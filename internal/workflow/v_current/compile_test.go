@@ -669,11 +669,12 @@ func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
 	}
 
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "github:pr:write", but the task does not declare it`) {
+	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "provider:pr:write", but the task does not declare it`) {
 		t.Fatalf("Compile error = %v, want missing policy-action capability", err)
 	}
 
-	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite))
+	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities,
+		string(capability.ProviderPRWrite), string(capability.GitHubPRWrite))
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("policy actions with their capabilities should compile: %v", err)
 	}

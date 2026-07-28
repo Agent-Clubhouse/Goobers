@@ -23,7 +23,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"comment-on-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":                 {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},

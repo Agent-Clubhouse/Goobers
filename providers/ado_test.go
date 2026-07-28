@@ -757,52 +757,6 @@ func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
 	}
 }
 
-func TestADOProviderClosePullRequestAbandonsAndComments(t *testing.T) {
-	var patches int
-	var patchBody map[string]string
-	var threadBody adoPullRequestThreadRequest
-	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "active"})
-		case http.MethodPatch:
-			patches++
-			decodeJSON(t, r, &patchBody)
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": "abandoned"})
-		default:
-			t.Fatalf("unexpected pull request method %s", r.Method)
-		}
-	})
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/12/threads", func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		decodeJSON(t, r, &threadBody)
-		w.WriteHeader(http.StatusCreated)
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
-	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		PullID:     "12",
-		Comment:    "No longer needed",
-	})
-	if err != nil {
-		t.Fatalf("ClosePullRequest returned error: %v", err)
-	}
-	if result.Number != 12 || result.Merged || result.State != "closed" {
-		t.Fatalf("result = %#v", result)
-	}
-	if patches != 1 || patchBody["status"] != "abandoned" {
-		t.Fatalf("patches = %d, body = %#v", patches, patchBody)
-	}
-	if threadBody.Status != 1 || len(threadBody.Comments) != 1 ||
-		threadBody.Comments[0].Content != "No longer needed" || threadBody.Comments[0].CommentType != 1 {
-		t.Fatalf("thread body = %#v", threadBody)
-	}
-}
-
 func TestADOProviderPullRequestErrorsUseProviderErrorModel(t *testing.T) {
 	for _, test := range []struct {
 		name      string

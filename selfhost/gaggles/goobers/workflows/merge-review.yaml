@@ -182,6 +182,7 @@ spec:
         # A test pins that the two stages agree on identical inputs.
         electionPolicy: "fifo"
       capabilities:
+        - provider:pr:write
         - github:pr:write
         - github:pr:review
       policyActions:

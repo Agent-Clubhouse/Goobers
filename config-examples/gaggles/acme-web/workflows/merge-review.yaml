@@ -108,6 +108,7 @@ spec:
         # gate, where a single-hop inputsFrom edge would fail closed.
         electionPolicy: "fifo"
       capabilities:
+        - provider:pr:write
         - github:pr:write
         - github:pr:review
       policyActions:

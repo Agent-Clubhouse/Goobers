@@ -711,6 +711,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			ID:         strconv.Itoa(pr.PullRequestID),
 			Number:     pr.PullRequestID,
 			URL:        prURL,
+			State:      "open",
 			Head:       head,
 			Base:       strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
 			HeadSHA:    pr.LastMergeSourceCommit.CommitID,
@@ -719,6 +720,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Labels:     labels,
 			CheckState: CheckStatePending,
 			UpdatedAt:  pr.CreationDate,
+			Body:       pr.Description,
 		})
 	}
 	return out, nil

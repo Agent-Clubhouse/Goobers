@@ -362,19 +362,19 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
+	repo, err := pullRequestProviderRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	githubProvider, githubSelected := provider.(*providers.GitHubProvider)
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerTargetBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -392,13 +392,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the demotion signal must never itself become a merge outage, and an empty
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
-	demoted, derr := demotedSet(ctx, provider, repo, prs)
-	if derr != nil {
-		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
-		demoted = nil
+	var demoted map[int]bool
+	if githubSelected {
+		var derr error
+		demoted, derr = demotedSet(ctx, githubProvider, repo, prs)
+		if derr != nil {
+			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
+			demoted = nil
+		}
 	}
 
-	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr, prs)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
 	}
@@ -435,7 +439,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if reason, moot := mootFailReason(ctx, provider, repo, &current); moot {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
-		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, &current); dup {
+		if !githubSelected {
+			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+			return 1
+		}
+		if reason, dup := duplicateOfEarlierPR(ctx, githubProvider, repo, &current); dup {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 		// Superseded by a byte-identical earlier open sibling (#1211): two PRs
@@ -443,9 +451,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// tree, which duplicateOfEarlierPR (shared-issue only) misses — the
 		// deadlock #1179/#1180 filed. Same disposition: the earlier one wins,
 		// this redundant later one is closed as no-longer-needed.
-		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, &current); superseded {
+		if reason, superseded := supersededByIdenticalSibling(ctx, githubProvider, repo, &current); superseded {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
+	}
+
+	if !githubSelected {
+		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+		return 1
 	}
 
 	posted := *verdict
@@ -478,7 +491,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
-		ctx, provider, repo, policyInput, selectedNumber, clusterBlockers, prs)
+		ctx, githubProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
 		return failProviderStage(stderr, "resolve election policy "+policyInput, perr, "")
 	}
@@ -509,11 +522,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	verdictAuthor, err := githubProvider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
 	}
-	statusComments, err := provider.ListComments(ctx, repo, selectedNumberStr)
+	statusComments, err := githubProvider.ListComments(ctx, repo, selectedNumberStr)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("load finding-set history for PR #%d", selectedNumber), err, resultFile)
 	}
@@ -605,7 +618,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
@@ -623,10 +636,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if oscillated {
 		update.RemoveLabels = []string{needsRemediationLabel}
 	}
-	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
+	if _, err := githubProvider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 
@@ -892,7 +905,7 @@ func resolvedIssueNumbers(body string) []string {
 // Fails closed in every ambiguous case: a provider error, an unresolvable
 // issue, or a pull request that references no issue at all all return false and
 // take the ordinary escalate-to-a-human path.
-func mootFailReason(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+func mootFailReason(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
 	// Condition 1: the pull request no longer changes anything. Whatever it
 	// proposed is already contained in its base, so there is nothing to merge
 	// and nothing to decide. This is the general "already fixed elsewhere"
@@ -914,7 +927,7 @@ func mootFailReason(ctx context.Context, provider *providers.GitHubProvider, rep
 		if err != nil {
 			return "", false
 		}
-		if !strings.EqualFold(item.State, "closed") {
+		if !providerWorkItemClosed(item) {
 			return "", false
 		}
 	}
@@ -1057,7 +1070,7 @@ func changedDiffDigest(ctx context.Context, provider *providers.GitHubProvider, 
 // No native review is submitted first: a changes-requested review on a pull
 // request being closed in the same breath is noise, and #870 means it would
 // frequently be refused as a self-review anyway.
-func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
+func closeMootPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
 	comment := fmt.Sprintf(
 		"Closing this pull request automatically: %s.\n\nThis change is **no longer needed** rather than wrong — there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
 		reason, strings.ReplaceAll(strings.TrimSpace(verdict.Rationale), "\n", "\n> "))
@@ -1070,6 +1083,33 @@ func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvide
 	}
 	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", "", stderr)
+}
+
+func currentPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pullID string, listed []providers.PullRequestSummary) (providers.PullRequestSummary, error) {
+	if githubProvider, ok := provider.(*providers.GitHubProvider); ok {
+		return githubProvider.GetPullRequest(ctx, repo, pullID)
+	}
+	number, err := strconv.Atoi(pullID)
+	if err != nil {
+		return providers.PullRequestSummary{}, fmt.Errorf("invalid pull id %q: %w", pullID, err)
+	}
+	for _, pr := range listed {
+		if pr.Number == number {
+			return pr, nil
+		}
+	}
+	return providers.PullRequestSummary{}, fmt.Errorf("pull request #%d is not open in the routed repository", number)
+}
+
+func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+	if repo.Provider != providers.ProviderGitHub {
+		return newOpenPRProviderForRepo(root, repo)
+	}
+	token, err := pullRequestProviderToken(repo)
+	if err != nil {
+		return nil, err
+	}
+	return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"})), nil
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {

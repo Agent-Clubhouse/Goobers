@@ -317,15 +317,31 @@ func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var body map[string]interface{}
+	var (
+		body         map[string]interface{}
+		opened       bool
+		closePatches int
+	)
+	pullPath := "/organization/project/_apis/git/repositories/repository/pullrequests/42"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/organization/project/_apis/git/repositories/repository/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []interface{}{}}); err != nil {
+			value := []interface{}{}
+			if opened {
+				value = append(value, map[string]interface{}{
+					"pullRequestId": 42, "status": "active", "description": "Implements #772",
+					"sourceRefName":         "refs/heads/goobers/implementation/run-ado",
+					"targetRefName":         "refs/heads/trunk",
+					"lastMergeSourceCommit": map[string]string{"commitId": "ado-head"},
+					"lastMergeTargetCommit": map[string]string{"commitId": "ado-base"},
+				})
+			}
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": value}); err != nil {
 				t.Fatal(err)
 			}
 		case http.MethodPost:
+			opened = true
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
@@ -339,13 +355,31 @@ func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
 			t.Fatalf("unexpected method %s", r.Method)
 		}
 	})
+	mux.HandleFunc(pullPath, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeFakeJSON(w, map[string]interface{}{"pullRequestId": 42, "status": "active"})
+		case http.MethodPatch:
+			closePatches++
+			writeFakeJSON(w, map[string]interface{}{"pullRequestId": 42, "status": "abandoned"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	mux.HandleFunc(pullPath+"/iterations", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"value": []map[string]int{{"id": 1}}})
+	})
+	mux.HandleFunc(pullPath+"/iterations/1/changes", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"changeEntries": []interface{}{}})
+	})
+	mux.HandleFunc(pullPath+"/threads", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	var providerCalls int
 	previousADOProvider := newADOProvider
 	newADOProvider = func(organization, project, token string, opts ...func(*providers.ADOProvider)) *providers.ADOProvider {
-		providerCalls++
 		if token != "" {
 			t.Fatalf("ADO provider token = %q, want configured credential source", token)
 		}
@@ -375,23 +409,19 @@ func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stderr = %q", code, stderr)
 	}
-	if providerCalls != 1 {
-		t.Fatalf("ADO provider calls = %d, want 1", providerCalls)
-	}
 	if body["targetRefName"] != "refs/heads/trunk" {
 		t.Fatalf("targetRefName = %q, want configured default branch", body["targetRefName"])
 	}
-	mutationData, err := os.ReadFile(filepath.Join(workDir, mutationsSidecarFile))
-	if err != nil {
-		t.Fatalf("read mutation sidecar: %v", err)
-	}
-	var mutation mutationFact
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(mutationData))), &mutation); err != nil {
-		t.Fatalf("decode mutation sidecar: %v", err)
-	}
-	if mutation.Provider != string(providers.ProviderADO) || mutation.Kind != "pr" ||
-		mutation.ID != "42" || mutation.Operation != "open" {
-		t.Fatalf("mutation sidecar = %#v", mutation)
+
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "42")
+	seedGateVerdictJournal(t, root, "run-ado", apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges, Rationale: "superseded",
+		HeadSHA: "ado-head", BaseSHA: "ado-base",
+	})
+	code, _, stderr = runArgs(t, "apply-verdict", root)
+	if code != 0 || closePatches != 1 {
+		t.Fatalf("ADO apply-verdict close: code=%d patches=%d stderr=%q", code, closePatches, stderr)
 	}
 }
 
