@@ -152,6 +152,7 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 	t.Setenv("GOOBERS_INPUT_OVERLAPPINGSIBLINGS", "11")
+	t.Setenv("GOOBERS_INPUT_SCOPEGATEPARKED", "true")
 	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
 		Decision:  apiv1.VerdictNeedsChanges,
 		Rationale: "the overlap is a substantive conflict",
@@ -184,6 +185,9 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	if election["elected"] != "false" {
 		t.Fatalf("elected = %q, want false", election["elected"])
 	}
+	if election["scopeGateParked"] != "true" {
+		t.Fatalf("scopeGateParked = %q, want true", election["scopeGateParked"])
+	}
 
 	applyDir := t.TempDir()
 	t.Chdir(applyDir)
@@ -201,6 +205,9 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	}
 	if applied["decision"] != string(apiv1.VerdictFail) {
 		t.Fatalf("applied decision = %q, want fail", applied["decision"])
+	}
+	if applied["scopeGateParked"] != "true" {
+		t.Fatalf("applied scopeGateParked = %q, want true", applied["scopeGateParked"])
 	}
 
 	server.mu.Lock()

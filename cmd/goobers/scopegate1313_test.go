@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,8 +60,7 @@ func TestGatherSiblingContextEmitsSelectedChangedLines(t *testing.T) {
 // TestGatherSiblingContextParksOversizedPR is #1313's end-to-end integration
 // path: a PR whose changed-file count meets the gate's threshold gets parked
 // by gather-sibling-context itself (label + comment), and reports
-// scopeGateParked="true" so merge-review's scope-gate branches away from
-// review this cycle.
+// scopeGateParked="true" so merge-review can block merge after review.
 func TestGatherSiblingContextParksOversizedPR(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -188,6 +188,29 @@ func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
 	}
 	if !issueHasLabel(server, 30, needsRemediationLabel) {
 		t.Fatalf("%s was cleared before a fresh verdict replaced it", needsRemediationLabel)
+	}
+}
+
+func TestApplyVerdictResultPreservesScopeGateDecision(t *testing.T) {
+	for _, parked := range []string{"false", "true"} {
+		t.Run(parked, func(t *testing.T) {
+			t.Setenv("GOOBERS_INPUT_SCOPEGATEPARKED", parked)
+			path := filepath.Join(t.TempDir(), "verdict-result.json")
+			if code := writeApplyVerdictResult(path, 30, "head", "base", "pass", "reviewer", io.Discard); code != 0 {
+				t.Fatalf("writeApplyVerdictResult code = %d, want 0", code)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read result: %v", err)
+			}
+			var out map[string]string
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if out["scopeGateParked"] != parked {
+				t.Fatalf("scopeGateParked = %q, want %q", out["scopeGateParked"], parked)
+			}
+		})
 	}
 }
 

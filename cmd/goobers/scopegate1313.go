@@ -7,17 +7,13 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// scopeGateLabel marks a PR merge-review has PARKED before review because its
-// diff meets or exceeds the #1313 size threshold — escalating #1111's
-// advisory goobers:scope-drift flag (which never blocks) into an actual
-// merge-review gate. Unlike scope-drift, a PR carrying this label does not
-// reach the review gate at all this cycle: gather-sibling-context's
-// scopeGateParked output routes merge-review's scope-gate branch straight to
-// completion instead of review.
+// scopeGateLabel marks a PR that cannot be merged autonomously because its diff
+// meets or exceeds the #1313 size threshold. Review still runs so findings can
+// drive remediation; the carried scopeGateParked output stops the merge path.
 const scopeGateLabel = "goobers:scope-gate"
 
 // scopeGateAckLabel lets an operator explicitly release a parked PR for
-// review despite its size — the "operator ack" half of #1313's acceptance
+// autonomous merge despite its size — the "operator ack" half of #1313's acceptance
 // criteria. Persistent, not one-shot: it stays in effect until a human
 // removes it, exactly like every other durable override label in this
 // codebase (goobers:merge-demoted, goobers:merge-escalated).
@@ -33,7 +29,7 @@ const scopeGateAckLabel = "goobers:scope-gate-ack"
 // no remediation cycle can do (#1801).
 const (
 	scopeGateAckLabelColor       = "D4C5F9"
-	scopeGateAckLabelDescription = "Operator acknowledgement that an oversized PR may proceed past the #1313 scope gate"
+	scopeGateAckLabelDescription = "Operator acknowledgement that an oversized PR may merge past the #1313 scope gate"
 )
 
 // ensureScopeGateAckLabel makes the ack label exist before the park comment
@@ -104,10 +100,10 @@ func reconcileScopeGate(ctx context.Context, provider *providers.GitHubProvider,
 		_ = ensureScopeGateAckLabel(ctx, provider, repo)
 		comment := fmt.Sprintf(
 			"🚧 **Scope gate** (#1313): this pull request %s — at or past the configured threshold for autonomous "+
-				"merge. Unlike the advisory `goobers:scope-drift` flag (#1111), this label **blocks** merge-review "+
-				"from proceeding to review this cycle: diffs this large are where mega-merge failures have shipped "+
-				"before despite review (#1068, #1186). It clears automatically once the diff shrinks back under both "+
-				"thresholds on a later run, or an operator can add `%s` to release it for review despite the size.",
+				"merge. Unlike the advisory `goobers:scope-drift` flag (#1111), this label **blocks autonomous merge** "+
+				"but does not suppress review: fresh findings can still drive remediation without allowing a mega-merge "+
+				"to land (#1068, #1186). It clears automatically once the diff shrinks back under both thresholds on a "+
+				"later run, or an operator can add `%s` to acknowledge the size and release the merge gate.",
 			scopeGateSizeDescription(changedFiles, changedLines, filesThreshold, linesThreshold), scopeGateAckLabel)
 		if _, uerr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: fmt.Sprintf("%d", prNumber), AddLabels: []string{scopeGateLabel}, Comment: comment,
@@ -120,7 +116,7 @@ func reconcileScopeGate(ctx context.Context, provider *providers.GitHubProvider,
 		if !acked {
 			reason = "the diff shrunk back under both thresholds"
 		}
-		comment := fmt.Sprintf("✅ **Scope gate cleared** (#1313): %s — proceeding to review normally this cycle.", reason)
+		comment := fmt.Sprintf("✅ **Scope gate cleared** (#1313): %s — autonomous merge is eligible again.", reason)
 		if _, uerr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: fmt.Sprintf("%d", prNumber), RemoveLabels: []string{scopeGateLabel}, Comment: comment,
 		}); uerr != nil {

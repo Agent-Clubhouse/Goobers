@@ -1312,6 +1312,7 @@ func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedN
 		"verdictAuthor":             verdictAuthor,
 		"advisoryMode":              strconv.FormatBool(advisoryMode),
 		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
+		"scopeGateParked":           providerInput("scopeGateParked", ""),
 	}
 	if reason != "" {
 		out["reason"] = reason
