@@ -152,6 +152,37 @@ describe("loadOperationalOverview", () => {
     expect(overview.groups).toEqual({ active: [], attention: [], recent: [] });
   });
 
+  it("keeps gaggle and workflow inventory available when a shared goober load fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const cache = new SessionDataCache();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi
+      .spyOn(client, "listGoobers")
+      .mockRejectedValue(new Error("goober inventory unavailable"));
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+
+    try {
+      const [snapshot, overview] = await Promise.allSettled([
+        loadOperationalSnapshot(client, undefined, cache),
+        loadOperationalOverview(client, undefined, { cache }),
+      ]);
+
+      expect(snapshot.status).toBe("rejected");
+      expect(overview.status).toBe("fulfilled");
+      if (overview.status !== "fulfilled") {
+        throw overview.reason;
+      }
+      expect(listGaggles).toHaveBeenCalledOnce();
+      expect(listGoobers).toHaveBeenCalledTimes(2);
+      expect(listWorkflows).toHaveBeenCalledTimes(2);
+      expect(overview.value.gaggleCount).toBe(2);
+      expect(overview.value.workflowNames.size).toBe(2);
+      expect(overview.value.sectionErrors?.inventory).toBeUndefined();
+    } finally {
+      cache.dispose();
+    }
+  });
+
   it("keeps the other four phase groups when a single phase query fails (#1709)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const real = client.listRuns.bind(client);
@@ -230,7 +261,7 @@ describe("operational inventory cache", () => {
       await loadOperationalSnapshot(client, undefined, cache);
 
       expect(listGaggles).not.toHaveBeenCalled();
-      expect(listGoobers).not.toHaveBeenCalled();
+      expect(listGoobers).toHaveBeenCalledTimes(2);
       expect(listWorkflows).not.toHaveBeenCalled();
 
       vi.setSystemTime(1_000 + INVENTORY_CACHE_TTL_MS);

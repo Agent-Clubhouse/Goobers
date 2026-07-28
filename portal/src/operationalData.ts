@@ -43,7 +43,7 @@ const WORKFLOW_RUN_LIMIT = 5;
 const WORKFLOW_OUTCOME_CONCURRENCY = 4;
 const OPERATIONAL_SNAPSHOT_CACHE_KEY = dataCacheKey("operational-snapshot");
 const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
-const OPERATIONAL_INVENTORY_CACHE_KEY = dataCacheKey("operational-inventory");
+const OPERATIONAL_GAGGLES_CACHE_KEY = dataCacheKey("operational-inventory", "gaggles");
 export const INVENTORY_CACHE_TTL_MS = 5 * 60_000;
 const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
   { model: "instance" },
@@ -599,7 +599,7 @@ export async function loadOperationalOverview(
     client.getHealth(requestOptions),
     client.getInstance(requestOptions),
     wantInventory
-      ? loadOperationalInventory(client, options?.cache, signal).then(summarizeInventory)
+      ? loadOverviewInventory(client, options?.cache, signal)
       : Promise.resolve<OverviewInventory>({
           gaggleCount: previous!.gaggleCount,
           workflowNames: previous!.workflowNames,
@@ -665,57 +665,119 @@ function settledError(result: PromiseSettledResult<unknown>): Error | undefined 
     : new Error("Unable to read daemon data.");
 }
 
-function summarizeInventory(inventories: GaggleInventory[]): OverviewInventory {
+async function loadOverviewInventory(
+  client: DaemonClient,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<OverviewInventory> {
+  const gaggles = await loadGaggles(client, cache, signal);
+  const workflowLists = await Promise.all(
+    gaggles.map((gaggle) => loadWorkflows(client, gaggle.name, cache, signal)),
+  );
   const workflowNames = new Map<string, string>();
-  for (const inventory of inventories) {
-    for (const workflow of inventory.workflows) {
+  for (const workflows of workflowLists) {
+    for (const workflow of workflows) {
       workflowNames.set(
         `${workflow.identity.gaggle}/${workflow.identity.name}`,
         workflow.displayName,
       );
     }
   }
-  return { gaggleCount: inventories.length, workflowNames };
+  return { gaggleCount: gaggles.length, workflowNames };
 }
 
-function loadOperationalInventory(
+async function loadOperationalInventory(
   client: DaemonClient,
   cache?: SessionDataCache,
   signal?: AbortSignal,
 ): Promise<GaggleInventory[]> {
-  if (cache) {
-    return cache.getOrLoad(
-      OPERATIONAL_INVENTORY_CACHE_KEY,
-      INVENTORY_DEPENDENCIES,
-      // Keep the session-scoped request alive across a route unmount so the
-      // destination page can join it instead of restarting the inventory fan-out.
-      () => fetchOperationalInventory(client),
-      INVENTORY_CACHE_TTL_MS,
-    );
-  }
-  return fetchOperationalInventory(client, signal);
-}
-
-async function fetchOperationalInventory(
-  client: DaemonClient,
-  signal?: AbortSignal,
-): Promise<GaggleInventory[]> {
-  const gaggles = await collectPages((cursor) =>
-    client.listGaggles({ cursor, limit: PAGE_LIMIT }, { signal }),
-  );
+  const gaggles = await loadGaggles(client, cache, signal);
   return Promise.all(
     gaggles.map(async (gaggle) => {
       const [goobers, workflows] = await Promise.all([
-        collectPages((cursor) =>
-          client.listGoobers(gaggle.name, { cursor, limit: PAGE_LIMIT }, { signal }),
-        ),
-        collectPages((cursor) =>
-          client.listWorkflows(gaggle.name, { cursor, limit: PAGE_LIMIT }, { signal }),
-        ),
+        loadGoobers(client, gaggle.name, cache, signal),
+        loadWorkflows(client, gaggle.name, cache, signal),
       ]);
       return { gaggle, goobers, workflows };
     }),
   );
+}
+
+function loadGaggles(
+  client: DaemonClient,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<Gaggle[]> {
+  return loadInventoryCollection(
+    cache,
+    OPERATIONAL_GAGGLES_CACHE_KEY,
+    (requestSignal) =>
+      collectPages((cursor) =>
+        client.listGaggles({ cursor, limit: PAGE_LIMIT }, { signal: requestSignal }),
+      ),
+    signal,
+  );
+}
+
+function loadGoobers(
+  client: DaemonClient,
+  gaggle: string,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<Goober[]> {
+  return loadInventoryCollection(
+    cache,
+    dataCacheKey("operational-inventory", "goobers", gaggle),
+    (requestSignal) =>
+      collectPages((cursor) =>
+        client.listGoobers(
+          gaggle,
+          { cursor, limit: PAGE_LIMIT },
+          { signal: requestSignal },
+        ),
+      ),
+    signal,
+  );
+}
+
+function loadWorkflows(
+  client: DaemonClient,
+  gaggle: string,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<WorkflowSummary[]> {
+  return loadInventoryCollection(
+    cache,
+    dataCacheKey("operational-inventory", "workflows", gaggle),
+    (requestSignal) =>
+      collectPages((cursor) =>
+        client.listWorkflows(
+          gaggle,
+          { cursor, limit: PAGE_LIMIT },
+          { signal: requestSignal },
+        ),
+      ),
+    signal,
+  );
+}
+
+function loadInventoryCollection<T>(
+  cache: SessionDataCache | undefined,
+  key: string,
+  load: (signal?: AbortSignal) => Promise<T[]>,
+  signal?: AbortSignal,
+): Promise<T[]> {
+  if (cache) {
+    return cache.getOrLoad(
+      key,
+      INVENTORY_DEPENDENCIES,
+      // Keep session-scoped requests alive across route unmounts so the
+      // destination page can join them instead of restarting the fan-out.
+      () => load(),
+      INVENTORY_CACHE_TTL_MS,
+    );
+  }
+  return load(signal);
 }
 
 async function loadOverviewRunGroups(
