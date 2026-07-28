@@ -262,6 +262,57 @@ func TestGatherSiblingContextInvalidatesFailVerdictAfterOperatorClearsEscalation
 	}
 }
 
+func TestGatherSiblingContextInvalidatesFailVerdictAfterEscalationSelfHeals(t *testing.T) {
+	root, server, wantDigest := seedVerdictCacheFixture(t)
+	server.setPRLabels(10, []string{remediationEscalatedLabel})
+	stateComment, err := remediationStateComment(remediationState{
+		Escalated:        true,
+		EscalatedHeadSHA: "sha10head",
+		EscalatedBaseSHA: "shamainbase",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	server.addComment(10, stateComment)
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictFail, Summary: "human decision required", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+	}))
+	server.setBranchTip("main", "base-tip-after-sibling-merge")
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "gather-sibling-context", root)
+	if code != 0 {
+		t.Fatalf("gather-sibling-context: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+	if err != nil {
+		t.Fatalf("read sibling-context.json: %v", err)
+	}
+	var result siblingContextResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal sibling-context.json: %v", err)
+	}
+	if result.CachedVerdictJSON != "" {
+		t.Fatalf("cachedVerdictJson = %q, want empty after the live base tip advanced", result.CachedVerdictJSON)
+	}
+	if !strings.Contains(stdout, remediationEscalatedLabel+" self-healed") {
+		t.Fatalf("stdout = %q, want self-healed escalation invalidation", stdout)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if !hasAnyLabel(server.prs[10].labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("%s was cleared; the cache decision must use recorded escalation state rather than label absence", remediationEscalatedLabel)
+	}
+	comments := server.issues[10].comments
+	if len(comments) != 2 || !strings.Contains(comments[1], "**merge-review verdict: stale**") ||
+		!strings.Contains(comments[1], "live base tip advanced") {
+		t.Fatalf("comments = %q, want the fail verdict marked stale after live-base self-heal", comments)
+	}
+}
+
 func TestGatherSiblingContextKeepsFailVerdictWhileEscalationRemains(t *testing.T) {
 	root, server, wantDigest := seedVerdictCacheFixture(t)
 	server.setPRLabels(10, []string{remediationEscalatedLabel})
