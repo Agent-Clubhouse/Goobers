@@ -845,16 +845,37 @@ describe("live page integration", () => {
     });
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
     expect(listGaggles).toHaveBeenCalledTimes(inventoryReads.gaggles);
-    expect(listGoobers).toHaveBeenCalledTimes(inventoryReads.goobers);
+    expect(listGoobers.mock.calls.length).toBeGreaterThan(inventoryReads.goobers);
     expect(listWorkflows).toHaveBeenCalledTimes(inventoryReads.workflows);
+
+    const populatedInventoryReads = {
+      gaggles: listGaggles.mock.calls.length,
+      goobers: listGoobers.mock.calls.length,
+      workflows: listWorkflows.mock.calls.length,
+    };
+    act(() => {
+      window.location.hash = "#/overview";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
+    act(() => {
+      window.location.hash = "#/workflows";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(listGaggles).toHaveBeenCalledTimes(populatedInventoryReads.gaggles);
+    expect(listGoobers).toHaveBeenCalledTimes(populatedInventoryReads.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(populatedInventoryReads.workflows);
 
     client.addWorkflow();
     client.stream.push(update("fixture:1", ["instance", "workflow"]));
 
     expect(await screen.findByText("Inventory refresh")).toBeInTheDocument();
-    expect(listGaggles.mock.calls.length).toBeGreaterThan(inventoryReads.gaggles);
-    expect(listGoobers.mock.calls.length).toBeGreaterThan(inventoryReads.goobers);
-    expect(listWorkflows.mock.calls.length).toBeGreaterThan(inventoryReads.workflows);
+    expect(listGaggles.mock.calls.length).toBeGreaterThan(populatedInventoryReads.gaggles);
+    expect(listGoobers.mock.calls.length).toBeGreaterThan(populatedInventoryReads.goobers);
+    expect(listWorkflows.mock.calls.length).toBeGreaterThan(populatedInventoryReads.workflows);
   });
 
   it("meets the local p95 update target and stays stale on disconnect", async () => {
