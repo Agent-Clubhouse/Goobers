@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
-import { FixtureDaemonClient } from "./api/fixtureClient";
+import { FixtureDaemonClient, type DaemonFixtures } from "./api/fixtureClient";
 import type {
   DaemonEventStream,
   DaemonUpdateEvent,
@@ -804,7 +804,12 @@ describe("live page integration", () => {
     const inventoryWorkflowReads = listWorkflows.mock.calls.length;
 
     for (let sequence = 1; sequence <= 8; sequence += 1) {
-      client.stream.push(update(`fixture:${sequence}`, ["run"]));
+      client.stream.push(
+        update(`fixture:${sequence}`, ["instance", "run", "workflow"], {
+          runIds: ["01JZ441DAEMONAPI"],
+          workflows: [{ gaggle: "core", name: "implementation" }],
+        }),
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 150));
 
@@ -812,6 +817,44 @@ describe("live page integration", () => {
     // the gaggle/workflow inventory.
     expect(listGaggles.mock.calls.length).toBe(inventoryGaggleReads);
     expect(listWorkflows.mock.calls.length).toBe(inventoryWorkflowReads);
+  });
+
+  it("shares inventory across page mounts and refetches it after a definition event", async () => {
+    vi.useRealTimers();
+    const client = new MutableFixtureClient();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
+    );
+    const inventoryReads = {
+      gaggles: listGaggles.mock.calls.length,
+      goobers: listGoobers.mock.calls.length,
+      workflows: listWorkflows.mock.calls.length,
+    };
+
+    act(() => {
+      window.location.hash = "#/workflows";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(listGaggles).toHaveBeenCalledTimes(inventoryReads.gaggles);
+    expect(listGoobers).toHaveBeenCalledTimes(inventoryReads.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(inventoryReads.workflows);
+
+    client.addWorkflow();
+    client.stream.push(update("fixture:1", ["instance", "workflow"]));
+
+    expect(await screen.findByText("Inventory refresh")).toBeInTheDocument();
+    expect(listGaggles.mock.calls.length).toBeGreaterThan(inventoryReads.gaggles);
+    expect(listGoobers.mock.calls.length).toBeGreaterThan(inventoryReads.goobers);
+    expect(listWorkflows.mock.calls.length).toBeGreaterThan(inventoryReads.workflows);
   });
 
   it("meets the local p95 update target and stays stale on disconnect", async () => {
@@ -873,10 +916,13 @@ class ScriptedClient extends FixtureDaemonClient {
 
 class MutableFixtureClient extends FixtureDaemonClient {
   private currentStream = new ControlledEventStream();
+  private readonly mutableFixtures: DaemonFixtures;
   instanceName = "goobers-dev";
 
   constructor() {
-    super(populatedDaemonFixtures());
+    const fixtures = populatedDaemonFixtures();
+    super(fixtures);
+    this.mutableFixtures = fixtures;
   }
 
   get stream(): ControlledEventStream {
@@ -894,6 +940,22 @@ class MutableFixtureClient extends FixtureDaemonClient {
   override async getInstance(options?: RequestOptions): Promise<Instance> {
     const instance = await super.getInstance(options);
     return { ...instance, name: this.instanceName };
+  }
+
+  addWorkflow(): void {
+    const workflows = this.mutableFixtures.workflows?.core;
+    const template = workflows?.items[0];
+    const gaggle = this.mutableFixtures.gaggles.items.find((item) => item.name === "core");
+    if (!workflows || !template || !gaggle) {
+      throw new Error("Populated fixtures must include the core workflow inventory.");
+    }
+    workflows.items.push({
+      ...template,
+      identity: { gaggle: "core", name: "inventory-refresh" },
+      displayName: "Inventory refresh",
+    });
+    workflows.page.total = workflows.items.length;
+    gaggle.workflowCount = workflows.items.length;
   }
 }
 

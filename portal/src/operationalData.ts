@@ -19,7 +19,11 @@ import type {
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
-import { dataCacheKey, type DataCacheDependency } from "./dataCache";
+import {
+  dataCacheKey,
+  type DataCacheDependency,
+  type SessionDataCache,
+} from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
 
 const PAGE_LIMIT = 100;
@@ -39,10 +43,15 @@ const WORKFLOW_RUN_LIMIT = 5;
 const WORKFLOW_OUTCOME_CONCURRENCY = 4;
 const OPERATIONAL_SNAPSHOT_CACHE_KEY = dataCacheKey("operational-snapshot");
 const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
+const OPERATIONAL_INVENTORY_CACHE_KEY = dataCacheKey("operational-inventory");
+export const INVENTORY_CACHE_TTL_MS = 5 * 60_000;
 const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
   { model: "instance" },
   { model: "workflow" },
   { model: "run" },
+];
+const INVENTORY_DEPENDENCIES: readonly DataCacheDependency[] = [
+  { model: "inventory" },
 ];
 
 export interface GaggleInventory {
@@ -176,7 +185,7 @@ export function useOperationalSnapshot(
       );
 
       try {
-        const data = await loadOperationalSnapshot(client, signal);
+        const data = await loadOperationalSnapshot(client, signal, cache);
         if (signal.aborted) {
           return false;
         }
@@ -254,27 +263,14 @@ export function useOperationalSnapshot(
 export async function loadOperationalSnapshot(
   client: DaemonClient,
   signal?: AbortSignal,
+  cache?: SessionDataCache,
 ): Promise<OperationalSnapshot> {
   const options = { signal };
-  const [health, instance, gaggles] = await Promise.all([
+  const [health, instance, inventories] = await Promise.all([
     client.getHealth(options),
     client.getInstance(options),
-    collectPages((cursor) => client.listGaggles({ cursor, limit: PAGE_LIMIT }, options)),
+    loadOperationalInventory(client, cache, signal),
   ]);
-
-  const inventories = await Promise.all(
-    gaggles.map(async (gaggle) => {
-      const [goobers, workflows] = await Promise.all([
-        collectPages((cursor) =>
-          client.listGoobers(gaggle.name, { cursor, limit: PAGE_LIMIT }, options),
-        ),
-        collectPages((cursor) =>
-          client.listWorkflows(gaggle.name, { cursor, limit: PAGE_LIMIT }, options),
-        ),
-      ]);
-      return { gaggle, goobers, workflows };
-    }),
-  );
   const runs = await collectWorkflowOutcomes(client, inventories, signal);
 
   return { health, instance, inventories, runs: sortRuns(runs) };
@@ -401,6 +397,7 @@ export interface OperationalOverviewQuery {
 }
 
 export interface OverviewLoadOptions {
+  cache?: SessionDataCache;
   previous?: OperationalOverview;
   models?: ReadonlySet<UpdateModel>;
 }
@@ -437,6 +434,7 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
 
       try {
         const loaded = await loadOperationalOverview(client, signal, {
+          cache,
           previous: data.current,
           models,
         });
@@ -601,7 +599,7 @@ export async function loadOperationalOverview(
     client.getHealth(requestOptions),
     client.getInstance(requestOptions),
     wantInventory
-      ? loadOverviewInventory(client, signal)
+      ? loadOperationalInventory(client, options?.cache, signal).then(summarizeInventory)
       : Promise.resolve<OverviewInventory>({
           gaggleCount: previous!.gaggleCount,
           workflowNames: previous!.workflowNames,
@@ -667,30 +665,57 @@ function settledError(result: PromiseSettledResult<unknown>): Error | undefined 
     : new Error("Unable to read daemon data.");
 }
 
-async function loadOverviewInventory(
-  client: DaemonClient,
-  signal?: AbortSignal,
-): Promise<OverviewInventory> {
-  const gaggles = await collectPages((cursor) =>
-    client.listGaggles({ cursor, limit: PAGE_LIMIT }, { signal }),
-  );
-  const workflowLists = await Promise.all(
-    gaggles.map((gaggle) =>
-      collectPages((cursor) =>
-        client.listWorkflows(gaggle.name, { cursor, limit: PAGE_LIMIT }, { signal }),
-      ),
-    ),
-  );
+function summarizeInventory(inventories: GaggleInventory[]): OverviewInventory {
   const workflowNames = new Map<string, string>();
-  for (const workflows of workflowLists) {
-    for (const workflow of workflows) {
+  for (const inventory of inventories) {
+    for (const workflow of inventory.workflows) {
       workflowNames.set(
         `${workflow.identity.gaggle}/${workflow.identity.name}`,
         workflow.displayName,
       );
     }
   }
-  return { gaggleCount: gaggles.length, workflowNames };
+  return { gaggleCount: inventories.length, workflowNames };
+}
+
+function loadOperationalInventory(
+  client: DaemonClient,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<GaggleInventory[]> {
+  if (cache) {
+    return cache.getOrLoad(
+      OPERATIONAL_INVENTORY_CACHE_KEY,
+      INVENTORY_DEPENDENCIES,
+      // Keep the session-scoped request alive across a route unmount so the
+      // destination page can join it instead of restarting the inventory fan-out.
+      () => fetchOperationalInventory(client),
+      INVENTORY_CACHE_TTL_MS,
+    );
+  }
+  return fetchOperationalInventory(client, signal);
+}
+
+async function fetchOperationalInventory(
+  client: DaemonClient,
+  signal?: AbortSignal,
+): Promise<GaggleInventory[]> {
+  const gaggles = await collectPages((cursor) =>
+    client.listGaggles({ cursor, limit: PAGE_LIMIT }, { signal }),
+  );
+  return Promise.all(
+    gaggles.map(async (gaggle) => {
+      const [goobers, workflows] = await Promise.all([
+        collectPages((cursor) =>
+          client.listGoobers(gaggle.name, { cursor, limit: PAGE_LIMIT }, { signal }),
+        ),
+        collectPages((cursor) =>
+          client.listWorkflows(gaggle.name, { cursor, limit: PAGE_LIMIT }, { signal }),
+        ),
+      ]);
+      return { gaggle, goobers, workflows };
+    }),
+  );
 }
 
 async function loadOverviewRunGroups(
