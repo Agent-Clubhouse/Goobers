@@ -27,6 +27,9 @@ var ErrUnknownSelector = errors.New("unknown selector")
 // DSL version.
 var ErrUnavailableSelector = errors.New("unavailable selector")
 
+// ErrIncompleteContract identifies a selector without embedded purpose guidance.
+var ErrIncompleteContract = errors.New("embedded contract has no field-purpose guidance")
+
 // Explanation combines field facts from an embedded schema with lifecycle
 // metadata from the built-in schema and DSL feature registries.
 type Explanation struct {
@@ -74,8 +77,10 @@ func Explain(selector string) (Explanation, error) {
 	resolved := doc.root
 	currentDoc := doc
 	var required *bool
+	var elementDescription string
 
 	for _, part := range parts[1:] {
+		elementDescription = ""
 		childDoc, child, childResolved, isRequired, found, resolveErr :=
 			r.resolveProperty(currentDoc, resolved, part.name, 0)
 		if resolveErr != nil || !found {
@@ -88,6 +93,7 @@ func Explain(selector string) (Explanation, error) {
 		if !part.element {
 			continue
 		}
+		elementDescription, _ = schemaString(declared, resolved, "description")
 		items, ok := resolved["items"].(map[string]any)
 		if !ok {
 			return Explanation{}, unknownSelector(selector)
@@ -100,7 +106,10 @@ func Explain(selector string) (Explanation, error) {
 		required = nil
 	}
 
-	explanation := projectFacts(selector, declared, resolved, required)
+	explanation, err := projectFacts(selector, declared, resolved, required, elementDescription)
+	if err != nil {
+		return Explanation{}, fmt.Errorf("explain %q: %w", selector, err)
+	}
 	explanation.Type, err = r.schemaType(currentDoc, declared, resolved, 0)
 	if err != nil {
 		return Explanation{}, fmt.Errorf("explain %q: %w", selector, err)
@@ -132,17 +141,14 @@ func Explain(selector string) (Explanation, error) {
 	return explanation, nil
 }
 
-func projectFacts(selector string, declared, resolved map[string]any, required *bool) Explanation {
+func projectFacts(selector string, declared, resolved map[string]any, required *bool, fallbackDescription string) (Explanation, error) {
 	explanation := Explanation{Selector: selector, Required: required}
 	description, ok := schemaString(declared, resolved, "description")
 	if !ok || strings.TrimSpace(description) == "" {
-		normalized := strings.ReplaceAll(selector, "/", ".")
-		parts := strings.Split(normalized, ".")
-		description = fmt.Sprintf(
-			"Defines the %s field in the built-in %s contract.",
-			strings.TrimSuffix(parts[len(parts)-1], "[]"),
-			parts[0],
-		)
+		description = fallbackDescription
+	}
+	if strings.TrimSpace(description) == "" {
+		return Explanation{}, ErrIncompleteContract
 	}
 	explanation.Description = description
 	explanation.AllowedValues = schemaAllowedValues(declared, resolved)
@@ -150,7 +156,7 @@ func projectFacts(selector string, declared, resolved map[string]any, required *
 		explanation.Default = &value
 	}
 	explanation.SinceVersion, _ = schemaString(declared, resolved, "sinceVersion")
-	return explanation
+	return explanation, nil
 }
 
 func selectorLifecycle(requestedSelector string, parts []selectorPart, entry schemas.Entry) (string, string, error) {

@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SELF UPDATE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers self-update \- stage and request a supervised binary update
+.SH SYNOPSIS
+\fBgoobers self-update\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers self-update [flags] [path]
+
+Stage and smoke-check a binary, then request supervised activation. Policies
+are manual, on-release (default), and on-main. Manual requires a release tag;
+on-main builds the configured branch. Config is never changed.
+.fi
+.SH EXAMPLES
+.nf
+goobers self-update --policy on-release
+goobers self-update --policy manual --target v1.2.3
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

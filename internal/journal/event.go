@@ -130,6 +130,17 @@ const (
 	// EventDaemonDirtyRestart records startup finding a previous daemon lock
 	// without a subsequent clean-shutdown event.
 	EventDaemonDirtyRestart EventType = "daemon.dirty_restart"
+	// EventDaemonUpdateDrainStarted records the stable supervisor beginning a
+	// graceful drain for a validated binary handoff.
+	EventDaemonUpdateDrainStarted EventType = "daemon.update.drain_started"
+	// EventDaemonUpdateRestarted records the supervisor launching the staged binary.
+	EventDaemonUpdateRestarted EventType = "daemon.update.restarted"
+	// EventDaemonUpdateHealthy records the candidate completing its heartbeat window.
+	EventDaemonUpdateHealthy EventType = "daemon.update.healthy"
+	// EventDaemonUpdateRolledBack records restoration of the retained previous binary.
+	EventDaemonUpdateRolledBack EventType = "daemon.update.rolled_back"
+	// EventDaemonUpdateEscalated records successful creation of the rollback issue.
+	EventDaemonUpdateEscalated EventType = "daemon.update.escalated"
 )
 
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human

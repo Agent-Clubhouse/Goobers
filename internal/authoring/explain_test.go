@@ -22,11 +22,8 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 		{"workflow.spec.gates[].evaluator", "string", []any{"automated", "agentic", "human"}, &required, "automated", "ga"},
 		{"goober/spec/mcpServers[]/credentialRefs[]/scheme", "string", []any{"bearer", "basic"}, &optional, "bearer", "ga"},
 		{"goober.spec.capabilities", "array", nil, &optional, []any{"repo:read"}, "ga"},
-		{"features.version", "string", nil, &required, "x", "ga"},
 		{"gaggle.spec.sandbox", "object", nil, &optional, map[string]any{}, "preview"},
 		{"goober.apiVersion", "string", []any{"goobers.dev/v1alpha1"}, &required, "goobers.dev/v1alpha1", "ga"},
-		{"remediation-brief-v2.gatherPrContext.verdict", []any{"object", "null"}, nil, &required, map[string]any{"decision": "pass"}, "ga"},
-		{"remediation-brief-v2.gatherPrContext.verdict.decision", "string", []any{"pass", "fail", "needs-changes"}, &required, "pass", "ga"},
 	}
 	for _, test := range tests {
 		t.Run(test.selector, func(t *testing.T) {
@@ -59,6 +56,9 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 	if !reflect.DeepEqual(list.AllowedValues, element.AllowedValues) || len(list.AllowedValues) == 0 {
 		t.Fatalf("list values = %#v; element values = %#v", list, element)
 	}
+	if list.Description != element.Description {
+		t.Fatalf("element description = %q, want array purpose %q", element.Description, list.Description)
+	}
 
 	workspace, err := Explain("workflow.spec.tasks[].run.workspace")
 	if err != nil {
@@ -66,6 +66,20 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 	}
 	if want := []any{"repo", "scratch"}; !reflect.DeepEqual(workspace.AllowedValues, want) {
 		t.Fatalf("workspace values = %#v, want %#v", workspace.AllowedValues, want)
+	}
+}
+
+func TestExplainRejectsMissingPurposeMetadata(t *testing.T) {
+	for _, selector := range []string{
+		"features.version",
+		"remediation-brief-v2.gatherPrContext.verdict",
+		"remediation-brief-v2.gatherPrContext.verdict.decision",
+		"remediation-brief-v2.gatherPrContext.comments[]",
+	} {
+		_, err := Explain(selector)
+		if !errors.Is(err, ErrIncompleteContract) {
+			t.Errorf("%q: error = %v, want ErrIncompleteContract", selector, err)
+		}
 	}
 }
 
