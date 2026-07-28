@@ -750,21 +750,23 @@ func TestADOProviderPollPullRequestMapsTerminalStates(t *testing.T) {
 		{status: "completed", closeState: "merged", merged: true},
 	} {
 		t.Run(test.status, func(t *testing.T) {
-			state, merged := adoPullRequestPollState(test.status)
-			if state != "closed" || merged != test.merged {
-				t.Fatalf("adoPullRequestPollState(%q) = %q, %t", test.status, state, merged)
-			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assertMethod(t, r, http.MethodGet)
 				writeJSON(t, w, map[string]interface{}{"pullRequestId": 12, "status": test.status})
 			}))
 			defer server.Close()
 			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+			current, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+				Repository: RepositoryRef{Name: "repo", Project: "project"}, PullID: "12",
+			})
+			if err != nil || current.State != "closed" || current.Merged != test.merged {
+				t.Fatalf("PollPullRequest = %#v, %v; want state=closed merged=%t", current, err, test.merged)
+			}
 			result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
 				Repository: RepositoryRef{Name: "repo", Project: "project"}, PullID: "12",
 			})
-			if err != nil || result.State != test.closeState || result.Merged != merged {
-				t.Fatalf("ClosePullRequest = %#v, %v; want state=%q merged=%t", result, err, test.closeState, merged)
+			if err != nil || result.State != test.closeState || result.Merged != test.merged {
+				t.Fatalf("ClosePullRequest = %#v, %v; want state=%q merged=%t", result, err, test.closeState, test.merged)
 			}
 		})
 	}
