@@ -10,12 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
@@ -26,6 +26,7 @@ import (
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
 	recordedAuthoringPathSHA256 = "7a1f2732053c6b29bd2955a03718786e911989f2851d4c40dafc684f2a741be1"
+	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
 type fixtureDocument struct {
@@ -45,41 +46,26 @@ type fixtureScenario struct {
 	RepositoryFiles map[string]string `json:"repositoryFiles"`
 	EvidencePaths   []string          `json:"evidencePaths"`
 	GuidancePaths   []string          `json:"guidancePaths"`
-	Capture         recordedResponse  `json:"recordedResponse"`
 }
 
-type recordingDocument struct {
-	Recordings []invocationRecording `json:"recordings"`
+type captureDocument struct {
+	Schema   string              `json:"schema"`
+	Captures []invocationCapture `json:"captures"`
 }
 
-type invocationRecording struct {
-	Name           string                `json:"name"`
-	CapturedWith   string                `json:"capturedWith"`
-	CapturedAt     string                `json:"capturedAt"`
-	Model          string                `json:"model"`
-	SessionID      string                `json:"sessionId"`
-	SkillSHA256    string                `json:"skillSHA256"`
-	PromptSHA256   string                `json:"promptSHA256"`
-	ResponseSHA256 string                `json:"responseSHA256"`
-	DiffSHA256     string                `json:"diffSHA256"`
-	Interactions   []recordedInteraction `json:"interactions"`
-}
-
-type recordedInteraction struct {
-	Action   string   `json:"action"`
-	Tool     string   `json:"tool,omitempty"`
-	Path     string   `json:"path,omitempty"`
-	Args     []string `json:"args,omitempty"`
-	Source   string   `json:"source,omitempty"`
-	Contains string   `json:"contains,omitempty"`
-	WantOK   *bool    `json:"wantOK,omitempty"`
-}
-
-type recordedResponse struct {
-	Summary      string            `json:"summary"`
-	Files        map[string]string `json:"files"`
-	InitialFiles map[string]string `json:"initialFiles"`
-	Report       authoringReport   `json:"report"`
+type invocationCapture struct {
+	Name                   string            `json:"name"`
+	CapturedWith           string            `json:"capturedWith"`
+	CapturedAt             string            `json:"capturedAt"`
+	Model                  string            `json:"model"`
+	SessionID              string            `json:"sessionId"`
+	SkillSHA256            string            `json:"skillSHA256"`
+	RawEventsSHA256        string            `json:"rawEventsSHA256"`
+	NormalizedEventsSHA256 string            `json:"normalizedEventsSHA256"`
+	Events                 []json.RawMessage `json:"events"`
+	Files                  map[string]string `json:"files"`
+	Report                 json.RawMessage   `json:"report"`
+	Result                 json.RawMessage   `json:"result"`
 }
 
 type authoringReport struct {
@@ -87,14 +73,14 @@ type authoringReport struct {
 	Request    string               `json:"request"`
 	Contract   contractEvidence     `json:"contract"`
 	Target     targetEvidence       `json:"target"`
-	Terms      []string             `json:"terms"`
-	Command    []string             `json:"command,omitempty"`
+	Terms      map[string]string    `json:"terms"`
+	Command    json.RawMessage      `json:"command"`
 	Evidence   []repositoryEvidence `json:"evidence"`
 	Proposal   proposalReport       `json:"proposal"`
 	Release    releaseEvidence      `json:"release"`
 	Validation validationReport     `json:"validation"`
 	Diff       string               `json:"diff"`
-	Unresolved []string             `json:"unresolved,omitempty"`
+	Unresolved []string             `json:"unresolved"`
 }
 
 type contractEvidence struct {
@@ -119,7 +105,7 @@ type proposalReport struct {
 	StateGraph           string            `json:"stateGraph"`
 	Paths                []string          `json:"paths"`
 	Capabilities         []capabilityGrant `json:"capabilities"`
-	OmittedCapabilities  []string          `json:"omittedCapabilities"`
+	OmittedCapabilities  json.RawMessage   `json:"omittedCapabilities"`
 }
 
 type capabilityGrant struct {
@@ -137,14 +123,14 @@ type releaseEvidence struct {
 }
 
 type validationReport struct {
-	Command  []string            `json:"command"`
+	Command  json.RawMessage     `json:"command"`
 	Attempts []validationAttempt `json:"attempts"`
 	Status   string              `json:"status"`
 }
 
 type validationAttempt struct {
-	Status  string `json:"status"`
-	Finding string `json:"finding,omitempty"`
+	Status  string          `json:"status"`
+	Finding json.RawMessage `json:"finding"`
 }
 
 type resolvedTarget struct {
@@ -156,34 +142,23 @@ type resolvedTarget struct {
 }
 
 type selectedBinary struct {
-	path        string
-	version     string
-	commit      string
-	dslVersions []supportmatrix.Version
-	calls       []string
+	path    string
+	version string
+	commit  string
 }
 
-type copilotReplayRunner struct {
-	t                 *testing.T
-	scenario          fixtureScenario
-	recording         invocationRecording
-	response          recordedResponse
-	binary            *selectedBinary
-	target            resolvedTarget
-	prompt            string
-	events            []string
-	providerCalls     []string
-	validationResults []bool
-	skillReads        []string
-	writtenFinal      map[string]bool
-	writtenDraft      map[string]bool
+type captureReplayRunner struct {
+	t           *testing.T
+	capture     invocationCapture
+	loadedPaths []string
+	skillDigest string
 }
 
 func TestRepositoryAwareGoldenScenarios(t *testing.T) {
 	binaryPath := buildSelectedBinary(t)
 	for _, scenario := range loadScenarios(t).Scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
-			runRecordedScenario(t, binaryPath, scenario)
+			runCapturedScenario(t, binaryPath, scenario)
 		})
 	}
 }
@@ -192,7 +167,7 @@ func TestRepositoryAwareUnresolvedScenario(t *testing.T) {
 	binaryPath := buildSelectedBinary(t)
 	for _, scenario := range loadScenarios(t).Unresolved {
 		t.Run(scenario.Name, func(t *testing.T) {
-			runRecordedScenario(t, binaryPath, scenario)
+			runCapturedScenario(t, binaryPath, scenario)
 		})
 	}
 }
@@ -212,246 +187,124 @@ func TestRepositoryAwareFixturesCoverAcceptanceMatrix(t *testing.T) {
 	}
 }
 
-func runRecordedScenario(t *testing.T, binaryPath string, scenario fixtureScenario) {
+func runCapturedScenario(t *testing.T, binaryPath string, scenario fixtureScenario) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	binary := openSelectedBinary(t, binaryPath)
-	root, target := prepareWorkspace(t, scenario, &binary)
-	loadedPaths, skillDigest := loadPackagedAuthoringPath(t, root)
+	root, target, loadedPaths, skillDigest := prepareWorkspace(t, scenario, &binary)
 	if skillDigest != recordedAuthoringPathSHA256 {
-		t.Fatalf("installed authoring path digest = %s; update the recorded agent responses intentionally", skillDigest)
+		t.Fatalf("installed authoring path digest = %s; record fresh live invocations intentionally", skillDigest)
 	}
-	recording := loadRecording(t, scenario.Name)
-	assertRecordingProvenance(t, recording, scenario.Capture)
-	dslVersion := binary.selectDSL(t)
-	response := expandRecordedResponse(t, scenario.Capture, map[string]string{
-		"{binaryPath}":    binary.path,
-		"{binaryVersion}": binary.version,
-		"{binaryCommit}":  binary.commit,
-		"{dslVersion}":    dslVersion,
-		"{workspace}":     root,
-		"{targetCommit}":  target.Commit,
-		"{skillDigest}":   recordedAuthoringPathSHA256,
-	})
-	runner := &copilotReplayRunner{
-		t:            t,
-		scenario:     scenario,
-		recording:    recording,
-		response:     response,
-		binary:       &binary,
-		target:       target,
-		writtenFinal: map[string]bool{},
-		writtenDraft: map[string]bool{},
+
+	capture := loadCapture(t, scenario.Name)
+	assertCaptureProvenance(t, capture, skillDigest)
+	capture = expandCapture(t, capture, root, target, binary)
+	runner := &captureReplayRunner{
+		t:           t,
+		capture:     capture,
+		loadedPaths: loadedPaths,
+		skillDigest: skillDigest,
 	}
 	adapter := &harness.CopilotAdapter{
 		Command:   []string{"copilot"},
 		ExtraArgs: []string{},
 		Runner:    runner,
 	}
+	contextPointers := []apiv1.ContextPointer{{Name: "environment-resolver-report"}}
+	contextPaths := map[string]string{
+		"environment-resolver-report": ".goobers/context/environment-report.json",
+	}
+	if target.Access == "remote" {
+		contextPointers = append(contextPointers, apiv1.ContextPointer{Name: "read-only-provider-response"})
+		contextPaths["read-only-provider-response"] = ".goobers/context/provider-response.json"
+	}
 	outcome, err := adapter.Run(context.Background(), harness.RunRequest{
 		Mode: harness.ModeInvoke,
 		Envelope: apiv1.InvocationEnvelope{
-			TaskID:     "dsl-author-fixture",
-			WorkflowID: "repository-authoring",
-			RunID:      "golden-" + strings.ReplaceAll(scenario.Name, " ", "-"),
-			Gaggle:     "agent-toolkit",
-			Goal:       scenario.Request,
-			Workspace:  root,
-			ContextPointers: []apiv1.ContextPointer{{
-				Name: "environment-resolver-report",
-			}},
+			TaskID:          "dsl-author-fixture",
+			WorkflowID:      "repository-authoring",
+			RunID:           "capture-" + strings.ReplaceAll(scenario.Name, " ", "-"),
+			Gaggle:          "agent-toolkit",
+			Goal:            scenario.Request,
+			Workspace:       root,
+			ContextPointers: contextPointers,
 		},
+		Instructions:   authoringInvocationInstructions,
 		Workspace:      root,
 		CompletionPath: harness.DefaultResultPath,
-		Model:          recording.Model,
-		ContextPaths: map[string]string{
-			"environment-resolver-report": ".goobers/context/environment-report.json",
-		},
+		Model:          capture.Model,
+		ContextPaths:   contextPaths,
 	})
 	if err != nil {
-		t.Fatalf("run packaged authoring path: %v", err)
+		t.Fatalf("replay captured installed-skill invocation: %v", err)
 	}
+	assertCapturedTranscript(t, outcome)
 
 	var result apiv1.ResultEnvelope
 	if err := json.Unmarshal(outcome.Payload, &result); err != nil {
-		t.Fatalf("decode authoring completion: %v", err)
-	}
-	if result.Status != apiv1.ResultSuccess {
-		t.Fatalf("authoring completion status = %q", result.Status)
+		t.Fatalf("decode captured completion: %v", err)
 	}
 	if result.Outputs["reportPath"] != ".goobers/authoring-report.json" {
 		t.Fatalf("authoring report path = %v", result.Outputs["reportPath"])
 	}
-	assertRecordedTranscript(t, recording, outcome)
-
 	reportData, err := os.ReadFile(filepath.Join(root, ".goobers", "authoring-report.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var report authoringReport
 	if err := json.Unmarshal(reportData, &report); err != nil {
-		t.Fatalf("decode authoring report: %v", err)
+		t.Fatalf("decode captured authoring report: %v", err)
 	}
-	expected := response.Report
-	expected.Diff = workspaceDiff(t, root)
-	if !reflect.DeepEqual(report, expected) {
-		t.Fatalf("authoring report differs from recorded golden\n got: %+v\nwant: %+v", report, expected)
+	if report.Status == "unresolved" {
+		if result.Status != apiv1.ResultBlocked {
+			t.Fatalf("unresolved completion status = %q, want blocked", result.Status)
+		}
+	} else if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("ready completion status = %q, want success", result.Status)
 	}
-	evaluateAuthoringResult(t, scenario, root, target, loadedPaths, &binary, runner, report)
+	evaluateAuthoringResult(t, scenario, root, target, loadedPaths, &binary, capture, report)
 }
 
-func (r *copilotReplayRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
+func (r *captureReplayRunner) Run(_ context.Context, request harness.ProcessRequest) (harness.ProcessResult, error) {
 	r.t.Helper()
 	promptIndex := slices.Index(request.Command, "-p")
 	if promptIndex < 0 || promptIndex+1 >= len(request.Command) {
-		return harness.ProcessResult{}, fmt.Errorf("recorded Copilot invocation has no prompt")
+		return harness.ProcessResult{}, fmt.Errorf("captured Copilot invocation has no prompt")
 	}
-	r.prompt = request.Command[promptIndex+1]
-	if !strings.Contains(r.prompt, r.scenario.Request) ||
-		!strings.Contains(r.prompt, ".goobers/context/environment-report.json") {
-		return harness.ProcessResult{}, fmt.Errorf("recorded Copilot prompt omitted request or resolver report")
+	prompt := request.Command[promptIndex+1]
+	if prompt != capturedPrompt(r.capture.Events) {
+		return harness.ProcessResult{}, fmt.Errorf("runtime prompt differs from the captured invocation")
 	}
-	if got := normalizedPromptSHA256(r.prompt, request.Dir, r.target, r.binary.path); got != r.recording.PromptSHA256 {
-		return harness.ProcessResult{}, fmt.Errorf("recorded Copilot prompt digest = %s, want %s", got, r.recording.PromptSHA256)
-	}
-
 	loadedPaths, digest := loadPackagedAuthoringPath(r.t, request.Dir)
-	if !slices.Equal(loadedPaths, r.response.Report.Contract.LoadedPaths) ||
-		digest != r.response.Report.Contract.SkillSHA256 ||
-		digest != r.recording.SkillSHA256 {
-		return harness.ProcessResult{}, fmt.Errorf("recorded response does not match installed authoring path")
+	if !slices.Equal(loadedPaths, r.loadedPaths) || digest != r.skillDigest {
+		return harness.ProcessResult{}, fmt.Errorf("installed authoring path differs from the captured invocation")
 	}
-	if err := r.replayInteractions(request); err != nil {
+	for path, body := range r.capture.Files {
+		writeFile(r.t, filepath.Join(request.Dir, filepath.FromSlash(path)), body)
+		runGit(r.t, request.Dir, "add", "-N", "--", filepath.FromSlash(path))
+	}
+	if err := writeRawJSON(filepath.Join(request.Dir, ".goobers", "authoring-report.json"), r.capture.Report); err != nil {
 		return harness.ProcessResult{}, err
 	}
-	if err := writeReplaySessionLog(request, r.recording, r.prompt); err != nil {
+	if err := writeRawJSON(filepath.Join(request.Dir, harness.DefaultResultPath), r.capture.Result); err != nil {
 		return harness.ProcessResult{}, err
 	}
-	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("Copilot invocation replay\n")}, nil
-}
-
-func (r *copilotReplayRunner) complete(root, summary string) error {
-	return harness.WriteCompletion(root, harness.DefaultResultPath, apiv1.ResultEnvelope{
-		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{"reportPath": ".goobers/authoring-report.json"},
-		Summary: summary,
-	})
-}
-
-func (r *copilotReplayRunner) replayInteractions(request harness.ProcessRequest) error {
-	r.t.Helper()
-	presented, reported, completed := false, false, false
-	for _, interaction := range r.recording.Interactions {
-		switch interaction.Action {
-		case "skill.read":
-			if _, err := os.ReadFile(filepath.Join(request.Dir, filepath.FromSlash(interaction.Path))); err != nil {
-				return fmt.Errorf("replay skill read %q: %w", interaction.Path, err)
-			}
-			r.skillReads = append(r.skillReads, interaction.Path)
-		case "repository.read":
-			if r.target.Access != "local" {
-				return fmt.Errorf("repository read recorded for remote target")
-			}
-			if unsafeEvidencePath(interaction.Path) {
-				return fmt.Errorf("recorded authoring path requested unsafe evidence %q", interaction.Path)
-			}
-			runGit(r.t, r.target.Root, "show", r.target.Commit+":"+interaction.Path)
-		case "provider.read":
-			if r.target.Access != "remote" {
-				return fmt.Errorf("provider read recorded for local target")
-			}
-			if unsafeEvidencePath(interaction.Path) {
-				return fmt.Errorf("recorded authoring path requested unsafe evidence %q", interaction.Path)
-			}
-			if _, ok := r.scenario.RepositoryFiles[interaction.Path]; !ok {
-				return fmt.Errorf("remote fixture has no evidence path %q", interaction.Path)
-			}
-			r.providerCalls = append(r.providerCalls, "read "+r.target.Identity+"@"+r.target.Commit+":"+interaction.Path)
-		case "goobers.run":
-			args := expandInteractionArgs(interaction.Args, request.Dir, r.response)
-			output := r.binary.run(r.t, args...)
-			if interaction.Contains != "" && !strings.Contains(string(output), interaction.Contains) {
-				return fmt.Errorf("recorded command %q output omitted %q", strings.Join(args, " "), interaction.Contains)
-			}
-			if args[0] == "features" && !json.Valid(output) {
-				return fmt.Errorf("selected binary returned invalid feature registry")
-			}
-		case "proposal.present":
-			if presented {
-				return fmt.Errorf("recorded proposal was presented more than once")
-			}
-			presented = true
-			r.events = append(r.events, "present-proposal")
-		case "config.write":
-			if !presented {
-				return fmt.Errorf("recorded config write preceded proposal")
-			}
-			files, written := r.response.Files, r.writtenFinal
-			if interaction.Source == "draft" {
-				files, written = r.response.InitialFiles, r.writtenDraft
-			}
-			body, ok := files[interaction.Path]
-			if !ok {
-				return fmt.Errorf("recorded %s output has no file %q", interaction.Source, interaction.Path)
-			}
-			writeFile(r.t, filepath.Join(request.Dir, filepath.FromSlash(interaction.Path)), body)
-			written[interaction.Path] = true
-			r.events = append(r.events, "write-"+interaction.Source)
-		case "config.validate":
-			if interaction.WantOK == nil {
-				return fmt.Errorf("recorded validation omitted wantOK")
-			}
-			ok := r.binary.validate(r.t, request.Dir, r.scenario.ExistingConfig, *interaction.WantOK)
-			r.validationResults = append(r.validationResults, ok)
-			if ok {
-				r.events = append(r.events, "validate-ready")
-			} else {
-				r.events = append(r.events, "validate-invalid")
-			}
-		case "report.write":
-			report := r.response.Report
-			if report.Status == "unresolved" {
-				report.Diff = ""
-				r.events = append(r.events, "return-unresolved")
-			} else {
-				for _, path := range report.Proposal.Paths {
-					runGit(r.t, request.Dir, "add", "-N", "--", filepath.FromSlash(path))
-				}
-				report.Diff = workspaceDiff(r.t, request.Dir)
-			}
-			if got := fmt.Sprintf("%x", sha256.Sum256([]byte(report.Diff))); got != r.recording.DiffSHA256 {
-				return fmt.Errorf("replayed diff digest = %s, want %s", got, r.recording.DiffSHA256)
-			}
-			if err := writeJSON(filepath.Join(request.Dir, ".goobers", "authoring-report.json"), report); err != nil {
-				return err
-			}
-			reported = true
-		case "completion.write":
-			if !reported {
-				return fmt.Errorf("recorded completion preceded report")
-			}
-			if err := r.complete(request.Dir, r.response.Summary); err != nil {
-				return err
-			}
-			completed = true
-		default:
-			return fmt.Errorf("unknown recorded interaction %q", interaction.Action)
-		}
+	sessionPath, err := replaySessionLogPath(request)
+	if err != nil {
+		return harness.ProcessResult{}, err
 	}
-	if !reported || !completed {
-		return fmt.Errorf("recording omitted report or completion")
+	var events bytes.Buffer
+	for _, event := range r.capture.Events {
+		events.Write(event)
+		events.WriteByte('\n')
 	}
-	for path := range r.response.Files {
-		if !r.writtenFinal[path] {
-			return fmt.Errorf("recording did not replay final output %q", path)
-		}
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		return harness.ProcessResult{}, err
 	}
-	for path := range r.response.InitialFiles {
-		if !r.writtenDraft[path] {
-			return fmt.Errorf("recording did not replay draft output %q", path)
-		}
+	if err := os.WriteFile(sessionPath, events.Bytes(), 0o600); err != nil {
+		return harness.ProcessResult{}, err
 	}
-	return nil
+	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("captured invocation replayed\n")}, nil
 }
 
 func evaluateAuthoringResult(
@@ -461,7 +314,7 @@ func evaluateAuthoringResult(
 	target resolvedTarget,
 	loadedPaths []string,
 	binary *selectedBinary,
-	runner *copilotReplayRunner,
+	capture invocationCapture,
 	report authoringReport,
 ) {
 	t.Helper()
@@ -470,59 +323,45 @@ func evaluateAuthoringResult(
 		report.Target.Access != target.Access {
 		t.Fatalf("report request or target does not match fixture: %+v", report.Target)
 	}
-	if !slices.Equal(report.Contract.LoadedPaths, loadedPaths) || report.Contract.SkillSHA256 == "" {
-		t.Fatalf("report did not identify the complete packaged authoring path: %+v", report.Contract)
-	}
-	if !slices.Equal(runner.skillReads, loadedPaths) {
-		t.Fatalf("recorded skill reads = %v, want %v", runner.skillReads, loadedPaths)
+	if !slices.Equal(report.Contract.LoadedPaths, loadedPaths) ||
+		report.Contract.SkillSHA256 != capture.SkillSHA256 {
+		t.Fatalf("report did not identify the captured installed authoring path: %+v", report.Contract)
 	}
 	if !report.Proposal.PresentedBeforeWrite || len(report.Terms) == 0 ||
-		report.Release.ExampleReason == "" {
-		t.Fatal("report omitted the pre-write explanation, relevant terms, or closest-example rationale")
+		report.Release.ExampleReason == "" || report.Release.CanonicalExample == "" {
+		t.Fatal("report omitted its pre-write explanation, terms, or closest-example rationale")
 	}
-	if len(runner.events) == 0 || runner.events[0] != "present-proposal" {
-		t.Fatalf("authoring event order = %v", runner.events)
-	}
-	assertReplayOrder(t, report, runner.events)
 	assertEvidenceCitations(t, scenario, target, report.Evidence)
-	assertReleaseCalls(t, binary.calls, report.Release)
-	assertProviderAccess(t, scenario, target, runner.providerCalls)
 	assertSecretFreeWorkspace(t, root)
 
 	changed := diffNames(t, root)
-	if !slices.Equal(changed, report.Proposal.Paths) {
-		t.Fatalf("workspace diff paths = %v, proposed paths = %v", changed, report.Proposal.Paths)
+	capturedPaths := sortedKeys(capture.Files)
+	if !slices.Equal(changed, capturedPaths) {
+		t.Fatalf("workspace diff paths = %v, captured output paths = %v", changed, capturedPaths)
 	}
-	if report.Diff != workspaceDiff(t, root) {
-		t.Fatal("reported reviewable diff differs from the workspace diff")
-	}
-
 	if report.Status == "unresolved" {
-		if len(changed) != 0 || len(report.Unresolved) == 0 ||
-			report.Validation.Status != "unresolved" || len(runner.validationResults) != 0 {
-			t.Fatalf("unresolved report wrote config or omitted diagnostics: %+v", report)
+		if len(changed) != 0 || report.Diff != "" || len(report.Unresolved) == 0 ||
+			report.Validation.Status != "unresolved" || len(capture.Files) != 0 {
+			t.Fatalf("unresolved capture wrote config or omitted diagnostics: %+v", report)
 		}
 		return
 	}
-	if report.Status != "ready" || report.Validation.Status != "ready" {
-		t.Fatalf("ready fixture status = %q, validation = %q", report.Status, report.Validation.Status)
+	if report.Status != "ready" || (report.Validation.Status != "ready" && report.Validation.Status != "passed") {
+		t.Fatalf("ready capture status = %q, validation = %q", report.Status, report.Validation.Status)
 	}
-	wantValidation := make([]bool, 0, len(report.Validation.Attempts))
-	for _, attempt := range report.Validation.Attempts {
-		switch attempt.Status {
-		case "invalid":
-			wantValidation = append(wantValidation, false)
-			if attempt.Finding == "" {
-				t.Fatal("invalid validation attempt omitted its finding")
-			}
-		case "ready":
-			wantValidation = append(wantValidation, true)
-		default:
-			t.Fatalf("unknown validation attempt status %q", attempt.Status)
-		}
+	proposalPaths := append([]string(nil), report.Proposal.Paths...)
+	sort.Strings(proposalPaths)
+	if !slices.Equal(changed, proposalPaths) {
+		t.Fatalf("workspace diff paths = %v, proposed paths = %v", changed, proposalPaths)
 	}
-	if !slices.Equal(runner.validationResults, wantValidation) {
-		t.Fatalf("validator results = %v, report attempts = %v", runner.validationResults, wantValidation)
+	replayedDiff := workspaceDiff(t, root)
+	if canonicalDiff(report.Diff) != canonicalDiff(replayedDiff) {
+		t.Fatalf("captured reviewable diff differs from the replayed workspace diff: %s",
+			firstDifference(canonicalDiff(report.Diff), canonicalDiff(replayedDiff)))
+	}
+	binary.validate(t, root, scenario.ExistingConfig, true)
+	if scenario.ExistingConfig {
+		assertExistingFilesPreserved(t, scenario, root)
 	}
 
 	configDir := root
@@ -531,119 +370,279 @@ func evaluateAuthoringResult(
 	}
 	set, loadReport, err := instance.LoadConfigDir(configDir)
 	if err != nil {
-		t.Fatalf("load generated config: %v (report: %+v)", err, loadReport)
+		t.Fatalf("load captured config: %v (report: %+v)", err, loadReport)
 	}
-	workflow := findWorkflow(t, set, "repository-check")
-	if graph := renderGraph(workflow); graph != report.Proposal.StateGraph {
-		t.Fatalf("generated state graph = %q, report = %q", graph, report.Proposal.StateGraph)
+	command := reportCommand(t, report.Command)
+	workflow := findWorkflowForCommand(t, set, command)
+	if workflow.DSLVersion != report.Release.DSLVersion {
+		t.Fatalf("generated DSL version = %q, report = %q", workflow.DSLVersion, report.Release.DSLVersion)
 	}
-	assertWorkflowCommand(t, workflow, report.Command)
-	capabilities := configCapabilities(set, workflow)
-	if grants := grantNames(report.Proposal.Capabilities); !slices.Equal(capabilities, grants) {
-		t.Fatalf("generated capabilities = %v, report grants = %v", capabilities, grants)
+	if !strings.Contains(report.Proposal.StateGraph, workflow.Spec.Start) {
+		t.Fatalf("reported state graph %q omits start state %q", report.Proposal.StateGraph, workflow.Spec.Start)
+	}
+	wantCapabilities := expectedCapabilities(scenario.Name)
+	if got := configCapabilities(set, workflow); !slices.Equal(got, wantCapabilities) {
+		t.Fatalf("generated capabilities = %v, want %v", got, wantCapabilities)
+	}
+	if got := grantNames(report.Proposal.Capabilities); !slices.Equal(got, wantCapabilities) {
+		t.Fatalf("reported capabilities = %v, want %v", got, wantCapabilities)
 	}
 	for _, grant := range report.Proposal.Capabilities {
 		if strings.TrimSpace(grant.Reason) == "" {
 			t.Errorf("capability %q has no least-privilege explanation", grant.Name)
 		}
 	}
-	for _, omitted := range report.Proposal.OmittedCapabilities {
-		if slices.Contains(capabilities, omitted) {
-			t.Errorf("omitted stronger capability %q was generated", omitted)
+}
+
+func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDigest string) {
+	t.Helper()
+	if capture.CapturedWith != "GitHub Copilot CLI 1.0.75" || capture.Model != "gpt-5.6-sol" ||
+		!regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(capture.SkillSHA256) || len(capture.Events) == 0 {
+		t.Fatal("capture provenance is incomplete")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, capture.CapturedAt); err != nil {
+		t.Fatalf("capture time %q: %v", capture.CapturedAt, err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f-]{27}$`).MatchString(capture.SessionID) {
+		t.Fatalf("capture session id = %q", capture.SessionID)
+	}
+	digestPattern := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !digestPattern.MatchString(capture.RawEventsSHA256) ||
+		!digestPattern.MatchString(capture.NormalizedEventsSHA256) {
+		t.Fatal("capture event digests are malformed")
+	}
+	var tools []string
+	completed := map[string]bool{}
+	var preWrite strings.Builder
+	writing := false
+	eventsText := ""
+	for _, raw := range capture.Events {
+		eventsText += string(raw)
+		var event struct {
+			ID        string          `json:"id"`
+			Timestamp string          `json:"timestamp"`
+			Type      string          `json:"type"`
+			Data      json.RawMessage `json:"data"`
 		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.ID == "" || event.Timestamp == "" || event.Type == "" {
+			t.Fatalf("captured native event lacks identity: %s", raw)
+		}
+		switch event.Type {
+		case "session.start":
+			var data struct {
+				SessionID      string `json:"sessionId"`
+				CopilotVersion string `json:"copilotVersion"`
+			}
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.SessionID != capture.SessionID || "GitHub Copilot CLI "+data.CopilotVersion != capture.CapturedWith {
+				t.Fatalf("native session identity does not match capture metadata")
+			}
+		case "assistant.message":
+			if writing {
+				continue
+			}
+			var data struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			preWrite.WriteString(data.Content)
+		case "tool.execution_start":
+			var data struct {
+				ToolCallID string `json:"toolCallId"`
+				ToolName   string `json:"toolName"`
+			}
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			tools = append(tools, data.ToolName)
+			if data.ToolName == "apply_patch" {
+				writing = true
+			}
+		case "tool.execution_complete":
+			var data struct {
+				ToolCallID string `json:"toolCallId"`
+			}
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			completed[data.ToolCallID] = true
+		}
+	}
+	for _, required := range []string{"skill", "view", "bash", "apply_patch"} {
+		if !slices.Contains(tools, required) {
+			t.Fatalf("captured tools %v omit %q", tools, required)
+		}
+	}
+	preWriteText := strings.ToLower(preWrite.String())
+	for _, required := range []string{"evidence", "state", "capabilit"} {
+		if !strings.Contains(preWriteText, required) {
+			t.Fatalf("captured pre-write explanation omits %q", required)
+		}
+	}
+	for _, path := range []string{
+		".goobers/agent-toolkit/skills/goobers-dsl-author/SKILL.md",
+		".goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-authoring.md",
+	} {
+		if !strings.Contains(eventsText, path) {
+			t.Fatalf("captured native events do not load %s", path)
+		}
+	}
+	if !strings.Contains(eventsText, skillDigest) {
+		t.Fatalf("captured native events do not contain recorder-computed installed-path digest %s", skillDigest)
+	}
+	hash := sha256.New()
+	for _, event := range capture.Events {
+		hash.Write(event)
+		hash.Write([]byte{'\n'})
+	}
+	if got := fmt.Sprintf("%x", hash.Sum(nil)); got != capture.NormalizedEventsSHA256 {
+		t.Fatalf("normalized event digest = %s, want %s", got, capture.NormalizedEventsSHA256)
+	}
+	if len(completed) == 0 {
+		t.Fatal("captured native event stream has no tool completions")
 	}
 }
 
-func assertReplayOrder(t *testing.T, report authoringReport, events []string) {
+func assertCapturedTranscript(t *testing.T, outcome harness.Outcome) {
 	t.Helper()
-	hasInvalid := slices.ContainsFunc(report.Validation.Attempts, func(attempt validationAttempt) bool {
-		return attempt.Status == "invalid"
-	})
-	if !hasInvalid {
-		if slices.Contains(events, "write-draft") || slices.Contains(events, "validate-invalid") {
-			t.Fatalf("ready-only recording contains a repair loop: %v", events)
+	if outcome.TranscriptSchema == "" {
+		t.Fatal("captured invocation did not replay through the native Copilot transcript parser")
+	}
+	var tools []string
+	for _, line := range bytes.Split(outcome.Transcript, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
 		}
-		return
-	}
-	draft := slices.Index(events, "write-draft")
-	invalid := slices.Index(events, "validate-invalid")
-	ready := slices.Index(events, "validate-ready")
-	repaired := -1
-	for index := invalid + 1; index < len(events); index++ {
-		if events[index] == "write-final" {
-			repaired = index
-			break
+		var event struct {
+			Role     string `json:"role"`
+			ToolCall *struct {
+				Name string `json:"name"`
+			} `json:"tool_call"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode replayed transcript: %v", err)
+		}
+		if event.Role == "assistant" && event.ToolCall != nil {
+			tools = append(tools, event.ToolCall.Name)
 		}
 	}
-	if draft < 0 || invalid <= draft || repaired <= invalid || ready <= repaired {
-		t.Fatalf("recorded repair order = %v", events)
-	}
-}
-
-func assertProviderAccess(t *testing.T, scenario fixtureScenario, target resolvedTarget, calls []string) {
-	t.Helper()
-	if target.Access != "remote" {
-		if len(calls) != 0 {
-			t.Fatalf("local target made provider calls: %v", calls)
-		}
-		return
-	}
-	if target.Root != "" {
-		t.Fatalf("remote-only target unexpectedly has a local checkout at %q", target.Root)
-	}
-	paths := append(append([]string(nil), scenario.EvidencePaths...), scenario.GuidancePaths...)
-	sort.Strings(paths)
-	paths = slices.Compact(paths)
-	if len(calls) != len(paths) {
-		t.Fatalf("remote provider calls = %v, want one exact-ref read per evidence path %v", calls, paths)
-	}
-	for index, path := range paths {
-		want := "read " + target.Identity + "@" + target.Commit + ":" + path
-		if calls[index] != want {
-			t.Errorf("remote provider call = %q, want %q", calls[index], want)
-		}
+	if !slices.Contains(tools, "skill") || !slices.Contains(tools, "apply_patch") {
+		t.Fatalf("replayed native transcript tools = %v", tools)
 	}
 }
 
 func assertEvidenceCitations(t *testing.T, scenario fixtureScenario, target resolvedTarget, evidence []repositoryEvidence) {
 	t.Helper()
-	encoded, err := json.Marshal(evidence)
+	data, err := json.Marshal(evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(encoded)
-	for _, path := range append(append([]string(nil), scenario.EvidencePaths...), scenario.GuidancePaths...) {
-		if !strings.Contains(text, path+":") {
+	text := string(data)
+	for _, path := range scenario.EvidencePaths {
+		if !strings.Contains(text, path) {
 			t.Errorf("repository evidence does not cite %q: %s", path, text)
 		}
+	}
+	if target.Access == "local" && len(scenario.GuidancePaths) > 0 &&
+		!slices.ContainsFunc(scenario.GuidancePaths, func(path string) bool {
+			return strings.Contains(text, path)
+		}) {
+		t.Errorf("repository evidence cites none of the applicable guidance paths %v: %s",
+			scenario.GuidancePaths, text)
 	}
 	if target.Access == "remote" {
 		prefix := target.Identity + "@" + target.Commit + ":"
 		for _, item := range evidence {
-			if !strings.Contains(item.Citation, prefix) {
-				t.Errorf("remote evidence %q does not cite exact ref %q", item.Citation, prefix)
+			if strings.HasPrefix(item.Citation, target.Identity+"@") && !strings.Contains(item.Citation, prefix) {
+				t.Errorf("remote evidence %q does not cite exact commit %q", item.Citation, prefix)
 			}
-		}
-	}
-	for _, forbidden := range []string{secretFixtureValue, ".env", "secrets.API_TOKEN", "oauth2:"} {
-		if strings.Contains(text, forbidden) {
-			t.Errorf("evidence contains forbidden credential material %q", forbidden)
 		}
 	}
 }
 
-func assertReleaseCalls(t *testing.T, calls []string, release releaseEvidence) {
+func expectedCapabilities(name string) []string {
+	switch name {
+	case "node app":
+		return []string{"agent:model", "github:issues:write", "repo:read"}
+	case "go service":
+		return []string{"go@1.26.5"}
+	default:
+		return nil
+	}
+}
+
+func reportCommand(t *testing.T, raw json.RawMessage) []string {
 	t.Helper()
-	for _, want := range []string{
-		"version --json",
-		"versions --json",
-		"agent-kit check ",
-		"features --json --dsl-version " + release.DSLVersion,
-		"examples list",
-		"examples show " + release.CanonicalExample,
-	} {
-		if !slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, want) }) {
-			t.Errorf("selected binary calls %v do not contain %q", calls, want)
+	var command []string
+	if err := json.Unmarshal(raw, &command); err == nil {
+		return command
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.Fields(text)
+	}
+	t.Fatalf("ready report command has unsupported shape: %s", raw)
+	return nil
+}
+
+func findWorkflowForCommand(t *testing.T, set *instance.ConfigSet, command []string) apiv1.Workflow {
+	t.Helper()
+	for _, workflow := range set.Workflows {
+		for _, task := range workflow.Spec.Tasks {
+			if task.Run != nil && slices.Equal(task.Run.Command, command) {
+				return workflow
+			}
+		}
+	}
+	t.Fatalf("no generated workflow runs %v", command)
+	return apiv1.Workflow{}
+}
+
+func configCapabilities(set *instance.ConfigSet, workflow apiv1.Workflow) []string {
+	unique := map[string]bool{}
+	for _, task := range workflow.Spec.Tasks {
+		for _, capability := range task.Capabilities {
+			unique[capability] = true
+		}
+		for _, capability := range task.RequiredCapabilities {
+			unique[capability] = true
+		}
+	}
+	for _, goober := range set.Goobers {
+		if slices.Contains(goober.Spec.Workflows, workflow.Name) {
+			for _, capability := range goober.Spec.Capabilities {
+				unique[capability] = true
+			}
+		}
+	}
+	return sortedKeys(unique)
+}
+
+func grantNames(grants []capabilityGrant) []string {
+	names := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		names = append(names, grant.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func assertExistingFilesPreserved(t *testing.T, scenario fixtureScenario, root string) {
+	t.Helper()
+	for path, want := range scenario.ExistingFiles {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != want {
+			t.Errorf("existing file %s changed outside the request", path)
 		}
 	}
 }
@@ -680,15 +679,16 @@ func openSelectedBinary(t *testing.T, path string) selectedBinary {
 		t.Fatalf("decode selected binary DSL versions: %v", err)
 	}
 	if identity.Version == "" || identity.Commit == "" || len(versions.DSLVersions) == 0 {
-		t.Fatalf("selected binary identity or DSL support is incomplete")
+		t.Fatal("selected binary identity or DSL support is incomplete")
 	}
-	binary.version, binary.commit, binary.dslVersions = identity.Version, identity.Commit, versions.DSLVersions
+	binary.version, binary.commit = identity.Version, identity.Commit
 	return binary
 }
 
 func (b *selectedBinary) run(t *testing.T, args ...string) []byte {
 	t.Helper()
-	output, err := b.runResult(args...)
+	command := exec.Command(b.path, args...)
+	output, err := command.Output()
 	if err == nil {
 		return output
 	}
@@ -700,30 +700,14 @@ func (b *selectedBinary) run(t *testing.T, args ...string) []byte {
 	return nil
 }
 
-func (b *selectedBinary) runResult(args ...string) ([]byte, error) {
-	b.calls = append(b.calls, strings.Join(args, " "))
-	command := exec.Command(b.path, args...)
-	return command.Output()
-}
-
-func (b *selectedBinary) selectDSL(t *testing.T) string {
-	t.Helper()
-	for index := len(b.dslVersions) - 1; index >= 0; index-- {
-		if b.dslVersions[index].Level != supportmatrix.LevelUnsupported {
-			return b.dslVersions[index].Version
-		}
-	}
-	t.Fatal("selected binary reports no supported DSL version")
-	return ""
-}
-
-func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) bool {
+func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
 	t.Helper()
 	args := []string{"validate", "--json", "--source-tree", root}
 	if existing {
 		args = []string{"validate", "--json", root}
 	}
-	data, commandErr := b.runResult(args...)
+	command := exec.Command(b.path, args...)
+	data, commandErr := command.Output()
 	var report struct {
 		OK bool `json:"ok"`
 	}
@@ -733,10 +717,13 @@ func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bo
 	if report.OK != wantOK || (wantOK && commandErr != nil) || (!wantOK && commandErr == nil) {
 		t.Fatalf("validator ok = %v, error = %v; want ok = %v\n%s", report.OK, commandErr, wantOK, data)
 	}
-	return report.OK
 }
 
-func prepareWorkspace(t *testing.T, scenario fixtureScenario, binary *selectedBinary) (string, resolvedTarget) {
+func prepareWorkspace(
+	t *testing.T,
+	scenario fixtureScenario,
+	binary *selectedBinary,
+) (string, resolvedTarget, []string, string) {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -747,22 +734,43 @@ func prepareWorkspace(t *testing.T, scenario fixtureScenario, binary *selectedBi
 		writeFile(t, filepath.Join(root, filepath.FromSlash(path)), body)
 	}
 	target := resolveFixtureTarget(t, scenario)
-	reportData, err := json.MarshalIndent(target, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(root, ".goobers", "context", "environment-report.json"), string(reportData)+"\n")
 	binary.run(t, "agent-kit", "install", "--harness", "copilot", root)
+	loadedPaths, skillDigest := loadPackagedAuthoringPath(t, root)
+	resolverReport := map[string]interface{}{
+		"status": "ready",
+		"executable": map[string]string{
+			"path":    binary.path,
+			"version": binary.version,
+			"commit":  binary.commit,
+		},
+		"contractSource": map[string]interface{}{
+			"kind":        "installed-toolkit",
+			"root":        filepath.Join(root, ".goobers", "agent-toolkit"),
+			"integrity":   "current",
+			"loadedPaths": loadedPaths,
+			"sha256":      skillDigest,
+		},
+		"target": target,
+	}
+	writeJSON(t, filepath.Join(root, ".goobers", "context", "environment-report.json"), resolverReport)
+	if target.Access == "remote" {
+		writeJSON(t, filepath.Join(root, ".goobers", "context", "provider-response.json"), map[string]interface{}{
+			"identity": target.Identity,
+			"branch":   target.Branch,
+			"commit":   target.Commit,
+			"files":    scenario.RepositoryFiles,
+		})
+	}
 	runGit(t, root, "add", ".")
 	runGit(t, root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture baseline")
-	return root, target
+	return root, target, loadedPaths, skillDigest
 }
 
 func resolveFixtureTarget(t *testing.T, scenario fixtureScenario) resolvedTarget {
 	t.Helper()
 	target := resolvedTarget{
 		Identity: scenario.Identity,
-		Branch:   scenario.Capture.Report.Target.Branch,
+		Branch:   capturedTargetBranch(t, scenario.Name),
 		Access:   scenario.Access,
 	}
 	switch scenario.Access {
@@ -835,199 +843,79 @@ func loadPackagedAuthoringPath(t *testing.T, root string) ([]string, string) {
 	return paths, fmt.Sprintf("%x", hash.Sum(nil))
 }
 
-func expandRecordedResponse(t *testing.T, response recordedResponse, replacements map[string]string) recordedResponse {
+func loadCapture(t *testing.T, name string) invocationCapture {
 	t.Helper()
-	data, err := json.Marshal(response)
+	data, err := os.ReadFile(filepath.Join("testdata", "repository-captures.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	for token, value := range replacements {
-		text = strings.ReplaceAll(text, token, value)
-	}
-	var expanded recordedResponse
-	if err := json.Unmarshal([]byte(text), &expanded); err != nil {
-		t.Fatalf("expand recorded response: %v", err)
-	}
-	return expanded
-}
-
-func loadRecording(t *testing.T, name string) invocationRecording {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "repository-invocations.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document recordingDocument
+	var document captureDocument
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
 	}
-	for _, recording := range document.Recordings {
-		if recording.Name == name {
-			return recording
+	if document.Schema != captureSchema {
+		t.Fatalf("capture schema = %q, want %q", document.Schema, captureSchema)
+	}
+	for _, capture := range document.Captures {
+		if capture.Name == name {
+			return capture
 		}
 	}
-	t.Fatalf("invocation recording %q not found", name)
-	return invocationRecording{}
+	t.Fatalf("capture %q not found", name)
+	return invocationCapture{}
 }
 
-func assertRecordingProvenance(t *testing.T, recording invocationRecording, response recordedResponse) {
+func capturedTargetBranch(t *testing.T, name string) string {
 	t.Helper()
-	if recording.CapturedWith == "" || recording.CapturedAt == "" || recording.Model == "" ||
-		recording.SessionID == "" || recording.SkillSHA256 == "" ||
-		recording.PromptSHA256 == "" || recording.ResponseSHA256 == "" ||
-		recording.DiffSHA256 == "" ||
-		len(recording.Interactions) == 0 {
-		t.Fatalf("recording provenance is incomplete: %+v", recording)
+	capture := loadCapture(t, name)
+	var report authoringReport
+	if err := json.Unmarshal(capture.Report, &report); err != nil {
+		t.Fatal(err)
 	}
-	data, err := json.Marshal(response)
+	return report.Target.Branch
+}
+
+func expandCapture(
+	t *testing.T,
+	capture invocationCapture,
+	workspace string,
+	target resolvedTarget,
+	binary selectedBinary,
+) invocationCapture {
+	t.Helper()
+	workspaceCommit := strings.TrimSpace(string(runGit(t, workspace, "rev-parse", "HEAD")))
+	data, err := json.Marshal(capture)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != recording.ResponseSHA256 {
-		t.Fatalf("captured response digest = %s, want %s", got, recording.ResponseSHA256)
-	}
-	for _, interaction := range recording.Interactions {
-		if interaction.Action == "" {
-			t.Fatal("recorded interaction omitted its action")
-		}
-		if interaction.Action != "proposal.present" && interaction.Tool == "" {
-			t.Fatalf("recorded interaction %q omitted its native tool", interaction.Action)
-		}
-	}
-}
-
-func normalizedPromptSHA256(prompt, workspace string, target resolvedTarget, binaryPath string) string {
-	replacements := []string{
-		workspace, "{workspace}",
-		binaryPath, "{binaryPath}",
-		target.Commit, "{targetCommit}",
-	}
-	if target.Root != "" {
-		replacements = append(replacements, target.Root, "{targetRoot}")
-	}
-	normalized := strings.NewReplacer(replacements...).Replace(prompt)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(normalized)))
-}
-
-func expandInteractionArgs(args []string, workspace string, response recordedResponse) []string {
-	replacer := strings.NewReplacer(
+	text := strings.NewReplacer(
 		"{workspace}", workspace,
-		"{dslVersion}", response.Report.Release.DSLVersion,
-		"{canonicalExample}", response.Report.Release.CanonicalExample,
-	)
-	expanded := make([]string, len(args))
-	for index, arg := range args {
-		expanded[index] = replacer.Replace(arg)
+		"{workspaceCommit}", workspaceCommit,
+		"{binaryPath}", binary.path,
+		"{targetRoot}", target.Root,
+		"{targetCommit}", target.Commit,
+		"{home}", os.Getenv("HOME"),
+	).Replace(string(data))
+	var expanded invocationCapture
+	if err := json.Unmarshal([]byte(text), &expanded); err != nil {
+		t.Fatalf("expand captured invocation: %v", err)
 	}
 	return expanded
 }
 
-func assertRecordedTranscript(t *testing.T, recording invocationRecording, outcome harness.Outcome) {
-	t.Helper()
-	if outcome.TranscriptSchema == "" {
-		t.Fatal("Copilot replay did not expose captured native session events")
-	}
-	var tools []string
-	for _, line := range bytes.Split(outcome.Transcript, []byte{'\n'}) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
+func capturedPrompt(events []json.RawMessage) string {
+	for _, raw := range events {
 		var event struct {
-			Role     string `json:"role"`
-			ToolCall *struct {
-				Name string `json:"name"`
-			} `json:"tool_call"`
+			Type string `json:"type"`
+			Data struct {
+				Content string `json:"content"`
+			} `json:"data"`
 		}
-		if err := json.Unmarshal(line, &event); err != nil {
-			t.Fatalf("decode replay transcript: %v", err)
-		}
-		if event.Role == "assistant" && event.ToolCall != nil && event.ToolCall.Name != "" {
-			tools = append(tools, event.ToolCall.Name)
+		if json.Unmarshal(raw, &event) == nil && event.Type == "user.message" {
+			return event.Data.Content
 		}
 	}
-	want := make([]string, len(recording.Interactions))
-	want = want[:0]
-	for _, interaction := range recording.Interactions {
-		if interaction.Tool != "" {
-			want = append(want, interaction.Tool)
-		}
-	}
-	if !slices.Equal(tools, want) {
-		t.Fatalf("captured tool interactions = %v, want %v", tools, want)
-	}
-}
-
-func writeReplaySessionLog(request harness.ProcessRequest, recording invocationRecording, prompt string) error {
-	path, err := replaySessionLogPath(request)
-	if err != nil {
-		return err
-	}
-	var log bytes.Buffer
-	emit := func(eventType string, data interface{}) error {
-		event := map[string]interface{}{"type": eventType, "data": data}
-		encoded, err := json.Marshal(event)
-		if err != nil {
-			return err
-		}
-		log.Write(encoded)
-		log.WriteByte('\n')
-		return nil
-	}
-	if err := emit("session.start", map[string]interface{}{"sessionId": recording.SessionID}); err != nil {
-		return err
-	}
-	if err := emit("user.message", map[string]interface{}{"content": prompt}); err != nil {
-		return err
-	}
-	// The cassette normalizes machine-specific arguments but preserves the native
-	// Copilot tool sequence, which is re-emitted through the adapter's real parser.
-	for index, interaction := range recording.Interactions {
-		if interaction.Action == "proposal.present" {
-			if err := emit("assistant.message", map[string]interface{}{
-				"messageId": fmt.Sprintf("recorded-proposal-%03d", index+1),
-				"content":   "Presenting the evidence ledger, state graph, paths, and capability rationale before writing.",
-				"model":     recording.Model,
-			}); err != nil {
-				return err
-			}
-			continue
-		}
-		callID := fmt.Sprintf("recorded-%03d", index+1)
-		if err := emit("tool.execution_start", map[string]interface{}{
-			"toolCallId": callID,
-			"toolName":   interaction.Tool,
-			"arguments":  interaction,
-			"model":      recording.Model,
-		}); err != nil {
-			return err
-		}
-		success := interaction.WantOK == nil || *interaction.WantOK
-		data := map[string]interface{}{
-			"toolCallId": callID,
-			"success":    success,
-			"model":      recording.Model,
-		}
-		if success {
-			data["result"] = map[string]string{"content": "captured interaction replayed"}
-		} else {
-			data["error"] = map[string]string{"message": "captured validation returned findings"}
-		}
-		if err := emit("tool.execution_complete", data); err != nil {
-			return err
-		}
-	}
-	if err := emit("assistant.message", map[string]interface{}{
-		"messageId": "recorded-final",
-		"content":   "Repository-aware authoring capture replayed.",
-		"model":     recording.Model,
-	}); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, log.Bytes(), 0o600)
+	return ""
 }
 
 func replaySessionLogPath(request harness.ProcessRequest) (string, error) {
@@ -1046,7 +934,7 @@ func replaySessionLogPath(request harness.ProcessRequest) (string, error) {
 	}
 	if copilotHome == "" {
 		if home == "" {
-			return "", fmt.Errorf("recorded Copilot invocation has no home")
+			return "", fmt.Errorf("captured Copilot invocation has no home")
 		}
 		copilotHome = filepath.Join(home, ".copilot")
 	}
@@ -1060,20 +948,39 @@ func replaySessionLogPath(request harness.ProcessRequest) (string, error) {
 		}
 	}
 	if sessionID == "" {
-		return "", fmt.Errorf("recorded Copilot invocation has no session id")
+		return "", fmt.Errorf("captured Copilot invocation has no session id")
 	}
 	return filepath.Join(copilotHome, "session-state", sessionID, "events.jsonl"), nil
-}
-
-func unsafeEvidencePath(path string) bool {
-	base := strings.ToLower(filepath.Base(path))
-	return base == ".env" || strings.HasPrefix(base, ".env.") ||
-		strings.Contains(base, "credentials") || strings.Contains(base, "auth")
 }
 
 func workspaceDiff(t *testing.T, root string) string {
 	t.Helper()
 	return string(runGit(t, root, "diff", "--no-ext-diff", "--"))
+}
+
+func firstDifference(left, right string) string {
+	limit := min(len(left), len(right))
+	index := 0
+	for index < limit && left[index] == right[index] {
+		index++
+	}
+
+	start := max(0, index-80)
+	leftEnd := min(len(left), index+80)
+	rightEnd := min(len(right), index+80)
+	return fmt.Sprintf("byte %d (lengths %d/%d), captured %q, replayed %q",
+		index, len(left), len(right), left[start:leftEnd], right[start:rightEnd])
+}
+
+func canonicalDiff(diff string) string {
+	var sections []string
+	for _, section := range strings.Split(diff, "diff --git ") {
+		if section != "" {
+			sections = append(sections, "diff --git "+section)
+		}
+	}
+	sort.Strings(sections)
+	return strings.Join(sections, "")
 }
 
 func diffNames(t *testing.T, root string) []string {
@@ -1113,78 +1020,6 @@ func assertSecretFreeWorkspace(t *testing.T, root string) {
 	}
 }
 
-func findWorkflow(t *testing.T, set *instance.ConfigSet, name string) apiv1.Workflow {
-	t.Helper()
-	for _, workflow := range set.Workflows {
-		if workflow.Name == name {
-			return workflow
-		}
-	}
-	t.Fatalf("workflow %q was not loaded", name)
-	return apiv1.Workflow{}
-}
-
-func renderGraph(workflow apiv1.Workflow) string {
-	parts := []string{workflow.Spec.Start}
-	for _, task := range workflow.Spec.Tasks {
-		if task.Name == workflow.Spec.Start && task.Next != "" {
-			parts = append(parts, task.Next)
-			break
-		}
-	}
-	for _, gate := range workflow.Spec.Gates {
-		if gate.Name != parts[len(parts)-1] {
-			continue
-		}
-		outcomes := sortedKeys(gate.Branches)
-		branches := make([]string, 0, len(outcomes))
-		for _, outcome := range outcomes {
-			branches = append(branches, outcome+":"+gate.Branches[outcome])
-		}
-		parts[len(parts)-1] += "(" + strings.Join(branches, ", ") + ")"
-	}
-	return strings.Join(parts, " -> ")
-}
-
-func configCapabilities(set *instance.ConfigSet, workflow apiv1.Workflow) []string {
-	unique := map[string]bool{}
-	for _, task := range workflow.Spec.Tasks {
-		for _, capability := range task.Capabilities {
-			unique[capability] = true
-		}
-	}
-	for _, goober := range set.Goobers {
-		if slices.Contains(goober.Spec.Workflows, workflow.Name) {
-			for _, capability := range goober.Spec.Capabilities {
-				unique[capability] = true
-			}
-		}
-	}
-	return sortedKeys(unique)
-}
-
-func grantNames(grants []capabilityGrant) []string {
-	names := make([]string, 0, len(grants))
-	for _, grant := range grants {
-		names = append(names, grant.Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func assertWorkflowCommand(t *testing.T, workflow apiv1.Workflow, want []string) {
-	t.Helper()
-	for _, task := range workflow.Spec.Tasks {
-		if task.Name == workflow.Spec.Start && task.Run != nil {
-			if !slices.Equal(task.Run.Command, want) {
-				t.Fatalf("workflow command = %v, report = %v", task.Run.Command, want)
-			}
-			return
-		}
-	}
-	t.Fatalf("workflow start task %q has no deterministic command", workflow.Spec.Start)
-}
-
 func loadScenarios(t *testing.T) fixtureDocument {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "repository-scenarios.json"))
@@ -1198,15 +1033,28 @@ func loadScenarios(t *testing.T) fixtureDocument {
 	return document
 }
 
-func writeJSON(path string, value interface{}) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
+func writeRawJSON(path string, data json.RawMessage) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("captured output %q is not valid JSON", path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return os.WriteFile(path, append(append([]byte(nil), data...), '\n'), 0o644)
+}
+
+func writeJSON(t *testing.T, path string, value interface{}) {
+	t.Helper()
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -1242,3 +1090,7 @@ func sortedKeys[V any](values map[string]V) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+const authoringInvocationInstructions = `Exercise the installed Goobers adapter chain and goobers-dsl-author skill exactly as an adopter would. Treat the task as a plain-English authoring request. Use the supplied environment-resolver report rather than selecting another binary or contract source. A read-only-provider-response context, when present, is the captured response from existing provider access at the exact target commit.
+
+Before writing config, present the evidence ledger, state graph, changed paths, release and closest-example choice, and least-privilege capability rationale. After authoring, write .goobers/authoring-report.json as JSON with: status (ready or unresolved), request, contract {loadedPaths, skillSHA256}, target {identity, branch, commit, access}, terms, command, evidence [{conclusion,citation}], proposal {presentedBeforeWrite,stateGraph,paths,capabilities [{name,reason}],omittedCapabilities}, release {binaryPath,version,commit,dslVersion,canonicalExample,exampleReason}, validation {command,attempts [{status,finding}],status}, diff, and unresolved. The diff must match the final workspace diff. Set the completion result output reportPath to .goobers/authoring-report.json.`
