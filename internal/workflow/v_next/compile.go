@@ -371,9 +371,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 	var problems []string
 	for _, t := range def.Spec.Tasks {
 		declared := toSet(t.Capabilities)
-		if t.Inputs["kind"] == "ci-poll" &&
-			!declared[string(capability.ProviderPRWrite)] &&
-			!declared[string(capability.GitHubPRWrite)] {
+		if t.Inputs["kind"] == "ci-poll" && !declared[string(capability.ProviderPRWrite)] && !declared[string(capability.GitHubPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.ProviderPRWrite))
 		}
 		if t.Inputs["kind"] == "external-telemetry" && !declared[string(capability.TelemetryRead)] {

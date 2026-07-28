@@ -402,9 +402,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 			legacyGitHubPRRef = ref
 		}
 	}
-	// Existing GitHub instances source their dedicated PR token through
-	// github:pr:write; keep that override authoritative for provider-neutral PR
-	// stages unless the instance explicitly configures the new capability.
+	// Preserve an explicit legacy GitHub PR token unless provider:pr:write overrides it.
 	if selectedRepoProvider(cfg, gaggleOwner, gaggleName) == string(apiv1.ProviderGitHub) &&
 		!providerPROverridden && legacyGitHubPRRef != "" {
 		overrides = append(overrides, credentials.Grant{

@@ -885,6 +885,10 @@ func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
 		t.Fatalf("explicitly disabled dynamic deleteBranches actions = %v, want none", got)
 	}
+	task.Run.Command = []string{"goobers", "backlog-health", "--feedback"}
+	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "update-issue" {
+		t.Fatalf("backlog-health feedback actions = %v, want [update-issue]", got)
+	}
 
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",

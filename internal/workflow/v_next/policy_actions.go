@@ -71,6 +71,7 @@ var commandPolicyActions = map[string][]string{
 }
 
 var commandArgumentPolicyActions = map[string]map[string][]string{
+	"backlog-health": {"feedback": {"update-issue"}},
 	"backlog-query": {
 		"claim":   {"claim-backlog-items"},
 		"release": {"release-backlog-claim"},

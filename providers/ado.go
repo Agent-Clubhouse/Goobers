@@ -296,8 +296,7 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }
 
-// OpenPullRequest opens an Azure DevOps pull request, or updates the active
-// source/target pull request created by an earlier workflow attempt.
+// OpenPullRequest opens or updates the active Azure DevOps pull request for the source and target.
 func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
@@ -482,8 +481,7 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
-// PollPullRequest reports Azure DevOps review votes and pull-request builds in
-// the provider-neutral poll result.
+// PollPullRequest reports Azure DevOps review votes and builds in the provider-neutral result.
 func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return PullRequestPollResult{}, err
@@ -567,8 +565,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	}, nil
 }
 
-// ClosePullRequest abandons an active Azure DevOps pull request. Completed pull
-// requests are reported as merged without attempting an invalid abandon update.
+// ClosePullRequest abandons an active PR and reports completed Azure DevOps PRs as merged.
 func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
 		return ClosePullRequestResult{}, err
