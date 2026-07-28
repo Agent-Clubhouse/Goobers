@@ -255,125 +255,163 @@ func scanGoFile(root, path string) ([]finding, error) {
 	findings := append([]finding(nil), importFindings...)
 
 	for _, declaration := range parsed.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
-			continue
-		}
-		implicitCalls := make(map[string][]*ast.CallExpr)
-		ast.Inspect(function.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			bindings := bindingsAt(function, call, fileBindings)
-			if firstArgument, callName, monitored := monitoredProcessCall(selector, imports); monitored {
-				position := files.Position(call.Pos())
-				arguments, inspectPartial := processURLArguments(call.Args[firstArgument:], bindings)
-				for _, argument := range arguments {
-					destination, found := processURLDestination(argument, bindings, inspectPartial)
-					if !found {
-						destination, found = conditionalEgressDestination(
-							function,
-							call,
-							argument,
-							fileBindings,
-							imports,
-							egressAPI{},
-							true,
-							false,
-						)
-					}
-					if found {
-						findings = append(findings, finding{
-							path: rel, line: position.Line, column: position.Column,
-							message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
-						})
-					}
-				}
-				return true
-			}
-			if callName, monitored := monitoredReportingSDKCall(selector, imports); monitored {
-				position := files.Position(call.Pos())
-				destination, _, hardcoded := reportingSDKConfiguration(call.Args, bindings)
-				switch {
-				case hardcoded:
-					findings = append(findings, finding{
-						path: rel, line: position.Line, column: position.Column,
-						message: fmt.Sprintf("hardcoded reporting SDK destination %q passed to %s", destination, callName),
-					})
-				default:
-					findings = append(findings, finding{
-						path: rel, line: position.Line, column: position.Column,
-						message: "non-OTLP reporting SDK initialization via " + callName,
-					})
-				}
-				return true
-			}
-			api, callName, monitored := monitoredEgressCall(
-				parsed,
-				function,
-				call,
-				selector,
-				imports,
-				bindings,
-			)
-			if !monitored {
-				return true
-			}
-			position := files.Position(call.Pos())
-			if api.implicit {
-				implicitCalls[callName] = append(implicitCalls[callName], call)
-				return true
-			}
-			if api.destination >= len(call.Args) {
-				return true
-			}
-			destination, found := egressDestination(api, call.Args[api.destination], bindings, imports)
-			if !found {
-				destination, found = conditionalEgressDestination(
-					function,
-					call,
-					call.Args[api.destination],
-					fileBindings,
-					imports,
-					api,
-					false,
-					strings.Contains(callName, "go.opentelemetry.io/otel/exporters/"),
+		switch value := declaration.(type) {
+		case *ast.FuncDecl:
+			if value.Body != nil {
+				findings = append(
+					findings,
+					scanGoCallScope(files, parsed, rel, imports, fileBindings, value.Body, value)...,
 				)
 			}
-			if found {
-				findings = append(findings, finding{
-					path: rel, line: position.Line, column: position.Column,
-					message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
-				})
-			}
-			return true
-		})
-		location := rel + ":" + function.Name.Name
-		for callName, calls := range implicitCalls {
-			approval, approved := approvedImplicitEgress[callName]
-			approved = approved &&
-				approval.location == location &&
-				len(calls) == 1 &&
-				explicitlyConfiguredImplicitCall(function, calls[0], imports, fileBindings, callName, approval)
-			if approved {
-				continue
-			}
-			for _, call := range calls {
-				position := files.Position(call.Pos())
-				findings = append(findings, finding{
-					path: rel, line: position.Line, column: position.Column,
-					message: "implicit network destination via " + callName,
-				})
+		case *ast.GenDecl:
+			for _, spec := range value.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, initializer := range values.Values {
+					findings = append(
+						findings,
+						scanGoCallScope(files, parsed, rel, imports, fileBindings, initializer, nil)...,
+					)
+				}
 			}
 		}
 	}
 	findings = append(findings, telemetryEndpointDefaults(files, parsed, rel, fileBindings)...)
 	return findings, nil
+}
+
+func scanGoCallScope(
+	files *token.FileSet,
+	parsed *ast.File,
+	rel string,
+	imports map[string]string,
+	fileBindings map[string]ast.Expr,
+	scope ast.Node,
+	function *ast.FuncDecl,
+) []finding {
+	var findings []finding
+	implicitCalls := make(map[string][]*ast.CallExpr)
+	ast.Inspect(scope, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		bindings := bindingsAtScope(scope, function, call, fileBindings)
+		if firstArgument, callName, monitored := monitoredProcessCall(selector, imports); monitored {
+			position := files.Position(call.Pos())
+			arguments, inspectPartial := processURLArguments(call.Args[firstArgument:], bindings)
+			for _, argument := range arguments {
+				destination, found := processURLDestination(argument, bindings, inspectPartial)
+				if !found {
+					destination, found = conditionalEgressDestination(
+						scope,
+						function,
+						call,
+						argument,
+						fileBindings,
+						imports,
+						egressAPI{},
+						true,
+						false,
+					)
+				}
+				if found {
+					findings = append(findings, finding{
+						path: rel, line: position.Line, column: position.Column,
+						message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
+					})
+				}
+			}
+			return true
+		}
+		if callName, monitored := monitoredReportingSDKCall(selector, imports); monitored {
+			position := files.Position(call.Pos())
+			destination, _, hardcoded := reportingSDKConfiguration(call.Args, bindings)
+			switch {
+			case hardcoded:
+				findings = append(findings, finding{
+					path: rel, line: position.Line, column: position.Column,
+					message: fmt.Sprintf("hardcoded reporting SDK destination %q passed to %s", destination, callName),
+				})
+			default:
+				findings = append(findings, finding{
+					path: rel, line: position.Line, column: position.Column,
+					message: "non-OTLP reporting SDK initialization via " + callName,
+				})
+			}
+			return true
+		}
+		api, callName, monitored := monitoredEgressCall(
+			parsed,
+			function,
+			scope,
+			call,
+			selector,
+			imports,
+			bindings,
+		)
+		if !monitored {
+			return true
+		}
+		position := files.Position(call.Pos())
+		if api.implicit {
+			implicitCalls[callName] = append(implicitCalls[callName], call)
+			return true
+		}
+		if api.destination >= len(call.Args) {
+			return true
+		}
+		destination, found := egressDestination(api, call.Args[api.destination], bindings, imports)
+		if !found {
+			destination, found = conditionalEgressDestination(
+				scope,
+				function,
+				call,
+				call.Args[api.destination],
+				fileBindings,
+				imports,
+				api,
+				false,
+				strings.Contains(callName, "go.opentelemetry.io/otel/exporters/"),
+			)
+		}
+		if found {
+			findings = append(findings, finding{
+				path: rel, line: position.Line, column: position.Column,
+				message: fmt.Sprintf("hardcoded network destination %q passed to %s", destination, callName),
+			})
+		}
+		return true
+	})
+	location := ""
+	if function != nil {
+		location = rel + ":" + function.Name.Name
+	}
+	for callName, calls := range implicitCalls {
+		approval, approved := approvedImplicitEgress[callName]
+		approved = approved &&
+			function != nil &&
+			approval.location == location &&
+			len(calls) == 1 &&
+			explicitlyConfiguredImplicitCall(function, calls[0], imports, fileBindings, callName, approval)
+		if approved {
+			continue
+		}
+		for _, call := range calls {
+			position := files.Position(call.Pos())
+			findings = append(findings, finding{
+				path: rel, line: position.Line, column: position.Column,
+				message: "implicit network destination via " + callName,
+			})
+		}
+	}
+	return findings
 }
 
 func monitoredReportingSDKCall(selector *ast.SelectorExpr, imports map[string]string) (string, bool) {
@@ -796,6 +834,7 @@ func isURLType(expression ast.Expr, imports map[string]string) bool {
 func monitoredEgressCall(
 	parsed *ast.File,
 	function *ast.FuncDecl,
+	scope ast.Node,
 	call *ast.CallExpr,
 	selector *ast.SelectorExpr,
 	imports map[string]string,
@@ -808,7 +847,7 @@ func monitoredEgressCall(
 		}
 	}
 	if api, monitored := netDialerEgressAPIs[selector.Sel.Name]; monitored {
-		typedDialers := netDialerIdentifiersAt(parsed, function, call, imports)
+		typedDialers := netDialerIdentifiersAt(parsed, function, scope, call, imports)
 		if isNetDialerReceiver(selector.X, imports, bindings, typedDialers, nil) {
 			return api, "net.Dialer." + selector.Sel.Name, true
 		}
@@ -817,7 +856,7 @@ func monitoredEgressCall(
 	if !monitored {
 		return egressAPI{}, "", false
 	}
-	typedClients := httpClientIdentifiersAt(parsed, function, call, imports)
+	typedClients := httpClientIdentifiersAt(parsed, function, scope, call, imports)
 	if !isHTTPClientReceiver(selector.X, imports, bindings, typedClients, nil) {
 		return egressAPI{}, "", false
 	}
@@ -827,6 +866,7 @@ func monitoredEgressCall(
 func netDialerIdentifiersAt(
 	parsed *ast.File,
 	function *ast.FuncDecl,
+	scope ast.Node,
 	target ast.Node,
 	imports map[string]string,
 ) map[string]bool {
@@ -866,20 +906,28 @@ func netDialerIdentifiersAt(
 			}
 		}
 	}
-	addFields(function.Recv)
-	addFields(function.Type.Params)
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	if function != nil {
+		addFields(function.Recv)
+		addFields(function.Type.Params)
+	}
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= target.Pos() {
 			return false
 		}
-		values, ok := node.(*ast.ValueSpec)
-		if !ok {
+		switch value := node.(type) {
+		case *ast.FuncLit:
+			if containsNode(value.Body, target) {
+				addFields(value.Type.Params)
+			}
+			return true
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				addNetDialerIdentifiers(identifiers, name.Name, value.Type, imports, structFields)
+			}
+			return false
+		default:
 			return true
 		}
-		for _, name := range values.Names {
-			addNetDialerIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
-		}
-		return false
 	})
 	return identifiers
 }
@@ -1032,6 +1080,7 @@ func isNetDialerReceiver(
 func httpClientIdentifiersAt(
 	parsed *ast.File,
 	function *ast.FuncDecl,
+	scope ast.Node,
 	target ast.Node,
 	imports map[string]string,
 ) map[string]bool {
@@ -1071,20 +1120,28 @@ func httpClientIdentifiersAt(
 			}
 		}
 	}
-	addFields(function.Recv)
-	addFields(function.Type.Params)
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	if function != nil {
+		addFields(function.Recv)
+		addFields(function.Type.Params)
+	}
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= target.Pos() {
 			return false
 		}
-		values, ok := node.(*ast.ValueSpec)
-		if !ok {
+		switch value := node.(type) {
+		case *ast.FuncLit:
+			if containsNode(value.Body, target) {
+				addFields(value.Type.Params)
+			}
+			return true
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				addHTTPClientIdentifiers(identifiers, name.Name, value.Type, imports, structFields)
+			}
+			return false
+		default:
 			return true
 		}
-		for _, name := range values.Names {
-			addHTTPClientIdentifiers(identifiers, name.Name, values.Type, imports, structFields)
-		}
-		return false
 	})
 	return identifiers
 }
@@ -1325,17 +1382,28 @@ func staticBindings(parsed *ast.File) map[string]ast.Expr {
 }
 
 func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string]ast.Expr) map[string]ast.Expr {
+	return bindingsAtScope(function.Body, function, target, fileBindings)
+}
+
+func bindingsAtScope(
+	scope ast.Node,
+	function *ast.FuncDecl,
+	target ast.Node,
+	fileBindings map[string]ast.Expr,
+) map[string]ast.Expr {
 	bindings := make(map[string]ast.Expr, len(fileBindings))
 	for name, expression := range fileBindings {
 		bindings[name] = expression
 	}
-	forgetFieldNames(bindings, function.Recv)
-	forgetFieldNames(bindings, function.Type.Params)
-	forgetFieldNames(bindings, function.Type.Results)
+	if function != nil {
+		forgetFieldNames(bindings, function.Recv)
+		forgetFieldNames(bindings, function.Type.Params)
+		forgetFieldNames(bindings, function.Type.Results)
+	}
 
 	parents := make(map[ast.Node]ast.Node)
 	var stack []ast.Node
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil {
 			stack = stack[:len(stack)-1]
 			return true
@@ -1346,6 +1414,12 @@ func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string
 		stack = append(stack, node)
 		return true
 	})
+	for node := target; node != nil; node = parents[node] {
+		if literal, ok := node.(*ast.FuncLit); ok {
+			forgetFieldNames(bindings, literal.Type.Params)
+			forgetFieldNames(bindings, literal.Type.Results)
+		}
+	}
 
 	callScopes := make(map[*ast.BlockStmt]bool)
 	for node := target; node != nil; node = parents[node] {
@@ -1354,7 +1428,7 @@ func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string
 		}
 	}
 
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= target.Pos() {
 			return false
 		}
@@ -1413,6 +1487,7 @@ func enclosingBlock(node ast.Node, parents map[ast.Node]ast.Node) *ast.BlockStmt
 }
 
 func conditionalEgressDestination(
+	scope ast.Node,
 	function *ast.FuncDecl,
 	target ast.Node,
 	expression ast.Expr,
@@ -1422,7 +1497,7 @@ func conditionalEgressDestination(
 	requireURL bool,
 	rejectAny bool,
 ) (string, bool) {
-	bindings := bindingsAt(function, target, fileBindings)
+	bindings := bindingsAtScope(scope, function, target, fileBindings)
 	names := referencedBindingNames(expression, bindings, target.Pos())
 	if len(names) == 0 {
 		return "", false
@@ -1430,7 +1505,7 @@ func conditionalEgressDestination(
 
 	parents := make(map[ast.Node]ast.Node)
 	var stack []ast.Node
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil {
 			stack = stack[:len(stack)-1]
 			return true
@@ -1449,7 +1524,7 @@ func conditionalEgressDestination(
 	}
 
 	lastDominatingAssignment := make(map[string]token.Pos)
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= target.Pos() {
 			return false
 		}
@@ -1479,7 +1554,7 @@ func conditionalEgressDestination(
 	})
 
 	var destination string
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	ast.Inspect(scope, func(node ast.Node) bool {
 		if destination != "" || node == nil || node.Pos() >= target.Pos() {
 			return false
 		}

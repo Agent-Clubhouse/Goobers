@@ -23,6 +23,16 @@ func report() { _, _ = http.NewRequest(http.MethodPost, "https://maintainer.exam
 			want: "hardcoded network destination",
 		},
 		{
+			name: "package-level function initializer",
+			source: `package sample
+import "net/http"
+var usageReporter = func() {
+	_, _ = http.Post("https://agent-clubhouse.github.io/goobers/events", "application/json", nil)
+}
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "constant destination",
 			source: `package sample
 import "google.golang.org/grpc"
@@ -561,6 +571,23 @@ void fetch("https://fixture.example.invalid");
 		t.Fatal(err)
 	}
 
+	findings, err := scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("scan() findings = %v, want none", findings)
+	}
+}
+
+func TestScanAllowsPackageInitializerWithUserSuppliedDestination(t *testing.T) {
+	root := writeSource(t, `package sample
+import "net/http"
+const endpoint = "https://maintainer.example.invalid/usage"
+var usageReporter = func(endpoint string) {
+	_, _ = http.Post(endpoint, "application/json", nil)
+}
+`)
 	findings, err := scan(root)
 	if err != nil {
 		t.Fatal(err)
