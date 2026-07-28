@@ -128,31 +128,36 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) error {
 		}
 		pending = false
 	}
-	if pending && request.Status == "healthy" {
-		if err := finalizeHealthyUpdate(opts, log, request); err != nil {
-			return err
-		}
-		pending = false
-	}
-	if pending && request.Status == "rollback" {
-		if err := restorePrevious(opts); err != nil {
-			return err
-		}
-		if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
-			return err
-		}
-	}
-	if pending && request.Status == "monitoring" {
-		if err := restorePrevious(opts); err != nil {
-			return err
-		}
-		request.Status = "rollback"
-		request.Reason = "stable supervisor restarted before the candidate completed its health window"
-		if err := WriteRequest(opts.Root, request); err != nil {
-			return err
-		}
-		if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
-			return err
+	if pending {
+		switch request.Status {
+		case "healthy":
+			if err := finalizeHealthyUpdate(opts, log, request); err != nil {
+				return err
+			}
+			pending = false
+		case "activating":
+			if err := recoverInterruptedActivation(opts, log, &request); err != nil {
+				return err
+			}
+		case "rollback":
+			if err := restorePrevious(opts); err != nil {
+				return err
+			}
+			if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
+				return err
+			}
+		case "monitoring":
+			if err := restorePrevious(opts); err != nil {
+				return err
+			}
+			request.Status = "rollback"
+			request.Reason = "stable supervisor restarted before the candidate completed its health window"
+			if err := WriteRequest(opts.Root, request); err != nil {
+				return err
+			}
+			if err := ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, request, request.Reason); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -189,6 +194,10 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) error {
 				_ = os.Remove(StopRequestPath(opts.Root))
 				if childErr != nil && !drainForced {
 					return fmt.Errorf("daemon failed while draining for self-update: %w", childErr)
+				}
+				request.Status = "activating"
+				if err := WriteRequest(opts.Root, request); err != nil {
+					return err
 				}
 				if err := activateCandidate(opts, request); err != nil {
 					return err
@@ -454,7 +463,7 @@ func validateRequest(root string, request Request) error {
 		return errors.New("self-update request health ticks must be positive")
 	}
 	switch request.Status {
-	case "requested", "draining", "monitoring", "healthy", "rollback":
+	case "requested", "draining", "activating", "monitoring", "healthy", "rollback":
 	default:
 		return fmt.Errorf("unsupported self-update request status %q", request.Status)
 	}
@@ -476,7 +485,7 @@ func validateRequest(root string, request Request) error {
 	if err != nil {
 		return err
 	}
-	if request.Status == "requested" || request.Status == "draining" {
+	if request.Status == "requested" || request.Status == "draining" || request.Status == "activating" {
 		info, err := os.Stat(staged)
 		if err != nil {
 			return fmt.Errorf("inspect staged binary: %w", err)
@@ -598,6 +607,28 @@ func restorePrevious(opts SupervisorOptions) error {
 		return fmt.Errorf("restore retained previous binary: %w", err)
 	}
 	return nil
+}
+
+func recoverInterruptedActivation(opts SupervisorOptions, log *journal.InstanceLog, request *Request) error {
+	currentIsCandidate, err := filesEqual(CurrentBinary(opts.Root, opts.GOOS), request.StagedPath)
+	if err != nil {
+		return fmt.Errorf("inspect interrupted candidate activation: %w", err)
+	}
+	if currentIsCandidate {
+		if _, err := os.Stat(PreviousBinary(opts.Root, opts.GOOS)); err == nil {
+			if err := restorePrevious(opts); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect retained previous binary: %w", err)
+		}
+	}
+	request.Status = "rollback"
+	request.Reason = "stable supervisor restarted during candidate activation"
+	if err := WriteRequest(opts.Root, *request); err != nil {
+		return err
+	}
+	return ensureUpdateEvent(opts, log, journal.EventDaemonUpdateRolledBack, *request, request.Reason)
 }
 
 func rollbackAndRestart(ctx context.Context, opts SupervisorOptions, log *journal.InstanceLog, request *Request, process Process, reason string) (Process, error) {

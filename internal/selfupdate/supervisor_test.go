@@ -313,6 +313,53 @@ func TestActivateCandidatePreservesPreviousAcrossInterruptedSecondUpdate(t *test
 	}
 }
 
+func TestSupervisorRollsBackActivationInterruptedAfterReplacement(t *testing.T) {
+	root := t.TempDir()
+	current := CurrentBinary(root, "linux")
+	previous := PreviousBinary(root, "linux")
+	staged := filepath.Join(StagingDir(root), "target", "goobers")
+	writeTestExecutable(t, current, []byte("candidate"))
+	writeTestExecutable(t, previous, []byte("old"))
+	writeTestExecutable(t, staged, []byte("candidate"))
+	request := Request{
+		RunID: "run-activating", Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers",
+		Target: "v2", Version: "v2", StagedPath: staged, RequestedAt: time.Now().UTC(),
+		HealthTicks: 1, HealthTimeout: time.Minute.String(), HeartbeatInterval: time.Second.String(),
+		Status: "activating",
+	}
+	if err := WriteRequest(root, request); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &fakeLauncher{started: make(chan *fakeProcess, 1)}
+	escalator := &fakeEscalator{calls: make(chan Request, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunSupervisor(ctx, SupervisorOptions{
+			Root: root, HostExecutable: current, GOOS: "linux", Launcher: launcher, Escalator: escalator,
+			PollInterval: 5 * time.Millisecond, DrainTimeout: 100 * time.Millisecond,
+		})
+	}()
+
+	process := <-launcher.started
+	if got, err := os.ReadFile(current); err != nil || string(got) != "old" {
+		t.Fatalf("binary launched after interrupted activation = %q, %v", got, err)
+	}
+	select {
+	case rolledBack := <-escalator.calls:
+		if rolledBack.Status != "rollback" || rolledBack.Reason == "" {
+			t.Fatalf("escalation request = %+v", rolledBack)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupted activation rollback was not escalated")
+	}
+	assertUpdateEvent(t, root, journal.EventDaemonUpdateRolledBack)
+	waitFor(t, func() bool {
+		return hasUpdateEvent(t, root, journal.EventDaemonUpdateEscalated)
+	})
+	stopFakeSupervisor(t, root, cancel, process, done)
+}
+
 func TestSupervisorFinalizesHealthyRequestAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	current := CurrentBinary(root, "linux")

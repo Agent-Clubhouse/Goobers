@@ -125,6 +125,9 @@ func TestSelfhostSelfUpdateDefaultsToTaggedReleases(t *testing.T) {
 	if task.Inputs["policy"] != "on-release" {
 		t.Fatalf("policy = %q, want on-release", task.Inputs["policy"])
 	}
+	if _, configured := task.Inputs["healthTimeout"]; configured {
+		t.Fatalf("healthTimeout must derive from the instance liveness setting")
+	}
 	if task.Run == nil || !slices.Equal(task.Run.Command, []string{"goobers", "self-update"}) {
 		t.Fatalf("command = %+v", task.Run)
 	}

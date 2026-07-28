@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -19,7 +20,8 @@ func TestSelfUpdateCommandUsesReleaseDefaultAndWritesResult(t *testing.T) {
 	t.Setenv("SELF_UPDATE_TEST_TOKEN", "configured-token")
 	config := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos:\n" +
 		"  - provider: github\n    owner: acme\n    name: goobers\n" +
-		"    token:\n      env: SELF_UPDATE_TEST_TOKEN\n"
+		"    token:\n      env: SELF_UPDATE_TEST_TOKEN\n" +
+		"runner:\n  livenessTimeout: 3m\n"
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,9 @@ func TestSelfUpdateCommandUsesReleaseDefaultAndWritesResult(t *testing.T) {
 	if captured.Policy != selfupdate.PolicyOnRelease ||
 		captured.Owner != "acme" ||
 		captured.Repository != "goobers" ||
-		captured.Token != "contents-token" {
+		captured.Token != "contents-token" ||
+		captured.HeartbeatInterval != 90*time.Second ||
+		captured.HealthTimeout != 6*time.Minute {
 		t.Fatalf("options = %+v", captured)
 	}
 	raw, err := os.ReadFile(resultPath)

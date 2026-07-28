@@ -29,7 +29,6 @@ spec:
         repository: "Goobers"
         branch: "main"
         healthTicks: "3"
-        healthTimeout: "5m"
         resultFile: "self-update-result.json"
       capabilities:
         - contents:read

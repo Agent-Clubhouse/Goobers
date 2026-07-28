@@ -40,7 +40,7 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")
 	target := fs.String("target", providerInput("target", ""), "manual release tag")
 	healthTicks := fs.Int("health-ticks", providerInputInt("healthTicks", selfupdate.DefaultHealthTicks), "required clean heartbeat ticks")
-	healthTimeout := fs.Duration("health-timeout", providerInputDuration("healthTimeout", selfupdate.DefaultHealthTimeout), "bounded candidate health window")
+	healthTimeout := fs.Duration("health-timeout", providerInputDuration("healthTimeout", 0), "bounded candidate health window (derived from daemon liveness when omitted)")
 	fs.Usage = helpUsage(stderr, "self-update")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -71,6 +71,14 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: resolve daemon heartbeat interval: %v\n", err)
 		return 1
+	}
+	heartbeatInterval := livenessTimeout / 2
+	if *healthTimeout == 0 {
+		*healthTimeout = selfupdate.DefaultHealthTimeout
+		minimumWindow := time.Duration(*healthTicks+1) * heartbeatInterval
+		if *healthTimeout < minimumWindow {
+			*healthTimeout = minimumWindow
+		}
 	}
 	if *owner == "" || *repository == "" {
 		repo, repoErr := providerRepo(root)
@@ -103,7 +111,7 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 		RunID:             os.Getenv("GOOBERS_RUN_ID"),
 		HealthTicks:       *healthTicks,
 		HealthTimeout:     *healthTimeout,
-		HeartbeatInterval: livenessTimeout / 2,
+		HeartbeatInterval: heartbeatInterval,
 	})
 	if err != nil {
 		pf(stderr, "error: self-update: %v\n", err)
