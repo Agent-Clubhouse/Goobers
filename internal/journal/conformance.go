@@ -3,6 +3,8 @@ package journal
 import (
 	"fmt"
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // NormativeEvent is the cross-runner comparable projection of an Event: the
@@ -38,6 +40,8 @@ type NormativeEvent struct {
 	WorkflowDigest      string
 	RefDigest           string
 	Name                string
+	Integrity           apiv1.Integrity
+	MinimumIntegrity    apiv1.Integrity
 
 	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
 	// the branch completeness record rather than a slice, because
@@ -92,6 +96,7 @@ func projectNormative(e Event) NormativeEvent {
 		Gate: e.Gate, Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
+		Integrity: e.Integrity, MinimumIntegrity: e.MinimumIntegrity,
 		Parallel: e.Parallel, BranchName: e.BranchName,
 		BranchStatus: e.BranchStatus,
 		Completeness: encodeCompleteness(e.Completeness),
@@ -166,10 +171,10 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.InstructionAddendum, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
-		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ext, ne.ErrorCode, redaction,
+		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
 		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness,
 	)
 }

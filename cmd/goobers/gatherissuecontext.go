@@ -77,6 +77,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	issues := make([]apiv1.RemediationIssue, 0)
+	integrities := []apiv1.Integrity{brief.Integrity}
 	prs, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository:     repo,
 		Base:           brief.Base,
@@ -91,6 +92,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		if fmt.Sprint(pr.Number) == brief.SelectedNumber {
 			prBody = pr.Body
 			foundPR = true
+			integrities = append(integrities, pr.Integrity)
 			break
 		}
 	}
@@ -109,15 +111,18 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 				return failProviderStage(stderr, fmt.Sprintf("read originating issue #%s", number), issueErr, remediationBriefResultFile)
 			}
 			issues = append(issues, apiv1.RemediationIssue{
-				Number: number,
-				Title:  item.Title,
-				Body:   item.Body,
-				URL:    item.URL,
+				Number:    number,
+				Title:     item.Title,
+				Body:      item.Body,
+				URL:       item.URL,
+				Integrity: item.Integrity,
 			})
+			integrities = append(integrities, item.Integrity)
 		}
 	}
 
 	brief.GatherIssueContext = &apiv1.RemediationIssueContext{Issues: issues}
+	brief.Integrity = apiv1.WeakestIntegrity(integrities...)
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
 	data, err := json.MarshalIndent(brief, "", "  ")
 	if err != nil {

@@ -231,6 +231,16 @@ Contract rules:
   built-in to provider-neutral behavior updates its contract and bundled
   definitions atomically; workflow-version pinning preserves already-started
   runs. See [ADR 0002](adr/0002-provider-neutral-capability-namespaces.md).
+- **Input-integrity admission:** provider reads, immutable snapshots, artifacts,
+  and invocation context pointers carry `trusted`, `maintainer`, `unapproved`, or
+  `derived` provenance. A task may declare `minimumIntegrity`; the compiler rejects
+  unknown grades and every runner refuses lower-graded input before dispatch with
+  the normative journal error code `input_integrity_below_minimum`. Grades persist
+  in both invocation envelopes and journal records, so this decision is part of
+  the cross-runner conformance surface rather than a `runner.*` annotation.
+  Tasks that need a strict minimum may declare `contextFrom` to route only named
+  producer tasks or gates into their invocation; omitted sources remain honestly
+  graded in the journal and available to other consumers.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 - **Run-control inheritance is explicit:** `runConditions` supplies instance

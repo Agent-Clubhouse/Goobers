@@ -42,7 +42,10 @@ const (
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
 // RemediationBrief is the current versioned PR-remediation evidence artifact schema.
-const RemediationBrief = "remediation-brief-v2.schema.json"
+const RemediationBrief = "remediation-brief-v3.schema.json"
+
+// RemediationBriefV2 is retained because remediation brief wire versions are immutable.
+const RemediationBriefV2 = "remediation-brief-v2.schema.json"
 
 // RemediationBriefV1 is retained because remediation brief wire versions are immutable.
 const RemediationBriefV1 = "remediation-brief-v1.schema.json"

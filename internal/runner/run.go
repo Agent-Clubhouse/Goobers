@@ -548,8 +548,16 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		return Result{}, fmt.Errorf("runner: resolve run controls: %w", err)
 	}
 	in.RunControls = effectiveControls
+	if in.Item != nil && !in.Item.Integrity.Valid() {
+		item := *in.Item
+		item.Integrity = apiv1.IntegrityUnapproved
+		in.Item = &item
+	}
 
 	inputs := map[string][]byte{}
+	inputIntegrity := map[string]apiv1.Integrity{
+		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+	}
 	graph, err := json.Marshal(in.Machine.Graph())
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: marshal pinned workflow graph: %w", err)
@@ -561,6 +569,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			return Result{}, fmt.Errorf("runner: marshal item snapshot: %w", err)
 		}
 		inputs["item"] = b
+		inputIntegrity["item"] = in.Item.Integrity
 	}
 
 	// registrar/scrubber are fresh per run (never shared — a run's secrets
@@ -582,7 +591,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:          in.Gaggle,
 		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
-	}, inputs, journal.WithScrubber(scrubber))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
@@ -1454,7 +1463,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
 			} else if retry {
 				if gr.VerdictArtifact != nil {
-					pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+					pointer := apiv1.ContextPointer{
+						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+					}
 					if par != nil {
 						par.recordCurrentPointer(pointer)
 					} else {
@@ -1481,7 +1492,9 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// this, that promise was never kept, so a repass regenerated
 				// the same diff and tripped the #316 identical-diff guard
 				// for lack of anything new to act on.
-				pointer := apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact}
+				pointer := apiv1.ContextPointer{
+					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+				}
 				if par != nil {
 					par.recordCurrentPointer(pointer)
 				} else {
@@ -2360,6 +2373,25 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 }
 
 func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
+	if err := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity); err != nil {
+		admission := &apiv1.IntegrityAdmissionError{}
+		if !errors.As(err, &admission) {
+			return apiv1.ResultEnvelope{}, nil, err
+		}
+		if appendErr := jr.Append(journal.Event{
+			Type:             journal.EventError,
+			Stage:            t.Name,
+			Integrity:        admission.Actual,
+			MinimumIntegrity: admission.Minimum,
+			Error: &journal.ErrorDetail{
+				Code: apiv1.IntegrityAdmissionErrorCode, Message: admission.Error(),
+			},
+		}); appendErr != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal integrity refusal for %q: %w", t.Name, appendErr)
+		}
+		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: refuse stage %q: %w", t.Name, admission)
+	}
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -2531,6 +2563,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
+		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
 		outputs := result.Outputs
 		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 			outputs = nil
@@ -2747,7 +2780,8 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
 				Artifacts: []apiv1.ArtifactPointer{{
-					Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json",
+					Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+					MediaType: "application/json", Integrity: ref.Integrity,
 				}},
 				Error: &apiv1.ErrorInfo{
 					Code:      baseSyncConflictErrorCode,
@@ -2770,6 +2804,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		}
 		return apiv1.ResultEnvelope{}, nil, prepErr, nil
 	}
+	env.MinimumIntegrity = t.MinimumIntegrity
 	env.InstructionAddendum = instructionAddendum
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
@@ -3304,8 +3339,11 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	if err != nil {
 		return nil, fmt.Errorf("record reviewer diff artifact: %w", err)
 	}
-	ptr := apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "text/x-diff"}
-	return &apiv1.ContextPointer{Name: gateName + ".diff", Artifact: &ptr}, nil
+	ptr := apiv1.ArtifactPointer{
+		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+		MediaType: "text/x-diff", Integrity: ref.Integrity,
+	}
+	return &apiv1.ContextPointer{Name: gateName + ".diff", Integrity: ref.Integrity, Artifact: &ptr}, nil
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is
@@ -3705,9 +3743,23 @@ func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []a
 	out := make([]apiv1.ContextPointer, 0, len(artifacts))
 	for i := range artifacts {
 		a := artifacts[i]
-		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
+		if !a.Integrity.Valid() {
+			a.Integrity = apiv1.IntegrityDerived
+		}
+		out = append(out, apiv1.ContextPointer{
+			Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Integrity: a.Integrity, Artifact: &a,
+		})
 	}
 	return out
+}
+
+func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.ArtifactPointer) []apiv1.ArtifactPointer {
+	for i := range artifacts {
+		if taskType == apiv1.TaskAgentic || !artifacts[i].Integrity.Valid() {
+			artifacts[i].Integrity = apiv1.IntegrityDerived
+		}
+	}
+	return artifacts
 }
 
 // refsFrom converts a ResultEnvelope's wire ArtifactPointers into their
@@ -3720,7 +3772,9 @@ func refsFrom(artifacts []apiv1.ArtifactPointer) []journal.Ref {
 	}
 	out := make([]journal.Ref, len(artifacts))
 	for i, a := range artifacts {
-		out[i] = journal.Ref{Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType}
+		out[i] = journal.Ref{
+			Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
+		}
 	}
 	return out
 }
@@ -3735,7 +3789,9 @@ func artifactPointersFrom(refs []journal.Ref) []apiv1.ArtifactPointer {
 	}
 	out := make([]apiv1.ArtifactPointer, len(refs))
 	for i, ref := range refs {
-		out[i] = apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType}
+		out[i] = apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType, Integrity: ref.Integrity,
+		}
 	}
 	return out
 }

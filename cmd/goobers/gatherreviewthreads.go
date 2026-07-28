@@ -67,6 +67,7 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, fmt.Sprintf("list review threads on PR #%s", brief.SelectedNumber), err, remediationBriefResultFile)
 	}
 	reviews := make([]apiv1.RemediationNativeReview, 0, len(evidence.Reviews))
+	integrities := []apiv1.Integrity{brief.Integrity}
 	for _, review := range evidence.Reviews {
 		submittedAt := ""
 		if review.SubmittedAt != nil {
@@ -79,7 +80,9 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 			CommitSHA:   review.CommitSHA,
 			SubmittedAt: submittedAt,
 			URL:         review.URL,
+			Integrity:   review.Integrity,
 		})
+		integrities = append(integrities, review.Integrity)
 	}
 	comments := make([]apiv1.RemediationInlineComment, 0, len(evidence.InlineComments))
 	for _, comment := range evidence.InlineComments {
@@ -103,11 +106,14 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 			IsOutdated:        comment.IsOutdated,
 			CreatedAt:         createdAt,
 			URL:               comment.URL,
+			Integrity:         comment.Integrity,
 		})
+		integrities = append(integrities, comment.Integrity)
 	}
 	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{
 		Reviews: reviews, InlineComments: comments,
 	}
+	brief.Integrity = apiv1.WeakestIntegrity(integrities...)
 
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
 	data, err := json.MarshalIndent(brief, "", "  ")

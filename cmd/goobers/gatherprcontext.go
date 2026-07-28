@@ -257,14 +257,16 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	}
 
 	comments := make([]apiv1.RemediationThreadComment, 0, len(rawComments))
+	integrities := []apiv1.Integrity{selected.Integrity}
 	for _, c := range rawComments {
 		createdAt := ""
 		if c.CreatedAt != nil {
 			createdAt = c.CreatedAt.Format(time.RFC3339)
 		}
 		comments = append(comments, apiv1.RemediationThreadComment{
-			Author: c.Author, Body: c.Body, CreatedAt: createdAt, URL: c.URL,
+			Author: c.Author, Body: c.Body, CreatedAt: createdAt, URL: c.URL, Integrity: c.Integrity,
 		})
+		integrities = append(integrities, c.Integrity)
 	}
 
 	// hasSubstantiveFindings is a plain "true"/"false" STRING, not a native
@@ -284,6 +286,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
 	data, err := json.MarshalIndent(apiv1.RemediationBrief{
 		Schema:         apiv1.RemediationBriefVersion,
+		Integrity:      apiv1.WeakestIntegrity(integrities...),
 		SelectedNumber: strconv.Itoa(selected.Number),
 		Head:           selected.Head,
 		// The runner's well-known branch-rebinding output (issue #392,

@@ -2,13 +2,14 @@ package v1alpha1
 
 // RemediationBriefVersion is the current remediation-brief wire identifier.
 // Shape changes require a new version.
-const RemediationBriefVersion = "goobers.dev/remediation-brief/v2"
+const RemediationBriefVersion = "goobers.dev/remediation-brief/v3"
 
 // RemediationBrief is the evidence bundle consumed by an agentic PR-remediation
 // stage. GatherPRContext is required; every other evidence section is optional
 // and owned by the correspondingly named gatherer.
 type RemediationBrief struct {
 	Schema                 string                     `json:"schema"`
+	Integrity              Integrity                  `json:"integrity"`
 	SelectedNumber         string                     `json:"selectedNumber"`
 	Head                   string                     `json:"head"`
 	Base                   string                     `json:"base"`
@@ -34,10 +35,11 @@ type RemediationPRContext struct {
 
 // RemediationThreadComment is one issue-level PR thread comment.
 type RemediationThreadComment struct {
-	Author    string `json:"author,omitempty"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Author    string    `json:"author,omitempty"`
+	Body      string    `json:"body"`
+	CreatedAt string    `json:"createdAt,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	Integrity Integrity `json:"integrity"`
 }
 
 // RemediationCIFailures is the optional section owned by gather-ci-failures.
@@ -73,31 +75,33 @@ type RemediationReviewThreads struct {
 
 // RemediationNativeReview is one provider-native PR review body.
 type RemediationNativeReview struct {
-	Author      string `json:"author,omitempty"`
-	State       string `json:"state"`
-	Body        string `json:"body,omitempty"`
-	CommitSHA   string `json:"commitSha,omitempty"`
-	SubmittedAt string `json:"submittedAt,omitempty"`
-	URL         string `json:"url,omitempty"`
+	Author      string    `json:"author,omitempty"`
+	State       string    `json:"state"`
+	Body        string    `json:"body,omitempty"`
+	CommitSHA   string    `json:"commitSha,omitempty"`
+	SubmittedAt string    `json:"submittedAt,omitempty"`
+	URL         string    `json:"url,omitempty"`
+	Integrity   Integrity `json:"integrity"`
 }
 
 // RemediationInlineComment is one line-level PR review comment.
 type RemediationInlineComment struct {
-	Author            string `json:"author,omitempty"`
-	Body              string `json:"body"`
-	Path              string `json:"path"`
-	Line              int    `json:"line,omitempty"`
-	OriginalLine      int    `json:"originalLine,omitempty"`
-	Side              string `json:"side,omitempty"`
-	StartLine         int    `json:"startLine,omitempty"`
-	OriginalStartLine int    `json:"originalStartLine,omitempty"`
-	StartSide         string `json:"startSide,omitempty"`
-	DiffHunk          string `json:"diffHunk,omitempty"`
-	InReplyTo         int64  `json:"inReplyTo,omitempty"`
-	IsResolved        bool   `json:"isResolved"`
-	IsOutdated        bool   `json:"isOutdated"`
-	CreatedAt         string `json:"createdAt,omitempty"`
-	URL               string `json:"url,omitempty"`
+	Author            string    `json:"author,omitempty"`
+	Body              string    `json:"body"`
+	Path              string    `json:"path"`
+	Line              int       `json:"line,omitempty"`
+	OriginalLine      int       `json:"originalLine,omitempty"`
+	Side              string    `json:"side,omitempty"`
+	StartLine         int       `json:"startLine,omitempty"`
+	OriginalStartLine int       `json:"originalStartLine,omitempty"`
+	StartSide         string    `json:"startSide,omitempty"`
+	DiffHunk          string    `json:"diffHunk,omitempty"`
+	InReplyTo         int64     `json:"inReplyTo,omitempty"`
+	IsResolved        bool      `json:"isResolved"`
+	IsOutdated        bool      `json:"isOutdated"`
+	CreatedAt         string    `json:"createdAt,omitempty"`
+	URL               string    `json:"url,omitempty"`
+	Integrity         Integrity `json:"integrity"`
 }
 
 // RemediationSiblingContext is the optional section owned by
@@ -124,8 +128,9 @@ type RemediationIssueContext struct {
 
 // RemediationIssue is one originating issue referenced by the PR.
 type RemediationIssue struct {
-	Number string `json:"number"`
-	Title  string `json:"title,omitempty"`
-	Body   string `json:"body"`
-	URL    string `json:"url,omitempty"`
+	Number    string    `json:"number"`
+	Title     string    `json:"title,omitempty"`
+	Body      string    `json:"body"`
+	URL       string    `json:"url,omitempty"`
+	Integrity Integrity `json:"integrity"`
 }

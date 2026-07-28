@@ -68,8 +68,9 @@ func releaseRunLock(held *journalLock) {
 
 // config holds constructor options.
 type config struct {
-	scrubber Scrubber
-	now      func() time.Time
+	scrubber       Scrubber
+	now            func() time.Time
+	inputIntegrity map[string]apiv1.Integrity
 }
 
 // Option configures a Run at creation/open.
@@ -86,6 +87,17 @@ func WithScrubber(s Scrubber) Option {
 // WithClock overrides the time source (for deterministic tests).
 func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
+}
+
+// WithInputIntegrity labels immutable snapshots by logical input name. Inputs
+// not present in grades default to trusted operator/config provenance.
+func WithInputIntegrity(grades map[string]apiv1.Integrity) Option {
+	return func(c *config) {
+		c.inputIntegrity = make(map[string]apiv1.Integrity, len(grades))
+		for name, grade := range grades {
+			c.inputIntegrity[name] = grade
+		}
+	}
 }
 
 func newConfig(opts ...Option) config {
@@ -182,7 +194,16 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 			releaseRunLock(lock)
 			return nil, fmt.Errorf("journal: snapshot input %q: %w", name, err)
 		}
-		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref})
+		integrity := apiv1.IntegrityTrusted
+		if configured, ok := cfg.inputIntegrity[name]; ok {
+			integrity = configured
+		}
+		if !integrity.Valid() {
+			releaseRunLock(lock)
+			return nil, fmt.Errorf("journal: snapshot input %q has unknown integrity %q", name, integrity)
+		}
+		ref.Integrity = integrity
+		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref, Integrity: integrity})
 	}
 	if err := writeRunYAML(dir, id); err != nil {
 		releaseRunLock(lock)
@@ -404,31 +425,54 @@ func (r *Run) Checkpoint() error {
 // appends an artifact.recorded event. Identical content deduplicates to one
 // blob. The returned Ref's Digest commits to the scrubbed bytes.
 func (r *Run) RecordArtifact(name string, data []byte) (Ref, error) {
-	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data, 0)
+	return r.RecordArtifactWithIntegrity(name, data, apiv1.IntegrityDerived)
+}
+
+// RecordArtifactWithIntegrity records an artifact with explicit provenance.
+func (r *Run) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (Ref, error) {
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name, Integrity: integrity}, data, 0)
 }
 
 // RecordArtifactBounded is RecordArtifact with a byte limit applied after
 // journal redaction, at the same boundary that writes and digests the artifact.
 func (r *Run) RecordArtifactBounded(name string, data []byte, maxBytes int) (Ref, error) {
+	return r.RecordArtifactBoundedWithIntegrity(name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+// RecordArtifactBoundedWithIntegrity records a size-bounded artifact with
+// explicit provenance.
+func (r *Run) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (Ref, error) {
 	if maxBytes <= 0 {
 		return Ref{}, fmt.Errorf("journal: artifact %q byte limit must be positive", name)
 	}
-	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data, maxBytes)
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name, Integrity: integrity}, data, maxBytes)
 }
 
 // RecordBranchArtifact records an artifact with explicit parallel-branch
 // attribution instead of using the run's sequential branch default.
 func (r *Run) RecordBranchArtifact(branch int, name string, data []byte) (Ref, error) {
-	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name}, data, 0)
+	return r.RecordBranchArtifactWithIntegrity(branch, name, data, apiv1.IntegrityDerived)
+}
+
+// RecordBranchArtifactWithIntegrity records a branch-attributed artifact with
+// explicit provenance.
+func (r *Run) RecordBranchArtifactWithIntegrity(branch int, name string, data []byte, integrity apiv1.Integrity) (Ref, error) {
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name, Integrity: integrity}, data, 0)
 }
 
 // RecordBranchArtifactBounded is RecordBranchArtifact with a post-redaction
 // byte limit.
 func (r *Run) RecordBranchArtifactBounded(branch int, name string, data []byte, maxBytes int) (Ref, error) {
+	return r.RecordBranchArtifactBoundedWithIntegrity(branch, name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+// RecordBranchArtifactBoundedWithIntegrity records a size-bounded,
+// branch-attributed artifact with explicit provenance.
+func (r *Run) RecordBranchArtifactBoundedWithIntegrity(branch int, name string, data []byte, integrity apiv1.Integrity, maxBytes int) (Ref, error) {
 	if maxBytes <= 0 {
 		return Ref{}, fmt.Errorf("journal: artifact %q byte limit must be positive", name)
 	}
-	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name}, data, maxBytes)
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name, Integrity: integrity}, data, maxBytes)
 }
 
 // ContextManifestArtifactName is the stable journal name for the context
@@ -441,16 +485,28 @@ func ContextManifestArtifactName(stage string, attempt int) string {
 // one stage attempt. The stage metadata keeps infra-retry artifacts out of the
 // conformance set alongside the attempt that produced them.
 func (r *Run) RecordStageArtifact(stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
+	return r.RecordStageArtifactWithIntegrity(stage, attempt, class, name, data, apiv1.IntegrityDerived)
+}
+
+// RecordStageArtifactWithIntegrity records a stage-scoped artifact with
+// explicit provenance.
+func (r *Run) RecordStageArtifactWithIntegrity(stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity) (Ref, error) {
 	return r.recordArtifact(Event{
-		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
+		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
 	}, data, 0)
 }
 
 // RecordBranchStageArtifact is RecordStageArtifact with explicit
 // parallel-branch attribution.
 func (r *Run) RecordBranchStageArtifact(branch int, stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
+	return r.RecordBranchStageArtifactWithIntegrity(branch, stage, attempt, class, name, data, apiv1.IntegrityDerived)
+}
+
+// RecordBranchStageArtifactWithIntegrity records a branch-attributed stage
+// artifact with explicit provenance.
+func (r *Run) RecordBranchStageArtifactWithIntegrity(branch int, stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity) (Ref, error) {
 	return r.recordArtifact(Event{
-		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
 	}, data, 0)
 }
 
@@ -459,6 +515,9 @@ func (r *Run) recordArtifact(ev Event, data []byte, maxBytes int) (Ref, error) {
 	defer r.mu.Unlock()
 	if r.closed {
 		return Ref{}, ErrClosed
+	}
+	if !ev.Integrity.Valid() {
+		return Ref{}, fmt.Errorf("journal: record artifact %q with unknown integrity %q", ev.Name, ev.Integrity)
 	}
 	scrubbed := r.scrubber.Scrub(data)
 	if maxBytes > 0 && len(scrubbed) > maxBytes {
@@ -478,6 +537,7 @@ func (r *Run) recordArtifact(ev Event, data []byte, maxBytes int) (Ref, error) {
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: record artifact %q: %w", ev.Name, err)
 	}
+	ref.Integrity = ev.Integrity
 	ev.Ref = &ref
 	if err := r.append(ev); err != nil {
 		return Ref{}, err

@@ -374,7 +374,11 @@ func (e *CIPollExecutor) ciPollFailureOutcome(result providers.PullRequestPollRe
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
-	ref, err := e.Journal.RecordArtifact(CIChecksArtifactName, data)
+	recorder, ok := e.Journal.(integrityArtifactRecorder)
+	if !ok {
+		return apiv1.ResultEnvelope{}, errors.New("executor: CI failure evidence integrity recorder is unavailable")
+	}
+	ref, err := recorder.RecordArtifactWithIntegrity(CIChecksArtifactName, data, apiv1.IntegrityUnapproved)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record %s: %w", CIChecksArtifactName, err)
 	}
@@ -502,7 +506,7 @@ func truncateUTF8Bytes(value string, limit int) (string, bool) {
 
 func artifactPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
 	return apiv1.ArtifactPointer{
-		Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: mediaType,
+		Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: mediaType, Integrity: ref.Integrity,
 	}
 }
 

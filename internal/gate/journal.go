@@ -122,7 +122,11 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 		}
 		ev.Name = name
 		ev.Ref = &ref
-		artifact = &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json"}
+		ev.Integrity = ref.Integrity
+		artifact = &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: ref.Integrity,
+		}
 	}
 	if err := j.Append(ev); err != nil {
 		return nil, err

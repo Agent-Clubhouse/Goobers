@@ -76,6 +76,7 @@ type stubTaskResult struct {
 	artifactName      string
 	artifactData      []byte
 	artifactMediaType string
+	artifactIntegrity apiv1.Integrity
 	outputs           map[string]interface{}
 }
 
@@ -96,12 +97,25 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 	}
 	result := apiv1.ResultEnvelope{Status: cfg.status, Summary: cfg.summary, Error: cfg.errorInfo, Outputs: cfg.outputs}
 	if cfg.artifactName != "" {
-		ref, err := s.rec.RecordArtifact(cfg.artifactName, cfg.artifactData)
+		var ref journal.Ref
+		var err error
+		if cfg.artifactIntegrity.Valid() {
+			recorder, ok := s.rec.(interface {
+				RecordArtifactWithIntegrity(string, []byte, apiv1.Integrity) (journal.Ref, error)
+			})
+			if !ok {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("stub executor: integrity recorder unavailable")
+			}
+			ref, err = recorder.RecordArtifactWithIntegrity(cfg.artifactName, cfg.artifactData, cfg.artifactIntegrity)
+		} else {
+			ref, err = s.rec.RecordArtifact(cfg.artifactName, cfg.artifactData)
+		}
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
 		result.Artifacts = []apiv1.ArtifactPointer{{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: cfg.artifactMediaType,
+			Integrity: ref.Integrity,
 		}}
 	}
 	return result, nil

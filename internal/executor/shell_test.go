@@ -21,14 +21,16 @@ import (
 // fakeRecorder is an in-memory ArtifactRecorder for tests: no real journal
 // directory needed.
 type fakeRecorder struct {
-	recorded map[string][]byte
-	maxBytes map[string]int
+	recorded  map[string][]byte
+	integrity map[string]apiv1.Integrity
+	maxBytes  map[string]int
 }
 
 func newFakeRecorder() *fakeRecorder {
 	return &fakeRecorder{
-		recorded: map[string][]byte{},
-		maxBytes: map[string]int{},
+		recorded:  map[string][]byte{},
+		integrity: map[string]apiv1.Integrity{},
+		maxBytes:  map[string]int{},
 	}
 }
 
@@ -40,11 +42,25 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 }
 
 func (f *fakeRecorder) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	return f.RecordArtifactBoundedWithIntegrity(name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+func (f *fakeRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error) {
 	if len(data) > maxBytes {
 		return journal.Ref{}, errors.New("artifact exceeds byte limit")
 	}
 	f.maxBytes[name] = maxBytes
-	return f.RecordArtifact(name, data)
+	return f.RecordArtifactWithIntegrity(name, data, integrity)
+}
+
+func (f *fakeRecorder) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	ref, err := f.RecordArtifact(name, data)
+	if err != nil {
+		return journal.Ref{}, err
+	}
+	f.integrity[name] = integrity
+	ref.Integrity = integrity
+	return ref, nil
 }
 
 // noopRegistrar satisfies credentials.SecretRegistrar for tests that don't
@@ -219,7 +235,7 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 func TestShellExecutor_ProviderStageUsesImplicitResultFile(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
 	resultEnv := InputEnvVar(InputResultFile)
-	script := "#!/bin/sh\nprintf '{\"reconciled\":true}' > \"$" + resultEnv + "\"\n"
+	script := "#!/bin/sh\nprintf '{\"reconciled\":true,\"integrity\":\"derived\"}' > \"$" + resultEnv + "\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +256,7 @@ func TestShellExecutor_ProviderStageUsesImplicitResultFile(t *testing.T) {
 	if result.Outputs["reconciled"] != true {
 		t.Fatalf("reconciled = %v, want true", result.Outputs["reconciled"])
 	}
-	if got := string(rec.recorded["task-1/result"]); got != `{"reconciled":true}` {
+	if got := string(rec.recorded["task-1/result"]); got != `{"reconciled":true,"integrity":"derived"}` {
 		t.Fatalf("result artifact = %q", got)
 	}
 }
@@ -369,13 +385,13 @@ func TestShellExecutor_ProviderBuiltinPrefersStructuredErrorCodeOverStderr(t *te
 	}{
 		{
 			name:               "retryable code drives infrastructure failure",
-			resultJSON:         `{"errorCode":"github_rate_limited","errorMessage":"rate limited, resets soon","errorRetryable":true,"rateLimitReset":"2026-07-17T04:00:00Z"}`,
+			resultJSON:         `{"errorCode":"github_rate_limited","errorMessage":"rate limited, resets soon","errorRetryable":true,"rateLimitReset":"2026-07-17T04:00:00Z","integrity":"unapproved"}`,
 			wantInfrastructure: true,
 			wantMessage:        "rate limited, resets soon",
 		},
 		{
 			name:               "non-retryable code stays a plain ResultFailure with its own code",
-			resultJSON:         `{"errorCode":"github_auth_failed","errorMessage":"bad credentials","errorRetryable":false}`,
+			resultJSON:         `{"errorCode":"github_auth_failed","errorMessage":"bad credentials","errorRetryable":false,"integrity":"unapproved"}`,
 			wantInfrastructure: false,
 			wantCode:           "github_auth_failed",
 			wantMessage:        "bad credentials",
@@ -755,6 +771,44 @@ func TestShellExecutor_ResultFileLiftedToArtifact(t *testing.T) {
 	}
 	if !strings.Contains(string(rec.recorded["task-1/result"]), `"ok":true`) {
 		t.Fatalf("result artifact missing expected content: %v", rec.recorded["task-1/result"])
+	}
+}
+
+func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		want    apiv1.Integrity
+		wantErr string
+	}{
+		{name: "top-level", data: `{"id":"42","integrity":"maintainer"}`, want: apiv1.IntegrityMaintainer},
+		{name: "composite weakest source", data: `{"integrity":"maintainer","reviews":[{"integrity":"unapproved"}]}`, want: apiv1.IntegrityUnapproved},
+		{name: "missing label", data: `{"id":"42"}`, wantErr: "no valid integrity label"},
+		{name: "invalid nested label", data: `{"integrity":"maintainer","reviews":[{"integrity":"unknown"}]}`, wantErr: "invalid integrity label"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, nil)
+			ref, err := exec.recordResultArtifact(
+				"task-1/result", []byte(test.data),
+				stageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
+			)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("recordResultArtifact error = %v, want %q", err, test.wantErr)
+				}
+				if _, ok := rec.recorded["task-1/result"]; ok {
+					t.Fatal("provider result was recorded despite invalid integrity")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("recordResultArtifact: %v", err)
+			}
+			if ref.Integrity != test.want || rec.integrity["task-1/result"] != test.want {
+				t.Fatalf("integrity = %q / %q, want %q", ref.Integrity, rec.integrity["task-1/result"], test.want)
+			}
+		})
 	}
 }
 

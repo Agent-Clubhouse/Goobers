@@ -422,6 +422,15 @@ spec:
                       items:
                         type: string
                       type: array
+                    contextFrom:
+                      description: |-
+                        ContextFrom limits this task's context pointers to artifacts and verdicts
+                        produced by the named tasks or gates. Empty preserves the historical
+                        behavior of receiving every accumulated pointer.
+                      items:
+                        type: string
+                      type: array
+                      uniqueItems: true
                     continueOnError:
                       description: |-
                         ContinueOnError makes a ResultFailure best-effort: the failed status is
@@ -455,9 +464,12 @@ spec:
                       additionalProperties:
                         type: string
                       description: |-
-                        InputsFrom declares an explicit, small output->input handoff from the
-                        immediately preceding task's ResultEnvelope.Outputs into this task's
-                        Inputs: InputsFrom[inputKey] = outputKey. Unlike a gate (which receives
+                        InputsFrom declares an explicit, small output->input handoff into this
+                        task's Inputs: InputsFrom[inputKey] = outputKey. A bare outputKey reads the
+                        immediately preceding task. DSL 2.0 also admits <stage>.<outputKey> and,
+                        on a parallel join, <parallel>.<branch>.<stage>.<outputKey>; the stage may
+                        be omitted only when that branch has one @join-terminal stage.
+                        Unlike a gate (which receives
                         every upstream Output key flattened automatically, per
                         internal/gate/automated.go's runner-contract convention — a gate never
                         mutates run state, so a wide-open read is safe), a task-to-task handoff
@@ -490,6 +502,17 @@ spec:
                           minimum: 0
                           type: integer
                       type: object
+                    minimumIntegrity:
+                      description: |-
+                        MinimumIntegrity is the lowest provenance grade this task accepts from its
+                        backlog item and context pointers. Empty preserves compatibility by
+                        imposing no integrity admission policy.
+                      enum:
+                      - trusted
+                      - maintainer
+                      - unapproved
+                      - derived
+                      type: string
                     name:
                       description: Name uniquely identifies this state within the
                         workflow.

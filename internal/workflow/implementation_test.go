@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -44,8 +45,8 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	// Structural shape: query-backlog -> implement -> review(gate) ->
-	// {local-ci on pass, implement on needs-changes, park on fail/escalate}.
+	// Structural shape: query-backlog -> gather context -> implement ->
+	// review(gate), with CI failures routed through remediate-ci.
 	if w.Spec.Start != "query-backlog" {
 		t.Errorf("start = %q, want query-backlog", w.Spec.Start)
 	}
@@ -58,6 +59,13 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 	if implement.Goober != "implementer" {
 		t.Errorf("implement.goober = %q, want implementer", implement.Goober)
+	}
+	if implement.MinimumIntegrity != apiv1.IntegrityMaintainer {
+		t.Errorf("implement.minimumIntegrity = %q, want maintainer", implement.MinimumIntegrity)
+	}
+	wantImplementContext := []string{"query-backlog", "implement", "remediate-ci", "review", "local-ci"}
+	if !slices.Equal(implement.ContextFrom, wantImplementContext) {
+		t.Errorf("implement.contextFrom = %v, want %v", implement.ContextFrom, wantImplementContext)
 	}
 	// #724: the implement stage salvages a viable committed diff on session
 	// timeout rather than discarding actively-progressed work.
@@ -91,17 +99,30 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		}
 	}
 
-	// The bounded repass loop closes back to implement from two independent
-	// gates (review:needs-changes, ci-gate:fail) — both must resolve.
+	// Review and local failures return to the maintainer-only implement task.
+	// Provider-authored CI evidence routes to an unapproved-compatible consumer.
 	ciGate, ok := m.Gate("ci-gate")
 	if !ok {
 		t.Fatal("ci-gate not found")
 	}
-	if target, ok := BranchTarget(ciGate, "fail"); !ok || target != "implement" {
-		t.Errorf("ci-gate fail branch = %q,%v; want implement,true", target, ok)
+	if target, ok := BranchTarget(ciGate, "fail"); !ok || target != "remediate-ci" {
+		t.Errorf("ci-gate fail branch = %q,%v; want remediate-ci,true", target, ok)
 	}
 	if target, ok := BranchTarget(ciGate, "pass"); !ok || target != "close-out" {
 		t.Errorf("ci-gate pass branch = %q,%v; want close-out,true", target, ok)
+	}
+	remediateCI, ok := m.Task("remediate-ci")
+	if !ok {
+		t.Fatal("remediate-ci task not found")
+	}
+	if remediateCI.MinimumIntegrity != apiv1.IntegrityUnapproved {
+		t.Errorf("remediate-ci.minimumIntegrity = %q, want unapproved", remediateCI.MinimumIntegrity)
+	}
+	if !slices.Contains(remediateCI.ContextFrom, "ci-poll") {
+		t.Errorf("remediate-ci.contextFrom = %v, want ci-poll", remediateCI.ContextFrom)
+	}
+	if remediateCI.Next != "review" {
+		t.Errorf("remediate-ci.next = %q, want review", remediateCI.Next)
 	}
 	for _, gateName := range []string{"local-gate", "ci-gate"} {
 		g, ok := m.Gate(gateName)
@@ -188,7 +209,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
 	// opening, since the claim was only validated once at query-backlog.
-	const wantDigest = "sha256:1881a32d87ee66a61acb42b30b1f8f2c74267ded8a4d2496b9281a3233620e2f"
+	const wantDigest = "sha256:a0df472a9988d83446665e169d398ef5a6134d11ff69c9e4ba7851605fd01010"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

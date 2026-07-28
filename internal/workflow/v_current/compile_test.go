@@ -56,6 +56,33 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsUnknownMinimumIntegrity(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].MinimumIntegrity = "owner-ish"
+	_, err := compileAcknowledged(Definition{Name: "integrity", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `minimumIntegrity "owner-ish"`) {
+		t.Fatalf("Compile error = %v, want unknown minimum integrity", err)
+	}
+}
+
+func TestCompileRejectsUnknownContextSource(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].ContextFrom = []string{"missing"}
+	_, err := compileAcknowledged(Definition{Name: "context-routing", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `contextFrom source "missing"`) {
+		t.Fatalf("Compile error = %v, want unknown context source", err)
+	}
+}
+
+func TestCompileRejectsDuplicateContextSource(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].ContextFrom = []string{"build", "build"}
+	_, err := compileAcknowledged(Definition{Name: "context-routing", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `contextFrom source "build" is duplicated`) {
+		t.Fatalf("Compile error = %v, want duplicate context source", err)
+	}
+}
+
 func TestCompileRejectsRunScriptInFrozenDSL(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",

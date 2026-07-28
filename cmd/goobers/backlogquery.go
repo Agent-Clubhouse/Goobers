@@ -410,6 +410,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		if item.State != "" && !strings.EqualFold(item.State, "open") {
 			continue
 		}
+		item.Integrity = providers.IntegrityForLabels(item.Labels, trustLabel)
 		eligible = append(eligible, item)
 	}
 
@@ -534,6 +535,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 					return 1
 				}
 				if matched {
+					item.Integrity = providers.IntegrityForLabels(item.Labels, trustLabel)
 					filtered = append(filtered, item)
 				}
 			}

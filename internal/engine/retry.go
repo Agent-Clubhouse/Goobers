@@ -87,6 +87,7 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		}
 		rec.recordDeferredRunBranch(ctx, err, res)
 		if err == nil {
+			res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
 			rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
 			return res, nil
 		}

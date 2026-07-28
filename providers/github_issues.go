@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
 // GitHub directs clients to wait at least one minute when a secondary-limit
@@ -738,6 +740,7 @@ func mapGitHubComment(c githubComment) Comment {
 		Body:       c.Body,
 		CreatedAt:  c.CreatedAt,
 		URL:        c.HTMLURL,
+		Integrity:  apiintegrity.Unapproved,
 	}
 }
 

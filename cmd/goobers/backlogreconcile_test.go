@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
@@ -366,12 +367,18 @@ func TestBacklogReconcileWritesActualCorrectionCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read reconciliation result: %v", err)
 	}
-	var result map[string]int
+	var result struct {
+		Reconciled int                `json:"reconciled"`
+		Integrity  apiintegrity.Grade `json:"integrity"`
+	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("decode reconciliation result: %v", err)
 	}
-	if result["reconciled"] != 1 {
-		t.Fatalf("reconciled = %d, want 1", result["reconciled"])
+	if result.Reconciled != 1 {
+		t.Fatalf("reconciled = %d, want 1", result.Reconciled)
+	}
+	if result.Integrity != apiintegrity.Unapproved {
+		t.Fatalf("integrity = %q, want %q", result.Integrity, apiintegrity.Unapproved)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady}, nil)

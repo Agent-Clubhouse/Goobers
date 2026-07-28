@@ -28,9 +28,13 @@ func evidencePointers(subjectStage string, subject apiv1.ResultEnvelope) []apiv1
 	ptrs := make([]apiv1.ContextPointer, 0, len(subject.Artifacts))
 	for i, a := range subject.Artifacts {
 		a := a
+		if !a.Integrity.Valid() {
+			a.Integrity = apiv1.IntegrityDerived
+		}
 		ptrs = append(ptrs, apiv1.ContextPointer{
-			Name:     fmt.Sprintf("%s.artifact[%d]", subjectStage, i),
-			Artifact: &a,
+			Name:      fmt.Sprintf("%s.artifact[%d]", subjectStage, i),
+			Integrity: a.Integrity,
+			Artifact:  &a,
 		})
 	}
 	return ptrs

@@ -68,6 +68,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 		Digest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		MediaType: "application/json",
 		Size:      42,
+		Integrity: apiv1.IntegrityDerived,
 	}
 }
 
@@ -95,23 +96,26 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Path: "/workspace-reference",
 		}},
 		Item: &apiv1.BacklogItem{
-			ID:       "1704",
-			Provider: apiv1.ProviderGitHub,
-			Title:    "Keep schemas synchronized",
-			Body:     "Add a structural drift guard.",
-			URL:      "https://example.test/issues/1704",
-			Labels:   []string{"type:bug"},
+			ID:        "1704",
+			Provider:  apiv1.ProviderGitHub,
+			Title:     "Keep schemas synchronized",
+			Body:      "Add a structural drift guard.",
+			URL:       "https://example.test/issues/1704",
+			Labels:    []string{"type:bug"},
+			Integrity: apiv1.IntegrityMaintainer,
 		},
 		ContextPointers: []apiv1.ContextPointer{
 			{
 				Name:       "evidence",
 				Branch:     1,
 				BranchName: "gather",
+				Integrity:  apiv1.IntegrityDerived,
 				Artifact:   pointer(completeArtifactPointer("artifacts/gather/evidence.json")),
 				RunID:      "source-run",
 			},
 			{
-				Name: "issue",
+				Name:      "issue",
+				Integrity: apiv1.IntegrityUnapproved,
 				External: &apiv1.ExternalRef{
 					Kind:        "issue",
 					URI:         "https://example.test/issues/1704",
@@ -119,7 +123,8 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 				},
 			},
 		},
-		Capabilities: []string{"repo:push"},
+		MinimumIntegrity: apiv1.IntegrityMaintainer,
+		Capabilities:     []string{"repo:push"},
 		Limits: apiv1.Limits{
 			MaxDurationSeconds: 600,
 			MaxTokens:          10_000,
@@ -171,6 +176,7 @@ func completeVerdict() apiv1.Verdict {
 func completeRemediationBrief() apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
 		SelectedNumber:         "1704",
 		Head:                   "goobers/implementation/run-1704",
 		Base:                   "main",
@@ -187,6 +193,7 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				Body:      "Address every finding.",
 				CreatedAt: "2026-07-26T12:00:00Z",
 				URL:       "https://example.test/comments/1",
+				Integrity: apiv1.IntegrityUnapproved,
 			}},
 		},
 		GatherCIFailures: &apiv1.RemediationCIFailures{
@@ -213,6 +220,7 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				CommitSHA:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				SubmittedAt: "2026-07-26T12:00:00Z",
 				URL:         "https://example.test/reviews/1",
+				Integrity:   apiv1.IntegrityUnapproved,
 			}},
 			InlineComments: []apiv1.RemediationInlineComment{{
 				Author:            "reviewer",
@@ -230,6 +238,7 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				IsOutdated:        true,
 				CreatedAt:         "2026-07-26T12:00:00Z",
 				URL:               "https://example.test/comments/2",
+				Integrity:         apiv1.IntegrityUnapproved,
 			}},
 		},
 		GatherSiblingContext: &apiv1.RemediationSiblingContext{
@@ -244,10 +253,11 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 		},
 		GatherIssueContext: &apiv1.RemediationIssueContext{
 			Issues: []apiv1.RemediationIssue{{
-				Number: "1704",
-				Title:  "Keep schemas synchronized",
-				Body:   "Add a structural drift guard.",
-				URL:    "https://example.test/issues/1704",
+				Number:    "1704",
+				Title:     "Keep schemas synchronized",
+				Body:      "Add a structural drift guard.",
+				URL:       "https://example.test/issues/1704",
+				Integrity: apiv1.IntegrityMaintainer,
 			}},
 		},
 	}

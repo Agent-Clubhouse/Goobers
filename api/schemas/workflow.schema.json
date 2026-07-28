@@ -229,6 +229,17 @@
             ]
           }
         },
+        "minimumIntegrity": {
+          "type": "string",
+          "enum": ["trusted", "maintainer", "unapproved", "derived"],
+          "description": "Lowest provenance grade this task accepts from its backlog item and context pointers."
+        },
+        "contextFrom": {
+          "type": "array",
+          "description": "Workflow task or gate names whose artifacts and verdicts are routed into this task's context. Omitted means all accumulated context pointers.",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "policyActions": {
           "description": "Closed vocabulary of externally mutating actions this task may perform because policy, persona, or verdict output prescribes them. Agentic tasks must include every unconditional action declared by their referenced goober, and compiler admission requires each action's canonical capability.",
           "type": "array",

@@ -552,7 +552,9 @@ func (e *Executor) liftArtifactFile(env apiv1.InvocationEnvelope) (*apiv1.Artifa
 // refToPointer converts a journal content-address into its wire equivalent —
 // same shape, different package, mirroring internal/executor's refToPointer.
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
-	return apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size}
+	return apiv1.ArtifactPointer{
+		Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size, Integrity: ref.Integrity,
+	}
 }
 
 // mediaTypeFor advisorily categorizes a declared artifact file by extension —

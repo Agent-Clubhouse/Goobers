@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
 func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *testing.T) {
@@ -72,6 +74,9 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 	)
 	if err != nil {
 		t.Fatalf("ListPullRequestReviewThreads: %v", err)
+	}
+	if got.Integrity != apiintegrity.Unapproved {
+		t.Fatalf("review threads integrity = %q, want unapproved", got.Integrity)
 	}
 	if graphqlCalls != 2 {
 		t.Fatalf("reviewThreads GraphQL calls = %d, want 2 paginated requests", graphqlCalls)

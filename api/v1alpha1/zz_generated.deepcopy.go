@@ -6,7 +6,7 @@ package v1alpha1
 
 import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -1146,6 +1146,11 @@ func (in *Task) DeepCopyInto(out *Task) {
 	}
 	if in.Capabilities != nil {
 		in, out := &in.Capabilities, &out.Capabilities
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ContextFrom != nil {
+		in, out := &in.ContextFrom, &out.ContextFrom
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

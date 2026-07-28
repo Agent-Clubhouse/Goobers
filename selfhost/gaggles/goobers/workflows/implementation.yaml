@@ -85,13 +85,11 @@ spec:
         - claimed-item
       next: gather-implement-context
 
-    # First-pass enrichment (#1299): produce one bounded journal artifact with
+    # Workflow enrichment (#1299): produce one bounded journal artifact with
     # the shipped merge-review verdict taxonomy and a hot-file map from current
-    # sibling PRs plus exact conflict files in recent run journals. The runner
-    # accumulates this artifact through the same ContextPointers path that #412
-    # uses for reviewer verdicts on repass, so implement receives it on attempt
-    # 1 and retains it on every later pass without widening the closed
-    # invocation-envelope schema.
+    # sibling PRs plus exact conflict files in recent run journals. The reviewer
+    # can consume this unapproved provider evidence; the maintainer-only
+    # implementation task explicitly excludes it below.
     - name: gather-implement-context
       type: deterministic
       goal: Gather the reviewer verdict taxonomy and current/recent-conflict hot-file map for implementation.
@@ -107,12 +105,21 @@ spec:
 
     # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
     # to repo:push only — this stage never talks to the issues or PR API.
-    # Every repass (from the review or ci-gate below) re-enters here, so the
-    # instructions cover reading prior-attempt context, not just a cold
-    # start.
+    # Review and local-CI repasses re-enter here. Provider-authored CI check
+    # evidence uses the compatible remediate-ci task below.
     - name: implement
       type: agentic
       goober: implementer
+      minimumIntegrity: maintainer
+      # Provider-derived enrichment remains unapproved and is intentionally not
+      # routed into this maintainer-only consumer. Reviewer and local-CI evidence
+      # are derived workflow outputs and remain available on their repass paths.
+      contextFrom:
+        - query-backlog
+        - implement
+        - remediate-ci
+        - review
+        - local-ci
       goal: >-
         Implement the claimed issue end to end: read the issue and its
         acceptance criteria, plan, implement, verify with fast, targeted
@@ -122,7 +129,7 @@ spec:
         deterministic local-ci stage below owns that authoritatively; running
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
-        reviewer rationale or CI failure evidence attached as context and
+        reviewer rationale or local-CI failure evidence attached as context and
         address it before making further changes.
       capabilities:
         - repo:push
@@ -147,6 +154,36 @@ spec:
       # ArtifactPointers, so the result is status + scalar summary only.
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
+      next: review
+
+    # CI check details are provider-authored and therefore remain unapproved.
+    # Route them to a distinct remediation consumer that explicitly accepts
+    # that grade rather than weakening the maintainer-only implementation task.
+    - name: remediate-ci
+      type: agentic
+      goober: implementer
+      minimumIntegrity: unapproved
+      contextFrom:
+        - query-backlog
+        - implement
+        - remediate-ci
+        - review
+        - local-ci
+        - ci-poll
+      goal: >-
+        Remediate the failed CI checks using the attached provider evidence,
+        run fast targeted tests for the change, and commit the fix to the run's
+        branch. Do not run the full `make ci` / `go test -race ./...` suite;
+        local-ci runs it authoritatively after review.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
       next: review
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
@@ -359,10 +396,9 @@ spec:
           equals: "passing"
       branches:
         pass: close-out
-        # A CI failure repasses to implement with the failure evidence
-        # (checks/failure detail) attached as context by the runner, the
-        # same evidence-pointer mechanism the reviewer gate uses.
-        fail: implement
+        # Provider-authored failure evidence remains unapproved and is routed
+        # to the explicitly compatible remediation consumer.
+        fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
         # didn't finish in time — so it escalates for a human decision

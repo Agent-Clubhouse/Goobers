@@ -1,6 +1,10 @@
 package journal
 
-import "time"
+import (
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
 
 // EventType is the kind of an orchestration event. The taxonomy is the
 // conformance surface (§3.3): the runner, telemetry, portal, and conformance
@@ -236,6 +240,12 @@ type Event struct {
 	// Outputs. Each entry's Digest is normative; Path/Size/MediaType are not
 	// (see Ref).
 	Artifacts []Ref `json:"artifacts,omitempty"`
+	// Integrity is the provenance grade on an input snapshot, artifact, or
+	// integrity-admission refusal. Normative.
+	Integrity apiv1.Integrity `json:"integrity,omitempty"`
+	// MinimumIntegrity is the refusing stage's declared threshold on an
+	// integrity-admission error. Normative.
+	MinimumIntegrity apiv1.Integrity `json:"minimumIntegrity,omitempty"`
 
 	// Ref points at in-journal content (artifact.recorded, input.snapshot). Its
 	// Digest is normative except for runner-assembled context manifests, whose

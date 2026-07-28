@@ -34,8 +34,9 @@ type Trigger struct {
 
 // InputRef names an immutable input snapshot stored under inputs/.
 type InputRef struct {
-	Name string `json:"name"`
-	Ref  Ref    `json:"ref"`
+	Name      string          `json:"name"`
+	Ref       Ref             `json:"ref"`
+	Integrity apiv1.Integrity `json:"integrity"`
 }
 
 // RunIdentity is the pinned identity of a run, serialized to run.yaml. It is

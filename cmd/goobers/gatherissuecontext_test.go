@@ -35,6 +35,7 @@ func seedRemediationBriefRun(t *testing.T, root, runID string, brief apiv1.Remed
 func issueContextBrief() apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
 		SelectedNumber:         "77",
 		Head:                   "goobers/implementation/run-77",
 		Base:                   "main",
@@ -46,7 +47,7 @@ func issueContextBrief() apiv1.RemediationBrief {
 			HeadSHA: "head-sha",
 			BaseSHA: "base-sha",
 			Comments: []apiv1.RemediationThreadComment{
-				{Author: "reviewer", Body: "Keep this context."},
+				{Author: "reviewer", Body: "Keep this context.", Integrity: apiv1.IntegrityUnapproved},
 			},
 		},
 		GatherCIFailures: &apiv1.RemediationCIFailures{
@@ -87,10 +88,11 @@ func TestGatherIssueContextAddsResolvableClosingIssuesAndPreservesBrief(t *testi
 	want := original
 	want.GatherIssueContext = &apiv1.RemediationIssueContext{
 		Issues: []apiv1.RemediationIssue{{
-			Number: "945",
-			Title:  "Originating issue",
-			Body:   "## Acceptance criteria\n\n- Include this body.",
-			URL:    "https://example/issues/945",
+			Number:    "945",
+			Title:     "Originating issue",
+			Body:      "## Acceptance criteria\n\n- Include this body.",
+			URL:       "https://example/issues/945",
+			Integrity: apiv1.IntegrityUnapproved,
 		}},
 	}
 	if !reflect.DeepEqual(got, want) {

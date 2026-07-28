@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/remediation-brief-v3.schema.json",
+  "title": "RemediationBriefV3",
+  "description": "Version 3 of the PR-remediation evidence artifact. It adds end-to-end input-integrity provenance to the composite brief and its provider-authored text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "integrity",
+    "selectedNumber",
+    "head",
+    "base",
+    "workspaceBranch",
+    "isBehindBase",
+    "hasSubstantiveFindings",
+    "hasFailingCI",
+    "gatherPrContext"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/remediation-brief/v3",
+      "description": "Remediation brief wire version."
+    },
+    "integrity": {
+      "$ref": "#/$defs/integrity",
+      "description": "Weakest provenance grade of all content in the composite brief."
+    },
+    "selectedNumber": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Selected pull request number."
+    },
+    "head": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Selected pull request head branch."
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Selected pull request base branch."
+    },
+    "workspaceBranch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Branch the runner must use for later remediation stages."
+    },
+    "isBehindBase": {
+      "type": "boolean",
+      "description": "Whether the selected head is behind its base."
+    },
+    "hasSubstantiveFindings": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Scalar-compatible substantive-finding indicator."
+    },
+    "hasFailingCI": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Scalar-compatible failing-CI indicator."
+    },
+    "gatherPrContext": {
+      "$ref": "#/$defs/gatherPrContext",
+      "description": "Required selected pull request context."
+    },
+    "gatherCIFailures": {
+      "$ref": "#/$defs/gatherCIFailures",
+      "description": "Optional failing-CI evidence."
+    },
+    "gatherReviewThreads": {
+      "$ref": "#/$defs/gatherReviewThreads",
+      "description": "Optional native review and inline-comment evidence."
+    },
+    "gatherSiblingContext": {
+      "$ref": "#/$defs/gatherSiblingContext",
+      "description": "Optional sibling pull request evidence."
+    },
+    "gatherIssueContext": {
+      "$ref": "#/$defs/gatherIssueContext",
+      "description": "Optional originating-issue evidence."
+    }
+  },
+  "$defs": {
+    "integrity": {
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "description": "Provenance grade carried with content across stage boundaries."
+    },
+    "gatherPrContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headSha", "baseSha", "verdict", "comments"],
+      "properties": {
+        "headSha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Selected pull request head commit."
+        },
+        "baseSha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Selected pull request base commit."
+        },
+        "verdict": {
+          "description": "Most recent trusted merge-review verdict, or null.",
+          "oneOf": [
+            { "$ref": "verdict.schema.json" },
+            { "type": "null" }
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "description": "Issue-level pull request comments.",
+          "items": { "$ref": "#/$defs/threadComment" }
+        }
+      }
+    },
+    "threadComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body", "integrity"],
+      "properties": {
+        "author": {
+          "type": "string",
+          "description": "Comment author."
+        },
+        "body": {
+          "type": "string",
+          "description": "Provider-authored comment body."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Comment creation time."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the comment."
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity",
+          "description": "Provenance grade of the comment body."
+        }
+      }
+    },
+    "gatherCIFailures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "description": "Failing provider checks.",
+          "items": { "$ref": "#/$defs/ciFailure" }
+        }
+      }
+    },
+    "ciFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "conclusion", "annotations"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Check name."
+        },
+        "conclusion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Check conclusion."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the check."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Bounded check summary."
+        },
+        "annotations": {
+          "type": "array",
+          "description": "Bounded check annotations.",
+          "items": { "$ref": "#/$defs/ciAnnotation" }
+        }
+      }
+    },
+    "ciAnnotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Annotated repository path."
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "First annotated line."
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Last annotated line."
+        },
+        "level": {
+          "type": "string",
+          "description": "Provider annotation level."
+        },
+        "title": {
+          "type": "string",
+          "description": "Provider annotation title."
+        },
+        "message": {
+          "type": "string",
+          "description": "Provider annotation message."
+        }
+      }
+    },
+    "gatherReviewThreads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviews", "inlineComments"],
+      "properties": {
+        "reviews": {
+          "type": "array",
+          "description": "Provider-native pull request reviews.",
+          "items": { "$ref": "#/$defs/nativeReview" }
+        },
+        "inlineComments": {
+          "type": "array",
+          "description": "Provider-native inline review comments.",
+          "items": { "$ref": "#/$defs/inlineComment" }
+        }
+      }
+    },
+    "nativeReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "integrity"],
+      "properties": {
+        "author": {
+          "type": "string",
+          "description": "Review author."
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-native review state."
+        },
+        "body": {
+          "type": "string",
+          "description": "Provider-authored review body."
+        },
+        "commitSha": {
+          "type": "string",
+          "description": "Commit reviewed."
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Review submission time."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the review."
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity",
+          "description": "Provenance grade of the review body."
+        }
+      }
+    },
+    "inlineComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body", "path", "isResolved", "isOutdated", "integrity"],
+      "properties": {
+        "author": {
+          "type": "string",
+          "description": "Inline comment author."
+        },
+        "body": {
+          "type": "string",
+          "description": "Provider-authored inline comment body."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Commented repository path."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Current diff line."
+        },
+        "originalLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Original diff line."
+        },
+        "side": {
+          "type": "string",
+          "description": "Current diff side."
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Current range start line."
+        },
+        "originalStartLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Original range start line."
+        },
+        "startSide": {
+          "type": "string",
+          "description": "Range start diff side."
+        },
+        "diffHunk": {
+          "type": "string",
+          "description": "Provider diff hunk."
+        },
+        "inReplyTo": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Parent inline comment identifier."
+        },
+        "isResolved": {
+          "type": "boolean",
+          "description": "Whether the review thread is resolved."
+        },
+        "isOutdated": {
+          "type": "boolean",
+          "description": "Whether the review thread is outdated."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Inline comment creation time."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the inline comment."
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity",
+          "description": "Provenance grade of the inline comment body."
+        }
+      }
+    },
+    "gatherSiblingContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pullRequests"],
+      "properties": {
+        "pullRequests": {
+          "type": "array",
+          "description": "Sibling pull requests relevant to remediation.",
+          "items": { "$ref": "#/$defs/sibling" }
+        }
+      }
+    },
+    "sibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "blocking", "overlappingFiles"],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Sibling pull request number."
+        },
+        "head": {
+          "type": "string",
+          "description": "Sibling head branch."
+        },
+        "headSha": {
+          "type": "string",
+          "description": "Sibling head commit."
+        },
+        "blocking": {
+          "type": "boolean",
+          "description": "Whether the sibling blocks remediation."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the sibling blocks remediation."
+        },
+        "overlappingFiles": {
+          "type": "array",
+          "description": "Paths overlapping the selected pull request.",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "gatherIssueContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issues"],
+      "properties": {
+        "issues": {
+          "type": "array",
+          "description": "Originating backlog issues.",
+          "items": { "$ref": "#/$defs/issue" }
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "body", "integrity"],
+      "properties": {
+        "number": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "description": "Originating issue number."
+        },
+        "title": {
+          "type": "string",
+          "description": "Provider-authored issue title."
+        },
+        "body": {
+          "type": "string",
+          "description": "Provider-authored issue body."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the issue."
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity",
+          "description": "Provenance grade of the issue title and body."
+        }
+      }
+    }
+  }
+}

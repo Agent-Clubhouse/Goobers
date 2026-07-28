@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -50,6 +51,110 @@ func projectionInput(name string, spec apiv1.WorkflowSpec) RunInput {
 	in := runInput(name, spec)
 	in.TriggerKind = string(journal.TriggerManual)
 	return in
+}
+
+func TestProjectionJournalsTypedIntegrityRefusal(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+			MinimumIntegrity: apiv1.IntegrityMaintainer,
+			Run: &apiv1.DeterministicRun{
+				Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch,
+			},
+		}},
+	}
+	in := projectionInput("integrity-refusal", spec)
+	in.Item = &apiv1.BacklogItem{
+		ID: "42", Provider: apiv1.ProviderGitHub, Integrity: apiv1.IntegrityUnapproved,
+	}
+	projection := executeForProjection(t, in, &Activities{}, true)
+
+	var refusal *journal.Event
+	for _, op := range projection.Ops {
+		if op.Event == nil {
+			continue
+		}
+		if op.Event.Type == journal.EventStageStarted {
+			t.Fatalf("stage dispatched despite integrity refusal: %+v", op.Event)
+		}
+		if op.Event.Error != nil && op.Event.Error.Code == apiv1.IntegrityAdmissionErrorCode {
+			refusal = op.Event
+		}
+	}
+	if refusal == nil || refusal.Integrity != apiv1.IntegrityUnapproved ||
+		refusal.MinimumIntegrity != apiv1.IntegrityMaintainer {
+		t.Fatalf("typed refusal = %+v", refusal)
+	}
+}
+
+func TestProjectionDefaultsMissingItemIntegrityConservatively(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+			MinimumIntegrity: apiv1.IntegrityUnapproved,
+			Run:              &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+		}},
+	}
+	in := projectionInput("integrity-normalization", spec)
+	in.Item = &apiv1.BacklogItem{
+		ID: "42", Provider: apiv1.ProviderGitHub, Labels: []string{"goobers:approved"},
+	}
+	var invocationIntegrity apiv1.Integrity
+	projection := executeForProjection(t, in, &Activities{
+		Det: &fakeRunner{run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+			invocationIntegrity = env.Item.Integrity
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	if invocationIntegrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("invocation item integrity = %q, want unapproved", invocationIntegrity)
+	}
+	if projection.Item == nil || projection.Item.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("projected item = %+v, want unapproved integrity", projection.Item)
+	}
+
+	legacyProjection := projection
+	legacyItem := *projection.Item
+	legacyItem.Integrity = ""
+	legacyProjection.Item = &legacyItem
+	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), legacyProjection)
+	if err != nil {
+		t.Fatalf("ProjectRun: %v", err)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	identity, err := rd.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	var itemRef *journal.InputRef
+	for i := range identity.Inputs {
+		if identity.Inputs[i].Name == "item" {
+			itemRef = &identity.Inputs[i]
+			break
+		}
+	}
+	if itemRef == nil || itemRef.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("item input ref = %+v, want unapproved integrity", itemRef)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, itemRef.Ref.Path))
+	if err != nil {
+		t.Fatalf("read item snapshot: %v", err)
+	}
+	var snapshot apiv1.BacklogItem
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("decode item snapshot: %v", err)
+	}
+	if snapshot.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("item snapshot integrity = %q, want unapproved", snapshot.Integrity)
+	}
 }
 
 // readDirBytes reads every regular file under dir into a path→content map, so

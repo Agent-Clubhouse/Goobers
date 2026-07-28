@@ -6,11 +6,11 @@ spec:
   gaggle: acme-web
   displayName: Implementation (with reviewer gate + CI repass loop)
   # Consumer workflow: a routed backlog item drives an implement → test → review
-  # → CI-poll pipeline, looping back to implement on review changes or a red CI.
+  # → CI-poll pipeline, routing red CI through an integrity-compatible remediation task.
   triggers:
     - type: backlog-item
       selector:
-        goobers: "true"
+        goobers:approved: "true"
   readiness:
     maxConcurrentRuns: 2
     maxRunsPerHour: 20
@@ -19,7 +19,36 @@ spec:
     - name: implement
       type: agentic
       goober: coder
+      minimumIntegrity: maintainer
+      contextFrom:
+        - implement
+        - remediate-ci
+        - run-tests
+        - review
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - repo:push
+        - github:pr:write
+      policyActions:
+        - modify-repository
+        - open-or-update-pr
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 30
+      expectedOutputs:
+        - pull-request
+      next: run-tests
+    - name: remediate-ci
+      type: agentic
+      goober: coder
+      minimumIntegrity: unapproved
+      contextFrom:
+        - implement
+        - remediate-ci
+        - run-tests
+        - review
+        - await-ci
+      goal: Remediate failed CI checks from the attached provider evidence.
       capabilities:
         - repo:push
         - github:pr:write
@@ -63,5 +92,5 @@ spec:
         check: ci-status
       branches:
         pass: ""
-        fail: implement
+        fail: remediate-ci
         timeout: "@escalate"

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -198,6 +199,7 @@ func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
 }
 
 func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
+	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
@@ -329,7 +331,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				// infer "something needs to change" from git. The local
 				// runner's walk appends the same "<gate>.verdict" pointer on
 				// both its retry route and its advance path.
-				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: verdictArtifact})
+				pointers = append(pointers, apiv1.ContextPointer{
+					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
+				})
 			}
 			state = next
 			continue
@@ -411,6 +415,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
@@ -420,6 +425,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	env.MinimumIntegrity = t.MinimumIntegrity
+	if err := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity); err != nil {
+		admission := &apiv1.IntegrityAdmissionError{}
+		if !errors.As(err, &admission) {
+			return apiv1.ResultEnvelope{}, err
+		}
+		rec.integrityRefused(ctx, t.Name, admission)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("engine: refuse stage %q: %w", t.Name, admission)
+	}
 	// InputsFrom overlays the immediately preceding task's declared outputs on
 	// top of the static Inputs (#132). A declared outputKey missing upstream
 	// fails the stage closed — the declaration is a contract, not a hint —
@@ -558,6 +572,15 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	}
 }
 
+func normalizeItemIntegrity(item *apiv1.BacklogItem) *apiv1.BacklogItem {
+	if item == nil || item.Integrity.Valid() {
+		return item
+	}
+	normalized := *item
+	normalized.Integrity = apiv1.IntegrityUnapproved
+	return &normalized
+}
+
 // contextPointersFor converts a finished stage's artifacts into the read-only
 // context pointers handed to downstream stages, mirroring the local runner's
 // contextPointersFor (internal/runner/run.go) so both runners name upstream
@@ -566,9 +589,23 @@ func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []a
 	out := make([]apiv1.ContextPointer, 0, len(artifacts))
 	for i := range artifacts {
 		a := artifacts[i]
-		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
+		if !a.Integrity.Valid() {
+			a.Integrity = apiv1.IntegrityDerived
+		}
+		out = append(out, apiv1.ContextPointer{
+			Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Integrity: a.Integrity, Artifact: &a,
+		})
 	}
 	return out
+}
+
+func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.ArtifactPointer) []apiv1.ArtifactPointer {
+	for i := range artifacts {
+		if taskType == apiv1.TaskAgentic || !artifacts[i].Integrity.Valid() {
+			artifacts[i].Integrity = apiv1.IntegrityDerived
+		}
+	}
+	return artifacts
 }
 
 func sortedKeys(m map[string]string) []string {

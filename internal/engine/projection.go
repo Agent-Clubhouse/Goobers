@@ -10,6 +10,7 @@ import (
 
 	"go.temporal.io/sdk/converter"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -75,12 +76,17 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 	inputs := map[string][]byte{
 		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
 	}
+	inputIntegrity := map[string]apiv1.Integrity{
+		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+	}
 	if proj.Item != nil {
-		b, err := json.Marshal(proj.Item)
+		item := normalizeItemIntegrity(proj.Item)
+		b, err := json.Marshal(item)
 		if err != nil {
 			return "", fmt.Errorf("engine: marshal item snapshot: %w", err)
 		}
 		inputs["item"] = b
+		inputIntegrity["item"] = item.Integrity
 	}
 
 	id := proj.Identity
@@ -88,7 +94,9 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 
 	clock := &projectionClock{}
 	clock.set(proj.Ops[0].Time)
-	jr, err := journal.Create(runsDir, id, inputs, journal.WithClock(clock.now))
+	jr, err := journal.Create(
+		runsDir, id, inputs, journal.WithClock(clock.now), journal.WithInputIntegrity(inputIntegrity),
+	)
 	if err != nil {
 		return "", fmt.Errorf("engine: create projected journal for run %q: %w", id.RunID, err)
 	}
@@ -102,12 +110,16 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 		switch op.Kind {
 		case opArtifact:
 			a := op.Artifact
+			integrity := a.Integrity
+			if integrity == "" {
+				integrity = apiv1.IntegrityDerived
+			}
 			var ref journal.Ref
 			var recErr error
 			if a.Stage != "" {
-				ref, recErr = jr.RecordStageArtifact(a.Stage, a.Attempt, a.Class, a.Name, a.Data)
+				ref, recErr = jr.RecordStageArtifactWithIntegrity(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
 			} else {
-				ref, recErr = jr.RecordArtifact(a.Name, a.Data)
+				ref, recErr = jr.RecordArtifactWithIntegrity(a.Name, a.Data, integrity)
 			}
 			if recErr != nil {
 				return "", fmt.Errorf("engine: project artifact %q (op %d): %w", a.Name, i+1, recErr)
@@ -206,6 +218,9 @@ func validateOp(op JournalOp, i, total int) error {
 		}
 		if a.Name == "" {
 			return fmt.Errorf("%w: artifact op %d has no name", ErrUnprojectable, i)
+		}
+		if a.Integrity != "" && !a.Integrity.Valid() {
+			return fmt.Errorf("%w: artifact op %d has unknown integrity %q", ErrUnprojectable, i, a.Integrity)
 		}
 		if !projectableAttemptClasses[a.Class] {
 			return fmt.Errorf("%w: artifact op %d has unknown attempt class %q", ErrUnprojectable, i, a.Class)

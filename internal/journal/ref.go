@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // DigestAlgo is the digest algorithm every journal content address uses. sha256
@@ -36,6 +38,8 @@ type Ref struct {
 	// MediaType optionally records the blob's media type (parity with the wire
 	// ArtifactPointer). Empty when unknown; not conformance-normative.
 	MediaType string `json:"mediaType,omitempty"`
+	// Integrity is the blob's provenance grade. It is normative.
+	Integrity apiv1.Integrity `json:"integrity,omitempty"`
 }
 
 // Digest computes the canonical "sha256:<hex>" content address of b. Callers
@@ -59,7 +63,7 @@ func ArtifactRef(data []byte) (Ref, error) {
 	if err != nil {
 		return Ref{}, err
 	}
-	return Ref{Path: path, Digest: digest, Size: int64(len(data))}, nil
+	return Ref{Path: path, Digest: digest, Size: int64(len(data)), Integrity: apiv1.IntegrityDerived}, nil
 }
 
 // digestHex returns the hex portion of a "sha256:<hex>" digest.

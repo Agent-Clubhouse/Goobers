@@ -2,9 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha6` (`api/v1alpha1.StageContractVersion`). The TBH-1 extension below
-> is a proposed design target, not part of `v1alpha6`; implementation must bump the
-> contract version and land the corresponding Go types and closed JSON Schemas.
+> version: `v1alpha7` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -97,6 +95,19 @@ The runner hands the stage an `InvocationEnvelope`:
   `branch` id and `branchName`; both fields are paired and valid only on artifact
   pointers. The union is ordered first by branch declaration, then by each
   branch's original pointer order.
+- `minimumIntegrity` — the task definition's lowest accepted provenance grade.
+  Backlog items, context pointers, and artifacts carry one of `trusted`
+  (operator/config), `maintainer` (SEC-047 trust-labeled task text), `unapproved`
+  (arbitrary provider content), or `derived` (workflow/agent output). The compiler
+  rejects unknown declarations. Before dispatch, the runner refuses missing,
+  contradictory, or lower-graded inputs and appends an `error` event with code
+  `input_integrity_below_minimum`; no workspace or credentials are provisioned.
+  `derived` remains distinguishable in the envelope and journal and is admitted at
+  the maintainer tier, while only `trusted` satisfies a trusted minimum.
+- `contextFrom[]` — optional task/gate names that explicitly route those
+  producers' artifact and verdict pointers into this task's invocation. When
+  omitted, the task receives every accumulated pointer for compatibility. The
+  compiler rejects unknown sources; routing never changes a pointer's integrity.
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
@@ -119,7 +130,8 @@ The stage returns a `ResultEnvelope`:
 - `status` — one of `success`, `failure`, `blocked`, `no-work`.
 - `artifacts[]` — its produced outputs. The stage writes bytes into the run
   journal (`api/v1alpha1.WriteArtifact`) and returns an `ArtifactPointer` for
-  each. Downstream stages receive these as `contextPointers`.
+  each. Every pointer carries its integrity grade; downstream stages receive the
+  same grade on the enclosing `contextPointer`.
 - `transcript` — an optional runner-authored `ArtifactPointer` to the scrubbed,
   digested transcript captured for this agentic attempt. It points at the
   existing journal span and is diagnostic only; it is not added to
@@ -153,12 +165,18 @@ Non-scalar data moves **only** by pointer:
 1. Stage A: `ptr, _ := v1alpha1.WriteArtifact(journalRoot, "artifacts/a/out.txt", data, "text/plain")`
    → returns a pointer whose `digest` commits to the exact bytes.
 2. Runner: puts `ptr` into stage B's invocation as a `contextPointer`. B never sees
-   A's `ResultEnvelope`.
+   A's `ResultEnvelope`; the pointer and artifact carry the same integrity grade.
 3. Stage B: `bytes, err := ptr.Resolve(journalRoot)` — reads the artifact
    **read-only** and **verifies the digest**; a mismatch is `ErrDigestMismatch`.
    Paths that escape the journal root (absolute or `..`) are refused
    (`ErrPathEscape`). Redaction runs journal-side before digesting, so digests
    commit to scrubbed bytes (§4).
+
+Integrity is persisted in both contract and journal surfaces: invocation/item/
+context/artifact fields make admission portable across harnesses, while `run.yaml`
+input refs and conformance-normative `artifact.recorded` and typed refusal events
+make the same decision replayable across runners. It never
+lives only in the conformance-excluded `runner.*` namespace.
 
 See `artifact_test.go:TestTwoStagePipelineByPointerOnly` for the end-to-end toy
 pipeline.
@@ -757,7 +775,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha6` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha7` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -766,7 +784,9 @@ from the diff alone.
   `no-work` through the closed result schema for both deterministic and agentic
   stage producers; `v1alpha5` adds paired branch attribution to artifact context
   pointers used at parallel joins; `v1alpha6` admits the optional `repoRef.project`
-  invocation field for Azure DevOps repository identity.
+  invocation field for Azure DevOps repository identity; `v1alpha7` adds
+  input-integrity grades to invocation items, context pointers, and artifact
+  pointers, plus the stage's declared minimum.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

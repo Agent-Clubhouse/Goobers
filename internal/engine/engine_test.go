@@ -119,6 +119,84 @@ func TestLinearFlowCompletes(t *testing.T) {
 	}
 }
 
+func TestRunRoutesContextBeforeIntegrityAdmission(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "approved-source",
+		Tasks: []apiv1.Task{
+			{
+				Name: "approved-source", Type: apiv1.TaskDeterministic, Goal: "approved",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "unapproved-source",
+			},
+			{
+				Name: "unapproved-source", Type: apiv1.TaskDeterministic, Goal: "unapproved",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "implement",
+			},
+			{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
+				MinimumIntegrity: apiv1.IntegrityMaintainer,
+				ContextFrom:      []string{"approved-source"},
+				Run:              &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next:             "remediate",
+			},
+			{
+				Name: "remediate", Type: apiv1.TaskDeterministic, Goal: "remediate",
+				MinimumIntegrity: apiv1.IntegrityUnapproved,
+				ContextFrom:      []string{"unapproved-source"},
+				Run:              &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+	var implementContext, remediationContext []apiv1.ContextPointer
+	runner := &fakeRunner{run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		_, stage, _ := strings.Cut(env.TaskID, ":")
+		switch stage {
+		case "approved-source":
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+				Artifacts: []apiv1.ArtifactPointer{{
+					Path: "stages/approved-source/1/item.json", Digest: apiv1.Digest([]byte("approved")),
+					Size: 8, MediaType: "application/json", Integrity: apiv1.IntegrityMaintainer,
+				}},
+			}, nil
+		case "unapproved-source":
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+				Artifacts: []apiv1.ArtifactPointer{{
+					Path: "stages/unapproved-source/1/comments.json", Digest: apiv1.Digest([]byte("unapproved")),
+					Size: 10, MediaType: "application/json", Integrity: apiv1.IntegrityUnapproved,
+				}},
+			}, nil
+		case "implement":
+			implementContext = env.ContextPointers
+		case "remediate":
+			remediationContext = env.ContextPointers
+		}
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}}
+
+	in := runInput("context-routing", spec)
+	in.Item = &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Integrity: apiv1.IntegrityMaintainer}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: runner, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if len(implementContext) != 1 || implementContext[0].Name != "approved-source.artifact[0]" {
+		t.Fatalf("implement context = %+v, want only approved-source", implementContext)
+	}
+	if len(remediationContext) != 1 ||
+		remediationContext[0].Name != "unapproved-source.artifact[0]" ||
+		remediationContext[0].Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("remediation context = %+v, want unapproved-source evidence", remediationContext)
+	}
+}
+
 // TestGateBlocksRun: an agentic gate returns "fail", which the definition routes
 // to @abort, so the run ends blocked.
 func TestGateBlocksRun(t *testing.T) {

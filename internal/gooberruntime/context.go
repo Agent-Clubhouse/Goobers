@@ -25,17 +25,18 @@ const (
 // GooberContext is the complete task or reviewer context delivered to the
 // harness.
 type GooberContext struct {
-	TaskID          string                 `json:"taskId"`
-	WorkflowID      string                 `json:"workflowId"`
-	RunID           string                 `json:"runId"`
-	Gaggle          string                 `json:"gaggle"`
-	Goal            string                 `json:"goal"`
-	Instructions    string                 `json:"instructions,omitempty"`
-	RepoRef         apiv1.RepoRef          `json:"repoRef"`
-	Item            *apiv1.BacklogItem     `json:"item,omitempty"`
-	Inputs          map[string]interface{} `json:"inputs,omitempty"`
-	ContextPointers []apiv1.ContextPointer `json:"contextPointers,omitempty"`
-	Limits          apiv1.Limits           `json:"limits,omitempty"`
+	TaskID           string                 `json:"taskId"`
+	WorkflowID       string                 `json:"workflowId"`
+	RunID            string                 `json:"runId"`
+	Gaggle           string                 `json:"gaggle"`
+	Goal             string                 `json:"goal"`
+	Instructions     string                 `json:"instructions,omitempty"`
+	RepoRef          apiv1.RepoRef          `json:"repoRef"`
+	Item             *apiv1.BacklogItem     `json:"item,omitempty"`
+	Inputs           map[string]interface{} `json:"inputs,omitempty"`
+	ContextPointers  []apiv1.ContextPointer `json:"contextPointers,omitempty"`
+	MinimumIntegrity apiv1.Integrity        `json:"minimumIntegrity,omitempty"`
+	Limits           apiv1.Limits           `json:"limits,omitempty"`
 }
 
 // InstructionResolver resolves the instruction markdown for an invocation.
@@ -159,17 +160,18 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 		return GooberContext{}, err
 	}
 	return GooberContext{
-		TaskID:          env.TaskID,
-		WorkflowID:      env.WorkflowID,
-		RunID:           env.RunID,
-		Gaggle:          env.Gaggle,
-		Goal:            env.Goal,
-		Instructions:    instructions,
-		RepoRef:         env.RepoRef,
-		Item:            env.Item,
-		Inputs:          copyInputs(env.Inputs),
-		ContextPointers: copyContextPointers(env.ContextPointers),
-		Limits:          env.Limits,
+		TaskID:           env.TaskID,
+		WorkflowID:       env.WorkflowID,
+		RunID:            env.RunID,
+		Gaggle:           env.Gaggle,
+		Goal:             env.Goal,
+		Instructions:     instructions,
+		RepoRef:          env.RepoRef,
+		Item:             env.Item,
+		Inputs:           copyInputs(env.Inputs),
+		ContextPointers:  copyContextPointers(env.ContextPointers),
+		MinimumIntegrity: env.MinimumIntegrity,
+		Limits:           env.Limits,
 	}, nil
 }
 

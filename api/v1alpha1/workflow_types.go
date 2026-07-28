@@ -163,6 +163,18 @@ type Task struct {
 	// closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// MinimumIntegrity is the lowest provenance grade this task accepts from its
+	// backlog item and context pointers. Empty preserves compatibility by
+	// imposing no integrity admission policy.
+	// +kubebuilder:validation:Enum=trusted;maintainer;unapproved;derived
+	// +optional
+	MinimumIntegrity Integrity `json:"minimumIntegrity,omitempty" yaml:"minimumIntegrity,omitempty"`
+	// ContextFrom limits this task's context pointers to artifacts and verdicts
+	// produced by the named tasks or gates. Empty preserves the historical
+	// behavior of receiving every accumulated pointer.
+	// +kubebuilder:validation:UniqueItems=true
+	// +optional
+	ContextFrom []string `json:"contextFrom,omitempty" yaml:"contextFrom,omitempty"`
 	// PolicyActions declares the closed vocabulary of externally mutating
 	// actions this task may perform because a policy, persona, or verdict
 	// prescribes them. The compiler maps each action to its required credential

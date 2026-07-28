@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -66,13 +67,13 @@ func providerCmdEnv(t *testing.T, server *fakeGitHubServer, credCapability, runI
 func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:ready")
+	server.addIssue(7, "Fix the bug", "goobers", "goobers:ready")
 	server.addIssue(8, "Untrusted item", "goobers:ready") // missing trust label
 	readyAt := time.Now().UTC().Add(-6 * time.Hour)
 	server.setLabelEventTime(7, providers.LabelReady, true, readyAt)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
-	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers")
 	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
 
 	workDir := t.TempDir()
@@ -96,6 +97,9 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 	if claimed["id"] != "7" {
 		t.Fatalf("claimed item id = %v, want \"7\"", claimed["id"])
+	}
+	if claimed["integrity"] != string(apiintegrity.Maintainer) {
+		t.Fatalf("claimed item integrity = %v, want maintainer", claimed["integrity"])
 	}
 	if claimed["readyAt"] != readyAt.Format(time.RFC3339Nano) {
 		t.Fatalf("claimed readyAt = %v, want %s", claimed["readyAt"], readyAt.Format(time.RFC3339Nano))

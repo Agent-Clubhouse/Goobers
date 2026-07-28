@@ -101,13 +101,15 @@ therefore write files; only scalars used for *gate routing* go through `inputsFr
 #### D1.1 — `remediation-brief.json` versioned contract
 
 The closed schema is
-`api/schemas/remediation-brief-v2.schema.json`; its wire identifier is
-`goobers.dev/remediation-brief/v2`. V2 adds inline review diff hunks, original
-lines, and explicit resolved/outdated state. The original v1 schema remains
-embedded and unchanged. Unknown fields are rejected. Any shape change,
-including an additive field, publishes a new schema version rather than
-silently widening an existing version. Writers emit one version and readers
-select support by the wire identifier.
+`api/schemas/remediation-brief-v3.schema.json`; its wire identifier is
+`goobers.dev/remediation-brief/v3`. V3 adds the aggregate weakest-source
+integrity grade and preserves grades on provider-authored comments, reviews,
+and issue text. V2 added inline review diff hunks, original lines, and explicit
+resolved/outdated state. The v1 and v2 schemas remain embedded and unchanged.
+Unknown fields are rejected. Any shape change, including an additive field,
+publishes a new schema version rather than silently widening an existing
+version. Writers emit one version and readers select support by the wire
+identifier.
 
 `gather-pr-context` owns the required top-level routing fields and the required
 `gatherPrContext` section (SHA pins, full verdict or `null`, and the full

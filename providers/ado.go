@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
@@ -667,6 +668,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Labels:     labels,
 			CheckState: CheckStatePending,
 			UpdatedAt:  pr.CreationDate,
+			Integrity:  apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -1843,6 +1845,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		UpdatedAt:  updated,
 		Fields:     adoWorkItemFields(item),
 		Raw:        item,
+		Integrity:  apiintegrity.Unapproved,
 	}
 }
 
@@ -1866,6 +1869,7 @@ func mapADOComment(comment adoComment) Comment {
 		Body:       comment.Text,
 		CreatedAt:  createdAt,
 		URL:        comment.URL,
+		Integrity:  apiintegrity.Unapproved,
 	}
 }
 

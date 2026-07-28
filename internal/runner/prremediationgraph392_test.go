@@ -209,8 +209,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 				"hasSubstantiveFindings": "true",
 				"hasFailingCI":           "false",
 			},
-			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"77"}`),
+			artifactName: "remediation-brief.json", artifactData: []byte(`{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]}}`),
 			artifactMediaType: "application/json",
+			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
 		runID + ":gather-sibling-context": {
 			status: apiv1.ResultSuccess,
@@ -238,14 +239,16 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":gather-review-threads": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
-			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]}}`),
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]}}`),
 			artifactMediaType: "application/json",
+			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
 		runID + ":gather-issue-context": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
-			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]},"gatherIssueContext":{"issues":[{"number":"945","body":"acceptance criteria"}]}}`),
+			artifactData:      []byte(`{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"77","head":"goobers/implementation/pr-head","base":"main","workspaceBranch":"goobers/implementation/pr-head","isBehindBase":true,"hasSubstantiveFindings":"true","hasFailingCI":"false","gatherPrContext":{"headSha":"head","baseSha":"base","verdict":null,"comments":[]},"gatherReviewThreads":{"reviews":[],"inlineComments":[]},"gatherIssueContext":{"issues":[{"number":"945","body":"acceptance criteria","integrity":"maintainer"}]}}`),
 			artifactMediaType: "application/json",
+			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
 		runID + ":validate-finding-responses": {status: opts.validationStatus},
 		runID + ":local-ci":                   {status: apiv1.ResultSuccess},
@@ -512,39 +515,7 @@ func TestShippedPRRemediationParksOnFindingResponseValidationExhaustion(t *testi
 // worktree actually landed on.
 func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 	const runID = "impl-unaffected"
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
-
-	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
-	if err != nil {
-		t.Fatalf("read implementation.yaml: %v", err)
-	}
-	var w apiv1.Workflow
-	if err := yaml.Unmarshal(raw, &w); err != nil {
-		t.Fatalf("unmarshal implementation.yaml: %v", err)
-	}
-	goobers := map[string]apiv1.GooberSpec{}
-	for _, name := range []string{"implementer", "reviewer"} {
-		var g apiv1.Goober
-		graw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
-		if err != nil {
-			t.Fatalf("read %s goober: %v", name, err)
-		}
-		if err := yaml.Unmarshal(graw, &g); err != nil {
-			t.Fatalf("unmarshal %s goober: %v", name, err)
-		}
-		goobers[g.Name] = g.Spec
-	}
-	machine, err := workflow.Compile(
-		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
-		workflow.WithGoobers(goobers),
-		// #947: open-pr-gate uses output-equals(opened) to abort on a
-		// mid-flight-closed issue.
-		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
-		workflow.WithPreviewFeatures(true),
-	)
-	if err != nil {
-		t.Fatalf("compile shipped implementation: %v", err)
-	}
+	machine := loadShippedImplementation(t)
 
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -559,12 +530,18 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 	var mu sync.Mutex
 	visited := []string{}
 	branches := map[string]string{}
+	invocations := map[string]apiv1.InvocationEnvelope{}
 
 	byTask := map[string]stubTaskResult{
-		runID + ":query-backlog": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"}},
+		runID + ":query-backlog": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"},
+			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
+			artifactMediaType: "application/json", artifactIntegrity: apiv1.IntegrityMaintainer,
+		},
 		runID + ":gather-implement-context": {
 			status: apiv1.ResultSuccess, artifactName: "implementation-context.json",
 			artifactData: []byte(`{"reviewerVerdictTaxonomy":{},"hotFileMap":{}}`), artifactMediaType: "application/json",
+			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
 		runID + ":local-ci":    {status: apiv1.ResultSuccess},
 		runID + ":push-branch": {status: apiv1.ResultSuccess},
@@ -583,6 +560,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		defer mu.Unlock()
 		visited = append(visited, stage)
 		branches[stage] = currentBranch(t, env.Workspace)
+		invocations[stage] = env
 	}
 
 	r, err := New(Config{
@@ -618,6 +596,13 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
+	implementEnv := invocations["implement"]
+	if !hasContextPointer(implementEnv, "query-backlog.artifact[0]", apiv1.IntegrityMaintainer) {
+		t.Errorf("implement context = %+v, want maintainer query-backlog artifact", implementEnv.ContextPointers)
+	}
+	if hasContextSource(implementEnv, "gather-implement-context") {
+		t.Errorf("implement context includes unapproved gather-implement-context: %+v", implementEnv.ContextPointers)
+	}
 
 	runBranch := providers.BranchName(machine.Def.Name, runID)
 	for stage, branch := range branches {
@@ -625,6 +610,142 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 			t.Errorf("%s ran on branch %q, want the run's own branch %q — the #392 seam must not touch a workflow that never rebinds", stage, branch, runBranch)
 		}
 	}
+}
+
+func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.T) {
+	const runID = "impl-ci-repass"
+	machine := loadShippedImplementation(t)
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newRebindFixtureRepo(t)
+
+	var mu sync.Mutex
+	visited := []string{}
+	invocations := map[string]apiv1.InvocationEnvelope{}
+	record := func(env apiv1.InvocationEnvelope) {
+		_, stage, _ := strings.Cut(env.TaskID, ":")
+		mu.Lock()
+		defer mu.Unlock()
+		visited = append(visited, stage)
+		invocations[stage] = env
+	}
+	byTask := map[string]stubTaskResult{
+		runID + ":query-backlog": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"},
+			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
+			artifactMediaType: "application/json", artifactIntegrity: apiv1.IntegrityMaintainer,
+		},
+		runID + ":gather-implement-context": {
+			status: apiv1.ResultSuccess, artifactName: "implementation-context.json",
+			artifactData: []byte(`{"hotFileMap":{}}`), artifactMediaType: "application/json",
+			artifactIntegrity: apiv1.IntegrityUnapproved,
+		},
+		runID + ":local-ci":    {status: apiv1.ResultSuccess},
+		runID + ":push-branch": {status: apiv1.ResultSuccess},
+		runID + ":open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"prNumber": "101", "pull-request-url": "https://example.test/pr/101", "opened": "true",
+		}},
+		runID + ":ci-poll":   {status: apiv1.ResultSuccess, outputs: map[string]interface{}{"ciStatus": "passing"}},
+		runID + ":close-out": {status: apiv1.ResultSuccess},
+	}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &ciRepassDeterministic{rec: rec, byTask: byTask, record: record}, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return &implementationGoober{t: t, record: record}, nil
+		},
+		Automated:              gate.NewAutomatedEvaluator(),
+		GateGooberCapabilities: map[string][]string{"reviewer": {"agent:model"}},
+		Worktrees:              wtMgr,
+		RunsDir:                filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL:           func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	want := []string{
+		"query-backlog", "gather-implement-context", "implement", "local-ci",
+		"push-branch", "open-pr", "ci-poll", "remediate-ci", "local-ci",
+		"push-branch", "open-pr", "ci-poll", "close-out",
+	}
+	if strings.Join(visited, ",") != strings.Join(want, ",") {
+		t.Errorf("stage order = %v, want %v", visited, want)
+	}
+	remediationEnv := invocations["remediate-ci"]
+	if remediationEnv.MinimumIntegrity != apiv1.IntegrityUnapproved {
+		t.Errorf("remediate-ci minimumIntegrity = %q, want unapproved", remediationEnv.MinimumIntegrity)
+	}
+	if !hasContextPointer(remediationEnv, "ci-poll.artifact[0]", apiv1.IntegrityUnapproved) {
+		t.Errorf("remediate-ci context = %+v, want unapproved ci-poll evidence", remediationEnv.ContextPointers)
+	}
+}
+
+func loadShippedImplementation(t *testing.T) *workflow.Machine {
+	t.Helper()
+	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
+	if err != nil {
+		t.Fatalf("read implementation.yaml: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation.yaml: %v", err)
+	}
+	goobers := map[string]apiv1.GooberSpec{}
+	for _, name := range []string{"implementer", "reviewer"} {
+		var g apiv1.Goober
+		graw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
+		if err != nil {
+			t.Fatalf("read %s goober: %v", name, err)
+		}
+		if err := yaml.Unmarshal(graw, &g); err != nil {
+			t.Fatalf("unmarshal %s goober: %v", name, err)
+		}
+		goobers[g.Name] = g.Spec
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
+		workflow.WithGoobers(goobers),
+		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile shipped implementation: %v", err)
+	}
+	return machine
+}
+
+func hasContextSource(env apiv1.InvocationEnvelope, source string) bool {
+	for _, pointer := range env.ContextPointers {
+		if strings.HasPrefix(pointer.Name, source+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasContextPointer(env apiv1.InvocationEnvelope, name string, integrity apiv1.Integrity) bool {
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name == name && pointer.Integrity == integrity {
+			return true
+		}
+	}
+	return false
 }
 
 // recordingDeterministic is stubDeterministic plus a caller-supplied observer,
@@ -640,6 +761,40 @@ func (d *recordingDeterministic) Run(ctx context.Context, env apiv1.InvocationEn
 	return (&stubDeterministic{rec: d.rec, byTask: d.byTask}).Run(ctx, env, dr)
 }
 
+type ciRepassDeterministic struct {
+	rec     ArtifactRecorder
+	byTask  map[string]stubTaskResult
+	record  func(apiv1.InvocationEnvelope)
+	ciPolls int
+}
+
+func (d *ciRepassDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, dr apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.record(env)
+	_, stage, _ := strings.Cut(env.TaskID, ":")
+	if stage == "ci-poll" && d.ciPolls == 0 {
+		d.ciPolls++
+		recorder, ok := d.rec.(interface {
+			RecordArtifactWithIntegrity(string, []byte, apiv1.Integrity) (journal.Ref, error)
+		})
+		if !ok {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("CI repass executor: integrity recorder unavailable")
+		}
+		ref, err := recorder.RecordArtifactWithIntegrity("ci-checks.json", []byte(`{"checks":[{"name":"test","state":"failing"}]}`), apiv1.IntegrityUnapproved)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Outputs: map[string]interface{}{"ciStatus": "failing"},
+			Artifacts: []apiv1.ArtifactPointer{{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+				MediaType: "application/json", Integrity: ref.Integrity,
+			}},
+		}, nil
+	}
+	return (&stubDeterministic{rec: d.rec, byTask: d.byTask}).Run(ctx, env, dr)
+}
+
 // implementationGoober commits a real change (so the reviewer gate sees a
 // non-empty diff, #415) and passes review.
 type implementationGoober struct {
@@ -650,11 +805,12 @@ type implementationGoober struct {
 func (g *implementationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	g.t.Helper()
 	g.record(env)
-	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("implemented\n"), 0o644); err != nil {
+	_, stage, _ := strings.Cut(env.TaskID, ":")
+	if err := os.WriteFile(filepath.Join(env.Workspace, stage+".txt"), []byte("implemented\n"), 0o644); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	runGit(g.t, env.Workspace, "add", "-A")
-	runGit(g.t, env.Workspace, "commit", "-m", "implement the issue")
+	runGit(g.t, env.Workspace, "commit", "-m", stage)
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
 }
 
