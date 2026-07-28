@@ -60,7 +60,6 @@ type PrepareOptions struct {
 	GOOS, GOARCH, APIBaseURL                                               string
 	HTTPClient                                                             *http.Client
 	Runner                                                                 CommandRunner
-	Now                                                                    func() time.Time
 }
 
 type PrepareResult struct {
@@ -163,7 +162,7 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	request := Request{
 		RunID: opts.RunID, Policy: opts.Policy, Owner: opts.Owner, Repository: opts.Repository,
 		Target: target, StagedPath: staged,
-		RequestedAt: opts.Now().UTC(), HealthTicks: opts.HealthTicks,
+		RequestedAt: time.Now().UTC(), HealthTicks: opts.HealthTicks,
 		HealthTimeout: opts.HealthTimeout.String(),
 		Status:        "requested",
 	}
@@ -188,9 +187,6 @@ func defaultPrepareOptions(opts PrepareOptions) PrepareOptions {
 	}
 	if opts.Runner == nil {
 		opts.Runner = ExecRunner{}
-	}
-	if opts.Now == nil {
-		opts.Now = time.Now
 	}
 	return opts
 }
@@ -342,7 +338,7 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 	binary := filepath.Join(dir, binaryName(opts.GOOS))
 	const versionPackage = "github.com/goobers/goobers/internal/version"
 	ldflags := fmt.Sprintf("-s -w -X %s.Version=dev -X %s.Commit=%s -X %s.Date=%s",
-		versionPackage, versionPackage, commit, versionPackage, opts.Now().UTC().Format(time.RFC3339))
+		versionPackage, versionPackage, commit, versionPackage, time.Now().UTC().Format(time.RFC3339))
 	if _, err := opts.Runner.Run(ctx, source, "go", "build", "-trimpath", "-ldflags", ldflags, "-o", binary, "./cmd/goobers"); err != nil {
 		return "", fmt.Errorf("build main target %s: %w", commit, err)
 	}
