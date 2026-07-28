@@ -412,6 +412,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// but omitting the echo cannot bypass the current-state check.
 	if reason := verdictPinVoidReason(*verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
 		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		// Voiding used to publish nothing at all, which left whatever verdict was
+		// already on the PR standing as if it were current. pr-remediation reads
+		// that comment, so it kept fixing findings from a superseded head, pushing
+		// — which moved the head again — and voiding the next review in turn. PR
+		// #1719 burned 3 hours over 4 cycles that way, each including a full local
+		// `make ci`, against a review that could no longer see any of its own
+		// fixes (#1733).
+		//
+		// Marking the standing verdict stale breaks that loop at its information
+		// source: remediation can tell "no current review" from "these findings
+		// still stand". Best-effort — a comment write must never turn a moot
+		// verdict into a stage failure, since the re-review next cycle is what
+		// actually resolves this.
+		if cerr := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); cerr != nil {
+			pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
 
@@ -657,6 +673,38 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 		return fmt.Errorf("resolve merge-review status author: %w", err)
 	}
 	return reconcileMergeReviewStatusCommentAs(ctx, provider, repo, prNumber, author, body)
+}
+
+// markMergeReviewVerdictStale rewrites the standing merge-review status comment
+// to say its verdict no longer describes the PR's current head, naming why.
+//
+// It edits the existing comment rather than posting a new one, so a PR whose
+// head moves repeatedly does not accumulate a comment per voided cycle. If no
+// status comment exists yet there is nothing to invalidate and this is a no-op:
+// posting "the verdict is stale" on a PR that never had a verdict would be
+// noise, not information.
+func markMergeReviewVerdictStale(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, reason string) error {
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve authenticated login: %w", err)
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(prNumber))
+	if err != nil {
+		return fmt.Errorf("list merge-review status comments: %w", err)
+	}
+	marked := mergeReviewStatusComments(comments, author)
+	if len(marked) == 0 {
+		return nil
+	}
+	body := fmt.Sprintf(
+		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer describes this pull request: %s.\n\n"+
+			"No current review stands. merge-review will re-review this PR on its next cycle; "+
+			"findings from the superseded review may already be resolved and should not be acted on.",
+		mergeReviewStatusMarker, reason)
+	if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
+		return fmt.Errorf("update merge-review status comment: %w", err)
+	}
+	return nil
 }
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
