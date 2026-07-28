@@ -408,26 +408,6 @@ func trustedSiblingOverlapHandoff(
 	return false, nil
 }
 
-func hasSiblingOverlapHandoff(comments []providers.Comment, author, targetHeadSHA string) bool {
-	if targetHeadSHA == "" {
-		return false
-	}
-	for i := len(comments) - 1; i >= 0; i-- {
-		if author != "" && !isTrustedMergeReviewAuthor(comments[i].Author, author) {
-			continue
-		}
-		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)
-		if !ok {
-			continue
-		}
-		if handoff.TargetHeadSHA == targetHeadSHA &&
-			isSiblingOverlapHandoff(handoff) {
-			return true
-		}
-	}
-	return false
-}
-
 func hasPotentialSiblingOverlapHandoff(comments []providers.Comment, targetHeadSHA string) bool {
 	for i := len(comments) - 1; i >= 0; i-- {
 		handoff, ok := parsePostMergeRemediationHandoff(comments[i].Body)

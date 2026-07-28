@@ -16,7 +16,6 @@ import (
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
-	"github.com/goobers/goobers/providers"
 )
 
 // rebasePRServerState is a small stateful fake GitHub server for rebase-pr's
@@ -808,24 +807,6 @@ func TestRebasePRLegacySiblingHandoffMigrationFailurePreservesCause(t *testing.T
 	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
 	if got := result["remediationCauses"]; got != "sibling-overlap" {
 		t.Fatalf("remediationCauses = %q, want detected sibling-overlap preserved on migration failure", got)
-	}
-}
-
-func TestSiblingOverlapHandoffMustBeTrustedAndHeadPinned(t *testing.T) {
-	body, err := renderPostMergeRemediationHandoff(postMergeRemediationHandoff{
-		DisplacingPullNumber: 66,
-		TargetHeadSHA:        "current-head",
-		Reason:               "file-overlap:shared.go",
-		OverlappingFiles:     []string{"shared.go"},
-	})
-	if err != nil {
-		t.Fatalf("renderPostMergeRemediationHandoff: %v", err)
-	}
-	if hasSiblingOverlapHandoff([]providers.Comment{{Author: "untrusted-user", Body: body}}, "goobers-bot", "current-head") {
-		t.Fatal("untrusted handoff was accepted as an active sibling-overlap cause")
-	}
-	if hasSiblingOverlapHandoff([]providers.Comment{{Author: "goobers-bot", Body: body}}, "goobers-bot", "new-head") {
-		t.Fatal("stale handoff was accepted after the target PR head changed")
 	}
 }
 
