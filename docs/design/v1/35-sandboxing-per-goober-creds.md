@@ -67,14 +67,17 @@ out-of-worktree writable roots) and recorded the decision and residual risks in
 
 Windows needs an explicit ladder even before it has a sandbox implementation. Otherwise
 the absence of a Seatbelt/bubblewrap equivalent silently grants a stage all of the daemon
-user's authority. The Windows rungs, from weakest to strongest, are:
+user's authority. W0–W2 increase local authority confinement. W3 is a containerized
+deployment branch rather than an automatically stronger security rung: process isolation
+narrows the environment but shares the host kernel, while Hyper-V isolation adds the
+separate-kernel boundary required for hostile workloads.
 
 | Rung | Mechanism | Filesystem guarantee | Network guarantee | Process spawning | Cost and harness-compatibility risk |
 |---|---|---|---|---|---|
 | **W0** | **Explicitly unsandboxed with warning** | None beyond the daemon user's normal ACLs. The worktree is an organizational workspace, not an authority boundary; a stage can read and write anything the daemon user can. | None. The stage has the host user's network reachability. A separate `run.network: none` request keeps its existing fail-closed or explicit trusted-local override contract; W0 itself does not satisfy it. | Children run with the daemon user's token. A Job Object still owns the tree's lifetime, but does not reduce its authority. | Lowest cost and no additional CLI compatibility risk. Highest security risk, so it is trusted-local-only, visibly warned, and recorded for every attempt. |
 | **W1** | **Restricted token (`CreateRestrictedToken`) plus low-integrity level** | Removes selected SIDs/privileges and prevents writes to medium/high-integrity objects. The worktree and required runtime roots need narrowly-scoped DACL and mandatory-label grants. It is a write-restriction rung, not broad read confinement: normal DACL-readable host files can remain readable. | None; a restricted token is not a network broker. Network credentials available to the token may still be used. | Descendants inherit the restricted/low-integrity token unless a separate privileged broker creates them. They also remain in the stage Job Object. | Moderate implementation and ACL-cleanup cost. Copilot/Node profile, temp, credential-store, and updater behavior under low integrity is unverified; an in-worktree `COPILOT_HOME` may help state writes but does not prove authentication works. |
 | **W2** | **AppContainer** (LPAC where the stronger boundary is required) | A regular AppContainer removes the daemon user's broad authority, but it can still read system paths and other objects whose DACL grants access to package-wide SIDs such as `ALL APPLICATION PACKAGES`, as well as objects granted to its capability or unique AppContainer SID. The effective ambient and explicit grant set must be inventoried and audited; disposable-workspace grants must be removed when reaped. A Less Privileged AppContainer (LPAC) excludes `ALL APPLICATION PACKAGES` grants, but `ALL RESTRICTED APPLICATION PACKAGES`, capability, and unique-SID grants still require the same audit. Use LPAC when W2 must exclude the regular AppContainer's broad package access. | Network is denied unless explicit AppContainer network capabilities are granted, so this rung can broker egress rather than merely document it. The Copilot service endpoints still require an intentionally granted network capability. | Child processes must remain in the same AppContainer/lowbox token and the stage Job Object. Launches that require an unsandboxed broker are outside the rung and must fail rather than escape. | High setup and cleanup cost: profile/SID lifecycle, per-worktree ACLs, auditing package-wide and capability grants, runtime dependency access, and credential brokering. LPAC further increases compatibility risk. Arbitrary Win32/Node CLIs are known compatibility risks; Copilot CLI install, auth, subprocesses, and updates all require native-Windows proof. |
-| **W3** | **Container-only (process-isolated Windows container)** | Container image plus explicit workspace/runtime mounts isolates the host filesystem; only mounted paths are shared. This is the strongest listed filesystem boundary when the host/image contract is correctly configured. | Container networking can apply an explicit egress policy; no claim is made until that policy is configured and tested. | Descendants remain in the container. A Job Object (inside the worker or at the container-host boundary) still supplies stage cancellation and cleanup; container teardown is additional defense, not a substitute for runner lifecycle semantics. | Highest operational cost: compatible Windows host/base-image versions, image lifecycle, workspace mounts, and explicit Copilot authentication forwarding. It fits tier-3 workers; under this option local Windows daemons remain explicitly at W0. |
+| **W3** | **Container-only** (process-isolated Windows container; Hyper-V isolation where a security boundary is required) | A separate container filesystem plus minimal explicit workspace/runtime mounts narrows ordinary host-filesystem reach. The process must run as least-privilege `ContainerUser`, never `ContainerAdministrator`; mounts are read-only unless the stage requires writes. Process isolation shares the host kernel and is not a robust security boundary for hostile workloads: a host escape or over-broad mount can expose host authority. Only Hyper-V isolation supplies the separate-kernel boundary needed to rank W3 above W2 as a security boundary. | Container networking can apply an explicit egress policy; no claim is made until that policy is configured and tested. | Descendants remain in the container under `ContainerUser`. A Job Object (inside the worker or at the container-host boundary) still supplies stage cancellation and cleanup; container teardown is additional defense, not a substitute for runner lifecycle semantics. | Highest operational cost: compatible Windows host/base-image versions, image lifecycle, workspace mounts, least-privilege account setup, and explicit Copilot authentication forwarding. Process isolation retains host-escape risk; Hyper-V isolation adds VM startup/resource cost and must be selected for hostile or multi-tenant stages. W3 fits tier-3 workers; under this option local Windows daemons remain explicitly at W0. |
 
 **Initial Windows decision: W0.** The exact operator-facing posture is:
 **"none yet — trusted local only, logged."** Deterministic and, if #647 permits them,
@@ -89,7 +92,9 @@ cannot be established, execution fails closed; the runner never falls back to W0
 preserves S0's unavailable-mechanism rule while allowing the curated Windows honest floor
 to be represented deliberately. W1 is the next practical hardening spike, W2 is the
 preferred local authority boundary if harness compatibility and ACL lifecycle prove
-tractable, and W3 is reserved for containerized tier-3 workers.
+tractable, and W3 is reserved for containerized tier-3 workers. A process-isolated W3
+does not supersede W2's authority boundary; only a Hyper-V-isolated W3 may be treated as
+the strongest rung.
 
 ### 3.2 Job Objects: lifetime is not authority
 
@@ -268,8 +273,11 @@ re-evaluated before dispatch.
 ### P11-I2 — Containerized Windows worker isolation
 
 - Define W3 only with the tier-3 worker/runtime work: compatible Windows base images,
-  workspace mounts, authentication forwarding, egress policy, and container teardown
-  composed with Job Object lifecycle.
+  minimal workspace mounts, a least-privilege `ContainerUser`, authentication forwarding,
+  egress policy, and container teardown composed with Job Object lifecycle.
+- Select and record process versus Hyper-V isolation from the worker threat model.
+  Process isolation must retain the documented shared-kernel/host-escape residual risk;
+  hostile or multi-tenant stages require Hyper-V isolation.
 - Gate implementation on the S0 contract still applying at the worker seam, the final
   #647 harness verdict, and an approved tier-3 Windows worker issue. It is not a
   prerequisite for trusted-local Windows deterministic support.
