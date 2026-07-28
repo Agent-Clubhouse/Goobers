@@ -23,6 +23,39 @@ const scopeGateLabel = "goobers:scope-gate"
 // codebase (goobers:merge-demoted, goobers:merge-escalated).
 const scopeGateAckLabel = "goobers:scope-gate-ack"
 
+// scopeGateAckLabelColor/Description define the ack label so the park path can
+// create it on demand. The gate names this label as the operator's only escape
+// hatch that does not require rewriting the PR, so the label has to actually
+// exist in the repository for the instruction to mean anything — and nothing
+// created it. It was absent from Agent-Clubhouse/Goobers entirely, which turned
+// a two-exit gate into a one-exit gate: PR #1748 sat parked ~16 hours because
+// the only reachable exit was shrinking a cohesive 5,313-line subsystem, which
+// no remediation cycle can do (#1801).
+const (
+	scopeGateAckLabelColor       = "D4C5F9"
+	scopeGateAckLabelDescription = "Operator acknowledgement that an oversized PR may proceed past the #1313 scope gate"
+)
+
+// ensureScopeGateAckLabel makes the ack label exist before the park comment
+// tells an operator to apply it. Idempotent (EnsureWorkItemLabels skips labels
+// that already exist) and best-effort by the same contract as the rest of this
+// file: failing to pre-create a label must never itself block or unblock a
+// merge, so the caller only warns. Asserting the label at the moment the
+// instruction is issued is what keeps the two in sync — a constant that names
+// repository state nothing validates is the same failure mode as the
+// ruleset-pinned required-ci job name.
+func ensureScopeGateAckLabel(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) error {
+	_, err := provider.EnsureWorkItemLabels(ctx, repo, []providers.WorkItemLabel{{
+		Name:        scopeGateAckLabel,
+		Color:       scopeGateAckLabelColor,
+		Description: scopeGateAckLabelDescription,
+	}})
+	if err != nil {
+		return fmt.Errorf("ensure %s exists: %w", scopeGateAckLabel, err)
+	}
+	return nil
+}
+
 // defaultScopeGateFilesThreshold/defaultScopeGateLinesThreshold are the
 // maintainer-ruled defaults (issue #1313): comfortably above an ordinary PR,
 // comfortably below the observed bad cases (73-94 files in #1068/#1186).
@@ -63,6 +96,12 @@ func reconcileScopeGate(ctx context.Context, provider *providers.GitHubProvider,
 
 	switch {
 	case parked && !labeled:
+		// Create the ack label before naming it, so the escape hatch the comment
+		// below advertises is actually reachable (#1801). Deliberately non-fatal:
+		// parking is the safe direction, so a labels-API hiccup must not stop the
+		// gate from blocking. Worst case the operator has to create the label by
+		// hand — the situation before this change, not a worse one.
+		_ = ensureScopeGateAckLabel(ctx, provider, repo)
 		comment := fmt.Sprintf(
 			"🚧 **Scope gate** (#1313): this pull request %s — at or past the configured threshold for autonomous "+
 				"merge. Unlike the advisory `goobers:scope-drift` flag (#1111), this label **blocks** merge-review "+
