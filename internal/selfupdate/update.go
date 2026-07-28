@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/durability"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
@@ -240,10 +241,13 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		HeartbeatInterval: opts.HeartbeatInterval.String(),
 		Status:            "requested",
 	}
-	if err := WriteRequest(opts.Root, request); err != nil {
+	published, err := writeRequest(opts.Root, request)
+	if published {
+		stagingPublished = true
+	}
+	if err != nil {
 		return PrepareResult{}, err
 	}
-	stagingPublished = true
 	return PrepareResult{
 		UpdateRequested: true,
 		Policy:          opts.Policy,
@@ -881,11 +885,16 @@ func StopRequestPath(root string) string { return filepath.Join(UpdatesDir(root)
 
 // WriteRequest atomically persists a supervisor handoff.
 func WriteRequest(root string, request Request) error {
+	_, err := writeRequest(root, request)
+	return err
+}
+
+func writeRequest(root string, request Request) (bool, error) {
 	if request.Schema == "" {
 		request.Schema = requestSchema
 	}
 	if request.Schema != requestSchema {
-		return fmt.Errorf("unsupported self-update request schema %q", request.Schema)
+		return false, fmt.Errorf("unsupported self-update request schema %q", request.Schema)
 	}
 	return writeJSONAtomic(RequestPath(root), request)
 }
@@ -906,18 +915,27 @@ func ReadRequest(root string) (Request, error) {
 	return request, nil
 }
 
-func writeJSONAtomic(path string, value any) (retErr error) {
+func writeJSONAtomic(path string, value any) (bool, error) {
+	return writeJSONAtomicWithDurability(path, value, durability.ReplaceFile, durability.SyncDir)
+}
+
+func writeJSONAtomicWithDurability(
+	path string,
+	value any,
+	replaceFile func(string, string) error,
+	syncDir func(string) error,
+) (published bool, retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create self-update directory: %w", err)
+		return false, fmt.Errorf("create self-update directory: %w", err)
 	}
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode self-update state: %w", err)
+		return false, fmt.Errorf("encode self-update state: %w", err)
 	}
 	raw = append(raw, '\n')
 	temp, err := os.CreateTemp(filepath.Dir(path), ".state-*")
 	if err != nil {
-		return fmt.Errorf("create self-update state: %w", err)
+		return false, fmt.Errorf("create self-update state: %w", err)
 	}
 	tempPath := temp.Name()
 	defer func() {
@@ -927,21 +945,25 @@ func writeJSONAtomic(path string, value any) (retErr error) {
 	}()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
-		return fmt.Errorf("secure self-update state: %w", err)
+		return false, fmt.Errorf("secure self-update state: %w", err)
 	}
 	if _, err := temp.Write(raw); err != nil {
 		_ = temp.Close()
-		return fmt.Errorf("write self-update state: %w", err)
+		return false, fmt.Errorf("write self-update state: %w", err)
 	}
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
-		return fmt.Errorf("sync self-update state: %w", err)
+		return false, fmt.Errorf("sync self-update state: %w", err)
 	}
 	if err := temp.Close(); err != nil {
-		return fmt.Errorf("close self-update state: %w", err)
+		return false, fmt.Errorf("close self-update state: %w", err)
 	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("publish self-update state: %w", err)
+	if err := replaceFile(tempPath, path); err != nil {
+		return false, fmt.Errorf("publish self-update state: %w", err)
 	}
-	return nil
+	published = true
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return true, fmt.Errorf("sync self-update state directory: %w", err)
+	}
+	return true, nil
 }

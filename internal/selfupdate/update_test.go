@@ -307,6 +307,62 @@ func TestExtractSourceTarGzRejectsBackslashTraversal(t *testing.T) {
 	}
 }
 
+func TestWriteJSONAtomicPublishesBeforeSyncingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates", "request.json")
+	var calls []string
+	published, err := writeJSONAtomicWithDurability(
+		path,
+		map[string]string{"status": "activating"},
+		func(source, destination string) error {
+			calls = append(calls, "replace")
+			return os.Rename(source, destination)
+		},
+		func(directory string) error {
+			calls = append(calls, "sync")
+			if directory != filepath.Dir(path) {
+				t.Fatalf("synced directory = %q, want %q", directory, filepath.Dir(path))
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(raw), `"status": "activating"`) {
+				t.Fatalf("published state = %q", raw)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !published {
+		t.Fatal("state was not reported as published")
+	}
+	if got := strings.Join(calls, ","); got != "replace,sync" {
+		t.Fatalf("durability calls = %q, want replace,sync", got)
+	}
+}
+
+func TestWriteJSONAtomicPreservesPublishedStateAfterSyncFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates", "request.json")
+	syncErr := errors.New("directory sync failed")
+	published, err := writeJSONAtomicWithDurability(
+		path,
+		map[string]string{"status": "activating"},
+		os.Rename,
+		func(string) error { return syncErr },
+	)
+	if !published {
+		t.Fatal("state was not reported as published")
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("writeJSONAtomicWithDurability error = %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("published state is unavailable: %v", err)
+	}
+}
+
 func testTarGz(t *testing.T, binary string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

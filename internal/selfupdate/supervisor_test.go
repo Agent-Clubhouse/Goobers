@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +15,11 @@ import (
 )
 
 type fakeProcess struct {
-	done chan error
-	once sync.Once
+	done        chan error
+	once        sync.Once
+	mu          sync.Mutex
+	killed      bool
+	killRelease <-chan struct{}
 }
 
 func newFakeProcess() *fakeProcess {
@@ -24,8 +28,29 @@ func newFakeProcess() *fakeProcess {
 
 func (p *fakeProcess) Done() <-chan error { return p.done }
 func (p *fakeProcess) Kill() error {
-	p.complete(errors.New("killed"))
+	p.mu.Lock()
+	p.killed = true
+	release := p.killRelease
+	p.mu.Unlock()
+	if release == nil {
+		p.complete(errors.New("killed"))
+	} else {
+		go func() {
+			<-release
+			p.complete(errors.New("killed"))
+		}()
+	}
 	return nil
+}
+func (p *fakeProcess) blockKillUntil(release <-chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.killRelease = release
+}
+func (p *fakeProcess) wasKilled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killed
 }
 func (p *fakeProcess) complete(err error) {
 	p.once.Do(func() {
@@ -142,6 +167,81 @@ func TestSupervisorPromotesCandidateAfterCleanHeartbeat(t *testing.T) {
 	assertUpdateEvent(t, root, journal.EventDaemonUpdateRestarted)
 	assertUpdateEvent(t, root, journal.EventDaemonUpdateHealthy)
 	stopFakeSupervisor(t, root, cancel, candidate, done)
+}
+
+func TestSupervisorKillsCandidateWhenHealthyStateCannotBePublished(t *testing.T) {
+	root, now := setupSupervisorRequest(t)
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := now.Add(-time.Second)
+	if err := os.WriteFile(lockPath, []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(lockPath, heartbeat, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &fakeLauncher{started: make(chan *fakeProcess, 4)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunSupervisor(ctx, SupervisorOptions{
+			Root: root, HostExecutable: CurrentBinary(root, "linux"), GOOS: "linux",
+			Launcher: launcher, PollInterval: 5 * time.Millisecond,
+			DrainTimeout: 10 * time.Millisecond, Now: func() time.Time { return now },
+		})
+	}()
+
+	old := <-launcher.started
+	waitFor(t, func() bool {
+		_, err := os.Stat(StopRequestPath(root))
+		return err == nil
+	})
+	if _, err := ConsumeStopRequest(root); err != nil {
+		t.Fatal(err)
+	}
+	old.complete(nil)
+	candidate := <-launcher.started
+	killRelease := make(chan struct{})
+	candidate.blockKillUntil(killRelease)
+
+	heartbeat = now.Add(time.Second)
+	if err := os.Chtimes(lockPath, heartbeat, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := os.Remove(RequestPath(root)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(RequestPath(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat = now.Add(2 * time.Second)
+	if err := os.Chtimes(lockPath, heartbeat, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, candidate.wasKilled)
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("supervisor returned before candidate exit: %v", err)
+	default:
+	}
+	close(killRelease)
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "publish self-update state") {
+			t.Fatalf("RunSupervisor error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not report the state publication failure")
+	}
+	if !candidate.wasKilled() {
+		t.Fatal("candidate survived the supervisor failure")
+	}
 }
 
 func TestSupervisorRollsBackBrokenCandidateAndEscalates(t *testing.T) {

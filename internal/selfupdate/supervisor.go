@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 const (
@@ -82,8 +83,8 @@ type SupervisorOptions struct {
 type execLauncher struct{}
 
 type execProcess struct {
-	command *exec.Cmd
-	done    chan error
+	tree *proc.Tree
+	done chan error
 }
 
 func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (Process, error) {
@@ -91,10 +92,11 @@ func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (Proces
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Env = os.Environ()
-	if err := command.Start(); err != nil {
+	tree, err := proc.Start(command)
+	if err != nil {
 		return nil, err
 	}
-	process := &execProcess{command: command, done: make(chan error, 1)}
+	process := &execProcess{tree: tree, done: make(chan error, 1)}
 	go func() {
 		process.done <- command.Wait()
 		close(process.done)
@@ -103,7 +105,7 @@ func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (Proces
 }
 
 func (p *execProcess) Done() <-chan error { return p.done }
-func (p *execProcess) Kill() error        { return p.command.Process.Kill() }
+func (p *execProcess) Kill() error        { return p.tree.Kill() }
 
 // RunSupervisor launches the mutable binary and owns drain, restart, health,
 // rollback, and escalation around durable update requests.
@@ -169,6 +171,12 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("start supervised daemon: %w", err)
 	}
+	ownedProcess := process
+	defer func() {
+		if err := terminateOwnedProcess(ownedProcess, opts.DrainTimeout); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 	ticker := time.NewTicker(opts.PollInterval)
 	defer ticker.Stop()
 
@@ -215,6 +223,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 					lastHeartbeat = time.Time{}
 				} else if err != nil {
 					process, err = rollbackAndRestart(ctx, opts, log, &request, nil, "read pre-start candidate heartbeat baseline: "+err.Error())
+					if process != nil {
+						ownedProcess = process
+					}
 					if err != nil {
 						if process == nil {
 							return err
@@ -230,6 +241,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 				process, err = opts.Launcher.Start(CurrentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
 				if err != nil {
 					process, err = rollbackAndRestart(ctx, opts, log, &request, nil, "candidate binary failed to start: "+err.Error())
+					if process != nil {
+						ownedProcess = process
+					}
 					if err != nil {
 						if process == nil {
 							return err
@@ -242,6 +256,7 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 					pending = false
 					continue
 				}
+				ownedProcess = process
 				if err := appendUpdateEvent(log, journal.EventDaemonUpdateRestarted, request, "candidate binary started"); err != nil {
 					_ = process.Kill()
 					return err
@@ -257,6 +272,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 					reason += ": " + childErr.Error()
 				}
 				process, err = rollbackAndRestart(ctx, opts, log, &request, nil, reason)
+				if process != nil {
+					ownedProcess = process
+				}
 				if err != nil {
 					if process == nil {
 						return err
@@ -306,6 +324,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 				timeout, err := time.ParseDuration(request.HealthTimeout)
 				if err != nil || timeout <= 0 {
 					process, err = rollbackAndRestart(ctx, opts, log, &request, process, "candidate request has invalid health timeout")
+					if process != nil {
+						ownedProcess = process
+					}
 					if err != nil {
 						if process == nil {
 							return err
@@ -323,6 +344,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 				}
 				if opts.Now().Sub(monitorStarted) > timeout {
 					process, err = rollbackAndRestart(ctx, opts, log, &request, process, "candidate did not complete its bounded health window")
+					if process != nil {
+						ownedProcess = process
+					}
 					if err != nil {
 						if process == nil {
 							return err
@@ -339,6 +363,9 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 				if err != nil {
 					if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
 						process, err = rollbackAndRestart(ctx, opts, log, &request, process, "read candidate heartbeat: "+err.Error())
+						if process != nil {
+							ownedProcess = process
+						}
 						if err != nil {
 							if process == nil {
 								return err
@@ -404,6 +431,31 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 				return fmt.Errorf("unsupported self-update request status %q", request.Status)
 			}
 		}
+	}
+}
+
+func terminateOwnedProcess(process Process, timeout time.Duration) error {
+	if process == nil {
+		return nil
+	}
+	select {
+	case <-process.Done():
+		return nil
+	default:
+	}
+	killErr := process.Kill()
+	if killErr == nil {
+		<-process.Done()
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-process.Done():
+		return nil
+	case <-timer.C:
+		timeoutErr := errors.New("timed out waiting for supervised daemon to terminate")
+		return errors.Join(fmt.Errorf("terminate supervised daemon: %w", killErr), timeoutErr)
 	}
 }
 
