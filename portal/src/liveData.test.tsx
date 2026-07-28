@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
@@ -787,22 +787,32 @@ describe("live page integration", () => {
     expect(await screen.findByText("VER002")).toBeInTheDocument();
   });
 
-  it("does not re-page gaggle/workflow inventory during a burst of run invalidations", async () => {
+  it("refreshes live concurrency without reloading the full inventory fan-out", async () => {
     vi.useRealTimers();
+    window.location.hash = "#/workflows";
     const client = new MutableFixtureClient();
     const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
     const listWorkflows = vi.spyOn(client, "listWorkflows");
     render(<App client={client} />);
 
-    expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
+    const coreSection = screen
+      .getByRole("heading", { name: "Core product" })
+      .closest<HTMLElement>(".gaggle-section");
+    if (!coreSection) {
+      throw new Error("Core product inventory section was not rendered.");
+    }
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
     );
     const inventoryGaggleReads = listGaggles.mock.calls.length;
+    const inventoryGooberReads = listGoobers.mock.calls.length;
     const inventoryWorkflowReads = listWorkflows.mock.calls.length;
 
+    client.setActiveRuns("core", "implementation", 2);
     await act(async () => {
       for (let sequence = 1; sequence <= 8; sequence += 1) {
         client.stream.push(
@@ -815,10 +825,11 @@ describe("live page integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
-    // Run-only invalidations rebuild the bounded run groups but never re-page
-    // the gaggle/workflow inventory.
-    expect(listGaggles.mock.calls.length).toBe(inventoryGaggleReads);
-    expect(listWorkflows.mock.calls.length).toBe(inventoryWorkflowReads);
+    expect(await screen.findByText("2 active / 2 max")).toBeInTheDocument();
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
+    expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads + 1);
+    expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
+    expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads + 1);
   });
 
   it("shares inventory across page mounts and refetches it after a definition event", async () => {
@@ -979,6 +990,18 @@ class MutableFixtureClient extends FixtureDaemonClient {
     });
     workflows.page.total = workflows.items.length;
     gaggle.workflowCount = workflows.items.length;
+  }
+
+  setActiveRuns(gaggleName: string, workflowName: string, activeRuns: number): void {
+    const gaggle = this.mutableFixtures.gaggles.items.find((item) => item.name === gaggleName);
+    const workflow = this.mutableFixtures.workflows?.[gaggleName]?.items.find(
+      (item) => item.identity.name === workflowName,
+    );
+    if (!gaggle || !workflow) {
+      throw new Error("Populated fixtures must include the requested workflow inventory.");
+    }
+    gaggle.activeRunCount = activeRuns;
+    workflow.concurrency.activeRuns = activeRuns;
   }
 }
 
