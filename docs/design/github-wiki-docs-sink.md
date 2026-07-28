@@ -74,12 +74,11 @@ page.
 
 ### Repository identity
 
-`repository` uses the existing `RepoRef` identity and connection fields, with
-these wiki-specific rules:
+`repository` has a wiki-specific `WikiRepositoryRef` shape:
 
 1. `provider`, `owner`, `name`, and `connectionRef` are required.
-2. `provider` must be `github`; `project`, `branch`, and `checkout` are
-   forbidden.
+2. `provider` has the single allowed value `github`. No other fields are
+   admitted.
 3. The case-insensitive `(provider, owner, name)` tuple must equal the
    workflow gaggle's project identity, and the normalized GitHub endpoint
    selected by the wiki-publisher binding must equal the endpoint selected by
@@ -89,6 +88,12 @@ these wiki-specific rules:
 4. `connectionRef` must differ from
    `Gaggle.spec.project.connectionRef` and select the independently scoped
    wiki-publisher credential.
+
+`WikiRepositoryRef` is a distinct closed CRD object; it does not embed or
+reuse `RepoRef`. In particular, it has no `project`, `branch`, or `checkout`
+property. The `RepoRef.branch` default therefore cannot materialize `main` in
+a valid wiki declaration, while supplying any of those fields is an unknown
+field validation error.
 
 Repeating the controlling repository identity is intentional: it makes the
 credential choice explicit while validation prevents the source and sink
@@ -256,8 +261,8 @@ binding, while the sink's
 local tiers, `connectionRef` is a direct exact lookup by
 `repos[].bindingName`; only after that lookup does validation require the
 selected binding's normalized `(provider, owner, name)` to equal the declaring
-`RepoRef`. At Manifest-backed tiers it remains a direct exact lookup by
-`Connection.name`, followed by the same provider, identity, and auth checks.
+`WikiRepositoryRef`. At Manifest-backed tiers it remains a direct exact lookup
+by `Connection.name`, followed by the same provider, identity, and auth checks.
 
 An unnamed local binding remains valid only for legacy identity-selected
 workflows when its normalized repository identity occurs once. If an identity
