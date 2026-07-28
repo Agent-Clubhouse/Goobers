@@ -30,6 +30,7 @@ spec:
   tools:
     - github
     - telemetry
+    - shell
   scaleFactor: 1
   workflows:
     - work-nomination
