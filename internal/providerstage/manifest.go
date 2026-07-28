@@ -3,7 +3,6 @@
 package providerstage
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -236,19 +235,9 @@ func Lookup(command string) (Command, bool) {
 	return entry, true
 }
 
-// Names returns all manifest command names in deterministic order.
-func Names() []string {
-	names := make([]string, 0, len(commands))
-	for name := range commands {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 // RequiredCapabilities returns the capabilities command must declare for args.
 func RequiredCapabilities(command string, args []string) []CapabilityUse {
-	entry, ok := commands[command]
+	entry, ok := Lookup(command)
 	if !ok {
 		return nil
 	}
@@ -263,7 +252,7 @@ func RequiredCapabilities(command string, args []string) []CapabilityUse {
 
 // ResultFile returns the default result file for a guarded provider stage.
 func ResultFile(command string) (string, bool) {
-	entry, ok := commands[command]
+	entry, ok := Lookup(command)
 	if !ok || entry.ResultFile == "" {
 		return "", false
 	}

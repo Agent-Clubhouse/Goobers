@@ -78,11 +78,7 @@ func TestRequiredCapabilities(t *testing.T) {
 }
 
 func TestManifestCapabilityUsesAreActionable(t *testing.T) {
-	for _, name := range Names() {
-		entry, ok := Lookup(name)
-		if !ok {
-			t.Fatalf("Lookup(%q) did not return a listed command", name)
-		}
+	for name, entry := range commands {
 		seen := map[capability.Capability]bool{}
 		for _, use := range entry.Capabilities {
 			if !capability.StageDeclarable(string(use.Capability)) {

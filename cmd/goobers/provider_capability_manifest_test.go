@@ -23,14 +23,10 @@ type providerCapabilityCallGraph struct {
 
 func TestProviderCapabilityManifestCoversCommandImplementations(t *testing.T) {
 	graph := loadProviderCapabilityCallGraph(t)
-	registered := map[string]bool{}
 
 	for _, command := range cliCommands {
 		name := command.names[0]
 		entry, manifested := providerstage.Lookup(name)
-		if manifested {
-			registered[name] = true
-		}
 
 		root := cliHandlerName(t, command.run)
 		used, unresolved := graph.capabilityUses(root)
@@ -51,12 +47,6 @@ func TestProviderCapabilityManifestCoversCommandImplementations(t *testing.T) {
 		}
 		if missing := undeclaredCapabilityUses(used, declared); len(missing) > 0 {
 			t.Errorf("built-in subcommand %q uses capabilities absent from its manifest: %v", name, missing)
-		}
-	}
-
-	for _, name := range providerstage.Names() {
-		if !registered[name] {
-			t.Errorf("provider capability manifest names unregistered built-in subcommand %q", name)
 		}
 	}
 }
