@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -326,7 +327,7 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 				MaxRepasses:            tc.maxRepasses,
 			}
 			var ts testsuite.WorkflowTestSuite
-			env := ts.NewTestWorkflowEnvironment()
+			env := temporaltest.NewWorkflowEnvironment(&ts)
 			env.RegisterActivity(&Activities{Det: engineStub, Auto: engineAuto, Workspaces: testWorkspaces(t)})
 			env.ExecuteWorkflow(Run, in)
 			if err := env.GetWorkflowError(); err != nil {
@@ -462,7 +463,7 @@ func TestGateEvaluatorInfraRetry(t *testing.T) {
 			return gate.OutcomePass, nil
 		})
 		var ts testsuite.WorkflowTestSuite
-		env := ts.NewTestWorkflowEnvironment()
+		env := temporaltest.NewWorkflowEnvironment(&ts)
 		env.RegisterActivity(&Activities{Det: &scriptedStages{}, Auto: auto, Workspaces: testWorkspaces(t)})
 		env.ExecuteWorkflow(Run, runInput("gate-retry", spec))
 		if err := env.GetWorkflowError(); err != nil {
@@ -480,7 +481,7 @@ func TestGateEvaluatorInfraRetry(t *testing.T) {
 			return "", errors.New("misconfigured check")
 		})
 		var ts testsuite.WorkflowTestSuite
-		env := ts.NewTestWorkflowEnvironment()
+		env := temporaltest.NewWorkflowEnvironment(&ts)
 		env.RegisterActivity(&Activities{Det: &scriptedStages{}, Auto: auto, Workspaces: testWorkspaces(t)})
 		env.ExecuteWorkflow(Run, runInput("gate-retry-fatal", spec))
 		err := env.GetWorkflowError()

@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 // This file is a fixture-driven dry run of the shipped implementation
@@ -151,7 +152,7 @@ func TestImplementationDryRunCIFailThenPass(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, implementationRunInput(spec))
@@ -241,7 +242,7 @@ func TestImplementationDryRunReviewerRepassThenApprove(t *testing.T) {
 	}
 
 	var ts testsuite.WorkflowTestSuite
-	env := ts.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Goober: inv, Det: det, Auto: auto, Workspaces: testWorkspaces(t)})
 
 	env.ExecuteWorkflow(Run, implementationRunInput(spec))
