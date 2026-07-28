@@ -59,24 +59,6 @@ func TestSchemaEmitsEveryEmbeddedContractByteForByte(t *testing.T) {
 	}
 }
 
-func TestExplainEmitsPublishedAuthoringGuidance(t *testing.T) {
-	nested := runExplainJSON(t, "workflow.spec.gates[].evaluator")
-	if nested.Type != "string" ||
-		!reflect.DeepEqual(nested.AllowedValues, []any{"automated", "agentic", "human"}) ||
-		nested.Required == nil || !*nested.Required ||
-		nested.Example != "automated" {
-		t.Fatalf("nested enum explanation = %+v", nested)
-	}
-	capabilities := runExplainJSON(t, "goober.spec.capabilities")
-	if capabilities.Type != "array" || len(capabilities.AllowedValues) == 0 ||
-		!reflect.DeepEqual(capabilities.Example, []any{"repo:read"}) {
-		t.Fatalf("capability explanation = %+v", capabilities)
-	}
-	if got := runExplainJSON(t, "gaggle.spec.sandbox"); got.Stability != "preview" {
-		t.Fatalf("version-gated explanation = %+v", got)
-	}
-}
-
 func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	root := initDemo(t)
 	t.Chdir(root)

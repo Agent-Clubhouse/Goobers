@@ -12,7 +12,7 @@
     "commit": { "type": "string", "minLength": 1, "description": "Source commit of the Goobers build that embedded the selected schema." },
     "dslVersion": { "type": "string", "minLength": 1, "description": "Current workflow DSL version of the producing build." },
     "selector": { "type": "string", "minLength": 1, "description": "Requested dotted or slash-separated schema selector." },
-    "description": { "type": "string", "minLength": 1, "description": "Purpose of the selected field, sourced from its schema description or synthesized from its contract location." },
+    "description": { "type": "string", "minLength": 1, "description": "Purpose of the selected field, sourced from its embedded schema or field-purpose registry." },
     "type": {
       "description": "JSON Schema type declared or implied by the selected node, including composition unions.",
       "oneOf": [

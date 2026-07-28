@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -69,16 +70,62 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 	}
 }
 
-func TestExplainRejectsMissingPurposeMetadata(t *testing.T) {
-	for _, selector := range []string{
-		"features.version",
-		"remediation-brief-v2.gatherPrContext.verdict",
-		"remediation-brief-v2.gatherPrContext.verdict.decision",
-		"remediation-brief-v2.gatherPrContext.comments[]",
-	} {
-		_, err := Explain(selector)
-		if !errors.Is(err, ErrIncompleteContract) {
-			t.Errorf("%q: error = %v, want ErrIncompleteContract", selector, err)
+func TestEveryEmbeddedSelectorReturnsCompleteGuidance(t *testing.T) {
+	r := registry{documents: make(map[string]*schemaDocument)}
+	selectors := make(map[string]bool)
+	for _, entry := range schemas.Entries() {
+		doc, err := r.load(entry.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		collectSelectors(t, &r, doc, doc.root, entry.Kind, selectors, 0)
+	}
+	for selector := range selectors {
+		got, err := Explain(selector)
+		if errors.Is(err, ErrUnavailableSelector) {
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q: %v", selector, err)
+			continue
+		}
+		if strings.TrimSpace(got.Description) == "" || got.Type == nil ||
+			got.Stability == "" || got.SinceVersion == "" {
+			t.Errorf("%q: incomplete explanation: %+v", selector, got)
+		}
+	}
+}
+
+func collectSelectors(t *testing.T, r *registry, doc *schemaDocument, node map[string]any, selector string, selectors map[string]bool, depth int) {
+	t.Helper()
+	if depth > 32 {
+		t.Fatal("schema nesting exceeds selector enumeration depth")
+	}
+	doc, node, err := r.resolve(doc, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectors[selector] = true
+	if properties, ok := node["properties"].(map[string]any); ok {
+		for name, value := range properties {
+			child, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			collectSelectors(t, r, doc, child, selector+"."+name, selectors, depth+1)
+		}
+	}
+	if items, ok := node["items"].(map[string]any); ok {
+		collectSelectors(t, r, doc, items, selector+"[]", selectors, depth+1)
+	}
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
+		alternatives, _ := node[keyword].([]any)
+		for _, value := range alternatives {
+			alternative, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			collectSelectors(t, r, doc, alternative, selector, selectors, depth+1)
 		}
 	}
 }

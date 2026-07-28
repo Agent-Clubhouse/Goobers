@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
-	"regexp/syntax"
 	"sort"
 	"strings"
 
@@ -94,19 +93,17 @@ func Explain(selector string) (Explanation, error) {
 			continue
 		}
 		elementDescription, _ = schemaString(declared, resolved, "description")
-		items, ok := resolved["items"].(map[string]any)
-		if !ok {
+		itemDoc, items, itemResolved, found, resolveErr :=
+			r.resolveItems(currentDoc, resolved, 0)
+		if resolveErr != nil || !found {
 			return Explanation{}, unknownSelector(selector)
 		}
 		declared = items
-		currentDoc, resolved, err = r.resolve(currentDoc, items)
-		if err != nil {
-			return Explanation{}, unknownSelector(selector)
-		}
+		currentDoc, resolved = itemDoc, itemResolved
 		required = nil
 	}
 
-	explanation, err := projectFacts(selector, declared, resolved, required, elementDescription)
+	explanation, err := projectFacts(selector, selectorString(parts, true), declared, resolved, required, elementDescription)
 	if err != nil {
 		return Explanation{}, fmt.Errorf("explain %q: %w", selector, err)
 	}
@@ -141,11 +138,14 @@ func Explain(selector string) (Explanation, error) {
 	return explanation, nil
 }
 
-func projectFacts(selector string, declared, resolved map[string]any, required *bool, fallbackDescription string) (Explanation, error) {
+func projectFacts(selector, purposeSelector string, declared, resolved map[string]any, required *bool, fallbackDescription string) (Explanation, error) {
 	explanation := Explanation{Selector: selector, Required: required}
 	description, ok := schemaString(declared, resolved, "description")
 	if !ok || strings.TrimSpace(description) == "" {
 		description = fallbackDescription
+	}
+	if strings.TrimSpace(description) == "" {
+		description, _ = schemas.FieldPurpose(purposeSelector)
 	}
 	if strings.TrimSpace(description) == "" {
 		return Explanation{}, ErrIncompleteContract
@@ -160,7 +160,7 @@ func projectFacts(selector string, declared, resolved map[string]any, required *
 }
 
 func selectorLifecycle(requestedSelector string, parts []selectorPart, entry schemas.Entry) (string, string, error) {
-	selector := normalizedSelector(parts)
+	selector := selectorString(parts, false)
 	allFeatures := workflow.AllFeatures()
 	versionFeatures, err := workflow.FeaturesAtDSLVersion(allFeatures, supportmatrix.CurrentDSLVersion)
 	if err != nil {
@@ -223,7 +223,7 @@ func selectorFeatureCandidates(selector string) []string {
 }
 
 func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
-	if normalizedSelector(parts) != "workflow.spec.tasks.run.workspace" || values == nil {
+	if selectorString(parts, false) != "workflow.spec.tasks.run.workspace" || values == nil {
 		return values, nil
 	}
 	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), supportmatrix.CurrentDSLVersion)
@@ -293,19 +293,18 @@ func featurePrefixLifecycle(prefix string, features []workflow.Feature) (string,
 	return stability, sinceVersion, found
 }
 
-func normalizedSelector(parts []selectorPart) string {
+func selectorString(parts []selectorPart, includeElements bool) string {
 	names := make([]string, len(parts))
 	for i, part := range parts {
 		names[i] = part.name
+		if includeElements && part.element {
+			names[i] += "[]"
+		}
 	}
 	return strings.Join(names, ".")
 }
 
-func (r *registry) schemaExample(
-	doc *schemaDocument,
-	declared, resolved map[string]any,
-	depth int,
-) (any, error) {
+func (r *registry) schemaExample(doc *schemaDocument, declared, resolved map[string]any, depth int) (any, error) {
 	if depth > 32 {
 		return nil, errors.New("schema nesting exceeds example depth")
 	}
@@ -371,12 +370,7 @@ func (r *registry) schemaExample(
 				if _, exists := example[name]; exists {
 					continue
 				}
-				example[name], err = r.schemaExample(
-					additionalDoc,
-					additional,
-					additionalResolved,
-					depth+1,
-				)
+				example[name], err = r.schemaExample(additionalDoc, additional, additionalResolved, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -459,12 +453,7 @@ func (r *registry) schemaExample(
 	}
 }
 
-func (r *registry) applyObjectConstraints(
-	doc *schemaDocument,
-	base, constraints map[string]any,
-	example map[string]any,
-	depth int,
-) error {
+func (r *registry) applyObjectConstraints(doc *schemaDocument, base, constraints map[string]any, example map[string]any, depth int) error {
 	properties, _ := base["properties"].(map[string]any)
 	required, _ := constraints["required"].([]any)
 	for _, nameValue := range required {
@@ -500,13 +489,7 @@ func (r *registry) applyObjectConstraints(
 			if !ok {
 				continue
 			}
-			if err := r.applyObjectConstraints(
-				doc,
-				base,
-				map[string]any{"required": dependencies},
-				example,
-				depth+1,
-			); err != nil {
+			if err := r.applyObjectConstraints(doc, base, map[string]any{"required": dependencies}, example, depth+1); err != nil {
 				return err
 			}
 		}
@@ -633,11 +616,7 @@ func validateSchemaExample(doc *schemaDocument, selected map[string]any, example
 	return compiled.Validate(example)
 }
 
-func (r *registry) schemaType(
-	doc *schemaDocument,
-	declared, resolved map[string]any,
-	depth int,
-) (any, error) {
+func (r *registry) schemaType(doc *schemaDocument, declared, resolved map[string]any, depth int) (any, error) {
 	if depth > 32 {
 		return nil, errors.New("schema nesting exceeds type depth")
 	}
@@ -728,94 +707,19 @@ func projectedTypes(types []string) (any, error) {
 }
 
 func minimalPatternExample(pattern string) (string, error) {
-	expression, err := syntax.Parse(pattern, syntax.Perl)
-	if err != nil {
-		return "", fmt.Errorf("parse pattern %q: %w", pattern, err)
-	}
-	example, err := minimalRegexpMatch(expression.Simplify())
-	if err != nil {
-		return "", fmt.Errorf("generate example for pattern %q: %w", pattern, err)
-	}
 	compiled, err := regexp.Compile(pattern)
 	if err != nil {
 		return "", fmt.Errorf("compile pattern %q: %w", pattern, err)
 	}
-	if !compiled.MatchString(example) {
-		return "", fmt.Errorf("generated example %q does not match pattern %q", example, pattern)
-	}
-	return example, nil
-}
-
-func minimalRegexpMatch(expression *syntax.Regexp) (string, error) {
-	switch expression.Op {
-	case syntax.OpNoMatch:
-		return "", errors.New("pattern cannot match any string")
-	case syntax.OpEmptyMatch,
-		syntax.OpBeginLine,
-		syntax.OpEndLine,
-		syntax.OpBeginText,
-		syntax.OpEndText,
-		syntax.OpWordBoundary,
-		syntax.OpNoWordBoundary:
-		return "", nil
-	case syntax.OpLiteral:
-		return string(expression.Rune), nil
-	case syntax.OpCharClass:
-		character, ok := printableClassRune(expression.Rune)
-		if !ok {
-			return "", errors.New("character class has no supported rune")
-		}
-		return string(character), nil
-	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
-		return "a", nil
-	case syntax.OpCapture, syntax.OpPlus:
-		return minimalRegexpMatch(expression.Sub[0])
-	case syntax.OpConcat, syntax.OpAlternate:
-		values := make([]string, len(expression.Sub))
-		for i, subexpression := range expression.Sub {
-			value, err := minimalRegexpMatch(subexpression)
-			if err != nil {
-				return "", err
-			}
-			values[i] = value
-		}
-		if expression.Op == syntax.OpConcat {
-			return strings.Join(values, ""), nil
-		}
-		sort.Slice(values, func(i, j int) bool {
-			return len(values[i]) < len(values[j]) ||
-				(len(values[i]) == len(values[j]) && values[i] < values[j])
-		})
-		return values[0], nil
-	case syntax.OpQuest, syntax.OpStar:
-		return "", nil
-	case syntax.OpRepeat:
-		value, err := minimalRegexpMatch(expression.Sub[0])
-		if err != nil {
-			return "", err
-		}
-		return strings.Repeat(value, expression.Min), nil
-	default:
-		return "", fmt.Errorf("unsupported regular expression operation %s", expression.Op)
-	}
-}
-
-func printableClassRune(ranges []rune) (rune, bool) {
-	for _, candidate := range "a0x1A._/-@=+" {
-		for i := 0; i+1 < len(ranges); i += 2 {
-			if candidate >= ranges[i] && candidate <= ranges[i+1] {
-				return candidate, true
-			}
+	hex64 := strings.Repeat("0", 64)
+	for _, candidate := range []string{
+		"x", "1", "/", "0.0", "0000", strings.Repeat("0", 32), hex64, "sha256:" + hex64,
+	} {
+		if compiled.MatchString(candidate) {
+			return candidate, nil
 		}
 	}
-	for i := 0; i+1 < len(ranges); i += 2 {
-		lower := max(ranges[i], ' ')
-		upper := min(ranges[i+1], '~')
-		if lower <= upper {
-			return lower, true
-		}
-	}
-	return 0, false
+	return "", fmt.Errorf("no built-in example satisfies pattern %q", pattern)
 }
 
 func primarySchemaType(value any, resolved map[string]any) string {
@@ -948,10 +852,7 @@ func (r *registry) load(kind string) (*schemaDocument, error) {
 	return doc, nil
 }
 
-func (r *registry) resolve(
-	doc *schemaDocument,
-	node map[string]any,
-) (*schemaDocument, map[string]any, error) {
+func (r *registry) resolve(doc *schemaDocument, node map[string]any) (*schemaDocument, map[string]any, error) {
 	seen := make(map[string]bool)
 	for {
 		ref, ok := node["$ref"].(string)
@@ -989,12 +890,7 @@ func (r *registry) resolve(
 	}
 }
 
-func (r *registry) resolveProperty(
-	doc *schemaDocument,
-	node map[string]any,
-	name string,
-	depth int,
-) (*schemaDocument, map[string]any, map[string]any, bool, bool, error) {
+func (r *registry) resolveProperty(doc *schemaDocument, node map[string]any, name string, depth int) (*schemaDocument, map[string]any, map[string]any, bool, bool, error) {
 	if depth > 32 {
 		return nil, nil, nil, false, false, errors.New("schema nesting exceeds selector depth")
 	}
@@ -1023,6 +919,34 @@ func (r *registry) resolveProperty(
 		}
 	}
 	return nil, nil, nil, false, false, nil
+}
+
+func (r *registry) resolveItems(doc *schemaDocument, node map[string]any, depth int) (*schemaDocument, map[string]any, map[string]any, bool, error) {
+	if depth > 32 {
+		return nil, nil, nil, false, errors.New("schema nesting exceeds selector depth")
+	}
+	doc, node, err := r.resolve(doc, node)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	if items, ok := node["items"].(map[string]any); ok {
+		itemDoc, resolved, err := r.resolve(doc, items)
+		return itemDoc, items, resolved, true, err
+	}
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
+		alternatives, _ := node[keyword].([]any)
+		for _, value := range alternatives {
+			alternative, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			itemDoc, items, resolved, found, err := r.resolveItems(doc, alternative, depth+1)
+			if err != nil || found {
+				return itemDoc, items, resolved, found, err
+			}
+		}
+	}
+	return nil, nil, nil, false, nil
 }
 
 func resolveJSONPointer(root map[string]any, pointer string) (map[string]any, error) {

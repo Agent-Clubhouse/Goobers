@@ -5,6 +5,7 @@ package schemas
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"sort"
 	"strings"
@@ -12,8 +13,20 @@ import (
 
 // FS holds the embedded *.schema.json files.
 //
-//go:embed *.schema.json
+//go:embed *.schema.json field-purposes.json
 var FS embed.FS
+
+var fieldPurposes = func() map[string]map[string]string {
+	raw, err := FS.ReadFile("field-purposes.json")
+	if err != nil {
+		panic("read embedded field purposes: " + err.Error())
+	}
+	var purposes map[string]map[string]string
+	if err := json.Unmarshal(raw, &purposes); err != nil {
+		panic("decode embedded field purposes: " + err.Error())
+	}
+	return purposes
+}()
 
 // BaseURI is the $id base every schema uses; relative $refs resolve against it.
 const BaseURI = "https://goobers.dev/schemas/"
@@ -120,6 +133,27 @@ func Lookup(kind string) (Entry, bool) {
 		}
 	}
 	return Entry{}, false
+}
+
+// FieldPurpose returns release-pinned guidance for legacy schema fields that
+// predate description coverage.
+func FieldPurpose(selector string) (string, bool) {
+	root, path, ok := strings.Cut(selector, ".")
+	if !ok {
+		return "", false
+	}
+	if root == "remediation-brief-v1" || root == "remediation-brief-v2" {
+		root = "remediation-brief"
+	}
+	fields, ok := fieldPurposes[root]
+	if !ok {
+		return "", false
+	}
+	purpose, ok := fields[path]
+	if !ok && strings.HasSuffix(path, "[]") {
+		purpose, ok = fields[strings.TrimSuffix(path, "[]")]
+	}
+	return purpose, ok
 }
 
 // Kinds lists every embedded schema kind in stable order.
