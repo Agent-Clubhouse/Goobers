@@ -47,7 +47,7 @@ func (e fakeEscalator) Escalate(_ context.Context, request Request, _ string) er
 }
 
 func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
-	root, now := setupSupervisorRequest(t)
+	root, now, _ := setupSupervisorRequest(t)
 	lockPath := filepath.Join(root, "scheduler", "up.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 		}
 		return nil
 	}
-	cancel, done := startSupervisor(root, now, launcher, fakeEscalator{make(chan Request, 1)})
+	cancel, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
@@ -85,10 +85,10 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 }
 
 func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
-	root, now := setupSupervisorRequest(t)
+	root, _, _ := setupSupervisorRequest(t)
 	escalations := make(chan Request, 1)
 	launcher := &fakeLauncher{started: make(chan *fakeProcess, 3)}
-	cancel, done := startSupervisor(root, now, launcher, fakeEscalator{escalations})
+	cancel, done := startSupervisor(root, launcher, fakeEscalator{escalations})
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
@@ -105,29 +105,39 @@ func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
 	stopSupervisor(t, root, cancel, restored, done)
 }
 
-func setupSupervisorRequest(t *testing.T) (string, time.Time) {
+func TestSupervisorKeepsCurrentAfterConsecutiveActivationCrash(t *testing.T) {
+	root, _, request := setupSupervisorRequest(t)
+	writeTestExecutable(t, PreviousBinary(root, "linux"), "stale")
+	request.Status, request.Target = "activating", "v3"
+	if err := WriteRequest(root, request); err != nil {
+		t.Fatal(err)
+	}
+	launcher := &fakeLauncher{started: make(chan *fakeProcess, 1)}
+	cancel, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
+	current := <-launcher.started
+	if got, _ := os.ReadFile(CurrentBinary(root, "linux")); string(got) != "old" {
+		t.Fatalf("current binary after interrupted second activation = %q", got)
+	}
+	stopSupervisor(t, root, cancel, current, done)
+}
+func setupSupervisorRequest(t *testing.T) (string, time.Time, Request) {
 	t.Helper()
 	root := t.TempDir()
 	writeTestExecutable(t, CurrentBinary(root, "linux"), "old")
 	staged := filepath.Join(StagingDir(root), "target", "goobers")
 	writeTestExecutable(t, staged, "candidate")
 	now := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)
-	if err := WriteRequest(root, Request{
-		RunID: "run", Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers",
-		Target: "v2", StagedPath: staged, RequestedAt: now,
+	request := Request{
+		RunID: "run", Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers", Target: "v2", StagedPath: staged, RequestedAt: now,
 		HealthTicks: 1, HealthTimeout: time.Minute.String(), Status: "requested",
-	}); err != nil {
+	}
+	if err := WriteRequest(root, request); err != nil {
 		t.Fatal(err)
 	}
-	return root, now
+	return root, now, request
 }
 
-func startSupervisor(
-	root string,
-	now time.Time,
-	launcher Launcher,
-	escalator Escalator,
-) (context.CancelFunc, <-chan error) {
+func startSupervisor(root string, launcher Launcher, escalator Escalator) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

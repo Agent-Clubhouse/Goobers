@@ -239,7 +239,7 @@ func startCandidate(opts SupervisorOptions, log *journal.InstanceLog, request *R
 	if err := setStatus(opts.Root, request, "activating"); err != nil {
 		return nil, time.Time{}, err
 	}
-	if err := activateCandidate(opts, *request); err != nil {
+	if err := activateCandidate(opts, request); err != nil {
 		return nil, time.Time{}, fmt.Errorf("activate staged binary: %w", err)
 	}
 	if err := setStatus(opts.Root, request, "monitoring"); err != nil {
@@ -267,12 +267,10 @@ func recoverRequest(opts SupervisorOptions, log *journal.InstanceLog, request *R
 	case "healthy":
 		return false, finalizeHealthyUpdate(opts.Root, log, *request)
 	case "activating":
-		if _, err := os.Stat(PreviousBinary(opts.Root, opts.GOOS)); err == nil {
-			if err = restorePrevious(opts); err != nil {
+		if request.RollbackReady {
+			if err := restorePrevious(opts); err != nil {
 				return true, err
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return true, err
 		}
 		return true, markRollback(opts.Root, log, request, "stable supervisor restarted during candidate activation")
 	case "monitoring":
@@ -531,10 +529,14 @@ func terminateProcess(process Process, timeout time.Duration) error {
 	}
 }
 
-func activateCandidate(opts SupervisorOptions, request Request) error {
+func activateCandidate(opts SupervisorOptions, request *Request) error {
 	current, previous := CurrentBinary(opts.Root, opts.GOOS), PreviousBinary(opts.Root, opts.GOOS)
 	if err := copyExecutable(current, previous); err != nil {
 		return fmt.Errorf("retain previous binary: %w", err)
+	}
+	request.RollbackReady = true
+	if err := WriteRequest(opts.Root, *request); err != nil {
+		return fmt.Errorf("record retained previous binary: %w", err)
 	}
 	return copyExecutable(request.StagedPath, current)
 }

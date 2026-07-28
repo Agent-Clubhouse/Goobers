@@ -50,6 +50,7 @@ type Request struct {
 	HealthTicks   int       `json:"healthTicks"`
 	HealthTimeout string    `json:"healthTimeout"`
 	Status        string    `json:"status"`
+	RollbackReady bool      `json:"rollbackReady,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 }
 
@@ -329,7 +330,8 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 		}
 	}()
 	source := filepath.Join(dir, "source")
-	if _, err := opts.Runner.Run(ctx, opts.WorkDir, "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", opts.WorkDir, source); err != nil {
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", url.PathEscape(opts.Owner), url.PathEscape(opts.Repository))
+	if _, err := opts.Runner.Run(ctx, dir, "git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", cloneURL, source); err != nil {
 		return "", fmt.Errorf("clone configured repository: %w", err)
 	}
 	if _, err := opts.Runner.Run(ctx, source, "git", "checkout", "--quiet", "--detach", commit); err != nil {

@@ -57,6 +57,9 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 				if name == current {
 					return []byte(`{"version":"v1","commit":"old"}`), nil
 				}
+				if name == "git" && args[0] == "clone" && args[len(args)-2] != "https://github.com/acme/goobers.git" {
+					return nil, fmt.Errorf("clone source = %q, want configured repository", args[len(args)-2])
+				}
 				if name == "git" {
 					return nil, nil
 				}
