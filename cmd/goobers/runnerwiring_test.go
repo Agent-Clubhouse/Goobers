@@ -453,12 +453,12 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := compiledMachines(
+			_, _, err := compiledMachinesWithWarnings(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("compiledMachines error = %v, want %q", err, tc.want)
+				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -1105,7 +1105,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, err := compiledMachines(set, map[string]apiv1.GooberSpec{})
+	machines, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}

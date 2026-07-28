@@ -1957,17 +1957,13 @@ func (e *workflowCompileError) Unwrap() error {
 	return e.Err
 }
 
-// compiledMachines compiles every workflow in set, admission-checked against
-// goobers (capabilities, harness, gate-outcome coverage, and known automated
-// check names — #124), keyed by gaggle and workflow name. WorkflowVersion is
-// registry-assigned (per-name monotonic, WF-016); no registry is wired at the
-// instance level yet, so this pins version 1 for every workflow, matching
-// run.go's existing limitation until a follow-up introduces one.
-func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
-	machines, _, err := compiledMachinesWithWarnings(set, goobers)
-	return machines, err
-}
-
+// compiledMachinesWithWarnings compiles every workflow in set,
+// admission-checked against goobers (capabilities, harness, gate-outcome
+// coverage, and known automated check names — #124), keyed by gaggle and
+// workflow name. WorkflowVersion is registry-assigned (per-name monotonic,
+// WF-016); no registry is wired at the instance level yet, so this pins
+// version 1 for every workflow, matching run.go's existing limitation until a
+// follow-up introduces one.
 func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
