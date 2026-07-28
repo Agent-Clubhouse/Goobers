@@ -311,7 +311,13 @@ func newOpenPRProviderForRepo(root string, repo providers.RepositoryRef) (provid
 				return nil, fmt.Errorf("configure ADO pull request authentication: %w", err)
 			}
 		}
-		return newADOProvider(repo.Owner, repo.Project, "", providers.WithADOCredentialSource(source)), nil
+		return newADOProvider(
+			repo.Owner,
+			repo.Project,
+			"",
+			providers.WithADOCredentialSource(source),
+			providers.WithADOMutationRecorder(sidecarMutationRecorder{kind: "pr"}),
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported repository provider %q", repo.Provider)
 	}

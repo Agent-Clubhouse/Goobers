@@ -228,6 +228,7 @@ func newDocsDryRunRunner(
 	}
 	grants := []credentials.Grant{
 		{Capability: "repo:push", Ref: "docs-dry-run"},
+		{Capability: "provider:pr:write", Ref: "docs-dry-run"},
 		{Capability: "github:pr:write", Ref: "docs-dry-run"},
 	}
 	executable, err := os.Executable()

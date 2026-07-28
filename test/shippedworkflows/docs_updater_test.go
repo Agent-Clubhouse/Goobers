@@ -106,7 +106,7 @@ func TestDocsUpdaterWorkflowContract(t *testing.T) {
 				t.Fatalf("push-branch capabilities = %v", push.Capabilities)
 			}
 			if open.Inputs["confineToDocsRoots"] != "true" || open.Inputs["docsRoots"] != rootsInput ||
-				!reflect.DeepEqual(open.Capabilities, []string{"github:pr:write"}) ||
+				!reflect.DeepEqual(open.Capabilities, []string{"provider:pr:write"}) ||
 				!contains(open.ExpectedOutputs, "pull-request-url") {
 				t.Fatalf("open-pr docs confinement/publication contract = %+v", open)
 			}

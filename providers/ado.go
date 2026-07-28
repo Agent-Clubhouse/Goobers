@@ -37,6 +37,7 @@ type ADOProvider struct {
 
 	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar
+	recorder         MutationRecorder
 	rateObserver     RateLimitObserver
 	maxRetries       int
 	maxRateLimitWait time.Duration
@@ -101,6 +102,11 @@ type SecretRegistrar interface {
 // with the scrubber used by journals and telemetry.
 func WithADOSecretRegistrar(registrar SecretRegistrar) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.secretRegistrar = registrar }
+}
+
+// WithADOMutationRecorder records Azure DevOps mutations for the run journal.
+func WithADOMutationRecorder(recorder MutationRecorder) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.recorder = recorder }
 }
 
 // WithADORateLimitObserver receives Azure DevOps rate-limit decisions.
@@ -321,6 +327,11 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
+	p.recordPullRequestMutation(ctx, req.Repository, out, "open", req.RunID, map[string]FieldDigest{
+		"title":       {After: digestString(req.Title)},
+		"description": {After: digestString(body["description"].(string))},
+		"state":       {After: digestString("open")},
+	})
 	return adoPullRequestResult(out), nil
 }
 
@@ -372,24 +383,62 @@ func (p *ADOProvider) updatePullRequest(ctx context.Context, req PullRequestRequ
 	if out.Links.Web.Href == "" {
 		out.Links.Web.Href = existing.Links.Web.Href
 	}
+	p.recordPullRequestMutation(ctx, req.Repository, out, "update", req.RunID, map[string]FieldDigest{
+		"title": {
+			Before: digestString(existing.Title),
+			After:  digestString(req.Title),
+		},
+		"description": {
+			Before: digestString(existing.Description),
+			After:  digestString(body["description"].(string)),
+		},
+	})
 	return adoPullRequestResult(out), nil
 }
 
 func adoPullRequestDescription(body, runID string) string {
 	description := withRunIDFooter(body, runID)
-	runes := []rune(description)
-	if len(runes) <= adoPullRequestDescriptionLimit {
+	if utf16CodeUnits(description) <= adoPullRequestDescriptionLimit {
 		return description
 	}
 	if runID == "" {
-		return string(runes[:adoPullRequestDescriptionLimit])
+		return truncateUTF16(description, adoPullRequestDescriptionLimit)
 	}
-	suffix := []rune("\n\n---\n" + runFooter(runID))
-	if len(suffix) >= adoPullRequestDescriptionLimit {
-		return string(suffix[:adoPullRequestDescriptionLimit])
+	suffix := "\n\n---\n" + runFooter(runID)
+	suffixUnits := utf16CodeUnits(suffix)
+	if suffixUnits >= adoPullRequestDescriptionLimit {
+		return truncateUTF16(suffix, adoPullRequestDescriptionLimit)
 	}
-	bodyRunes := []rune(body)
-	return string(bodyRunes[:adoPullRequestDescriptionLimit-len(suffix)]) + string(suffix)
+	return truncateUTF16(body, adoPullRequestDescriptionLimit-suffixUnits) + suffix
+}
+
+func utf16CodeUnits(value string) int {
+	units := 0
+	for _, r := range value {
+		units++
+		if r > 0xffff {
+			units++
+		}
+	}
+	return units
+}
+
+func truncateUTF16(value string, maxUnits int) string {
+	if maxUnits <= 0 {
+		return ""
+	}
+	units := 0
+	for index, r := range value {
+		width := 1
+		if r > 0xffff {
+			width = 2
+		}
+		if units+width > maxUnits {
+			return value[:index]
+		}
+		units += width
+	}
+	return value
 }
 
 func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
@@ -416,6 +465,9 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		if err := p.do(ctx, http.MethodPut, endpoint, map[string]int{"vote": 0}, nil); err != nil {
 			return err
 		}
+		p.recordPullRequestMutation(ctx, req.Repository, adoPullRequest{PullRequestID: pullRequestNumber(req.PullID)}, "review", "", map[string]FieldDigest{
+			"reviewer": {After: digestString(reviewer)},
+		})
 	}
 	return nil
 }
@@ -455,6 +507,13 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
+	var comments []PullRequestComment
+	if req.CommentsSince != nil {
+		comments, err = p.pullRequestCommentsSince(ctx, req.Repository, req.PullID, *req.CommentsSince)
+		if err != nil {
+			return PullRequestPollResult{}, err
+		}
+	}
 	reviewDecision, requestedChanges := adoReviewDecision(pr.Reviewers)
 	state, merged := adoPullRequestPollState(pr.Status)
 	prURL := pr.URL
@@ -493,6 +552,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		RequestedChanges: requestedChanges,
 		CheckState:       checkState,
 		Checks:           checks,
+		CommentsSince:    comments,
 		URL:              prURL,
 	}, nil
 }
@@ -519,6 +579,7 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	switch strings.ToLower(pr.Status) {
 	case "completed", "abandoned":
 	case "active":
+		beforeStatus := pr.Status
 		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"status": "abandoned"}, &pr); err != nil {
 			return ClosePullRequestResult{}, err
 		}
@@ -526,6 +587,12 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 		if state != "closed" && state != "merged" {
 			return ClosePullRequestResult{}, fmt.Errorf("ado pull request %s abandon returned status %q", req.PullID, pr.Status)
 		}
+		p.recordPullRequestMutation(ctx, req.Repository, pr, "close", "", map[string]FieldDigest{
+			"state": {
+				Before: digestString(beforeStatus),
+				After:  digestString(pr.Status),
+			},
+		})
 	default:
 		return ClosePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, pr.Status)
 	}
@@ -545,6 +612,9 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 		if err := p.do(ctx, http.MethodPost, commentsEndpoint, body, nil); err != nil {
 			return ClosePullRequestResult{}, err
 		}
+		p.recordPullRequestMutation(ctx, req.Repository, pr, "comment", "", map[string]FieldDigest{
+			"comment": {After: digestString(req.Comment)},
+		})
 	}
 	number := pr.PullRequestID
 	if number == 0 {
@@ -556,27 +626,193 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	return ClosePullRequestResult{Number: number, Merged: merged, State: state}, nil
 }
 
-// MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
+// MergePullRequest completes an active Azure DevOps pull request.
 func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
-	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return MergePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	strategy, err := adoMergeStrategy(req.MergeMethod)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	var current adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
+		return MergePullRequestResult{}, err
+	}
+	number, err := adoPullRequestNumber(current, req.PullID)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	switch strings.ToLower(current.Status) {
+	case "completed":
+		return MergePullRequestResult{
+			Number:   number,
+			Merged:   true,
+			MergeSHA: current.LastMergeCommit.CommitID,
+			Message:  current.MergeFailureMessage,
+		}, nil
+	case "active":
+	case "abandoned":
+		return MergePullRequestResult{}, fmt.Errorf("ado pull request %s is abandoned", req.PullID)
+	default:
+		return MergePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, current.Status)
+	}
+
+	completionOptions := map[string]interface{}{
+		"bypassPolicy":       false,
+		"deleteSourceBranch": false,
+	}
+	if strategy != "" {
+		completionOptions["mergeStrategy"] = strategy
+	}
+	body := map[string]interface{}{
+		"status":            "completed",
+		"completionOptions": completionOptions,
+	}
+	if req.ExpectedHeadSHA != "" {
+		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
+	}
+	var out adoPullRequest
+	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+		return MergePullRequestResult{}, err
+	}
+	if out.PullRequestID == 0 {
+		out.PullRequestID = number
+	}
+	p.recordPullRequestMutation(ctx, req.Repository, out, "merge", "", map[string]FieldDigest{
+		"state": {
+			Before: digestString(current.Status),
+			After:  digestString(out.Status),
+		},
+	})
+	return MergePullRequestResult{
+		Number:   number,
+		Merged:   strings.EqualFold(out.Status, "completed"),
+		MergeSHA: out.LastMergeCommit.CommitID,
+		Message:  out.MergeFailureMessage,
+	}, nil
 }
 
-// DetectMergePolicy is not yet implemented for Azure DevOps (issue #758):
-// merge-policy abstraction parity is scoped to V1 (BL-033) alongside the
-// rest of ADO's pull-request surface; the GitHub provider is the V0
-// workload (#13).
+// DetectMergePolicy reports direct completion for Azure Repos. Azure DevOps
+// enforces branch policies during completion but does not expose a merge queue.
 func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
-	return RepoMergePolicyResult{}, fmt.Errorf("ado: merge policy detection lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return RepoMergePolicyResult{}, err
+	}
+	if req.Branch == "" {
+		return RepoMergePolicyResult{}, fmt.Errorf("branch is required")
+	}
+	return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
 }
 
-// EnqueuePullRequest is not yet implemented for Azure DevOps: see DetectMergePolicy.
+// EnqueuePullRequest enables Azure DevOps auto-complete for a pull request.
 func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
-	return EnqueuePullRequestResult{}, fmt.Errorf("ado: pull request enqueue lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+	}
+	strategy, err := adoMergeStrategy(req.MergeMethod)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	var current adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &current); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	number, err := adoPullRequestNumber(current, req.PullID)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	switch strings.ToLower(current.Status) {
+	case "completed":
+		return EnqueuePullRequestResult{Number: number, Merged: true, MergeSHA: current.LastMergeCommit.CommitID}, nil
+	case "active":
+	case "abandoned":
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s is abandoned", req.PullID)
+	default:
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, current.Status)
+	}
+	if current.AutoCompleteSetBy.ID != "" {
+		return EnqueuePullRequestResult{Number: number, Message: "auto-complete already enabled"}, nil
+	}
+	if current.CreatedBy.ID == "" {
+		return EnqueuePullRequestResult{}, fmt.Errorf("ado pull request %s returned no creator identity for auto-complete", req.PullID)
+	}
+	completionOptions := map[string]interface{}{
+		"bypassPolicy":       false,
+		"deleteSourceBranch": false,
+	}
+	if strategy != "" {
+		completionOptions["mergeStrategy"] = strategy
+	}
+	body := map[string]interface{}{
+		"autoCompleteSetBy": map[string]string{"id": current.CreatedBy.ID},
+		"completionOptions": completionOptions,
+	}
+	if req.ExpectedHeadSHA != "" {
+		body["lastMergeSourceCommit"] = adoCommitRef{CommitID: req.ExpectedHeadSHA}
+	}
+	var out adoPullRequest
+	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	if out.PullRequestID == 0 {
+		out.PullRequestID = number
+	}
+	p.recordPullRequestMutation(ctx, req.Repository, out, "enqueue", "", map[string]FieldDigest{
+		"autoComplete": {Before: digestString("false"), After: digestString("true")},
+	})
+	return EnqueuePullRequestResult{
+		Number:   number,
+		Merged:   strings.EqualFold(out.Status, "completed"),
+		MergeSHA: out.LastMergeCommit.CommitID,
+		Message:  out.MergeFailureMessage,
+	}, nil
 }
 
-// PollMergeQueueEntry is not yet implemented for Azure DevOps: see DetectMergePolicy.
+// PollMergeQueueEntry maps Azure DevOps auto-complete onto the queue-watch
+// contract for callers that explicitly requested auto-complete.
 func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
-	return PollMergeQueueEntryResult{}, fmt.Errorf("ado: merge queue entry polling lands in V1 parity (BL-033)")
+	if err := requireRepo(req.Repository); err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	if req.PullID == "" {
+		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+	}
+	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
+	if err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	var pr adoPullRequest
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
+		return PollMergeQueueEntryResult{}, err
+	}
+	switch strings.ToLower(pr.Status) {
+	case "completed":
+		return PollMergeQueueEntryResult{State: MergeQueueEntryMerged, MergeSHA: pr.LastMergeCommit.CommitID}, nil
+	case "abandoned":
+		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, QueueState: "abandoned"}, nil
+	case "active":
+		if pr.AutoCompleteSetBy.ID == "" {
+			return PollMergeQueueEntryResult{State: MergeQueueEntryAbsent}, nil
+		}
+		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, QueueState: "auto-complete"}, nil
+	default:
+		return PollMergeQueueEntryResult{}, fmt.Errorf("ado pull request %s has unsupported status %q", req.PullID, pr.Status)
+	}
 }
 
 // ListPullRequests lists active Azure DevOps pull requests matching the
@@ -1413,6 +1649,71 @@ func (p *ADOProvider) pullRequestBuildState(ctx context.Context, repo Repository
 	return combinedCheckState(checks), checks, nil
 }
 
+func (p *ADOProvider) pullRequestCommentsSince(ctx context.Context, repo RepositoryRef, pullID string, since time.Time) ([]PullRequestComment, error) {
+	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
+	if err != nil {
+		return nil, err
+	}
+	var out adoPullRequestThreadsResponse
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return nil, err
+	}
+	comments := make([]PullRequestComment, 0)
+	for _, thread := range out.Value {
+		for _, comment := range thread.Comments {
+			if comment.IsDeleted || comment.Content == "" || !comment.PublishedDate.After(since) {
+				continue
+			}
+			author := comment.Author.UniqueName
+			if author == "" {
+				author = comment.Author.DisplayName
+			}
+			id := int64(comment.ID)
+			if thread.ID > 0 {
+				id = thread.ID<<32 | int64(uint32(comment.ID))
+			}
+			comments = append(comments, PullRequestComment{
+				ID:        id,
+				Author:    author,
+				Body:      comment.Content,
+				CreatedAt: comment.PublishedDate,
+			})
+		}
+	}
+	return comments, nil
+}
+
+func adoMergeStrategy(method MergeMethod) (string, error) {
+	switch method {
+	case "":
+		return "", nil
+	case MergeMethodMerge:
+		return "noFastForward", nil
+	case MergeMethodSquash:
+		return "squash", nil
+	case MergeMethodRebase:
+		return "rebase", nil
+	default:
+		return "", fmt.Errorf("unsupported merge method %q", method)
+	}
+}
+
+func adoPullRequestNumber(pr adoPullRequest, pullID string) (int, error) {
+	if pr.PullRequestID != 0 {
+		return pr.PullRequestID, nil
+	}
+	number, err := strconv.Atoi(pullID)
+	if err != nil {
+		return 0, fmt.Errorf("ado pull request returned no id and pull id %q is not numeric", pullID)
+	}
+	return number, nil
+}
+
+func pullRequestNumber(pullID string) int {
+	number, _ := strconv.Atoi(pullID)
+	return number
+}
+
 func adoReviewDecision(reviewers []adoReviewer) (ReviewDecision, int) {
 	requestedChanges := 0
 	approved := false
@@ -1635,6 +1936,35 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 	}
 }
 
+func (p *ADOProvider) recordPullRequestMutation(ctx context.Context, repo RepositoryRef, pr adoPullRequest, operation, runID string, fields map[string]FieldDigest) {
+	if p.recorder == nil {
+		return
+	}
+	repoName := repo.Name
+	if repoName == "" {
+		repoName = repo.ID
+	}
+	organization := repo.Owner
+	if organization == "" {
+		organization = p.Organization
+	}
+	p.recorder.RecordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderADO,
+		Ref:       fmt.Sprintf("%s/%s/%s#%d", organization, p.project(repo), repoName, pr.PullRequestID),
+		URL:       adoPullRequestURL(pr),
+		Operation: operation,
+		Fields:    fields,
+		RunID:     runID,
+	})
+}
+
+func adoPullRequestURL(pr adoPullRequest) string {
+	if pr.Links.Web.Href != "" {
+		return pr.Links.Web.Href
+	}
+	return pr.URL
+}
+
 type adoWIQLResponse struct {
 	WorkItems []struct {
 		ID int `json:"id"`
@@ -1729,11 +2059,14 @@ type adoPullRequest struct {
 	TargetRefName         string        `json:"targetRefName"`
 	IsDraft               bool          `json:"isDraft"`
 	MergeStatus           string        `json:"mergeStatus"`
+	MergeFailureMessage   string        `json:"mergeFailureMessage"`
 	Reviewers             []adoReviewer `json:"reviewers"`
+	AutoCompleteSetBy     adoIdentity   `json:"autoCompleteSetBy"`
 	Repository            adoRepository `json:"repository"`
 	Labels                []adoLabel    `json:"labels"`
 	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
 	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
+	LastMergeCommit       adoCommitRef  `json:"lastMergeCommit"`
 	Links                 adoPRLinks    `json:"_links"`
 }
 
@@ -1796,6 +2129,23 @@ type adoPullRequestThreadComment struct {
 	ParentCommentID int    `json:"parentCommentId"`
 	Content         string `json:"content"`
 	CommentType     int    `json:"commentType"`
+}
+
+type adoPullRequestThreadsResponse struct {
+	Value []adoPullRequestThread `json:"value"`
+}
+
+type adoPullRequestThread struct {
+	ID       int64                           `json:"id"`
+	Comments []adoPullRequestResponseComment `json:"comments"`
+}
+
+type adoPullRequestResponseComment struct {
+	ID            int         `json:"id"`
+	Author        adoIdentity `json:"author"`
+	Content       string      `json:"content"`
+	PublishedDate time.Time   `json:"publishedDate"`
+	IsDeleted     bool        `json:"isDeleted"`
 }
 
 type adoPullRequestIterationsResponse struct {

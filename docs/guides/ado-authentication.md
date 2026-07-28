@@ -77,6 +77,30 @@ repos:
 Omitting `auth` while configuring `token` preserves the legacy PAT behavior.
 Token files must pass Goobers' private-file permission check.
 
+## Azure Repos pull requests
+
+Pull-request stages declare `provider:pr:write`; the routed repository in
+`instance.yaml` selects Azure DevOps without changing the workflow definition.
+For PAT repositories, an explicit `provider:pr:write` credential overrides the
+repository PAT for PR open/update and polling. Entra-backed repositories keep
+using their configured identity source.
+
+Azure DevOps votes and builds map to the provider-neutral lifecycle as follows:
+
+- Votes `-10` (rejected) and `-5` (waiting for author) request changes; votes
+  `5` and `10` approve when no negative vote exists; otherwise review is pending.
+- A completed `succeeded` build passes. `partiallySucceeded`, `failed`, and
+  `canceled` fail. Incomplete builds and completed builds without a result remain
+  pending. Polling keeps the newest current-head build per pipeline definition.
+- `completed` pull requests are merged and `abandoned` pull requests are closed
+  without merge. Closing an active pull request abandons it; merging completes
+  it with the requested merge strategy. Azure DevOps auto-complete backs the
+  explicit enqueue/watch methods, while normal policy detection remains direct
+  because Azure Repos has no native merge queue.
+
+Pull-request descriptions are bounded to Azure DevOps' 4,000 UTF-16-code-unit
+limit while preserving the Goobers run footer.
+
 ## Runtime environment
 
 The superseded `goober-runtime` worker supports the same sources through:
@@ -119,6 +143,5 @@ iteration paths are left unchanged. Claims write `goobers:claimed` plus an
 internal run-owner tag in one revision-tested patch, so concurrent schedulers
 settle on one visible owner without overwriting unrelated tags.
 
-Repository and pull-request parity remains incremental. Keep human branch
-policies authoritative for ADO repo operations that the provider does not yet
-implement.
+Human branch policies remain authoritative; Azure DevOps enforces them when
+Goobers requests completion or auto-complete.

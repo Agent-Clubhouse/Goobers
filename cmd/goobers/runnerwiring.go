@@ -636,9 +636,22 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 					env.RepoRef.Owner, env.RepoRef.Project, env.RepoRef.Name,
 				)
 			}
-			source, err := adoauth.Source(configured, nil, e.stores)
-			if err != nil {
-				return apiv1.ResultEnvelope{}, fmt.Errorf("configure ci-poll ADO authentication: %w", err)
+			var source providers.ADOCredentialSource
+			authKind := instance.ADOAuthPAT
+			if configured.Auth != nil {
+				authKind = configured.Auth.Kind
+			}
+			if authKind == instance.ADOAuthPAT {
+				token, err := resolveToken()
+				if err != nil {
+					return apiv1.ResultEnvelope{}, err
+				}
+				source = providers.NewADOPATCredentialSource("goobers", token)
+			} else {
+				source, err = adoauth.Source(configured, nil, e.stores)
+				if err != nil {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("configure ci-poll ADO authentication: %w", err)
+				}
 			}
 			poller = newADOProvider(
 				configured.Owner,

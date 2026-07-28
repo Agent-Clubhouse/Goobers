@@ -368,7 +368,8 @@ func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
 	t.Setenv(executor.RepoBranchEnvVar, "trunk")
 	t.Setenv("GOOBERS_CRED_PROVIDER_PR_WRITE", "")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "")
-	t.Chdir(t.TempDir())
+	workDir := t.TempDir()
+	t.Chdir(workDir)
 
 	code, _, stderr := runArgs(t, "open-pr", root)
 	if code != 0 {
@@ -379,6 +380,18 @@ func TestOpenPRUsesConfiguredADOIdentityAndTargetBranch(t *testing.T) {
 	}
 	if body["targetRefName"] != "refs/heads/trunk" {
 		t.Fatalf("targetRefName = %q, want configured default branch", body["targetRefName"])
+	}
+	mutationData, err := os.ReadFile(filepath.Join(workDir, mutationsSidecarFile))
+	if err != nil {
+		t.Fatalf("read mutation sidecar: %v", err)
+	}
+	var mutation mutationFact
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(mutationData))), &mutation); err != nil {
+		t.Fatalf("decode mutation sidecar: %v", err)
+	}
+	if mutation.Provider != string(providers.ProviderADO) || mutation.Kind != "pr" ||
+		mutation.ID != "42" || mutation.Operation != "open" {
+		t.Fatalf("mutation sidecar = %#v", mutation)
 	}
 }
 
