@@ -67,6 +67,14 @@ configured, the Copilot adapter uses the stored CLI session. When a grant is
 configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
 from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
 
+Current limitation: the production harness auth preflight runs before this
+capability credential is resolved. A token-backed agentic stage on a clean
+service or CI profile therefore still needs a stored Copilot CLI sign-in to
+pass startup. The
+[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
+records the failure and the required preflight change; do not bypass the
+capability boundary with ambient token passthrough.
+
 **Cross-org reality — why it must be a separate token.** "Copilot Requests" is
 an **account-level** permission: it can only be granted on a **personal**
 fine-grained PAT, never on a token scoped to an organization's repositories. So
@@ -122,9 +130,16 @@ inline — use a supported token reference such as `token.env`, `token.file`,
 Omitting only the `agent:model` entry opts into stored Copilot CLI
 authentication. Missing grants for repository capabilities remain errors.
 
-Verify before a live run: `goobers validate --check-harness` preflights the
-Copilot CLI (and, when `AuthCheckArgs` is configured, its authentication) so a
-mis-scoped token fails fast at validation rather than mid-run.
+Verify harness availability before a live run with
+`goobers validate --check-harness`. When `AuthCheckArgs` is configured, its
+authentication probe receives only the base environment, not the configured
+`agent:model` credential, so it can validate a stored CLI session but not the
+token's scope. The token is first resolved and injected as
+`COPILOT_GITHUB_TOKEN` when `CopilotAdapter.Run` executes an agentic stage, so a
+mis-scoped token fails there. On a clean profile, the current preflight blocks
+before that stage; token-backed preflight validation requires the change
+documented in the
+[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md).
 
 ## GitHub App installation tokens (`auth.kind: github-app`)
 
