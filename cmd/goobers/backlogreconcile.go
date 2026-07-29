@@ -251,7 +251,7 @@ func inspectBacklogMetadata(
 		correction.checkClaim = true
 	}
 	if item.HasLabel(providers.LabelTracking) {
-		hasOpenChildren, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
+		hasOpenChildren, _, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
 		if err != nil {
 			return correction, botLogin, fmt.Errorf("inspect tracking children: %w", err)
 		}
@@ -324,7 +324,7 @@ func revalidateCompletedTrackingItem(
 		correction.trackingComplete = false
 		return correction, nil
 	}
-	hasOpenChildren, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
+	hasOpenChildren, hasUnverifiedChildren, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
 	if err != nil {
 		return correction, err
 	}
@@ -338,7 +338,7 @@ func revalidateCompletedTrackingItem(
 		correction.trackingComplete = false
 		return correction, nil
 	}
-	if item.HasLabel(providers.LabelAutoClose) && strings.EqualFold(item.State, "open") {
+	if !hasUnverifiedChildren && item.HasLabel(providers.LabelAutoClose) && strings.EqualFold(item.State, "open") {
 		correction.closeTrackingParent = true
 		correction.reasons = append(correction.reasons, trackingAutoCloseReason)
 	}
@@ -350,18 +350,19 @@ func trackingItemHasOpenChildren(
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	item providers.WorkItem,
-) (bool, error) {
+) (bool, bool, error) {
 	native, err := provider.ListWorkItemChildren(ctx, repo, item.ID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	seen := make(map[string]bool, len(native))
 	for _, child := range native {
 		seen[child.ID] = true
 		if strings.EqualFold(child.State, "open") {
-			return true, nil
+			return true, false, nil
 		}
 	}
+	hasUnverifiedChildren := false
 	for _, id := range trackingChecklistIssueIDs(item.Body) {
 		if seen[id] {
 			continue
@@ -369,15 +370,16 @@ func trackingItemHasOpenChildren(
 		child, err := provider.GetWorkItem(ctx, repo, id)
 		if err != nil {
 			if providers.IsNotFoundError(err) {
+				hasUnverifiedChildren = true
 				continue
 			}
-			return false, err
+			return false, hasUnverifiedChildren, err
 		}
 		if strings.EqualFold(child.State, "open") {
-			return true, nil
+			return true, hasUnverifiedChildren, nil
 		}
 	}
-	return false, nil
+	return false, hasUnverifiedChildren, nil
 }
 
 func trackingChecklistIssueIDs(body string) []string {

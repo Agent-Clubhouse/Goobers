@@ -38,6 +38,7 @@ spec:
         - github:issues:write
       policyActions:
         - claim-backlog-items
+        - close-issue
       expectedOutputs:
         - backlog-reconciliation
       next: implementation-feedback
@@ -131,6 +132,7 @@ spec:
         - github:pr:write
       policyActions:
         - claim-backlog-items
+        - close-issue
       expectedOutputs:
         - claimed-items
       next: surface-duplicates

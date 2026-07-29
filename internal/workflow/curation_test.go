@@ -71,6 +71,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if reconcile.Inputs["resultFile"] != "backlog-reconciliation.json" {
 		t.Errorf("reconcile-backlog resultFile = %q", reconcile.Inputs["resultFile"])
 	}
+	if !containsString(reconcile.PolicyActions, "close-issue") {
+		t.Errorf("reconcile-backlog policyActions = %v, want close-issue", reconcile.PolicyActions)
+	}
 	feedback, ok := m.Task("implementation-feedback")
 	if !ok {
 		t.Fatal("implementation-feedback task not found")
@@ -127,6 +130,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if query.Inputs["reconcileMetadata"] != "false" {
 		t.Errorf("query-backlog reconcileMetadata = %q, want false after dedicated reconciliation", query.Inputs["reconcileMetadata"])
 	}
+	if !containsString(query.PolicyActions, "close-issue") {
+		t.Errorf("query-backlog policyActions = %v, want conservative close-issue declaration", query.PolicyActions)
+	}
 	if query.Inputs["resweepMaxItems"] != "5" ||
 		query.Inputs["resweepInterval"] != "24h" ||
 		query.Inputs["resweepReadyLabel"] != "goobers:ready" {
@@ -174,7 +180,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:e1299519579b3d78ac127d433b65bdcc9ae461242446b23c93b8a5fdfb305e60"
+	const wantDigest = "sha256:f23c44cf9054202d7f1e59258dfcb9106f3e0ba351d8796af090da3db991ccbe"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

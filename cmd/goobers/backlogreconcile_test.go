@@ -468,13 +468,15 @@ func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T)
 	}
 }
 
-func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
+func TestReconcileBacklogMetadataToleratesMissingChecklistTargetWithoutAutoClose(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Tracker with stale reference", "goobers:approved", providers.LabelReady, providers.LabelTracking)
 	server.addIssue(8, "Unrelated contradiction", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(9, "Opted-in tracker with stale reference", "goobers:approved", providers.LabelTracking, providers.LabelAutoClose)
 	server.mu.Lock()
 	server.issues[7].body = "- [ ] #999"
+	server.issues[9].body = "- [x] #998"
 	server.mu.Unlock()
 
 	repo := providers.RepositoryRef{
@@ -495,6 +497,8 @@ func TestReconcileBacklogMetadataToleratesMissingChecklistTarget(t *testing.T) {
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelTracking})
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 9, []string{providers.LabelAutoClose}, []string{providers.LabelTracking})
+	assertFakeIssueState(t, server, 9, "open")
 }
 
 func TestReconcileBacklogMetadataUsesConfiguredStaleAfter(t *testing.T) {
