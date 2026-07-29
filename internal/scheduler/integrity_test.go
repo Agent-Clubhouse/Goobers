@@ -63,11 +63,16 @@ func (s *executingStarter) Start(_ context.Context, in engine.RunInput) (engine.
 
 func TestDispatchClassifiesDirectBacklogItemsBeforeEngineAdmission(t *testing.T) {
 	const trustLabel = "team-approved"
+	const routingLabel = "goobers:ready"
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Triggers: []apiv1.Trigger{{
-			Type:     apiv1.TriggerBacklogItem,
-			Selector: map[string]string{trustLabel: "true"},
+			Type:       apiv1.TriggerBacklogItem,
+			TrustLabel: trustLabel,
+			Selector: map[string]string{
+				trustLabel:   "true",
+				routingLabel: "true",
+			},
 		}},
 		Start: "implement",
 		Tasks: []apiv1.Task{{
@@ -85,6 +90,14 @@ func TestDispatchClassifiesDirectBacklogItemsBeforeEngineAdmission(t *testing.T)
 	if _, err := registry.Register("flow", spec); err != nil {
 		t.Fatalf("register workflow: %v", err)
 	}
+	routingOnlySpec := spec
+	routingOnlySpec.Triggers = []apiv1.Trigger{{
+		Type:     apiv1.TriggerBacklogItem,
+		Selector: map[string]string{routingLabel: "true"},
+	}}
+	if _, err := registry.Register("routing-only", routingOnlySpec); err != nil {
+		t.Fatalf("register routing-only workflow: %v", err)
+	}
 
 	t.Run("approved item reaches stage", func(t *testing.T) {
 		runner := &integrityRunner{}
@@ -95,7 +108,7 @@ func TestDispatchClassifiesDirectBacklogItemsBeforeEngineAdmission(t *testing.T)
 		item := providers.WorkItem{
 			Provider:  providers.ProviderGitHub,
 			ID:        "approved",
-			Labels:    []string{"bug", trustLabel},
+			Labels:    []string{routingLabel, trustLabel},
 			Integrity: apiv1.IntegrityUnapproved,
 		}
 
@@ -122,47 +135,55 @@ func TestDispatchClassifiesDirectBacklogItemsBeforeEngineAdmission(t *testing.T)
 		}
 	})
 
-	t.Run("unapproved item is journaled and refused", func(t *testing.T) {
-		runner := &integrityRunner{}
-		starter := &executingStarter{activities: &engine.Activities{
-			Det: runner, Workspaces: integrityWorkspaces{path: t.TempDir()},
-		}}
-		s := newScheduler(t, Config{Starter: starter, Registry: registry})
-		item := providers.WorkItem{
-			Provider:  providers.ProviderGitHub,
-			ID:        "unapproved",
-			Labels:    []string{"bug"},
-			Integrity: apiv1.IntegrityUnapproved,
-		}
-
-		_, err := s.Dispatch(context.Background(), Event{
-			WorkflowName: "flow",
-			Item:         &item,
-			Reason:       "backlog-item",
-			DedupeKey:    "github:unapproved",
-		})
-		if err == nil {
-			t.Fatal("Dispatch succeeded, want integrity refusal")
-		}
-		if !strings.Contains(err.Error(), `integrity "unapproved" below minimum "maintainer"`) {
-			t.Fatalf("Dispatch error = %v, want integrity refusal", err)
-		}
-		if len(runner.invocations) != 0 {
-			t.Fatalf("stage invocations = %d, want 0", len(runner.invocations))
-		}
-
-		var refusal *journal.Event
-		for _, op := range starter.projection.Ops {
-			if op.Event != nil && op.Event.Error != nil &&
-				op.Event.Error.Code == apiv1.IntegrityAdmissionErrorCode {
-				refusal = op.Event
-				break
+	for _, tc := range []struct {
+		name     string
+		workflow string
+	}{
+		{name: "unapproved item is journaled and refused", workflow: "flow"},
+		{name: "sole routing selector does not grant integrity", workflow: "routing-only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &integrityRunner{}
+			starter := &executingStarter{activities: &engine.Activities{
+				Det: runner, Workspaces: integrityWorkspaces{path: t.TempDir()},
+			}}
+			s := newScheduler(t, Config{Starter: starter, Registry: registry})
+			item := providers.WorkItem{
+				Provider:  providers.ProviderGitHub,
+				ID:        tc.workflow,
+				Labels:    []string{routingLabel},
+				Integrity: apiv1.IntegrityUnapproved,
 			}
-		}
-		if refusal == nil ||
-			refusal.Integrity != apiv1.IntegrityUnapproved ||
-			refusal.MinimumIntegrity != apiv1.IntegrityMaintainer {
-			t.Fatalf("journaled refusal = %+v", refusal)
-		}
-	})
+
+			_, err := s.Dispatch(context.Background(), Event{
+				WorkflowName: tc.workflow,
+				Item:         &item,
+				Reason:       "backlog-item",
+				DedupeKey:    "github:" + tc.workflow,
+			})
+			if err == nil {
+				t.Fatal("Dispatch succeeded, want integrity refusal")
+			}
+			if !strings.Contains(err.Error(), `integrity "unapproved" below minimum "maintainer"`) {
+				t.Fatalf("Dispatch error = %v, want integrity refusal", err)
+			}
+			if len(runner.invocations) != 0 {
+				t.Fatalf("stage invocations = %d, want 0", len(runner.invocations))
+			}
+
+			var refusal *journal.Event
+			for _, op := range starter.projection.Ops {
+				if op.Event != nil && op.Event.Error != nil &&
+					op.Event.Error.Code == apiv1.IntegrityAdmissionErrorCode {
+					refusal = op.Event
+					break
+				}
+			}
+			if refusal == nil ||
+				refusal.Integrity != apiv1.IntegrityUnapproved ||
+				refusal.MinimumIntegrity != apiv1.IntegrityMaintainer {
+				t.Fatalf("journaled refusal = %+v", refusal)
+			}
+		})
+	}
 }

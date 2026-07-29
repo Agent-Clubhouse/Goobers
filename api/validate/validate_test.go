@@ -563,6 +563,57 @@ func TestWorkflowSchemaAcceptsPollingPriority(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaValidatesBacklogTrustLabel(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "trusted-flow"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": TRIGGERS,
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Act on approved work.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	cases := []struct {
+		name     string
+		triggers string
+		wantErr  bool
+	}{
+		{
+			name:     "explicit trust and routing labels",
+			triggers: `[{"type":"backlog-item","trustLabel":"team-approved","selector":{"team-approved":"true","goobers:ready":"true"}}]`,
+		},
+		{
+			name:     "empty trust label",
+			triggers: `[{"type":"backlog-item","trustLabel":""}]`,
+			wantErr:  true,
+		},
+		{
+			name:     "trust label on schedule",
+			triggers: `[{"type":"schedule","schedule":"@daily","trustLabel":"team-approved"}]`,
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.ValidateJSON("workflow.schema.json", []byte(strings.Replace(workflow, "TRIGGERS", tc.triggers, 1)))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected schema validation to pass, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkflowSchemaValidatesDSLVersion(t *testing.T) {
 	v := newV(t)
 	workflow := `apiVersion: goobers.dev/v1alpha1

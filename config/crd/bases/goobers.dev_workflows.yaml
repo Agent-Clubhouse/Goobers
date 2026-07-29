@@ -729,6 +729,13 @@ spec:
                     signal:
                       description: Signal is the named external signal for type=signal.
                       type: string
+                    trustLabel:
+                      description: |-
+                        TrustLabel is the explicit SEC-047 approval label used to classify a
+                        directly triggered backlog item as maintainer integrity. It is never
+                        inferred from Selector, whose labels are routing criteria only.
+                      minLength: 1
+                      type: string
                     type:
                       description: |-
                         TriggerType differentiates workflow archetypes without splitting the taxonomy:
@@ -744,6 +751,9 @@ spec:
                   required:
                   - type
                   type: object
+                  x-kubernetes-validations:
+                  - message: trustLabel is supported only for type=backlog-item
+                    rule: '!has(self.trustLabel) || self.type == ''backlog-item'''
                 minItems: 1
                 type: array
                 x-kubernetes-validations:

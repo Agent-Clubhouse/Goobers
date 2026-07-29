@@ -220,24 +220,12 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 }
 
 func directBacklogTrustLabel(spec apiv1.WorkflowSpec) string {
-	var trustLabel string
 	for _, trigger := range spec.Triggers {
-		if trigger.Type != apiv1.TriggerBacklogItem {
-			continue
-		}
-		// Selector values have no semantics, so a direct-item workflow can
-		// identify its trust signal only when exactly one label is selected.
-		if len(trigger.Selector) != 1 {
-			return ""
-		}
-		for label := range trigger.Selector {
-			if trustLabel != "" && trustLabel != label {
-				return ""
-			}
-			trustLabel = label
+		if trigger.Type == apiv1.TriggerBacklogItem && trigger.TrustLabel != "" {
+			return trigger.TrustLabel
 		}
 	}
-	return trustLabel
+	return ""
 }
 
 // startSpan opens a scheduler span for the dispatch, if telemetry is configured.

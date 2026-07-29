@@ -113,6 +113,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 			Triggers: []Trigger{{
 				Type:           TriggerBacklogItem,
 				Selector:       map[string]string{"goobers": "true"},
+				TrustLabel:     "goobers:approved",
 				LabelPredicate: `("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
 				FieldPredicate: `fields["number"] >= 100`,
 				Priority:       10,

@@ -9,8 +9,10 @@ spec:
   # → CI-poll pipeline, routing red CI through an integrity-compatible remediation task.
   triggers:
     - type: backlog-item
+      trustLabel: goobers:approved
       selector:
         goobers:approved: "true"
+        goobers:ready: "true"
   readiness:
     maxConcurrentRuns: 2
     maxRunsPerHour: 20

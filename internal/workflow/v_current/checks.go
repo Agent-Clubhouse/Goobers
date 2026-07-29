@@ -267,10 +267,30 @@ func CheckGateOutcomes(def Definition) []string {
 func triggerFieldProblems(def Definition) []string {
 	var problems []string
 	manualIndex := -1
+	directTrustLabel := ""
+	directTrustLabelSet := false
 	for i, tr := range def.Spec.Triggers {
+		if tr.TrustLabel != "" && strings.TrimSpace(tr.TrustLabel) == "" {
+			problems = append(problems, fmt.Sprintf("trigger[%d] trustLabel must not be blank", i))
+		}
+		if tr.Type != apiv1.TriggerBacklogItem && tr.TrustLabel != "" {
+			problems = append(problems, fmt.Sprintf("trigger[%d] type=%s does not support trustLabel", i, tr.Type))
+		}
 		switch tr.Type {
 		case apiv1.TriggerManual:
 			manualIndex = i
+		case apiv1.TriggerBacklogItem:
+			if !directTrustLabelSet {
+				directTrustLabel = tr.TrustLabel
+				directTrustLabelSet = true
+				continue
+			}
+			if tr.TrustLabel != directTrustLabel {
+				problems = append(problems, fmt.Sprintf(
+					"trigger[%d] trustLabel %q conflicts with backlog-item trustLabel %q",
+					i, tr.TrustLabel, directTrustLabel,
+				))
+			}
 		case apiv1.TriggerSignal:
 			if strings.TrimSpace(tr.Signal) != "" {
 				continue

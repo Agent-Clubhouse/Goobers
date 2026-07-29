@@ -305,7 +305,9 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   performs the actual query and **claims** items (label/assignee marker + claim
   ledger) so concurrent runs never double-process (`WF-031`). A trigger
   `selector`'s KEYS remain required labels (values are ignored because GitHub
-  labels are flat strings). Gaggle backlogs, backlog-item triggers, and
+  labels are flat strings). A direct backlog-item trigger declares its SEC-047
+  approval source separately as `trustLabel`; selectors remain routing criteria
+  and never confer maintainer integrity. Gaggle backlogs, backlog-item triggers, and
   `backlog-query` tasks may additionally declare a `labelPredicate`: restricted
   CEL string-membership checks against `labels`, composed with `&&`, `||`, and
   `!`. The CEL predicate is ANDed with legacy label inputs and evaluated exactly
