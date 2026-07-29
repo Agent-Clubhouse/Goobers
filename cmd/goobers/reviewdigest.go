@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,16 +21,21 @@ import (
 // four things that must force a fresh review). Folded into reviewDigest so a
 // bump invalidates every standing cache entry without touching any PR's state.
 //
-// v5 (#1237): reviewDigest no longer folds in the open-PR sibling set — see
-// computeReviewDigest. The bump forces one clean re-review of every parked PR
-// onto the new relevance-scoped key rather than silently reinterpreting v4
-// digests.
-const verdictSchemaVersion = 5
+// v6 (#1813): reviewDigest now folds in gate-relevant selected-PR labels so an
+// operator action such as adding goobers:scope-gate-ack invalidates the parked
+// verdict even when the head and base SHAs remain unchanged.
+const verdictSchemaVersion = 6
+
+// verdictFreshnessLabels is the selected-PR label state that can change
+// merge-review's routing without changing the PR's commits. Keep this list
+// limited to gate inputs so unrelated labeling does not undo #1237's stable
+// verdict-cache behavior.
+var verdictFreshnessLabels = []string{scopeGateAckLabel}
 
 // computeReviewDigest is merge-review's stable cross-run cache key for the
 // SELECTED PR's own reviewable state: (schema version, selected head SHA,
-// selected base SHA). Empty means head or base was unavailable, which forces a
-// fresh review.
+// selected base SHA, gate-relevant labels). Empty means head or base was
+// unavailable, which forces a fresh review.
 //
 // It deliberately does NOT fold in the open-PR sibling set (#1237). Doing so
 // meant any change to any sibling — overwhelmingly, an UNRELATED new PR opening
@@ -37,19 +43,33 @@ const verdictSchemaVersion = 5
 // invalidated this key, defeating the verdict cache entirely and re-deriving an
 // unchanged blocked-on-sibling verdict on a ~30-minute treadmill for PRs whose
 // own diff and named blockers never moved. The selected PR's own reviewable
-// state is fully captured by its head and base SHAs: its own commits (head) and
-// a sibling merge that actually rebased its effective base (base) both still
-// invalidate. Sibling RELEVANCE is handled separately and precisely by
+// state is captured by its head and base SHAs plus the selected PR labels that
+// affect gate routing: its own commits (head), a sibling merge that actually
+// rebased its effective base (base), and operator gate actions all invalidate.
+// Sibling RELEVANCE is handled separately and precisely by
 // cachedBlockerVerdictStillApplies, which invalidates a cached
 // blocked-on-sibling verdict only when the specific sibling(s) it named as
 // blockers resolve — never when unrelated siblings churn.
-func computeReviewDigest(selectedHeadSHA, selectedBaseSHA string) string {
+func computeReviewDigest(selectedHeadSHA, selectedBaseSHA string, selectedLabels []string) string {
 	if strings.TrimSpace(selectedHeadSHA) == "" || strings.TrimSpace(selectedBaseSHA) == "" {
 		return ""
 	}
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "v%d\nhead:%s\nbase:%s\n", verdictSchemaVersion, selectedHeadSHA, selectedBaseSHA)
+	labels := reviewDigestLabels(selectedLabels)
+	_, _ = fmt.Fprintf(h, "labels:%s\n", strings.Join(labels, "\x00"))
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func reviewDigestLabels(selectedLabels []string) []string {
+	labels := make([]string, 0, len(verdictFreshnessLabels))
+	for _, label := range verdictFreshnessLabels {
+		if hasAnyLabel(selectedLabels, []string{label}) {
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 // cachedBlockerVerdictStillApplies reports whether a cached blocked-on-sibling

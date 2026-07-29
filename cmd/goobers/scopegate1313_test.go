@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -93,6 +94,100 @@ func TestGatherSiblingContextParksOversizedPR(t *testing.T) {
 	}
 	if !issueHasLabel(server, 30, scopeGateLabel) {
 		t.Fatal("expected goobers:scope-gate to be applied")
+	}
+}
+
+// TestMergeReviewReevaluatesScopeGateAck is #1813's regression: an operator
+// ack must make a scope-gated PR selectable despite its stale remediation
+// label, then clear the gate and invalidate the pre-ack verdict without a
+// head/base change.
+func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	labels := []string{needsRemediationLabel, scopeGateLabel, scopeGateAckLabel}
+	server.addIssue(30, "Oversized PR", labels...)
+	files := make([]fakePRFile, 60)
+	for i := range files {
+		files[i] = fakePRFile{path: "file" + string(rune('a'+i%26)) + ".go", status: "modified", additions: 1}
+	}
+	const (
+		headSHA = "sha30"
+		baseSHA = "base"
+	)
+	server.addOpenPR(30, "goobers/implementation/run-30", "main", headSHA, baseSHA, false, labels, files)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1813")
+
+	preAckDigest := computeReviewDigest(headSHA, baseSHA, nil)
+	server.addComment(30, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Message:  "scope gate is awaiting operator acknowledgement",
+			Class:    apiv1.FindingSubstantive,
+		}},
+		Digest:      preAckDigest,
+		SourceRunID: "run-before-ack",
+		HeadSHA:     headSHA,
+		BaseSHA:     baseSHA,
+	}))
+
+	type gatherResult struct {
+		SelectedHeadSHA   string `json:"selectedHeadSha"`
+		SelectedBaseSHA   string `json:"selectedBaseSha"`
+		ReviewDigest      string `json:"reviewDigest"`
+		CachedVerdictJSON string `json:"cachedVerdictJson"`
+		ScopeGateParked   string `json:"scopeGateParked"`
+	}
+	readResult := func(dir string) gatherResult {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+		if err != nil {
+			t.Fatalf("read sibling-context.json: %v", err)
+		}
+		var result gatherResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal sibling-context.json: %v", err)
+		}
+		return result
+	}
+
+	cycleDir := t.TempDir()
+	t.Chdir(cycleDir)
+	if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	selectedData, err := os.ReadFile(filepath.Join(cycleDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatalf("read selected-pr.json: %v", err)
+	}
+	var selected map[string]string
+	if err := json.Unmarshal(selectedData, &selected); err != nil {
+		t.Fatalf("unmarshal selected-pr.json: %v", err)
+	}
+	if selected["number"] != "30" || selected["headSha"] != headSHA || selected["baseSha"] != baseSHA {
+		t.Fatalf("selected PR = %#v, want acknowledged scope-gated PR #30 at unchanged head/base", selected)
+	}
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", selected["number"])
+
+	if code, _, stderr := runArgs(t, "gather-sibling-context", root); code != 0 {
+		t.Fatalf("post-ack gather-sibling-context: code = %d, stderr = %q", code, stderr)
+	}
+	released := readResult(cycleDir)
+	if released.SelectedHeadSHA != headSHA || released.SelectedBaseSHA != baseSHA {
+		t.Fatalf("gathered PR moved: got (%q, %q), want (%q, %q)",
+			released.SelectedHeadSHA, released.SelectedBaseSHA, headSHA, baseSHA)
+	}
+	if released.ScopeGateParked != "false" {
+		t.Fatalf("scopeGateParked = %q, want false after operator ack", released.ScopeGateParked)
+	}
+	if released.ReviewDigest == preAckDigest || released.CachedVerdictJSON != "" {
+		t.Fatalf("post-ack result = %+v, want a new digest and no pre-ack cached verdict", released)
+	}
+	if issueHasLabel(server, 30, scopeGateLabel) {
+		t.Fatalf("%s still applied after operator ack", scopeGateLabel)
+	}
+	if !issueHasLabel(server, 30, needsRemediationLabel) {
+		t.Fatalf("%s was cleared before a fresh verdict replaced it", needsRemediationLabel)
 	}
 }
 

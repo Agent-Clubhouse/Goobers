@@ -20,26 +20,29 @@ import (
 // (proven at the gate.Evaluator layer by
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall in internal/gate).
 
-// TestComputeReviewDigestKeyedOnSelectedHeadAndBaseOnly is #1237's key
-// contract, superseding #786's "every sibling field invalidates": the digest
-// changes iff the SELECTED PR's own head or base SHA changes. The open-PR
-// sibling set is deliberately NOT an input — an unrelated PR opening, closing,
-// or churning must not invalidate a parked PR's stable verdict. Sibling
-// relevance is enforced separately and precisely by
-// cachedBlockerVerdictStillApplies (see its own test).
-func TestComputeReviewDigestKeyedOnSelectedHeadAndBaseOnly(t *testing.T) {
-	base := computeReviewDigest("sha10", "base10")
+// TestComputeReviewDigestKeyedOnSelectedReviewState is #1237's stable-key
+// contract plus #1813's gate-label correction. Unrelated sibling and label
+// churn stays outside the key, while a selected-PR label that changes gate
+// routing invalidates the verdict even at an unchanged head/base.
+func TestComputeReviewDigestKeyedOnSelectedReviewState(t *testing.T) {
+	base := computeReviewDigest("sha10", "base10", nil)
 	if base == "" {
 		t.Fatal("digest empty for a complete (head, base) key")
 	}
-	if got := computeReviewDigest("sha10", "base10"); got != base {
+	if got := computeReviewDigest("sha10", "base10", nil); got != base {
 		t.Fatalf("digest not deterministic for a fixed key: %q vs %q", got, base)
 	}
-	if got := computeReviewDigest("sha10-changed", "base10"); got == base {
+	if got := computeReviewDigest("sha10-changed", "base10", nil); got == base {
 		t.Fatalf("digest unchanged after selected head SHA changed, want it to differ from %q", base)
 	}
-	if got := computeReviewDigest("sha10", "base10-changed"); got == base {
+	if got := computeReviewDigest("sha10", "base10-changed", nil); got == base {
 		t.Fatalf("digest unchanged after selected base SHA changed, want it to differ from %q", base)
+	}
+	if got := computeReviewDigest("sha10", "base10", []string{scopeGateAckLabel}); got == base {
+		t.Fatalf("digest unchanged after %s was applied, want it to differ from %q", scopeGateAckLabel, base)
+	}
+	if got := computeReviewDigest("sha10", "base10", []string{"unrelated"}); got != base {
+		t.Fatalf("digest changed for unrelated selected-PR label: %q vs %q", got, base)
 	}
 }
 
@@ -56,7 +59,7 @@ func TestComputeReviewDigestRejectsIncompleteKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := computeReviewDigest(tt.head, tt.base); got != "" {
+			if got := computeReviewDigest(tt.head, tt.base, nil); got != "" {
 				t.Fatalf("computeReviewDigest() = %q, want empty unusable key", got)
 			}
 		})
@@ -159,7 +162,7 @@ func seedVerdictCacheFixture(t *testing.T) (root string, server *fakeGitHubServe
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
 
-	wantDigest = computeReviewDigest("sha10head", "shamainbase")
+	wantDigest = computeReviewDigest("sha10head", "shamainbase", nil)
 	return root, server, wantDigest
 }
 
@@ -283,7 +286,8 @@ func TestGatherSiblingContextKeepsAdvisoryFailVerdict(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", authorScopeAny)
 	t.Setenv("GOOBERS_INPUT_ADVISORYMODE", "true")
 
-	wantDigest := computeReviewDigest("sha10head", "shamainbase")
+	// No scope-gate labels on this PR, so the label component is empty.
+	wantDigest := computeReviewDigest("sha10head", "shamainbase", nil)
 	comment := renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictFail, Summary: "advisory concern", Digest: wantDigest,
 		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
