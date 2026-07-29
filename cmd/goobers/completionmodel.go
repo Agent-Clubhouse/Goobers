@@ -170,6 +170,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dsl-version", takesArg: true, desc: "Scope features to one DSL version"},
 		{name: "used", desc: "List only features referenced by the instance"},
 	},
+	"schema": {
+		{name: "list", desc: "List every embedded schema kind"},
+		{name: "human", desc: "Emit a human-readable rendering"},
+	},
+	"explain": {
+		{name: "human", desc: "Emit a human-readable rendering"},
+	},
 	"blocked list": {
 		{name: "json", desc: "Emit JSON"},
 	},

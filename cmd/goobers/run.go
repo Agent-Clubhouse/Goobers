@@ -518,7 +518,12 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 				return journal.PhaseRunning, fmt.Errorf("read progress for run %s: %w", runID, eventsErr)
 			}
 			progress.observe(events, time.Now())
-			if phase := runPhase(reader); isTerminalPhase(phase) {
+			// Terminality is decided from the very slice just rendered, not by
+			// re-reading through runPhase. The events file is still being
+			// appended to, so a second read can see the terminal event that
+			// this one missed, and returning on it would drop the final
+			// stage's "finished" line from user-visible progress (#1557).
+			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
 				return phase, nil
 			}
 		} else {

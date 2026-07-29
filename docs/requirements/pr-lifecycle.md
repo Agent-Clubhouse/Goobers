@@ -199,6 +199,11 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   are entirely cross-PR (PRL-024); `fail` → `goobers:merge-escalated` (a
   wrong approach is a human's call, never burned on remediation budget — D2).
   An empty-findings `needs-changes` routes to remediation, not to parking.
+  While `goobers:merge-escalated` is present, a `needs-changes` verdict that
+  would route to remediation MUST still be published, but
+  `goobers:needs-remediation` MUST be suppressed and any conflicting existing
+  label removed. This precedence ends when the escalation is explicitly
+  cleared or self-heals under PRL-062.
 - **PRL-032 (MUST, Shipped):** The loop MAY **autonomously close** a PR only
   under one of three predicates (#923/#987/#1211, PR #1256), each established
   by a **deterministic, independently-verifiable repository fact** — never the
@@ -445,7 +450,7 @@ therefore have no action row.
 | Open or update a PR (`open-or-update-pr`) | `implementation/open-pr`, `tutor/open-pr` | `github:pr:write` | Covered |
 | Comment on and update the driving issue's status (`update-issue`) | `implementation/close-out`, `park-escalated`, `park-needs-human` | `github:issues:write` | Covered |
 | Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
-| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation (`route-verdict`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `merge-review/apply-verdict`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
 | Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `github:pr:write` | Covered |
 | Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |

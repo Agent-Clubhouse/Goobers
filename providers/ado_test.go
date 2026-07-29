@@ -78,6 +78,83 @@ func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	}
 }
 
+func TestADOUpdateWorkItemAssignee(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		update    bool
+		requested string
+		want      string
+	}{
+		{name: "set", update: true, requested: "Octo Cat", want: "Octo Cat"},
+		{name: "clear", update: true, requested: "", want: ""},
+		{name: "nil leaves unchanged", want: "Mona"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var patch []adoPatchOperation
+			mux := http.NewServeMux()
+			handleADOTestStateCategories(t, mux)
+			mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+				fields := map[string]interface{}{
+					"System.WorkItemType": "Issue",
+					"System.Title":        "Fix",
+					"System.State":        "Active",
+				}
+				switch r.Method {
+				case http.MethodGet:
+					fields["System.AssignedTo"] = map[string]interface{}{"displayName": "Mona"}
+					writeJSON(t, w, map[string]interface{}{"id": 42, "rev": 3, "url": "item-url", "fields": fields})
+				case http.MethodPatch:
+					if !tc.update {
+						t.Fatal("nil assignee must not PATCH")
+					}
+					decodeJSON(t, r, &patch)
+					if tc.requested != "" {
+						fields["System.AssignedTo"] = map[string]interface{}{"displayName": tc.requested}
+					}
+					// ADO 7.1's recorded "Reset an identity field" response omits
+					// System.AssignedTo after adding an empty value.
+					writeJSON(t, w, map[string]interface{}{"id": 42, "rev": 4, "url": "item-url", "fields": fields})
+				default:
+					t.Fatalf("unexpected work item method %s", r.Method)
+				}
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+			req := UpdateWorkItemRequest{
+				Repository: RepositoryRef{Name: "repo", Project: "project"},
+				ID:         "42",
+			}
+			if tc.update {
+				assignee := tc.requested
+				req.Assignee = &assignee
+			}
+			item, err := provider.UpdateWorkItem(context.Background(), req)
+			if err != nil {
+				t.Fatalf("UpdateWorkItem: %v", err)
+			}
+			if item.Assignee != tc.want {
+				t.Fatalf("assignee = %q, want %q", item.Assignee, tc.want)
+			}
+			if !tc.update {
+				if patch != nil {
+					t.Fatalf("nil assignee patch = %#v, want none", patch)
+				}
+				return
+			}
+			if len(patch) != 2 ||
+				patch[0].Op != "test" ||
+				patch[0].Path != "/rev" ||
+				patch[1].Op != "add" ||
+				patch[1].Path != "/fields/System.AssignedTo" ||
+				patch[1].Value != tc.requested {
+				t.Fatalf("patch = %#v", patch)
+			}
+		})
+	}
+}
+
 func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 	getRequests := 0
 	mux := http.NewServeMux()

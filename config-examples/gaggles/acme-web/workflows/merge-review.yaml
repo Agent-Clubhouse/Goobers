@@ -78,6 +78,7 @@ spec:
         - github:pr:write
       policyActions:
         - flag-scope-drift
+        - route-verdict
       expectedOutputs:
         - selectedNumber
         - selectedHeadSha

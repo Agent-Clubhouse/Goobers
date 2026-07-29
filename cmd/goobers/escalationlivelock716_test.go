@@ -466,3 +466,65 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 	}
 	assertNoWorkProviderStageResult(t, resultFile)
 }
+
+// TestEscalationSnapshotOverwrittenByLaterCheckpoint covers #1855: the
+// remediation-state comment is sticky and edited in place, so a later
+// non-escalation checkpoint OVERWRITES the escalation snapshot instead of
+// sitting beside it. The surviving payload carries headSha/baseSha but neither
+// escalated nor escalatedHeadSha.
+//
+// Treating that as "no snapshot" and failing closed parked the PR forever: the
+// head comparison was never reached, so moving the head — the exit this
+// label's own comment advertises — could not release it. This is the exact
+// shape observed live on PRs #1840, #1853, #1856 and #1859, all four of which
+// were simultaneously unselectable while merge-review's pr-select returned
+// no-work every minute.
+func TestEscalationSnapshotOverwrittenByLaterCheckpoint(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+
+	checkpointOnly := func(headSHA, baseSHA string) string {
+		return "pr-remediation checkpoint: cycle 2.\n\n<!-- remediation-state: {" +
+			`"cycles":2,"lastDiffDigest":"sha256:abc",` +
+			`"headSha":"` + headSHA + `","baseSha":"` + baseSHA + `"} -->`
+	}
+
+	t.Run("head moved since the surviving checkpoint releases the park", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(10, "pr 10")
+		server.addComment(10, checkpointOnly("old-head", "b10"))
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 10, HeadSHA: "new-head", BaseSHA: "b10",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — the head moved past the recorded checkpoint, " +
+				"which is the exit the escalation comment advertises")
+		}
+	})
+
+	t.Run("unchanged head still parks", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(11, "pr 11")
+		server.addComment(11, checkpointOnly("same-head", "b11"))
+		server.setBranchTip("main", "b11")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 11, HeadSHA: "same-head", BaseSHA: "b11", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — nothing moved, so the park must hold")
+		}
+	})
+}

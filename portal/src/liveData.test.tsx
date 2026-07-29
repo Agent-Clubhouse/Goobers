@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
-import { FixtureDaemonClient } from "./api/fixtureClient";
+import { FixtureDaemonClient, type DaemonFixtures } from "./api/fixtureClient";
 import type {
   DaemonEventStream,
   DaemonUpdateEvent,
@@ -787,10 +787,56 @@ describe("live page integration", () => {
     expect(await screen.findByText("VER002")).toBeInTheDocument();
   });
 
-  it("does not re-page gaggle/workflow inventory during a burst of run invalidations", async () => {
+  it("refreshes live concurrency without reloading the full inventory fan-out", async () => {
+    vi.useRealTimers();
+    window.location.hash = "#/workflows";
+    const client = new MutableFixtureClient();
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
+    const coreSection = screen
+      .getByRole("heading", { name: "Core product" })
+      .closest<HTMLElement>(".gaggle-section");
+    if (!coreSection) {
+      throw new Error("Core product inventory section was not rendered.");
+    }
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
+    );
+    const inventoryGaggleReads = listGaggles.mock.calls.length;
+    const inventoryGooberReads = listGoobers.mock.calls.length;
+    const inventoryWorkflowReads = listWorkflows.mock.calls.length;
+
+    client.setActiveRuns("core", "implementation", 2);
+    await act(async () => {
+      for (let sequence = 1; sequence <= 8; sequence += 1) {
+        client.stream.push(
+          update(`fixture:${sequence}`, ["instance", "run", "workflow"], {
+            runIds: ["01JZ441DAEMONAPI"],
+            workflows: [{ gaggle: "core", name: "implementation" }],
+          }),
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+
+    expect(await screen.findByText("2 active / 2 max")).toBeInTheDocument();
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
+    expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads + 1);
+    expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
+    expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads + 1);
+  });
+
+  it("shares inventory across page mounts and refetches it after a definition event", async () => {
     vi.useRealTimers();
     const client = new MutableFixtureClient();
     const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
     const listWorkflows = vi.spyOn(client, "listWorkflows");
     render(<App client={client} />);
 
@@ -800,18 +846,49 @@ describe("live page integration", () => {
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
     );
-    const inventoryGaggleReads = listGaggles.mock.calls.length;
-    const inventoryWorkflowReads = listWorkflows.mock.calls.length;
+    const inventoryReads = {
+      gaggles: listGaggles.mock.calls.length,
+      goobers: listGoobers.mock.calls.length,
+      workflows: listWorkflows.mock.calls.length,
+    };
 
-    for (let sequence = 1; sequence <= 8; sequence += 1) {
-      client.stream.push(update(`fixture:${sequence}`, ["run"]));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    act(() => {
+      window.location.hash = "#/workflows";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(listGaggles).toHaveBeenCalledTimes(inventoryReads.gaggles);
+    expect(listGoobers.mock.calls.length).toBeGreaterThan(inventoryReads.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(inventoryReads.workflows);
 
-    // Run-only invalidations rebuild the bounded run groups but never re-page
-    // the gaggle/workflow inventory.
-    expect(listGaggles.mock.calls.length).toBe(inventoryGaggleReads);
-    expect(listWorkflows.mock.calls.length).toBe(inventoryWorkflowReads);
+    const populatedInventoryReads = {
+      gaggles: listGaggles.mock.calls.length,
+      goobers: listGoobers.mock.calls.length,
+      workflows: listWorkflows.mock.calls.length,
+    };
+    act(() => {
+      window.location.hash = "#/overview";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
+    ).toBeInTheDocument();
+    act(() => {
+      window.location.hash = "#/workflows";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(listGaggles).toHaveBeenCalledTimes(populatedInventoryReads.gaggles);
+    expect(listGoobers).toHaveBeenCalledTimes(populatedInventoryReads.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(populatedInventoryReads.workflows);
+
+    client.addWorkflow();
+    act(() => client.stream.push(update("fixture:1", ["instance", "workflow"])));
+
+    expect(await screen.findByText("Inventory refresh")).toBeInTheDocument();
+    expect(listGaggles.mock.calls.length).toBeGreaterThan(populatedInventoryReads.gaggles);
+    expect(listGoobers.mock.calls.length).toBeGreaterThan(populatedInventoryReads.goobers);
+    expect(listWorkflows.mock.calls.length).toBeGreaterThan(populatedInventoryReads.workflows);
   });
 
   it("meets the local p95 update target and stays stale on disconnect", async () => {
@@ -873,10 +950,13 @@ class ScriptedClient extends FixtureDaemonClient {
 
 class MutableFixtureClient extends FixtureDaemonClient {
   private currentStream = new ControlledEventStream();
+  private readonly mutableFixtures: DaemonFixtures;
   instanceName = "goobers-dev";
 
   constructor() {
-    super(populatedDaemonFixtures());
+    const fixtures = populatedDaemonFixtures();
+    super(fixtures);
+    this.mutableFixtures = fixtures;
   }
 
   get stream(): ControlledEventStream {
@@ -894,6 +974,34 @@ class MutableFixtureClient extends FixtureDaemonClient {
   override async getInstance(options?: RequestOptions): Promise<Instance> {
     const instance = await super.getInstance(options);
     return { ...instance, name: this.instanceName };
+  }
+
+  addWorkflow(): void {
+    const workflows = this.mutableFixtures.workflows?.core;
+    const template = workflows?.items[0];
+    const gaggle = this.mutableFixtures.gaggles.items.find((item) => item.name === "core");
+    if (!workflows || !template || !gaggle) {
+      throw new Error("Populated fixtures must include the core workflow inventory.");
+    }
+    workflows.items.push({
+      ...template,
+      identity: { gaggle: "core", name: "inventory-refresh" },
+      displayName: "Inventory refresh",
+    });
+    workflows.page.total = workflows.items.length;
+    gaggle.workflowCount = workflows.items.length;
+  }
+
+  setActiveRuns(gaggleName: string, workflowName: string, activeRuns: number): void {
+    const gaggle = this.mutableFixtures.gaggles.items.find((item) => item.name === gaggleName);
+    const workflow = this.mutableFixtures.workflows?.[gaggleName]?.items.find(
+      (item) => item.identity.name === workflowName,
+    );
+    if (!gaggle || !workflow) {
+      throw new Error("Populated fixtures must include the requested workflow inventory.");
+    }
+    gaggle.activeRunCount = activeRuns;
+    workflow.concurrency.activeRuns = activeRuns;
   }
 }
 

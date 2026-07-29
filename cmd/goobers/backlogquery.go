@@ -1389,6 +1389,7 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	var released []string
+	var providerErr error
 	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if lerr != nil {
@@ -1433,7 +1434,8 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 				RunID:            runID,
 				LedgerAuthorized: true,
 			}); rerr != nil {
-				return fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
+				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
+				return providerErr
 			}
 			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
@@ -1443,6 +1445,9 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 		return nil
 	})
 	if err != nil {
+		if providerErr != nil {
+			return failProviderStage(stderr, "release backlog claims", providerErr, "")
+		}
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}

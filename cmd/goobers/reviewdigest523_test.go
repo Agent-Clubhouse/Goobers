@@ -222,6 +222,89 @@ func TestGatherSiblingContextFindsMatchingCachedVerdict(t *testing.T) {
 	}
 }
 
+// A matching fail verdict must not defeat the operator's explicit unpark by
+// immediately restoring goobers:merge-escalated without another review.
+func TestGatherSiblingContextInvalidatesFailVerdictAfterOperatorClearsEscalation(t *testing.T) {
+	root, server, wantDigest := seedVerdictCacheFixture(t)
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictFail, Summary: "human decision required", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+	}))
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "gather-sibling-context", root)
+	if code != 0 {
+		t.Fatalf("gather-sibling-context: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "sibling-context.json"))
+	if err != nil {
+		t.Fatalf("read sibling-context.json: %v", err)
+	}
+	var result siblingContextResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal sibling-context.json: %v", err)
+	}
+	if result.CachedVerdictJSON != "" {
+		t.Fatalf("cachedVerdictJson = %q, want empty after the operator cleared %s", result.CachedVerdictJSON, remediationEscalatedLabel)
+	}
+	if !strings.Contains(stdout, "invalidated the standing fail verdict and forcing a fresh review") {
+		t.Fatalf("stdout = %q, want operator-clear invalidation", stdout)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	comments := server.issues[10].comments
+	if len(comments) != 1 || !strings.Contains(comments[0], "**merge-review verdict: stale**") ||
+		!strings.Contains(comments[0], "The last published verdict no longer stands:") ||
+		!strings.Contains(comments[0], remediationEscalatedLabel+" was cleared by an operator") {
+		t.Fatalf("comments = %q, want the standing fail verdict marked stale with the operator-clear reason", comments)
+	}
+}
+
+func TestGatherSiblingContextKeepsFailVerdictWhileEscalationRemains(t *testing.T) {
+	root, server, wantDigest := seedVerdictCacheFixture(t)
+	server.setPRLabels(10, []string{remediationEscalatedLabel})
+	server.addComment(10, renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictFail, Summary: "human decision required", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+	}))
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON == "" {
+		t.Fatal("cachedVerdictJson is empty, want the unchanged, still-escalated fail verdict preserved")
+	}
+}
+
+func TestGatherSiblingContextKeepsAdvisoryFailVerdict(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(10, "Selected advisory PR")
+	server.addOpenPR(10, "external/contribution", "main", "sha10head", "shamainbase", false, nil, selectedPRFiles)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-2")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", authorScopeAny)
+	t.Setenv("GOOBERS_INPUT_ADVISORYMODE", "true")
+
+	// No scope-gate labels on this PR, so the label component is empty.
+	wantDigest := computeReviewDigest("sha10head", "shamainbase", nil)
+	comment := renderVerdictComment(apiv1.Verdict{
+		Decision: apiv1.VerdictFail, Summary: "advisory concern", Digest: wantDigest,
+		SourceRunID: "run-1", HeadSHA: "sha10head", BaseSHA: "shamainbase",
+	})
+	server.addComment(10, comment)
+
+	result := readSiblingContextResultAfterGather(t, root)
+	if result.CachedVerdictJSON == "" {
+		t.Fatal("cachedVerdictJson is empty, want advisory fail verdict preserved")
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if comments := server.issues[10].comments; len(comments) != 1 || comments[0] != comment {
+		t.Fatalf("comments = %q, want advisory verdict left unchanged", comments)
+	}
+}
+
 func TestGatherSiblingContextHeadChangeMissesCache(t *testing.T) {
 	root, server, reviewedDigest := seedVerdictCacheFixture(t)
 	server.addComment(10, renderVerdictComment(apiv1.Verdict{

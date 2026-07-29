@@ -126,7 +126,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("gather-sibling-context task not found")
 			}
-			if want := []string{"flag-scope-drift"}; !reflect.DeepEqual(gatherSiblings.PolicyActions, want) {
+			if want := []string{"flag-scope-drift", "route-verdict"}; !reflect.DeepEqual(gatherSiblings.PolicyActions, want) {
 				t.Errorf("gather-sibling-context policyActions = %v, want %v", gatherSiblings.PolicyActions, want)
 			}
 			if gatherSiblings.Inputs["authorScope"] != "any" ||

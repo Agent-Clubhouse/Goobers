@@ -67,7 +67,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Dead-code analysis
         run: make deadcode
@@ -100,7 +110,17 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
@@ -127,7 +147,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
         run: |
@@ -162,7 +192,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: go build (darwin/arm64)
         env:
@@ -201,7 +241,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
@@ -227,7 +277,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Find previous main timing run
         id: previous-timing
@@ -323,7 +383,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Shipped-workflow contracts
         env:
@@ -344,7 +414,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
@@ -372,7 +452,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       - name: Enforce the journal conformance contract
         run: make test-conformance
@@ -404,7 +494,17 @@ jobs:
           cache: true
 
       - name: Download modules
-        run: go mod download
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
 
       # Compiles every package for windows/amd64, including the //go:build windows
       # files (internal/platform/proc, lock, winsvc, safeopen) that no other gate

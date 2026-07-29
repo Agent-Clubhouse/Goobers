@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up self-update service worker dashboard run signal workflow runs status stats features reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up self-update service worker dashboard run signal workflow runs status stats features schema explain reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-health backlog-query reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -104,6 +104,9 @@ complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON
 complete -c goobers -n '__fish_seen_subcommand_from features' -l json -d 'Emit a versioned feature-discovery envelope'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l dsl-version -r -d 'Scope features to one DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l used -d 'List only features referenced by the instance'
+complete -c goobers -n '__fish_seen_subcommand_from schema' -l list -d 'List every embedded schema kind'
+complete -c goobers -n '__fish_seen_subcommand_from schema' -l human -d 'Emit a human-readable rendering'
+complete -c goobers -n '__fish_seen_subcommand_from explain' -l human -d 'Emit a human-readable rendering'
 complete -c goobers -n '__fish_seen_subcommand_from blocked; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l stale -d 'Show only expired claims'

@@ -121,9 +121,12 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"reviewDigest and checks the PR's own most recent verdict comment for a\n" +
 	"matching one (issue #523's verdict-level cache) — a match is emitted as\n" +
 	"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n" +
-	"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n" +
-	"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n" +
-	"is not an error), 1 = business error, 2 = usage/IO error.\n"
+	"entirely. For a managed PR, however, a matching fail verdict is marked\n" +
+	"stale and not emitted when an operator has cleared goobers:merge-escalated,\n" +
+	"so the stage forces a fresh review instead; --no-verdict-cache skips that\n" +
+	"lookup, always forcing a fresh review. Exit codes: 0 = context gathered\n" +
+	"(possibly empty — no siblings is not an error), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
@@ -399,7 +402,8 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	// (#1237 — see
 	// computeReviewDigest). Check the selected PR's trusted status comment for a
 	// matching usable verdict. Any missing key component or lookup problem
-	// degrades to a fresh review.
+	// degrades to a fresh review. Clearing an escalation also invalidates a
+	// matching fail verdict: the operator explicitly requested another review.
 	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, selectedLabels)
 	var cachedVerdictJSON string
 	if reviewDigest == "" {
@@ -408,6 +412,13 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
 		if cerr != nil {
 			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if !advisoryMode && cached != nil && cached.Decision == apiv1.VerdictFail &&
+			!hasAnyLabel(selectedLabels, []string{remediationEscalatedLabel}) {
+			reason := remediationEscalatedLabel + " was cleared by an operator"
+			if err := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); err != nil {
+				pf(stderr, "warning: could not mark PR #%d's operator-cleared verdict stale: %v\n", selectedNumber, err)
+			}
+			pf(stdout, "PR #%d: %s — invalidated the standing fail verdict and forcing a fresh review\n", selectedNumber, reason)
 		} else if cached != nil && !cachedBlockerVerdictStillApplies(*cached, siblings) {
 			// The head/base key still matches, but the cached verdict is a
 			// blocked-on-sibling verdict whose named blocker(s) have all resolved

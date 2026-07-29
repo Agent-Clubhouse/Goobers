@@ -890,14 +890,16 @@ func (r ListWorkItemsRequest) MatchesFieldPredicate(fields fieldpredicate.Fields
 	return r.FieldPredicate.Matches(fields)
 }
 
-// UpdateWorkItemRequest is a general backlog item edit: title/body edits, label
-// add/remove, open/close, milestone assignment, and an optional comment. Fields
-// left nil/empty are unchanged, so callers touch only what they intend to.
+// UpdateWorkItemRequest is a general backlog item edit: title/body edits, assignee
+// changes, label add/remove, open/close, milestone assignment, and an optional
+// comment. Nil pointer fields are unchanged; a non-nil empty Assignee clears the
+// current assignment.
 type UpdateWorkItemRequest struct {
 	Repository   RepositoryRef `json:"repository"`
 	ID           string        `json:"id"`
 	Title        *string       `json:"title,omitempty"`
 	Body         *string       `json:"body,omitempty"`
+	Assignee     *string       `json:"assignee,omitempty"`
 	AddLabels    []string      `json:"addLabels,omitempty"`
 	RemoveLabels []string      `json:"removeLabels,omitempty"`
 	// Milestone, when set, assigns an existing provider milestone by number.

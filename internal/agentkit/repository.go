@@ -31,6 +31,9 @@ const (
 	instructionReferenceEnd   = "<!-- goobers:agent-toolkit:end -->"
 )
 
+// ErrRepositoryMarkerMissing identifies a target that can become installable through explicit Git initialization.
+var ErrRepositoryMarkerMissing = errors.New(".git is missing")
+
 type updateTransaction struct {
 	Version int      `json:"version"`
 	Changes []Change `json:"changes"`
@@ -119,7 +122,7 @@ func OpenRepository(target string) (*Repository, error) {
 	gitInfo, err := os.Lstat(gitMarker)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("agent toolkit target %s is not a repository root (.git is missing)", absolute)
+			return nil, fmt.Errorf("agent toolkit target %s is not a repository root: %w", absolute, ErrRepositoryMarkerMissing)
 		}
 		return nil, fmt.Errorf("inspect repository marker: %w", err)
 	}

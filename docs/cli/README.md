@@ -41,6 +41,7 @@
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
+| [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
@@ -87,6 +88,7 @@
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
 | [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
 | [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
+| [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
 | [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
@@ -875,6 +877,29 @@ Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
 $ goobers examples show implementation
 ~~~
 
+## `goobers explain`
+
+project field facts from an embedded JSON Schema
+
+~~~text
+Usage: goobers explain [--human] <selector>
+
+Project field guidance from the embedded schema and feature registries using
+a dotted or slash-
+separated selector such as goober.spec.capabilities or
+workflow/spec/gates[]/evaluator. Array elements use []. Output includes the
+field purpose, type, allowed values, lifecycle, and a schema-grounded example.
+JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+1 = unknown selector or output error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers explain goober.spec.capabilities
+$ goobers explain --human workflow.spec.gates[].evaluator
+~~~
+
 ## `goobers features`
 
 list the workflow-DSL features this build supports
@@ -1090,9 +1115,12 @@ also computes the selected PR's
 reviewDigest and checks the PR's own most recent verdict comment for a
 matching one (issue #523's verdict-level cache) — a match is emitted as
 cachedVerdictJson, letting the runner skip the reviewer gate's LLM call
-entirely; --no-verdict-cache skips that lookup, always forcing a fresh
-review. Exit codes: 0 = context gathered (possibly empty — no siblings
-is not an error), 1 = business error, 2 = usage/IO error.
+entirely. For a managed PR, however, a matching fail verdict is marked
+stale and not emitted when an operator has cleared goobers:merge-escalated,
+so the stage forces a fresh review instead; --no-verdict-cache skips that
+lookup, always forcing a fresh review. Exit codes: 0 = context gathered
+(possibly empty — no siblings is not an error), 1 = business error,
+2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -1114,8 +1142,10 @@ telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
-then validates both. The source may be new or existing locally, cloned from
-GitHub, or optionally backed by a newly confirmed GitHub repository.
+then validates both. It can optionally preview and install the release-matched
+agent toolkit into that config source after an explicit harness and destination
+choice. The source may be new or existing locally, cloned from GitHub, or
+optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -1357,7 +1387,7 @@ and collisions or drift fail without overwriting files.
 
 Flags:
   --source-tree <path>  required config source repository root
-  --harness <name>      copilot, claude, or generic (default generic)
+  --harness <name>      required: copilot, claude, or generic
   --json                emit the versioned config-source action envelope
 
 Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
@@ -1993,6 +2023,29 @@ Usage: goobers scaffold goober [--force] <name> [path]
 Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
+~~~
+
+## `goobers schema`
+
+emit a JSON Schema embedded in this build
+
+~~~text
+Usage: goobers schema [--human] <kind>
+       goobers schema --list [--human]
+
+Emit a canonical JSON Schema embedded in this build, or list every available
+schema kind. JSON is the default and includes the build version, commit, and
+DSL version. --human prints a labeled terminal rendering. No network lookup
+or fallback to another release is performed. Exit codes: 0 = OK, 1 = unknown
+kind or output error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers schema --list
+$ goobers schema workflow
+$ goobers schema --human goober
 ~~~
 
 ## `goobers self-update`

@@ -2206,3 +2206,12 @@ func branchNamespacesByGaggle(set *instance.ConfigSet) map[string]string {
 	}
 	return out
 }
+
+func selfIdentitiesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = instance.EffectiveSelfIdentity(cfg, g)
+	}
+	return out
+}

@@ -3,6 +3,9 @@ import type { ModelInvalidation, UpdateModel, WorkflowUpdateReference } from "./
 export const DATA_CACHE_TTL_MS = 30_000;
 
 export type DataCacheDependency =
+  // Inventory changes are definition-wide workflow invalidations. Run events
+  // name their workflow and must not evict the slower inventory tier.
+  | { model: "inventory" }
   | { model: "instance" }
   | {
       model: "run";
@@ -28,9 +31,15 @@ interface DataCacheWrite {
   expiresAt: number;
 }
 
+interface DataCacheLoad {
+  promise: Promise<unknown>;
+  revision: number;
+}
+
 export class SessionDataCache {
   private readonly entries = new Map<string, DataCacheEntry>();
   private readonly writes = new Map<string, DataCacheWrite>();
+  private readonly loads = new Map<string, DataCacheLoad>();
   private evictionTimer: ReturnType<typeof setTimeout> | undefined;
   private revision = 0;
 
@@ -49,12 +58,16 @@ export class SessionDataCache {
     return entry.data as T;
   }
 
-  beginWrite(key: string, dependencies: readonly DataCacheDependency[]): number {
+  beginWrite(
+    key: string,
+    dependencies: readonly DataCacheDependency[],
+    ttlMs = this.ttlMs,
+  ): number {
     this.revision += 1;
     this.writes.set(key, {
       dependencies,
       revision: this.revision,
-      expiresAt: Date.now() + this.ttlMs,
+      expiresAt: Date.now() + ttlMs,
     });
     this.scheduleEviction();
     return this.revision;
@@ -65,6 +78,7 @@ export class SessionDataCache {
     data: T,
     dependencies: readonly DataCacheDependency[],
     revision?: number,
+    ttlMs = this.ttlMs,
   ): boolean {
     if (revision !== undefined) {
       if (this.writes.get(key)?.revision !== revision) {
@@ -77,15 +91,51 @@ export class SessionDataCache {
     this.entries.set(key, {
       data,
       dependencies,
-      expiresAt: Date.now() + this.ttlMs,
+      expiresAt: Date.now() + ttlMs,
     });
     this.scheduleEviction();
     return true;
   }
 
+  getOrLoad<T>(
+    key: string,
+    dependencies: readonly DataCacheDependency[],
+    load: () => Promise<T>,
+    ttlMs = this.ttlMs,
+  ): Promise<T> {
+    const cached = this.get<T>(key);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+    const active = this.loads.get(key);
+    if (active) {
+      return active.promise as Promise<T>;
+    }
+
+    const revision = this.beginWrite(key, dependencies, ttlMs);
+    const promise = Promise.resolve()
+      .then(load)
+      .then((data) => {
+        this.set(key, data, dependencies, revision, ttlMs);
+        return data;
+      })
+      .finally(() => {
+        if (this.loads.get(key)?.revision === revision) {
+          this.loads.delete(key);
+        }
+        if (this.writes.get(key)?.revision === revision) {
+          this.writes.delete(key);
+          this.scheduleEviction();
+        }
+      });
+    this.loads.set(key, { promise, revision });
+    return promise;
+  }
+
   remove(key: string): void {
     this.entries.delete(key);
     this.writes.delete(key);
+    this.loads.delete(key);
     this.scheduleEviction();
   }
 
@@ -93,9 +143,8 @@ export class SessionDataCache {
     const models = new Set<UpdateModel>(invalidation.models);
     for (const [key, entry] of this.entries) {
       if (
-        entry.dependencies.some(
-          (dependency) =>
-            models.has(dependency.model) && invalidatesDependency(dependency, invalidation),
+        entry.dependencies.some((dependency) =>
+          invalidatesDependency(dependency, invalidation, models),
         )
       ) {
         this.entries.delete(key);
@@ -103,12 +152,12 @@ export class SessionDataCache {
     }
     for (const [key, write] of this.writes) {
       if (
-        write.dependencies.some(
-          (dependency) =>
-            models.has(dependency.model) && invalidatesDependency(dependency, invalidation),
+        write.dependencies.some((dependency) =>
+          invalidatesDependency(dependency, invalidation, models),
         )
       ) {
         this.writes.delete(key);
+        this.loads.delete(key);
       }
     }
     this.scheduleEviction();
@@ -134,6 +183,7 @@ export class SessionDataCache {
     for (const [key, write] of this.writes) {
       if (write.expiresAt <= now) {
         this.writes.delete(key);
+        this.loads.delete(key);
       }
     }
     this.scheduleEviction();
@@ -167,7 +217,14 @@ export function dataCacheKey(namespace: string, ...parts: string[]): string {
 function invalidatesDependency(
   dependency: DataCacheDependency,
   invalidation: ModelInvalidation,
+  models: ReadonlySet<UpdateModel>,
 ): boolean {
+  if (dependency.model === "inventory") {
+    return models.has("workflow") && !invalidation.workflows?.length;
+  }
+  if (!models.has(dependency.model)) {
+    return false;
+  }
   if (dependency.model === "instance") {
     return true;
   }

@@ -108,11 +108,22 @@ prompt is separate from the config source prompt: enter `$GOOBERS_TARGET` only
 for the target. Guided setup asks for environment variable names, never token
 values.
 
+After confirming the config-source-to-target mapping, choose `copilot`,
+`claude`, `generic`, or `skip` for the optional agent toolkit. Guided setup
+reports detected harnesses without selecting one, requires the destination to
+match `$GOOBERS_CONFIG_SOURCE`, and previews the release, ownership boundary,
+instruction file, and current toolkit state before writing. The completion
+output includes starter prompts and explicit `agent-kit check` and
+`agent-kit update` commands. Choosing `skip` leaves the config source fully
+usable without toolkit files.
+
 The source may instead be an existing local tree or an existing GitHub config
 repository. A GitHub source is cloned to the local checkout path before it is
 validated. For a new local source, setup can optionally create an empty GitHub
 repository after displaying its owner, name, and visibility and asking for a
-second confirmation. It does not initialize git, commit, or push.
+second confirmation. Without toolkit installation, setup does not initialize
+Git, commit, or push. Installing the toolkit initializes the new local config
+source as a Git repository, but setup still does not commit or push.
 
 The checked-in source has this shape:
 

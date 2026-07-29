@@ -3,15 +3,40 @@
 // importing component can validate without reading files from disk.
 package schemas
 
-import "embed"
+import (
+	"embed"
+	"encoding/json"
+	"io/fs"
+	"sort"
+	"strings"
+)
 
 // FS holds the embedded *.schema.json files.
 //
-//go:embed *.schema.json
+//go:embed *.schema.json field-purposes.json
 var FS embed.FS
+
+var fieldPurposes = func() map[string]map[string]string {
+	raw, err := FS.ReadFile("field-purposes.json")
+	if err != nil {
+		panic("read embedded field purposes: " + err.Error())
+	}
+	var purposes map[string]map[string]string
+	if err := json.Unmarshal(raw, &purposes); err != nil {
+		panic("decode embedded field purposes: " + err.Error())
+	}
+	return purposes
+}()
 
 // BaseURI is the $id base every schema uses; relative $refs resolve against it.
 const BaseURI = "https://goobers.dev/schemas/"
+
+const (
+	// StabilityGA marks an embedded contract as generally available.
+	StabilityGA = "ga"
+	// InitialSinceVersion identifies contracts that predate the first tagged release.
+	InitialSinceVersion = "dev"
+)
 
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
@@ -36,6 +61,12 @@ const OnboardingAction = "config-source-action.schema.json"
 
 // ConfigSourceAction is retained as the original name of OnboardingAction.
 const ConfigSourceAction = OnboardingAction
+
+// SchemaOutput is the machine-readable envelope emitted by `goobers schema`.
+const SchemaOutput = "schema-output.schema.json"
+
+// ExplainOutput is the machine-readable envelope emitted by `goobers explain`.
+const ExplainOutput = "explain.schema.json"
 
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
@@ -65,25 +96,82 @@ var Journal = map[string]string{
 	"run":   "journal-run.schema.json",
 }
 
-// Files lists every embedded schema file name.
-func Files() []string {
-	return []string{
-		"manifest.schema.json",
-		"gaggle.schema.json",
-		"goober.schema.json",
-		"workflow.schema.json",
-		"invocation.schema.json",
-		"result.schema.json",
-		"verdict.schema.json",
-		"artifact-pointer.schema.json",
-		CandidateFindings,
-		RemediationBriefV1,
-		RemediationBrief,
-		"journal-event.schema.json",
-		"journal-run.schema.json",
-		AgentToolkitManifest,
-		Diagnostics,
-		Features,
-		OnboardingAction,
+// Entry identifies one embedded schema by its CLI-facing kind and file name.
+type Entry struct {
+	Kind         string
+	File         string
+	Stability    string
+	SinceVersion string
+}
+
+// Entries lists every embedded schema in stable kind order.
+func Entries() []Entry {
+	files, err := fs.Glob(FS, "*.schema.json")
+	if err != nil {
+		panic("glob embedded schemas: " + err.Error())
 	}
+	entries := make([]Entry, 0, len(files))
+	for _, file := range files {
+		entries = append(entries, Entry{
+			Kind:         strings.TrimSuffix(file, ".schema.json"),
+			File:         file,
+			Stability:    StabilityGA,
+			SinceVersion: InitialSinceVersion,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Kind < entries[j].Kind
+	})
+	return entries
+}
+
+// Lookup returns the embedded schema entry for a case-insensitive kind.
+func Lookup(kind string) (Entry, bool) {
+	for _, entry := range Entries() {
+		if strings.EqualFold(entry.Kind, kind) {
+			return entry, true
+		}
+	}
+	return Entry{}, false
+}
+
+// FieldPurpose returns release-pinned guidance for legacy schema fields that
+// predate description coverage.
+func FieldPurpose(selector string) (string, bool) {
+	root, path, ok := strings.Cut(selector, ".")
+	if !ok {
+		return "", false
+	}
+	if root == "remediation-brief-v1" || root == "remediation-brief-v2" {
+		root = "remediation-brief"
+	}
+	fields, ok := fieldPurposes[root]
+	if !ok {
+		return "", false
+	}
+	purpose, ok := fields[path]
+	if !ok && strings.HasSuffix(path, "[]") {
+		purpose, ok = fields[strings.TrimSuffix(path, "[]")]
+	}
+	return purpose, ok
+}
+
+// Kinds lists every embedded schema kind in stable order.
+func Kinds() []string {
+	entries := Entries()
+	kinds := make([]string, len(entries))
+	for i, entry := range entries {
+		kinds[i] = entry.Kind
+	}
+	return kinds
+}
+
+// Files lists every embedded schema file name in stable kind order.
+func Files() []string {
+	entries := Entries()
+	files := make([]string, len(entries))
+	for i, entry := range entries {
+		files[i] = entry.File
+	}
+	return files
 }

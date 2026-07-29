@@ -66,6 +66,13 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 				absolutePath(sourceRoot),
 				"<source-tree>",
 			)
+			for i := range result.Commands {
+				result.Commands[i] = strings.ReplaceAll(
+					result.Commands[i],
+					absolutePath(sourceRoot),
+					"<source-tree>",
+				)
+			}
 		default:
 			t.Fatalf("%v: unexpected action %q", args, result.Action)
 		}
@@ -114,6 +121,9 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 	for _, fixture := range []string{"empty", "partial", "populated"} {
 		t.Run(fixture, func(t *testing.T) {
 			root := cliAgentKitRepository(t)
+			if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+				t.Fatalf("seed config source: %v", err)
+			}
 			switch fixture {
 			case "partial":
 				code, _, stderr := runArgs(t, "agent-kit", "install", root)
@@ -148,8 +158,24 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 			if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 				t.Fatalf("decode result: %v\n%s", err, stdout)
 			}
+			if len(result.Prompts) != 3 ||
+				!strings.Contains(result.Prompts[0], "DSL author") ||
+				!strings.Contains(result.Prompts[1], "run operator") ||
+				!strings.Contains(result.Prompts[1], "<instance-path>") ||
+				!strings.Contains(result.Prompts[2], "workflow upgrade") {
+				t.Fatalf("starter prompts = %v", result.Prompts)
+			}
+			if len(result.Commands) != 3 ||
+				!strings.Contains(result.Commands[0], "agent-kit check") ||
+				!strings.Contains(result.Commands[1], "agent-kit update") ||
+				!strings.Contains(result.Commands[2], "agent-kit update --write") {
+				t.Fatalf("maintenance commands = %v", result.Commands)
+			}
 			result.Path = "<source-tree>"
 			result.NextCommand = "goobers agent-kit check '<source-tree>'"
+			for i := range result.Commands {
+				result.Commands[i] = strings.ReplaceAll(result.Commands[i], root, "<source-tree>")
+			}
 			normalized, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
 				t.Fatal(err)
@@ -176,6 +202,9 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 
 func TestOnboardingStubAgentInstructionsRefusesToolkitCollision(t *testing.T) {
 	root := cliAgentKitRepository(t)
+	if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+		t.Fatalf("seed config source: %v", err)
+	}
 	toolkit := filepath.Join(root, ".goobers", "agent-toolkit")
 	if err := os.MkdirAll(toolkit, 0o755); err != nil {
 		t.Fatal(err)
@@ -189,6 +218,7 @@ func TestOnboardingStubAgentInstructionsRefusesToolkitCollision(t *testing.T) {
 		t,
 		"onboarding", "stub-agent-instructions",
 		"--source-tree", root,
+		"--harness", "generic",
 		"--json",
 	)
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "exists without an installed manifest") {
@@ -202,6 +232,31 @@ func TestOnboardingStubAgentInstructionsRefusesToolkitCollision(t *testing.T) {
 	}
 }
 
+func TestOnboardingStubAgentInstructionsRejectsNonConfigRepository(t *testing.T) {
+	root := cliAgentKitRepository(t)
+	sentinel := filepath.Join(root, "README.md")
+	if err := os.WriteFile(sentinel, []byte("application repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(
+		t,
+		"onboarding", "stub-agent-instructions",
+		"--source-tree", root,
+		"--harness", "generic",
+		"--json",
+	)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "not a valid Goobers config source") {
+		t.Fatalf("non-config target: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".goobers")); !os.IsNotExist(err) {
+		t.Fatalf("non-config target received toolkit files: %v", err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "application repository\n" {
+		t.Fatalf("non-config target changed: data=%q err=%v", got, err)
+	}
+}
+
 func TestOnboardingStubAgentInstructionsFlagValidation(t *testing.T) {
 	root := cliAgentKitRepository(t)
 	for _, test := range []struct {
@@ -210,6 +265,14 @@ func TestOnboardingStubAgentInstructionsFlagValidation(t *testing.T) {
 		want string
 	}{
 		{name: "missing source", args: []string{"onboarding", "stub-agent-instructions"}, want: "Usage:"},
+		{
+			name: "missing harness",
+			args: []string{
+				"onboarding", "stub-agent-instructions",
+				"--source-tree", root,
+			},
+			want: "Usage:",
+		},
 		{
 			name: "unsupported harness",
 			args: []string{

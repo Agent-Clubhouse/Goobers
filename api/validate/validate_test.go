@@ -219,6 +219,8 @@ spec:
       goal: Query matching backlog items.
       run:
         command: ["goobers", "backlog-query"]
+      capabilities:
+        - github:issues:write
       inputs:
         requireLabels: area:runner
         excludeLabels: goobers:claimed
@@ -334,6 +336,8 @@ spec:
       goal: Query matching backlog items.
       run:
         command: ["goobers", "backlog-query"]
+      capabilities:
+        - github:issues:write
       inputs:
 %s%s`, field("    ", "fieldPredicate", tt.gagglePredicate),
 				field("      ", "fieldPredicate", tt.triggerPredicate),
@@ -1443,6 +1447,24 @@ func TestGaggleSchemaAcceptsCICommandAndRequiredCapabilities(t *testing.T) {
 				t.Fatalf("expected schema validation to pass, got %v", err)
 			}
 		})
+	}
+}
+
+func TestGaggleSchemaAcceptsSelfIdentity(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"selfIdentity": "web-bot",
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle selfIdentity rejected: %v", err)
 	}
 }
 

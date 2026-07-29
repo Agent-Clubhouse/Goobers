@@ -1,6 +1,6 @@
 {
   "action": "stub-sample",
-  "version": 1,
+  "version": 2,
   "created": [
     ".github/workflows/ci.yml",
     ".gitignore",
