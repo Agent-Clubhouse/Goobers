@@ -50,6 +50,7 @@ const defaultConfig: LiveDataConfig = {
 type ModelListener = (
   models: ReadonlySet<UpdateModel>,
   reason: "initial" | "refresh",
+  invalidations?: readonly ModelInvalidation[],
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness) => void;
 
@@ -619,10 +620,10 @@ export class LiveDataController {
     const refreshes: Promise<boolean | void>[] = [];
     for (const subscription of this.listeners) {
       const models = new Set<UpdateModel>();
-      for (const invalidation of invalidations) {
-        if (!matchesScope(invalidation, subscription.scope)) {
-          continue;
-        }
+      const matchingInvalidations = invalidations.filter((invalidation) =>
+        matchesScope(invalidation, subscription.scope),
+      );
+      for (const invalidation of matchingInvalidations) {
         for (const model of invalidation.models) {
           if (subscription.models.has(model)) {
             models.add(model);
@@ -630,7 +631,9 @@ export class LiveDataController {
         }
       }
       if (models.size > 0) {
-        refreshes.push(Promise.resolve(subscription.listener(models, "refresh")));
+        refreshes.push(
+          Promise.resolve(subscription.listener(models, "refresh", matchingInvalidations)),
+        );
       }
     }
     const results = await Promise.all(refreshes);

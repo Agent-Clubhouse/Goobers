@@ -171,6 +171,13 @@ type RunRef struct {
 	StartedAt time.Time
 }
 
+// WorkflowRunRef identifies the newest indexed run in one workflow.
+type WorkflowRunRef struct {
+	RunRef
+	Gaggle   string
+	Workflow string
+}
+
 // RunListFilter is the index-pushable subset of the run-list filters — the
 // stable identity/time columns whose vocabulary is byte-identical between the
 // journal identity and the runs table. Phase/stage/outcome filters are NOT
@@ -265,20 +272,20 @@ func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursor
 	return out, rows.Err()
 }
 
-// LatestTerminalRunRefs returns the newest finished run for each workflow in
-// scope. The aggregate is computed in SQLite so callers hydrate only one
-// authoritative journal per workflow rather than paging the full run history.
-func (db *DB) LatestTerminalRunRefs(gaggle, workflow string) ([]RunRef, error) {
+// LatestWorkflowRunRefs returns the newest indexed run for each workflow in
+// scope. Status is deliberately not considered because the journal is
+// authoritative and the derived row may lag a finish or resume.
+func (db *DB) LatestWorkflowRunRefs(gaggle, workflow string) ([]WorkflowRunRef, error) {
 	query := `
-		SELECT run_id, started_at
+		SELECT run_id, gaggle, workflow, started_at
 		FROM (
-			SELECT run_id, started_at,
+			SELECT run_id, gaggle, workflow, started_at,
 			       ROW_NUMBER() OVER (
 				       PARTITION BY gaggle, workflow
 				       ORDER BY started_at DESC, run_id ASC
 			       ) AS row_rank
 			FROM runs
-			WHERE status IS NOT NULL AND status <> ''`
+			WHERE 1=1`
 	var args []any
 	if gaggle != "" {
 		query += " AND gaggle = ?"
@@ -295,16 +302,16 @@ func (db *DB) LatestTerminalRunRefs(gaggle, workflow string) ([]RunRef, error) {
 
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: query latest terminal run refs: %w", err)
+		return nil, fmt.Errorf("rollup: query latest workflow run refs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []RunRef
+	var out []WorkflowRunRef
 	for rows.Next() {
-		var ref RunRef
+		var ref WorkflowRunRef
 		var startedAt sql.NullString
-		if err := rows.Scan(&ref.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan latest terminal run ref: %w", err)
+		if err := rows.Scan(&ref.RunID, &ref.Gaggle, &ref.Workflow, &startedAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan latest workflow run ref: %w", err)
 		}
 		if ref.StartedAt, err = parseTime(startedAt); err != nil {
 			return nil, err

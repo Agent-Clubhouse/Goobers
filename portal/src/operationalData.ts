@@ -13,6 +13,7 @@ import type {
   Goober,
   Health,
   Instance,
+  ModelInvalidation,
   RunPhase,
   RunSummary,
   UpdateModel,
@@ -245,7 +246,7 @@ export function useOperationalSnapshot(
     () =>
       subscribe(
         ["instance", "workflow", "run"],
-        (models, reason) => {
+        (models, reason, invalidations) => {
           const cached =
             reason === "initial"
               ? cache.get<OperationalSnapshot>(cacheKey)
@@ -257,7 +258,7 @@ export function useOperationalSnapshot(
             );
             return true;
           }
-          return refresh(models);
+          return refresh(operationalSnapshotModels(models, invalidations));
         },
         { gaggle, workflow },
       ),
@@ -288,6 +289,24 @@ export function useOperationalSnapshot(
     },
     state,
   };
+}
+
+function operationalSnapshotModels(
+  models: ReadonlySet<UpdateModel>,
+  invalidations: readonly ModelInvalidation[] | undefined,
+): ReadonlySet<UpdateModel> {
+  if (
+    invalidations?.length &&
+    invalidations.every(
+      (invalidation) =>
+        invalidation.models.includes("run") &&
+        invalidation.runIds !== undefined &&
+        invalidation.runIds.length > 0,
+    )
+  ) {
+    return new Set(["run"]);
+  }
+  return models;
 }
 
 export async function loadOperationalSnapshot(

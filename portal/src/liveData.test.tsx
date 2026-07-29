@@ -179,8 +179,16 @@ describe("LiveDataController", () => {
     await settle();
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(matchingRun).toHaveBeenCalledWith(new Set(["run"]), "refresh");
-    expect(matchingWorkflow).toHaveBeenCalledWith(new Set(["run", "workflow"]), "refresh");
+    expect(matchingRun).toHaveBeenCalledWith(
+      new Set(["run"]),
+      "refresh",
+      expect.any(Array),
+    );
+    expect(matchingWorkflow).toHaveBeenCalledWith(
+      new Set(["run", "workflow"]),
+      "refresh",
+      expect.any(Array),
+    );
     expect(unrelatedRun).not.toHaveBeenCalled();
     expect(unrelatedWorkflow).not.toHaveBeenCalled();
 
@@ -286,7 +294,7 @@ describe("LiveDataController", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
-    expect(refresh).toHaveBeenCalledWith(new Set(["run"]), "refresh");
+    expect(refresh).toHaveBeenCalledWith(new Set(["run"]), "refresh", expect.any(Array));
 
     controller.stop();
   });
@@ -333,7 +341,7 @@ describe("LiveDataController", () => {
 
     expect(client.requests[1]).toEqual({ cursor: "session:1" });
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]), "refresh");
+    expect(refresh).toHaveBeenLastCalledWith(new Set(["run"]), "refresh", expect.any(Array));
 
     controller.stop();
   });
@@ -787,13 +795,14 @@ describe("live page integration", () => {
     expect(await screen.findByText("VER002")).toBeInTheDocument();
   });
 
-  it("refreshes live concurrency without reloading the full inventory fan-out", async () => {
+  it("refreshes runs without reloading inventory for run-journal invalidations", async () => {
     vi.useRealTimers();
     window.location.hash = "#/workflows";
     const client = new MutableFixtureClient();
     const listGaggles = vi.spyOn(client, "listGaggles");
     const listGoobers = vi.spyOn(client, "listGoobers");
     const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
     render(<App client={client} />);
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
@@ -811,6 +820,7 @@ describe("live page integration", () => {
     const inventoryGaggleReads = listGaggles.mock.calls.length;
     const inventoryGooberReads = listGoobers.mock.calls.length;
     const inventoryWorkflowReads = listWorkflows.mock.calls.length;
+    const runReads = listRuns.mock.calls.length;
 
     client.setActiveRuns("core", "implementation", 2);
     await act(async () => {
@@ -825,11 +835,12 @@ describe("live page integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
-    expect(await screen.findByText("2 active / 2 max")).toBeInTheDocument();
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
-    expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads + 1);
+    expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
+    expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads);
     expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
-    expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads + 1);
+    expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads);
+    expect(listRuns).toHaveBeenCalledTimes(runReads + 1);
   });
 
   it("shares inventory across page mounts and refetches it after a definition event", async () => {

@@ -337,6 +337,108 @@ func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 	}
 }
 
+func TestLatestWorkflowOutcomesIndexedMatchesScanningWithStaleStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*testing.T, instance.Layout, *workflow.Machine) *rollup.DB
+		want string
+	}{
+		{
+			name: "finish missing from index",
+			seed: func(t *testing.T, layout instance.Layout, machine *workflow.Machine) *rollup.DB {
+				older, olderClock := createFixtureRun(
+					t, layout, machine, "run-older", machine.Def.Name, "goobers",
+					time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC),
+					journal.Trigger{Kind: journal.TriggerManual}, false,
+				)
+				finishFixtureRun(t, older, olderClock, journal.PhaseCompleted)
+				newer, newerClock := createFixtureRun(
+					t, layout, machine, "run-newer", machine.Def.Name, "goobers",
+					time.Date(2026, 7, 1, 13, 0, 0, 0, time.UTC),
+					journal.Trigger{Kind: journal.TriggerManual}, false,
+				)
+				if err := newer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db := buildIndex(t, layout)
+				newer, _, err := journal.Recover(
+					filepath.Join(layout.RunsDir(), "run-newer"),
+					journal.WithClock(func() time.Time { return newerClock.now }),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				finishFixtureRun(t, newer, newerClock, journal.PhaseCompleted)
+				return db
+			},
+			want: "[run-newer]",
+		},
+		{
+			name: "resume missing from index",
+			seed: func(t *testing.T, layout instance.Layout, machine *workflow.Machine) *rollup.DB {
+				older, olderClock := createFixtureRun(
+					t, layout, machine, "run-older", machine.Def.Name, "goobers",
+					time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC),
+					journal.Trigger{Kind: journal.TriggerManual}, false,
+				)
+				finishFixtureRun(t, older, olderClock, journal.PhaseCompleted)
+				newer, newerClock := createFixtureRun(
+					t, layout, machine, "run-newer", machine.Def.Name, "goobers",
+					time.Date(2026, 7, 1, 13, 0, 0, 0, time.UTC),
+					journal.Trigger{Kind: journal.TriggerManual}, false,
+				)
+				newerClock.advance(time.Second)
+				if err := newer.Append(journal.Event{
+					Type:   journal.EventRunFinished,
+					Status: string(journal.PhaseEscalated),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := newer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db := buildIndex(t, layout)
+				newer, _, err := journal.Recover(
+					filepath.Join(layout.RunsDir(), "run-newer"),
+					journal.WithClock(func() time.Time { return newerClock.now }),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				newerClock.advance(time.Second)
+				if err := newer.Append(journal.Event{
+					Type:   journal.EventRunResumed,
+					Status: string(journal.PhaseEscalated),
+					Target: "implement",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := newer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				return db
+			},
+			want: "[run-older]",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, layout, machine := fixtureService(t)
+			indexed, scanning := indexedAndScanning(t, layout, test.seed(t, layout, machine))
+			options := RunListOptions{LatestPerWorkflow: true}
+			gotIndexed := listAllPages(t, indexed, options)
+			gotScanning := listAllPages(t, scanning, options)
+			if fmt.Sprint(gotIndexed) != test.want {
+				t.Fatalf("indexed latest workflow outcomes = %v, want %s", gotIndexed, test.want)
+			}
+			if fmt.Sprint(gotScanning) != fmt.Sprint(gotIndexed) {
+				t.Fatalf("indexed vs scanning diverge: indexed=%v scanning=%v", gotIndexed, gotScanning)
+			}
+		})
+	}
+}
+
 // TestListRunsIndexedPhaseFilterIsBoundedNotScanned proves the #1197
 // dashboard-timeout fix: on an instance with a large terminal run history and
 // only a handful of still-running runs, filtering by Phase=running must not

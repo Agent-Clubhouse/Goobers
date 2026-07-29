@@ -407,7 +407,7 @@ func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options R
 	if err := s.reconcileIndex(ctx); err != nil {
 		return RunList{}, err
 	}
-	refs, err := s.sources.Telemetry.LatestTerminalRunRefs(options.Gaggle, options.Workflow)
+	refs, err := s.sources.Telemetry.LatestWorkflowRunRefs(options.Gaggle, options.Workflow)
 	if err != nil {
 		return RunList{}, err
 	}
@@ -415,23 +415,62 @@ func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options R
 	observedAt := s.now().UTC()
 	summaries := make([]RunSummary, 0, len(refs))
 	for _, ref := range refs {
-		if err := ctx.Err(); err != nil {
+		summary, err := s.latestTerminalWorkflowOutcome(ctx, ref, observedAt)
+		if err != nil {
 			return RunList{}, err
 		}
-		run, err := s.openRun(ref.RunID)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			return RunList{}, err
+		if summary != nil {
+			summaries = append(summaries, *summary)
 		}
-		summary, err := summarizeRunForStage(run, observedAt, "")
-		if err != nil {
-			return RunList{}, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
-		}
-		summaries = append(summaries, summary)
 	}
 	return latestWorkflowOutcomes(summaries, options), nil
+}
+
+func (s *Local) latestTerminalWorkflowOutcome(
+	ctx context.Context,
+	workflowRef rollup.WorkflowRunRef,
+	observedAt time.Time,
+) (*RunSummary, error) {
+	refs := []rollup.RunRef{workflowRef.RunRef}
+	for {
+		for _, ref := range refs {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			run, err := s.openRun(ref.RunID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			summary, err := summarizeRunForStage(run, observedAt, "")
+			if err != nil {
+				return nil, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
+			}
+			if summary.Terminal {
+				return &summary, nil
+			}
+		}
+
+		cursor := refs[len(refs)-1]
+		var err error
+		refs, err = s.sources.Telemetry.RunRefPage(
+			rollup.RunListFilter{
+				Gaggle:   workflowRef.Gaggle,
+				Workflow: workflowRef.Workflow,
+			},
+			cursor.StartedAt,
+			cursor.RunID,
+			defaultRunLimit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(refs) == 0 {
+			return nil, nil
+		}
+	}
 }
 
 func latestWorkflowOutcomes(summaries []RunSummary, options RunListOptions) RunList {

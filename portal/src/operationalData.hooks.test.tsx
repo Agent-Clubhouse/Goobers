@@ -266,6 +266,48 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
     expect(listRuns).toHaveBeenCalledTimes(expected.runs);
     unmount();
   });
+
+  it("treats production run-journal invalidations as run-only refreshes", async () => {
+    const client = new LiveSnapshotClient(populatedDaemonFixtures());
+    const getHealth = vi.spyOn(client, "getHealth");
+    const getInstance = vi.spyOn(client, "getInstance");
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
+    const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    getHealth.mockClear();
+    getInstance.mockClear();
+    listGaggles.mockClear();
+    listGoobers.mockClear();
+    listWorkflows.mockClear();
+    listRuns.mockClear();
+
+    act(() => {
+      client.stream.push({
+        id: "session:1",
+        type: "invalidate",
+        data: {
+          cursor: "session:1",
+          models: ["instance", "run", "workflow"],
+          runIds: ["run-1"],
+          workflows: [{ gaggle: "core", name: "implementation" }],
+        },
+      });
+    });
+
+    await waitFor(() => expect(getHealth).toHaveBeenCalledOnce());
+    expect(getInstance).toHaveBeenCalledOnce();
+    expect(listGaggles).not.toHaveBeenCalled();
+    expect(listGoobers).not.toHaveBeenCalled();
+    expect(listWorkflows).not.toHaveBeenCalled();
+    expect(listRuns).toHaveBeenCalledOnce();
+    unmount();
+  });
 });
 
 function invalidation(id: string): DaemonUpdateEvent {
