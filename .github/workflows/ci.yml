@@ -67,6 +67,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -107,6 +110,9 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -141,6 +147,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -183,6 +192,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -229,6 +241,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -262,6 +277,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -365,6 +383,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -393,6 +414,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -428,6 +452,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
@@ -467,6 +494,9 @@ jobs:
           cache: true
 
       - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if go mod download; then exit 0; fi
