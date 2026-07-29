@@ -27,16 +27,17 @@ import (
 //
 // apiReadCache wraps the provider's HTTPClient seam (providers/http.go) with a
 // disk-backed conditional-GET cache: on a GET it attaches If-None-Match from a
-// stored ETag, and a GitHub 304 Not Modified — which does NOT count against the
-// primary REST quota — is transparently replayed from the cached body. So an
-// unchanged tick costs ~0 quota, and cost tracks change instead of backlog size.
+// stored strong ETag, and a GitHub 304 Not Modified — which does NOT count
+// against the primary REST quota — is transparently replayed from the cached
+// body. For endpoints with strong validators, an unchanged tick costs ~0 quota,
+// and cost tracks change instead of backlog size.
 //
-// Correctness: a GitHub ETag is a content hash, so a 304 is GitHub asserting the
-// body is byte-identical to what we cached — replaying it is zero-staleness, not
-// "cached but possibly stale." Last-Modified is retained as the weaker fallback
-// for endpoints without ETags. The cache is also strictly fail-open: any lock,
-// read, write, or corruption error falls through to the normal full GET, so it
-// can never return wrong data or fail a request the network would have served.
+// Correctness: only a strong ETag can validate byte-equivalent content. GitHub's
+// weak ETags are persisted but never sent in conditional requests because weak
+// validators on label-filtered issue collections can remain unchanged when
+// membership changes. Last-Modified is retained as the fallback for endpoints
+// without ETags. The cache is also strictly fail-open: any lock, read, write, or
+// corruption error falls through to the normal full GET.
 //
 // It mirrors the established cross-process cache discipline (#758 merge-policy,
 // #523 sibling context): a single JSON file under the instance scheduler dir,
@@ -133,8 +134,8 @@ func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
 // apiReadCacheOption returns a provider option that routes GETs through the
 // shared conditional-GET (ETag) cache under root's instance scheduler dir
 // (#1053), wrapping a default HTTP client with providers' own timeout budget.
-// Provider list consumers apply it so an unchanged tick's list GETs become
-// zero-quota 304s and all stages share one ETag store.
+// Provider list consumers apply it so strongly validated unchanged GETs become
+// zero-quota 304s and all stages share one response store.
 func apiReadCacheOption(root string) func(*providers.GitHubProvider) {
 	return apiReadCacheOptionForSnapshot(layoutFor(root).SchedulerDir(), os.Getenv(providersnapshot.EnvVar))
 }
@@ -220,12 +221,15 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, snapshot bool, save func(apiReadCacheEntry)) (*http.Response, error) {
+	validatorSent := false
 	if hit {
 		switch {
-		case entry.ETag != "":
+		case isStrongETag(entry.ETag):
 			req.Header.Set("If-None-Match", entry.ETag)
-		case entry.LastModified != "":
+			validatorSent = true
+		case entry.ETag == "" && entry.LastModified != "":
 			req.Header.Set("If-Modified-Since", entry.LastModified)
+			validatorSent = true
 		}
 	}
 	resp, err := c.do(req)
@@ -233,8 +237,9 @@ func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, sn
 		return resp, err
 	}
 
-	// 304 is only replayable when we sent a validator and still hold its body.
-	if resp.StatusCode == http.StatusNotModified && hit {
+	// 304 is only replayable when this cache sent a trustworthy validator and
+	// still holds the corresponding body.
+	if resp.StatusCode == http.StatusNotModified && hit && validatorSent {
 		_ = resp.Body.Close()
 		validatorChanged := false
 		if etag := resp.Header.Get("ETag"); etag != "" {
@@ -277,6 +282,11 @@ func (c *apiReadCache) fetch(req *http.Request, entry apiReadCacheEntry, hit, sn
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
 	return resp, nil
+}
+
+func isStrongETag(etag string) bool {
+	etag = strings.TrimSpace(etag)
+	return etag != "" && !strings.HasPrefix(etag, "W/")
 }
 
 func (c *apiReadCache) do(req *http.Request) (*http.Response, error) {
@@ -358,9 +368,7 @@ func (c *apiReadCache) replaceMemory(entries map[string]apiReadCacheEntry) {
 	c.mu.Unlock()
 }
 
-// store records entry in memory and persists it. Persistence happens only on a
-// changed resource (a 200 with a new ETag) — an all-304 tick writes nothing, so
-// disk I/O tracks change, not tick count. A persist failure is swallowed
+// store records entry in memory and persists it. A persist failure is swallowed
 // (fail-open): the in-memory copy still serves the rest of this process.
 func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
 	c.mu.Lock()
