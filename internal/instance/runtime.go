@@ -12,6 +12,13 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
+// RuntimeMigration reports populated legacy runtime directories moved into a
+// gaggle-scoped layout.
+type RuntimeMigration struct {
+	Gaggle    string
+	MovedDirs []string
+}
+
 // EnsureGaggleRuntime creates the runs and workcopies directories for gaggle.
 func (l Layout) EnsureGaggleRuntime(gaggle string) error {
 	if err := validateGagglePathName(gaggle); err != nil {
@@ -108,10 +115,18 @@ func (l Layout) FindRunDir(runID string) (string, error) {
 // gaggle. Multi-gaggle instances retain populated flat roots so their legacy
 // journals and Git worktree metadata remain readable.
 func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
+	_, err := l.MigrateLegacyRuntimeWithReport(gaggles)
+	return err
+}
+
+// MigrateLegacyRuntimeWithReport performs MigrateLegacyRuntime and reports
+// populated directories that were moved during this call.
+func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigration, error) {
 	names, err := normalizedGaggles(gaggles)
 	if err != nil {
-		return err
+		return RuntimeMigration{}, err
 	}
+	migration := RuntimeMigration{}
 
 	legacyHasData := false
 	for _, legacy := range []string{l.RunsDir(), l.WorkcopiesDir()} {
@@ -120,13 +135,13 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 		}
 		hasFiles, inspectErr := dirHasFiles(legacy)
 		if inspectErr != nil {
-			return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, inspectErr)
+			return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, inspectErr)
 		}
 		legacyHasData = legacyHasData || hasFiles
 	}
 	scopedRuntimeExists, err := l.scopedRuntimeExists()
 	if err != nil {
-		return err
+		return RuntimeMigration{}, err
 	}
 	preserveLegacy := legacyHasData && scopedRuntimeExists
 	if len(names) == 1 && !preserveLegacy {
@@ -135,8 +150,13 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 			{l.RunsDir(), scoped.RunsDir()},
 			{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
 		} {
-			if err := migrateLegacyDir(pair[0], pair[1]); err != nil {
-				return err
+			moved, err := migrateLegacyDir(pair[0], pair[1])
+			if err != nil {
+				return RuntimeMigration{}, err
+			}
+			if moved {
+				migration.Gaggle = names[0]
+				migration.MovedDirs = append(migration.MovedDirs, filepath.Base(pair[0]))
 			}
 		}
 	} else if !legacyHasData {
@@ -146,20 +166,20 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
+				return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
 				continue
 			}
 			if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
+				return RuntimeMigration{}, fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
 			}
 		}
 	}
 
 	for _, gaggle := range names {
 		if err := l.EnsureGaggleRuntime(gaggle); err != nil {
-			return err
+			return RuntimeMigration{}, err
 		}
 	}
 	if len(names) == 1 && !preserveLegacy {
@@ -169,11 +189,11 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 			{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
 		} {
 			if err := ensureLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
-				return err
+				return RuntimeMigration{}, err
 			}
 		}
 	}
-	return nil
+	return migration, nil
 }
 
 func (l Layout) scopedRuntimeExists() (bool, error) {
@@ -200,52 +220,52 @@ func (l Layout) scopedRuntimeExists() (bool, error) {
 	return false, nil
 }
 
-func migrateLegacyDir(legacy, scoped string) error {
+func migrateLegacyDir(legacy, scoped string) (bool, error) {
 	if info, err := os.Lstat(legacy); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		target, err := filepath.EvalSymlinks(legacy)
 		if err != nil {
-			return fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
+			return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
 		}
 		if isGeneratedRuntimeAlias(legacy, target) {
-			return nil
+			return false, nil
 		}
 		scopedAbs, err := filepath.EvalSymlinks(scoped)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if target != scopedAbs {
-			return fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
+			return false, fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
 		}
-		return nil
+		return false, nil
 	}
 	hasFiles, err := dirHasFiles(legacy)
 	if err != nil {
-		return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
+		return false, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
 	}
 	if !hasFiles {
 		if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
+			return false, fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
 		}
-		return os.MkdirAll(scoped, 0o755)
+		return false, os.MkdirAll(scoped, 0o755)
 	}
 
 	scopedHasFiles, err := dirHasFiles(scoped)
 	if err != nil {
-		return fmt.Errorf("inspect scoped runtime directory %s: %w", scoped, err)
+		return false, fmt.Errorf("inspect scoped runtime directory %s: %w", scoped, err)
 	}
 	if scopedHasFiles {
-		return fmt.Errorf("cannot migrate legacy runtime %s: destination %s is not empty", legacy, scoped)
+		return false, fmt.Errorf("cannot migrate legacy runtime %s: destination %s is not empty", legacy, scoped)
 	}
 	if err := os.Remove(scoped); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove empty migration destination %s: %w", scoped, err)
+		return false, fmt.Errorf("remove empty migration destination %s: %w", scoped, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(scoped), 0o755); err != nil {
-		return fmt.Errorf("create migration parent for %s: %w", scoped, err)
+		return false, fmt.Errorf("create migration parent for %s: %w", scoped, err)
 	}
 	if err := durability.Move(legacy, scoped); err != nil {
-		return fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
+		return false, fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
 	}
-	return nil
+	return true, nil
 }
 
 func isGeneratedRuntimeAlias(legacy, target string) bool {

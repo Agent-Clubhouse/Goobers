@@ -127,8 +127,12 @@ func (r *configReloader) poll(now time.Time) error {
 	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
-	if err := r.layout.MigrateLegacyRuntime(configuredGaggleNames(set)); err != nil {
+	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
+	if err != nil {
 		return r.reject(digest, err)
+	}
+	if err := journalLegacyRuntimeMigration(r.setup.InstanceLog, runtimeMigration); err != nil {
+		return r.reject(digest, fmt.Errorf("journal legacy runtime migration: %w", err))
 	}
 	definitions, err := buildSchedulerDefinitions(
 		r.layout,

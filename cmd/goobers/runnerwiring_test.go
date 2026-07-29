@@ -1380,6 +1380,56 @@ func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing
 	}
 }
 
+func TestBuildSchedulerSetupJournalsLegacyRuntimeMigration(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "legacy-run", Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacyWorkcopy := filepath.Join(layout.WorkcopiesDir(), "legacy-repo", "repo.git", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(legacyWorkcopy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyWorkcopy, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), layout, &wg)
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup: %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["note"] == legacyRuntimeMigrationNote {
+			notes = append(notes, event)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("legacy runtime migration notes = %d, want 1: %+v", len(notes), events)
+	}
+	if notes[0].Runner["gaggle"] != "example" {
+		t.Fatalf("migration gaggle = %v, want example", notes[0].Runner["gaggle"])
+	}
+	moved, ok := notes[0].Runner["movedDirectories"].([]any)
+	if !ok || !slices.Equal(moved, []any{instance.RunsDirName, instance.WorkcopiesDirName}) {
+		t.Fatalf("moved directories = %#v, want runs and workcopies", notes[0].Runner["movedDirectories"])
+	}
+}
+
 // TestBuildCredentialsAgentModel: a credentials: entry for agent:model adds a
 // grant sourced from its own token, leaving the repo-backed capabilities intact
 // — the two-tokens-one-subprocess case (#287).

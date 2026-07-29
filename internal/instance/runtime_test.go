@@ -74,8 +74,12 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 		}
 	}
 
-	if err := layout.MigrateLegacyRuntime([]string{"alpha"}); err != nil {
+	migration, err := layout.MigrateLegacyRuntimeWithReport([]string{"alpha"})
+	if err != nil {
 		t.Fatalf("MigrateLegacyRuntime: %v", err)
+	}
+	if migration.Gaggle != "alpha" || !reflect.DeepEqual(migration.MovedDirs, []string{RunsDirName, WorkcopiesDirName}) {
+		t.Fatalf("migration report = %+v", migration)
 	}
 	scoped := layout.ForGaggle("alpha")
 	for _, path := range []string{
@@ -91,6 +95,13 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 		if err != nil || info.Mode()&os.ModeSymlink == 0 {
 			t.Fatalf("legacy path %s is not a compatibility symlink: %v", path, err)
 		}
+	}
+	migration, err = layout.MigrateLegacyRuntimeWithReport([]string{"alpha"})
+	if err != nil {
+		t.Fatalf("repeat MigrateLegacyRuntime: %v", err)
+	}
+	if migration.Gaggle != "" || len(migration.MovedDirs) != 0 {
+		t.Fatalf("repeat migration report = %+v, want empty", migration)
 	}
 }
 
