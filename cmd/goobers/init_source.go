@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -258,11 +259,27 @@ func promptGuidedAgentToolkit(
 	if !ok {
 		return guidedAgentToolkitSelection{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
 	}
+	initializeRepository := source.Mode == guidedSourceNewLocal
 	state, modified, missing, err := inspectGuidedAgentToolkitState(inspectionRoot, bundle)
+	if source.Mode == guidedSourceExistingLocal && errors.Is(err, agentkit.ErrRepositoryMarkerMissing) {
+		initialize, promptErr := p.ask(
+			"Initialize the selected config source with Git for agent toolkit installation? (yes/no)",
+			"no",
+			validYesNo,
+		)
+		if promptErr != nil {
+			return guidedAgentToolkitSelection{}, promptErr
+		}
+		if !isYes(initialize) {
+			pln(p.out, "Agent toolkit installation skipped; the selected config source remains non-Git and no toolkit files were written.")
+			return guidedAgentToolkitSelection{}, nil
+		}
+		initializeRepository = true
+		state, modified, missing, err = "not-installed", nil, nil, nil
+	}
 	if err != nil {
 		return guidedAgentToolkitSelection{}, err
 	}
-	initializeRepository := source.Mode == guidedSourceNewLocal
 	pf(p.out, `
 Agent toolkit installation preview:
   destination:       %s
@@ -289,7 +306,7 @@ Agent toolkit installation preview:
 		pf(p.out, "  missing owned:     %s\n", strings.Join(missing, ", "))
 	}
 	if initializeRepository {
-		pln(p.out, "  repository setup:  initialize the selected new config source with Git")
+		pln(p.out, "  repository setup:  initialize the selected config source with Git")
 	}
 	if state != "not-installed" && state != "current" {
 		commands := agentKitMaintenanceCommands(selectedDestination, runtime.GOOS)
@@ -361,7 +378,7 @@ func inspectGuidedAgentToolkitState(
 	repository, err := agentkit.OpenRepository(root)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf(
-			"selected config source %s is not an installable Git repository; choose skip or initialize it before installing Goobers assistance: %w",
+			"selected config source %s cannot be inspected for agent toolkit installation: %w",
 			root,
 			err,
 		)

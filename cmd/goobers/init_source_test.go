@@ -162,6 +162,83 @@ func TestGuidedInitInstallsAgentToolkitForEachHarness(t *testing.T) {
 	}
 }
 
+func TestGuidedInitHandlesNonGitExistingLocalSourceAfterHarnessSelection(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialize bool
+	}{
+		{name: "skip"},
+		{name: "initialize", initialize: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := onboardingTestTempDir(t)
+			sourceRoot := filepath.Join(base, "config-source")
+			if err := seedGuidedSourceForTest(sourceRoot, guidedSourceTestOptions()); err != nil {
+				t.Fatalf("SeedGuidedConfigSource: %v", err)
+			}
+			sentinel := filepath.Join(sourceRoot, "README.md")
+			if err := os.WriteFile(sentinel, []byte("keep me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			answers := []string{
+				guidedSourceExistingLocal,
+				sourceRoot,
+				"",
+				"yes",
+				"generic",
+				"",
+			}
+			if test.initialize {
+				answers = append(answers, "yes", "yes")
+			} else {
+				answers = append(answers, "no")
+			}
+			var stdout, stderr bytes.Buffer
+
+			_, _, code, err := runGuidedInit(
+				filepath.Join(base, "instance"),
+				strings.NewReader(strings.Join(answers, "\n")+"\n"),
+				&stdout,
+				&stderr,
+				&fakeGuidedGitHubOperations{},
+			)
+			if err != nil || code != 0 {
+				t.Fatalf("runGuidedInit: code=%d err=%v stdout=%q stderr=%q", code, err, stdout.String(), stderr.String())
+			}
+			data, err := os.ReadFile(sentinel)
+			if err != nil || string(data) != "keep me\n" {
+				t.Fatalf("existing instructions changed: data=%q err=%v", data, err)
+			}
+			if !strings.Contains(stdout.String(), "Initialize the selected config source with Git for agent toolkit installation?") {
+				t.Fatalf("guided output did not offer explicit Git initialization:\n%s", stdout.String())
+			}
+			for _, path := range []string{
+				filepath.Join(sourceRoot, ".git"),
+				filepath.Join(sourceRoot, filepath.FromSlash(agentkit.InstalledManifestPath)),
+			} {
+				_, statErr := os.Stat(path)
+				if test.initialize && statErr != nil {
+					t.Errorf("initialized toolkit path %s: %v", path, statErr)
+				}
+				if !test.initialize && !os.IsNotExist(statErr) {
+					t.Errorf("skipped initialization changed %s: %v", path, statErr)
+				}
+			}
+			if test.initialize {
+				if !strings.Contains(stdout.String(), "repository setup:  initialize the selected config source with Git") {
+					t.Errorf("installation preview omitted Git initialization:\n%s", stdout.String())
+				}
+			} else if !strings.Contains(
+				stdout.String(),
+				"Agent toolkit installation skipped; the selected config source remains non-Git and no toolkit files were written.",
+			) {
+				t.Errorf("guided output did not report the non-Git skip:\n%s", stdout.String())
+			}
+		})
+	}
+}
+
 func TestGuidedAgentToolkitPreviewReportsInstalledStatesWithoutWriting(t *testing.T) {
 	tests := []struct {
 		name       string
