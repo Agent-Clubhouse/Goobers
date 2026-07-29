@@ -128,19 +128,21 @@ func reconcileBacklogMetadata(
 		}
 		var correctionErr error
 		if correction.orphanedClaim {
-			_, correctionErr = provider.ReconcileOrphanedWorkItemClaim(
-				ctx,
-				repo,
-				current.ID,
-				correction.removeLabels,
-				comment,
-			)
-			if correctionErr == nil && correction.closeTrackingParent {
+			if correction.closeTrackingParent {
 				_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 					Repository: repo,
 					ID:         current.ID,
 					State:      state,
 				})
+			}
+			if correctionErr == nil {
+				_, correctionErr = provider.ReconcileOrphanedWorkItemClaim(
+					ctx,
+					repo,
+					current.ID,
+					correction.removeLabels,
+					comment,
+				)
 			}
 		} else {
 			_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
