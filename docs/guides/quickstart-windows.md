@@ -136,6 +136,11 @@ development gate on a shell-less Windows host.
 
 ## 5. Scaffold and configure an instance
 
+Keep the instance root outside the target repository and use a short path for
+worktree path-length headroom. Choose whether the config source is
+instance-local, an in-repo subtree, or a separate config repository using the
+[instance and config placement guide](instance-placement.md).
+
 ```powershell
 goobers init C:\goobers\my-instance
 ```
