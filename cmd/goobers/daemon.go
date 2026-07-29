@@ -26,6 +26,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle layout"
+
 // schedulerSetup bundles everything both `up` and `run` need to build a
 // localscheduler.Scheduler over an instance's config: per-gaggle runners and
 // worktree managers, the
@@ -159,7 +161,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	gaggles := configuredGaggleNames(set)
-	if err := l.MigrateLegacyRuntime(gaggles); err != nil {
+	runtimeMigration, err := l.MigrateLegacyRuntimeWithReport(gaggles)
+	if err != nil {
 		return nil, err
 	}
 	claimProviders := claimProvidersByGaggle(set)
@@ -222,6 +225,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
+	}
+	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
+		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	var recoveredClaims []localscheduler.ClaimEntry
 	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
@@ -304,6 +310,43 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		RunnerRegistry:    runnerRegistry,
 		SecretStores:      secretStores,
 	}, nil
+}
+
+func journalLegacyRuntimeMigration(l instance.Layout, instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
+	if len(migration.MovedDirs) == 0 {
+		return nil
+	}
+	events, err := journal.ReadInstanceLog(instanceLog.Dir())
+	if err != nil {
+		return fmt.Errorf("read instance log: %w", err)
+	}
+	journaled := false
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["note"] == legacyRuntimeMigrationNote &&
+			event.Runner["migrationId"] == migration.ID {
+			journaled = true
+			break
+		}
+	}
+	if !journaled {
+		if err := instanceLog.Append(legacyRuntimeMigrationEvent(migration)); err != nil {
+			return err
+		}
+	}
+	return l.CompleteLegacyRuntimeMigration(migration)
+}
+
+func legacyRuntimeMigrationEvent(migration instance.RuntimeMigration) journal.Event {
+	return journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"note":             legacyRuntimeMigrationNote,
+			"migrationId":      migration.ID,
+			"gaggle":           migration.Gaggle,
+			"movedDirectories": migration.MovedDirs,
+		},
+	}
 }
 
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {

@@ -3,6 +3,7 @@ import {
   API_VERSION,
   SCHEMA_VERSION,
   type Gaggle,
+  type GaggleConnections,
   type Goober,
   type RunDetail,
   type RunEvent,
@@ -43,6 +44,34 @@ const toolsGaggle: Gaggle = {
   activeRunCount: 0,
   warnings: [],
 };
+
+function connections(gaggle: Gaggle): GaggleConnections {
+  return {
+    gaggle: gaggle.name,
+    repositories: [
+      {
+        repository: {
+          provider: gaggle.project.provider,
+          owner: gaggle.project.owner,
+          name: gaggle.project.name,
+        },
+        accessMode: "read-write",
+      },
+      ...(gaggle.name === "core"
+        ? [
+            {
+              repository: {
+                provider: "github" as const,
+                owner: "Agent-Clubhouse",
+                name: "Clubhouse",
+              },
+              accessMode: "read-only" as const,
+            },
+          ]
+        : []),
+    ],
+  };
+}
 
 function workflow(gaggle: string): WorkflowSummary {
   return {
@@ -415,6 +444,10 @@ export function populatedDaemonFixtures(): DaemonFixtures {
     workflows: {
       core: { items: [coreWorkflow], page: page(1) },
       tools: { items: [toolsWorkflow], page: page(1) },
+    },
+    connections: {
+      core: connections(coreGaggle),
+      tools: connections(toolsGaggle),
     },
     workflowDetails: {
       [fixtureKey("core", "implementation")]: workflowDetail("core"),
@@ -902,6 +935,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     gaggles: { items: [], page: page(0) },
     goobers: {},
     workflows: {},
+    connections: {},
     workflowDetails: {},
     runs: { runs: [] },
     runDetails: {},

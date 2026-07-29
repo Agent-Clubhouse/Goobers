@@ -382,6 +382,10 @@ func (r *telemetryParityReader) Workflows(context.Context, string, readservice.P
 	return readservice.WorkflowPage{}, nil
 }
 
+func (r *telemetryParityReader) Connections(context.Context, string) (readservice.GaggleConnections, error) {
+	return readservice.GaggleConnections{}, nil
+}
+
 func (r *telemetryParityReader) Workflow(context.Context, string, string) (readservice.WorkflowDetail, error) {
 	return readservice.WorkflowDetail{}, nil
 }
