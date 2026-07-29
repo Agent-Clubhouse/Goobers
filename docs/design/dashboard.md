@@ -594,7 +594,9 @@ with that index (or an equivalent maintained run-summary store) so a bounded,
 filtered, sorted page is a bounded query, not a full-history parse. Run *detail*
 continues to read the authoritative journal for the one run in view. The journal
 remains the source of truth (section 2); the index is a derived, rebuildable
-projection, consistent with the shared-read-service architecture.
+projection, consistent with the shared-read-service architecture. The unified
+projection lifecycle, query model, and follow-up boundaries are specified in
+[`unified-index-backed-run-reads.md`](unified-index-backed-run-reads.md).
 
 ## 15. Smaller corrections carried in this pass
 
