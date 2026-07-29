@@ -292,12 +292,35 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	if len(completed.Runs) != 1 || completed.Runs[0].ID != "run-a" {
 		t.Fatalf("completed runs = %+v", completed.Runs)
 	}
+	otherActive, _ := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-f",
+		"implementation",
+		"other",
+		base.Add(4*time.Minute),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	if err := otherActive.Close(); err != nil {
+		t.Fatal(err)
+	}
 	latest, err := service.ListRuns(context.Background(), RunListOptions{LatestPerWorkflow: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := runIDs(latest); fmt.Sprint(got) != "[run-e run-b run-c]" {
 		t.Fatalf("latest workflow outcomes = %v", got)
+	}
+	if len(latest.WorkflowActivity) != 2 ||
+		latest.WorkflowActivity[0].Gaggle != "goobers" ||
+		latest.WorkflowActivity[0].Workflow != "implementation" ||
+		latest.WorkflowActivity[0].ActiveRuns != 1 ||
+		latest.WorkflowActivity[1].Gaggle != "other" ||
+		latest.WorkflowActivity[1].Workflow != "implementation" ||
+		latest.WorkflowActivity[1].ActiveRuns != 1 {
+		t.Fatalf("latest workflow activity = %+v", latest.WorkflowActivity)
 	}
 	scopedLatest, err := service.ListRuns(context.Background(), RunListOptions{
 		Gaggle:            "goobers",
@@ -308,6 +331,12 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	}
 	if got := runIDs(scopedLatest); fmt.Sprint(got) != "[run-e run-b]" {
 		t.Fatalf("scoped latest workflow outcomes = %v", got)
+	}
+	if len(scopedLatest.WorkflowActivity) != 1 ||
+		scopedLatest.WorkflowActivity[0].Gaggle != "goobers" ||
+		scopedLatest.WorkflowActivity[0].Workflow != "implementation" ||
+		scopedLatest.WorkflowActivity[0].ActiveRuns != 1 {
+		t.Fatalf("scoped workflow activity = %+v", scopedLatest.WorkflowActivity)
 	}
 
 	if _, err := service.ListRuns(context.Background(), RunListOptions{Cursor: "not-base64"}); !errors.Is(err, ErrInvalidArgument) {

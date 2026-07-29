@@ -310,7 +310,14 @@ export interface RunListOptions {
 
 export interface RunList {
   runs: RunSummary[];
+  workflowActivity?: WorkflowRunActivity[];
   nextCursor?: string;
+}
+
+export interface WorkflowRunActivity {
+  gaggle: string;
+  workflow: string;
+  activeRuns: number;
 }
 
 export interface RunSummary {

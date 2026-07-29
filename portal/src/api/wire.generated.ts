@@ -405,6 +405,13 @@ export const goWireFixtures = {
         "infraRetryCount": 1
       }
     ],
+    "workflowActivity": [
+      {
+        "gaggle": "core",
+        "workflow": "implementation",
+        "activeRuns": 1
+      }
+    ],
     "nextCursor": "next-run"
   },
   "runDetail": {

@@ -835,8 +835,8 @@ describe("live page integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
 
-    expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("2 active / 2 max")).toBeInTheDocument();
+    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
     expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads);
     expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
     expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads);

@@ -86,6 +86,27 @@ describe("loadOperationalSnapshot", () => {
     expect(snapshot.runs.every((run) => run.gaggle === "core")).toBe(true);
   });
 
+  it("keeps gaggle activity authoritative when an active workflow definition is absent", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      const response = await listRuns(request, options);
+      return {
+        ...response,
+        workflowActivity: [
+          ...(response.workflowActivity ?? []),
+          { gaggle: "core", workflow: "removed-workflow", activeRuns: 1 },
+        ],
+      };
+    });
+
+    const snapshot = await loadOperationalSnapshot(client);
+    const core = snapshot.inventories.find(({ gaggle }) => gaggle.name === "core");
+
+    expect(core?.gaggle.activeRunCount).toBe(2);
+    expect(core?.workflows[0].concurrency.activeRuns).toBe(1);
+  });
+
   it.each([
     {
       model: "run" as UpdateModel,

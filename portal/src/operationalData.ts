@@ -17,6 +17,7 @@ import type {
   RunPhase,
   RunSummary,
   UpdateModel,
+  WorkflowRunActivity,
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
@@ -320,7 +321,7 @@ export async function loadOperationalSnapshot(
     previous === undefined || models === undefined || models.has("instance") || models.has("workflow");
   const wantRuns = previous === undefined || models === undefined || models.has("run");
   const requestOptions = { signal };
-  const [health, instance, inventories, runs] = await Promise.all([
+  const [health, instance, inventories, workflowSnapshot] = await Promise.all([
     client.getHealth(requestOptions),
     client.getInstance(requestOptions),
     wantInventory
@@ -328,10 +329,17 @@ export async function loadOperationalSnapshot(
       : Promise.resolve(previous!.inventories),
     wantRuns
       ? loadWorkflowOutcomes(client, options?.scope, signal)
-      : Promise.resolve(previous!.runs),
+      : Promise.resolve({ runs: previous!.runs, activity: undefined }),
   ]);
 
-  return { health, instance, inventories, runs: sortRuns(runs) };
+  return {
+    health,
+    instance,
+    inventories: workflowSnapshot.activity
+      ? applyWorkflowActivity(inventories, workflowSnapshot.activity)
+      : inventories,
+    runs: sortRuns(workflowSnapshot.runs),
+  };
 }
 
 export function latestWorkflowOutcome(
@@ -369,7 +377,7 @@ async function loadWorkflowOutcomes(
   client: DaemonClient,
   scope?: OperationalScope,
   signal?: AbortSignal,
-): Promise<RunSummary[]> {
+): Promise<{ runs: RunSummary[]; activity: WorkflowRunActivity[] | undefined }> {
   const response = await client.listRuns(
     {
       gaggle: scope?.gaggle,
@@ -378,7 +386,46 @@ async function loadWorkflowOutcomes(
     },
     { signal },
   );
-  return response.runs;
+  return { runs: response.runs, activity: response.workflowActivity ?? [] };
+}
+
+function applyWorkflowActivity(
+  inventories: GaggleInventory[],
+  activity: WorkflowRunActivity[],
+): GaggleInventory[] {
+  const activeRuns = new Map(
+    activity.map((item) => [`${item.gaggle}\u0000${item.workflow}`, item.activeRuns]),
+  );
+  const gaggleActiveRuns = new Map<string, number>();
+  for (const item of activity) {
+    gaggleActiveRuns.set(
+      item.gaggle,
+      (gaggleActiveRuns.get(item.gaggle) ?? 0) + item.activeRuns,
+    );
+  }
+  return inventories.map((inventory) => {
+    const workflows = inventory.workflows.map((workflow) => {
+      const workflowActiveRuns =
+        activeRuns.get(
+          `${workflow.identity.gaggle}\u0000${workflow.identity.name}`,
+        ) ?? 0;
+      return {
+        ...workflow,
+        concurrency: {
+          ...workflow.concurrency,
+          activeRuns: workflowActiveRuns,
+        },
+      };
+    });
+    return {
+      ...inventory,
+      gaggle: {
+        ...inventory.gaggle,
+        activeRunCount: gaggleActiveRuns.get(inventory.gaggle.name) ?? 0,
+      },
+      workflows,
+    };
+  });
 }
 
 function nextCursor(value: string, seen: Set<string>): string {

@@ -169,6 +169,24 @@ export class FixtureDaemonClient implements DaemonClient {
     );
     runs = [...runs].sort(compareRunsNewestFirst);
     if (request?.latestPerWorkflow) {
+      const workflowActivity = Object.entries(this.fixtures.workflows ?? {})
+        .flatMap(([, page]) => page.items)
+        .filter(
+          (workflow) =>
+            workflow.concurrency.activeRuns > 0 &&
+            (!request.gaggle || workflow.identity.gaggle === request.gaggle) &&
+            (!request.workflow || workflow.identity.name === request.workflow),
+        )
+        .map((workflow) => ({
+          gaggle: workflow.identity.gaggle,
+          workflow: workflow.identity.name,
+          activeRuns: workflow.concurrency.activeRuns,
+        }))
+        .sort(
+          (left, right) =>
+            left.gaggle.localeCompare(right.gaggle) ||
+            left.workflow.localeCompare(right.workflow),
+        );
       const seen = new Set<string>();
       runs = runs.filter((run) => {
         if (!run.terminal) {
@@ -181,7 +199,7 @@ export class FixtureDaemonClient implements DaemonClient {
         seen.add(key);
         return true;
       });
-      return structuredClone({ runs });
+      return structuredClone({ runs, workflowActivity });
     }
     if (request?.cursor) {
       const cursor = decodeFixtureCursor(request.cursor);
