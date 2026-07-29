@@ -8,5 +8,15 @@
     ".goobers/agent-toolkit"
   ],
   "path": "\u003csource-tree\u003e",
-  "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'"
+  "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'",
+  "prompts": [
+    "Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: \u003cdescribe the workflow\u003e.",
+    "Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for this Goobers instance.",
+    "Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release."
+  ],
+  "commands": [
+    "goobers agent-kit check '\u003csource-tree\u003e'",
+    "goobers agent-kit update '\u003csource-tree\u003e'",
+    "goobers agent-kit update --write '\u003csource-tree\u003e'"
+  ]
 }

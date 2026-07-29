@@ -1139,8 +1139,10 @@ telemetry.db placeholder. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
-then validates both. The source may be new or existing locally, cloned from
-GitHub, or optionally backed by a newly confirmed GitHub repository.
+then validates both. It can optionally preview and install the release-matched
+agent toolkit into that config source after an explicit harness and destination
+choice. The source may be new or existing locally, cloned from GitHub, or
+optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -1382,7 +1384,7 @@ and collisions or drift fail without overwriting files.
 
 Flags:
   --source-tree <path>  required config source repository root
-  --harness <name>      copilot, claude, or generic (default generic)
+  --harness <name>      required: copilot, claude, or generic
   --json                emit the versioned config-source action envelope
 
 Exit codes: 0 = installed or already current, 1 = unsafe target, collision,

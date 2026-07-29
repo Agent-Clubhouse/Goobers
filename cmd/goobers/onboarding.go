@@ -53,7 +53,7 @@ const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instruct
 	"and collisions or drift fail without overwriting files.\n\n" +
 	"Flags:\n" +
 	"  --source-tree <path>  required config source repository root\n" +
-	"  --harness <name>      copilot, claude, or generic (default generic)\n" +
+	"  --harness <name>      required: copilot, claude, or generic\n" +
 	"  --json                emit the versioned config-source action envelope\n\n" +
 	"Exit codes: 0 = installed or already current, 1 = unsafe target, collision,\n" +
 	"drift, or write error, 2 = usage error.\n"
@@ -82,6 +82,13 @@ type onboardingActionResult struct {
 	Skipped     []string `json:"skipped"`
 	Path        string   `json:"path"`
 	NextCommand string   `json:"nextCommand"`
+	Prompts     []string `json:"prompts,omitempty"`
+	Commands    []string `json:"commands,omitempty"`
+}
+
+type agentToolkitInstallActionResult struct {
+	Action  onboardingActionResult
+	Install agentkit.InstallResult
 }
 
 func executeSeedConfigSourceAction(
@@ -167,13 +174,13 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 	flags := flag.NewFlagSet("onboarding stub-agent-instructions", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	sourceTree := flags.String("source-tree", "", "config source repository root")
-	harness := flags.String("harness", "generic", "harness adapter: copilot, claude, or generic")
+	harness := flags.String("harness", "", "harness adapter: copilot, claude, or generic")
 	jsonOutput := flags.Bool("json", false, "emit the versioned config-source action envelope")
 	flags.Usage = helpUsage(stderr, "onboarding stub-agent-instructions")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*sourceTree) == "" {
+	if flags.NArg() != 0 || strings.TrimSpace(*sourceTree) == "" || strings.TrimSpace(*harness) == "" {
 		flags.Usage()
 		return 2
 	}
@@ -181,26 +188,73 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 		pf(stderr, "error: unsupported harness %q (want copilot, claude, or generic)\n", *harness)
 		return 2
 	}
-	absolute, err := filepath.Abs(*sourceTree)
+	executed, err := executeAgentToolkitInstallAction(*sourceTree, *harness, runtime.GOOS)
 	if err != nil {
-		pf(stderr, "error: resolve config source path: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+
+	if *jsonOutput {
+		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, executed.Action); err != nil {
+			pf(stderr, "error: encode onboarding action result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	printOnboardingActionResult(stdout, executed.Action)
+	writeAgentKitNextSteps(stdout, executed.Action.Path)
+	return 0
+}
+
+func executeAgentToolkitInstallAction(
+	sourceTree, harness, goos string,
+) (agentToolkitInstallActionResult, error) {
+	if !supportedAgentKitHarness(harness) {
+		return agentToolkitInstallActionResult{}, fmt.Errorf(
+			"unsupported harness %q (want copilot, claude, or generic)",
+			harness,
+		)
+	}
+	absolute, err := filepath.Abs(sourceTree)
+	if err != nil {
+		return agentToolkitInstallActionResult{}, fmt.Errorf("resolve config source path: %w", err)
+	}
+	if _, err := instance.LoadGuidedSourceConfig(absolute); err != nil {
+		return agentToolkitInstallActionResult{}, fmt.Errorf(
+			"agent toolkit destination %s is not a valid Goobers config source: %w",
+			absolute,
+			err,
+		)
+	}
+	if _, _, err := instance.LoadConfigDir(absolute); err != nil {
+		return agentToolkitInstallActionResult{}, fmt.Errorf(
+			"agent toolkit destination %s is not a valid Goobers config source: %w",
+			absolute,
+			err,
+		)
 	}
 
 	bundle, err := currentAgentToolkitBundle()
 	if err != nil {
-		pf(stderr, "error: build bundled agent toolkit: %v\n", err)
-		return 1
+		return agentToolkitInstallActionResult{}, fmt.Errorf("build bundled agent toolkit: %w", err)
 	}
 	repository, err := agentkit.OpenRepository(absolute)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return agentToolkitInstallActionResult{}, err
 	}
-	installed, err := repository.Install(bundle, *harness)
+	installed, err := repository.Install(bundle, harness)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return agentToolkitInstallActionResult{}, err
+	}
+	report, err := repository.Check(bundle)
+	if err != nil {
+		return agentToolkitInstallActionResult{}, fmt.Errorf("verify installed agent toolkit: %w", err)
+	}
+	if report.State != "current" {
+		return agentToolkitInstallActionResult{}, fmt.Errorf(
+			"verify installed agent toolkit: state is %s",
+			report.State,
+		)
 	}
 
 	result := onboardingActionResult{
@@ -209,7 +263,9 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 		Created:     []string{},
 		Skipped:     []string{},
 		Path:        absolute,
-		NextCommand: "goobers agent-kit check " + quoteShellArg(absolute, runtime.GOOS),
+		NextCommand: "goobers agent-kit check " + quoteShellArg(absolute, goos),
+		Prompts:     agentKitStarterPrompts(),
+		Commands:    agentKitMaintenanceCommands(absolute, goos),
 	}
 	if installed.Installed {
 		result.Created = append(result.Created, agentkit.InstalledRoot)
@@ -221,16 +277,7 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 	} else {
 		result.Skipped = append(result.Skipped, installed.InstructionPath)
 	}
-
-	if *jsonOutput {
-		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, result); err != nil {
-			pf(stderr, "error: encode onboarding action result: %v\n", err)
-			return 1
-		}
-		return 0
-	}
-	printOnboardingActionResult(stdout, result)
-	return 0
+	return agentToolkitInstallActionResult{Action: result, Install: installed}, nil
 }
 
 func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {

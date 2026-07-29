@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	goobersassets "github.com/goobers/goobers"
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -74,6 +77,200 @@ func TestGuidedInitUsesExistingLocalSourceNonDestructively(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(instanceRoot, "config", "README.md")); !os.IsNotExist(err) {
 		t.Fatalf("non-definition source file materialized into runtime config: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sourceRoot, agentkit.InstalledRoot)); !os.IsNotExist(err) {
+		t.Fatalf("skipped toolkit installation changed config source: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Skipping agent toolkit installation; no toolkit files will be written.") {
+		t.Fatalf("guided output did not report side-effect-free skip:\n%s", stdout.String())
+	}
+}
+
+func TestGuidedInitInstallsAgentToolkitForEachHarness(t *testing.T) {
+	tests := []struct {
+		harness     string
+		instruction string
+	}{
+		{harness: "copilot", instruction: ".github/copilot-instructions.md"},
+		{harness: "claude", instruction: "CLAUDE.md"},
+		{harness: "generic", instruction: "AGENTS.md"},
+	}
+	for _, test := range tests {
+		t.Run(test.harness, func(t *testing.T) {
+			base := onboardingTestTempDir(t)
+			sourceRoot := filepath.Join(base, "config-source")
+			instanceRoot := filepath.Join(base, "instance")
+			input := strings.NewReader(strings.Join([]string{
+				guidedSourceNewLocal,
+				sourceRoot,
+				"app-org/widget-service",
+				"",
+				"work-nomination",
+				"",
+				"",
+				"",
+				"no",
+				"yes",
+				test.harness,
+				"",
+				"yes",
+			}, "\n") + "\n")
+			var stdout, stderr bytes.Buffer
+
+			_, _, code, err := runGuidedInit(
+				instanceRoot,
+				input,
+				&stdout,
+				&stderr,
+				&fakeGuidedGitHubOperations{},
+			)
+			if err != nil || code != 0 {
+				t.Fatalf("runGuidedInit: code=%d err=%v stdout=%q stderr=%q", code, err, stdout.String(), stderr.String())
+			}
+			for _, path := range []string{
+				filepath.Join(sourceRoot, ".git"),
+				filepath.Join(sourceRoot, filepath.FromSlash(agentkit.InstalledManifestPath)),
+				filepath.Join(sourceRoot, filepath.FromSlash(test.instruction)),
+			} {
+				if _, err := os.Stat(path); err != nil {
+					t.Errorf("installed path %s: %v", path, err)
+				}
+			}
+			instruction, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(test.instruction)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(instruction), ".goobers/agent-toolkit/adapters/") {
+				t.Fatalf("instruction lacks adapter reference: %q", instruction)
+			}
+			for _, want := range []string{
+				"Agent toolkit installation preview:",
+				"destination:       " + sourceRoot,
+				"harness:           " + test.harness,
+				"Starter prompts:",
+				"Goobers DSL author skill",
+				"Goobers run operator skill",
+				"Goobers workflow upgrade skill",
+				"goobers agent-kit check",
+				"goobers agent-kit update --write",
+			} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("guided output lacks %q:\n%s", want, stdout.String())
+				}
+			}
+		})
+	}
+}
+
+func TestGuidedAgentToolkitPreviewReportsInstalledStatesWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name       string
+		bundle     func(t *testing.T) agentkit.Bundle
+		modify     bool
+		wantState  string
+		wantDetail string
+	}{
+		{
+			name: "current",
+			bundle: func(t *testing.T) agentkit.Bundle {
+				t.Helper()
+				bundle, err := currentAgentToolkitBundle()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return bundle
+			},
+			wantState: "current",
+		},
+		{
+			name: "outdated",
+			bundle: func(t *testing.T) agentkit.Bundle {
+				t.Helper()
+				bundle, err := agentkit.Build(goobersassets.AgentToolkitAssets, "v0.1.0", "old123")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return bundle
+			},
+			wantState: "outdated",
+		},
+		{
+			name: "modified",
+			bundle: func(t *testing.T) agentkit.Bundle {
+				t.Helper()
+				bundle, err := currentAgentToolkitBundle()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return bundle
+			},
+			modify:     true,
+			wantState:  "modified",
+			wantDetail: agentkit.InstalledRoot + "/README.md",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := cliAgentKitRepository(t)
+			if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+				t.Fatalf("seed config source: %v", err)
+			}
+			repository, err := agentkit.OpenRepository(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repository.Install(test.bundle(t), "generic"); err != nil {
+				t.Fatal(err)
+			}
+			readme := filepath.Join(root, filepath.FromSlash(agentkit.InstalledRoot+"/README.md"))
+			if test.modify {
+				if err := os.WriteFile(readme, []byte("local edit\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(readme)
+			if err != nil {
+				t.Fatal(err)
+			}
+			confirmation := "no"
+			if test.wantState != "current" {
+				confirmation = "yes"
+			}
+			input := bufio.NewReader(strings.NewReader("generic\n\n" + confirmation + "\n"))
+			var stdout bytes.Buffer
+
+			selection, err := promptGuidedAgentToolkit(
+				guidedPrompter{reader: input, out: &stdout},
+				guidedSourceSelection{
+					Mode: guidedSourceExistingLocal,
+					Root: root,
+				},
+				root,
+			)
+			if err != nil {
+				t.Fatalf("promptGuidedAgentToolkit: %v", err)
+			}
+			if selection.Harness != "" {
+				t.Fatalf("declined selection = %+v", selection)
+			}
+			if !strings.Contains(stdout.String(), "current state:     "+test.wantState) {
+				t.Errorf("preview lacks state %q:\n%s", test.wantState, stdout.String())
+			}
+			if test.wantDetail != "" && !strings.Contains(stdout.String(), test.wantDetail) {
+				t.Errorf("preview lacks detail %q:\n%s", test.wantDetail, stdout.String())
+			}
+			if test.wantState != "current" &&
+				!strings.Contains(stdout.String(), "installation skipped because the existing toolkit is "+test.wantState) {
+				t.Errorf("preview did not safely skip %s toolkit:\n%s", test.wantState, stdout.String())
+			}
+			after, err := os.ReadFile(readme)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("declined preview changed owned file from %q to %q", before, after)
+			}
+		})
 	}
 }
 
