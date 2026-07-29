@@ -43,10 +43,11 @@ func apiReadBody(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-// TestAPIReadCacheConditionalGET is the core #1053 contract: a repeated GET
-// sends If-None-Match and a 304 is transparently replayed from the cached body
-// (with the Link pagination header preserved), and the cache persists to disk so
-// a fresh process (a later tick / sibling stage) reuses the ETag.
+// TestAPIReadCacheConditionalGET is the core #1053 contract for strong ETags: a
+// repeated GET sends If-None-Match and a 304 is transparently replayed from the
+// cached body (with the Link pagination header preserved), and the cache
+// persists to disk so a fresh process (a later tick / sibling stage) reuses the
+// ETag.
 func TestAPIReadCacheConditionalGET(t *testing.T) {
 	const body = `[{"number":1}]`
 	const etag = `"abc123"`
@@ -102,11 +103,11 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	}
 }
 
-// TestAPIReadCacheReducesQuotaGETs quantifies the #1053 win: over N identical
-// ticks against an unchanged resource, exactly ONE response is a quota-costing
-// 200 and the other N-1 are 304s (which do not count against GitHub's primary
-// REST quota). This is the before/after in one assertion: O(ticks) quota GETs
-// become O(1).
+// TestAPIReadCacheReducesQuotaGETs quantifies the #1053 win for a strong ETag:
+// over N identical ticks against an unchanged resource, exactly ONE response is
+// a quota-costing 200 and the other N-1 are 304s (which do not count against
+// GitHub's primary REST quota). This is the before/after in one assertion:
+// O(ticks) quota GETs become O(1).
 func TestAPIReadCacheReducesQuotaGETs(t *testing.T) {
 	const etag = `"stable"`
 	var full, conditional int
@@ -133,6 +134,83 @@ func TestAPIReadCacheReducesQuotaGETs(t *testing.T) {
 	}
 	if conditional != ticks-1 {
 		t.Fatalf("free (304) conditional GETs = %d, want %d", conditional, ticks-1)
+	}
+}
+
+func TestBacklogQueryListWorkItemsRefreshesWeakETag(t *testing.T) {
+	const (
+		readyLabel = "goobers:ready"
+		weakETag   = `W/"labels"`
+		firstBody  = `[
+			{"id":1,"number":1,"title":"ready first","state":"open","labels":[{"name":"goobers:ready"}]}
+		]`
+		secondBody = `[
+			{"id":1,"number":1,"title":"ready first","state":"open","labels":[{"name":"goobers:ready"}]},
+			{"id":2,"number":2,"title":"newly ready","state":"open","labels":[{"name":"goobers:ready"}]}
+		]`
+	)
+
+	var (
+		newlyLabeled    atomic.Bool
+		requests        atomic.Int32
+		weakConditional atomic.Int32
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if got := r.URL.Query().Get("labels"); got != readyLabel {
+			t.Errorf("labels query = %q, want %q", got, readyLabel)
+		}
+		if r.Header.Get("If-None-Match") == weakETag {
+			weakConditional.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", weakETag)
+		if newlyLabeled.Load() {
+			_, _ = io.WriteString(w, secondBody)
+			return
+		}
+		_, _ = io.WriteString(w, firstBody)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	newProvider := func(snapshotID string) *providers.GitHubProvider {
+		return providers.NewGitHubProvider("tok",
+			providers.WithHTTPClient(newAPIReadCache(dir, snapshotID, &http.Client{})),
+			func(p *providers.GitHubProvider) { p.BaseURL = srv.URL },
+		)
+	}
+	list := func(snapshotID string) []providers.WorkItem {
+		t.Helper()
+		items, _, err := listBacklogScanWindow(
+			context.Background(),
+			newProvider(snapshotID),
+			providers.RepositoryRef{Owner: "acme", Name: "app"},
+			[]string{readyLabel},
+			nil,
+			backlogScanPageSize,
+			backlogScanCursor{},
+			false,
+		)
+		if err != nil {
+			t.Fatalf("list backlog scan window: %v", err)
+		}
+		return items
+	}
+
+	if items := list("tick-1"); len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("first backlog tick = %+v, want issue 1", items)
+	}
+	newlyLabeled.Store(true)
+	if items := list("tick-2"); len(items) != 2 || items[1].ID != "2" {
+		t.Fatalf("next backlog tick = %+v, want newly labeled issue 2", items)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider requests = %d, want one full read per tick", got)
+	}
+	if got := weakConditional.Load(); got != 0 {
+		t.Fatalf("weak conditional requests = %d, want 0", got)
 	}
 }
 
