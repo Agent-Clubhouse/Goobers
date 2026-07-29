@@ -10,6 +10,11 @@ The guide uses the complete
 then removes workflows that are not needed for the first acceptance cycle.
 Finish the single-repository path before adding another gaggle.
 
+This guide uses the recommended outside layout: a separate config source and
+instance root, neither inside the target repository. Before choosing paths, see
+[Choose where an instance and its config live](instance-placement.md) for the
+supported placements, decision table, and trust implications.
+
 ## 1. Prepare the host and target repository
 
 Install or build:
