@@ -118,6 +118,7 @@ describe("HttpDaemonClient", () => {
     await client.listGaggles({ limit: 10, cursor: "next" });
     await client.listGoobers("core", { limit: 5 });
     await client.listWorkflows("core", { cursor: "workflow-page" });
+    await client.getGaggleConnections("core");
     await client.getWorkflow("core", "implementation");
     await expect(
       client.listRuns({
@@ -183,6 +184,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/gaggles?limit=10&cursor=next",
       "/api/v1/gaggles/core/goobers?limit=5",
       "/api/v1/gaggles/core/workflows?cursor=workflow-page",
+      "/api/v1/gaggles/core/connections",
       "/api/v1/gaggles/core/workflows/implementation",
       "/api/v1/runs?gaggle=core&workflow=implementation&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=25&cursor=run-page",
       "/api/v1/runs?gaggle=core&latestPerWorkflow=true",

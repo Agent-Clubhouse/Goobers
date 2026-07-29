@@ -43,6 +43,7 @@ type Reader interface {
 	Gaggles(context.Context, PageRequest) (GagglePage, error)
 	Goobers(context.Context, string, PageRequest) (GooberPage, error)
 	Workflows(context.Context, string, PageRequest) (WorkflowPage, error)
+	Connections(context.Context, string) (GaggleConnections, error)
 	Workflow(context.Context, string, string) (WorkflowDetail, error)
 }
 

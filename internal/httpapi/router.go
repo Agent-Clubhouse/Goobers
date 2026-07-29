@@ -41,6 +41,8 @@ const (
 	GaggleGoobersPath = apicontract.GaggleGoobersPath
 	// GaggleWorkflowsPath is the gaggle-scoped workflow inventory route.
 	GaggleWorkflowsPath = apicontract.GaggleWorkflowsPath
+	// GaggleConnectionsPath is the gaggle-scoped repository connection route.
+	GaggleConnectionsPath = apicontract.GaggleConnectionsPath
 	// WorkflowDetailPath is the gaggle-scoped workflow detail route.
 	WorkflowDetailPath = apicontract.WorkflowDetailPath
 	// EventsPath is the resumable SSE read-model invalidation stream.

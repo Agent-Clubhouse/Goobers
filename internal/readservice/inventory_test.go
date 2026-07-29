@@ -2,7 +2,9 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,8 +40,28 @@ func inventoryDefinitions() *instance.ConfigSet {
 				ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
 				Spec: apiv1.GaggleSpec{
 					DisplayName: "Alpha Team",
-					Project:     apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "alpha"},
-					Backlog:     apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "example/alpha"},
+					Project: apiv1.RepoRef{
+						Provider:      apiv1.ProviderGitHub,
+						Owner:         "example",
+						Name:          "alpha",
+						ConnectionRef: "alpha-write-token",
+					},
+					AdditionalRepos: []apiv1.RepoRef{
+						{
+							Provider:      apiv1.ProviderGitHub,
+							Owner:         "example",
+							Name:          "docs",
+							ConnectionRef: "docs-read-token",
+						},
+						{
+							Provider:      apiv1.ProviderADO,
+							Owner:         "example",
+							Project:       "platform",
+							Name:          "shared",
+							ConnectionRef: "shared-read-token",
+						},
+					},
+					Backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "example/alpha"},
 				},
 			},
 		},
@@ -246,6 +268,51 @@ func TestInventoryProjectsScopedWorkflowIdentityGraphOwnershipAndActiveCounts(t 
 		len(alpha.Graph.Nodes) != 1 || alpha.Graph.Nodes[0].Kind != workflow.GraphNodeAgentic {
 		t.Fatalf("alpha graph/owners = %+v / %+v", alpha.Graph, alpha.Owners)
 	}
+
+	connections, err := service.Connections(context.Background(), "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantConnections := []RepositoryConnection{
+		{
+			Repository: RepositoryIdentity{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "example",
+				Name:     "alpha",
+			},
+			AccessMode: RepositoryAccessReadWrite,
+		},
+		{
+			Repository: RepositoryIdentity{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "example",
+				Name:     "docs",
+			},
+			AccessMode: RepositoryAccessReadOnly,
+		},
+		{
+			Repository: RepositoryIdentity{
+				Provider: apiv1.ProviderADO,
+				Owner:    "example",
+				Project:  "platform",
+				Name:     "shared",
+			},
+			AccessMode: RepositoryAccessReadOnly,
+		},
+	}
+	if connections.Gaggle != "alpha" || !slices.Equal(connections.Repositories, wantConnections) {
+		t.Fatalf("connections = %+v, want %+v", connections, wantConnections)
+	}
+	encoded, err := json.Marshal(connections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "connectionRef") ||
+		strings.Contains(string(encoded), "alpha-write-token") ||
+		strings.Contains(string(encoded), "docs-read-token") ||
+		strings.Contains(string(encoded), "shared-read-token") {
+		t.Fatalf("connections response exposes credential routing references: %s", encoded)
+	}
 }
 
 func TestInventoryRejectsCrossGaggleWorkflowOwner(t *testing.T) {
@@ -329,5 +396,8 @@ func TestInventoryMissingIdentities(t *testing.T) {
 	}
 	if _, err := service.Workflow(context.Background(), "alpha", "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing workflow error = %v", err)
+	}
+	if _, err := service.Connections(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing connections error = %v", err)
 	}
 }

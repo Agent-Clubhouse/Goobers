@@ -1,4 +1,9 @@
-import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
+import type {
+  DaemonClient,
+  RepositoryConnection,
+  RunSummary,
+  WorkflowSummary,
+} from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import {
   latestWorkflowOutcome,
@@ -117,37 +122,104 @@ function GaggleTopology({
         action={
           <span className="graph-legend">
             {inventory.workflows.length}{" "}
-            {inventory.workflows.length === 1 ? "workflow" : "workflows"}
+            {inventory.workflows.length === 1 ? "workflow" : "workflows"} ·{" "}
+            {inventory.connections.length}{" "}
+            {inventory.connections.length === 1 ? "repository" : "repositories"}
           </span>
         }
         className="gaggle-topology-panel"
         eyebrow="Definitions"
         title="Workflow topology"
       >
-        {inventory.workflows.length === 0 ? (
-          <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
-        ) : (
-          <ul
-            aria-label={`${gaggle.displayName} workflows`}
-            className="gaggle-workflow-topology"
-          >
-            {inventory.workflows.map((workflow) => (
-              <WorkflowNode
-                gaggleDisplayName={gaggle.displayName}
-                key={workflow.identity.name}
-                latestOutcome={latestWorkflowOutcome(
-                  runs,
-                  workflow.identity.gaggle,
-                  workflow.identity.name,
-                )}
-                workflow={workflow}
-              />
-            ))}
-          </ul>
-        )}
+        <div className="gaggle-workflow-topology">
+          <div className="gaggle-workflow-column">
+            {inventory.workflows.length === 0 ? (
+              <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
+            ) : (
+              <ul aria-label={`${gaggle.displayName} workflows`} className="gaggle-workflow-list">
+                {inventory.workflows.map((workflow) => (
+                  <WorkflowNode
+                    gaggleDisplayName={gaggle.displayName}
+                    key={workflow.identity.name}
+                    latestOutcome={latestWorkflowOutcome(
+                      runs,
+                      workflow.identity.gaggle,
+                      workflow.identity.name,
+                    )}
+                    workflow={workflow}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+          <ConnectionTopology
+            connections={inventory.connections}
+            gaggleDisplayName={gaggle.displayName}
+            hasWorkflows={inventory.workflows.length > 0}
+          />
+        </div>
       </GraphFrame>
     </>
   );
+}
+
+function ConnectionTopology({
+  connections,
+  gaggleDisplayName,
+  hasWorkflows,
+}: {
+  connections: RepositoryConnection[];
+  gaggleDisplayName: string;
+  hasWorkflows: boolean;
+}) {
+  return (
+    <section
+      aria-label={`${gaggleDisplayName} repository connections`}
+      className={`gaggle-connection-topology${hasWorkflows ? "" : " without-workflows"}`}
+    >
+      <h3>External connections</h3>
+      <ul>
+        {connections.map((connection) => {
+          const identity = repositoryIdentity(connection);
+          const access = formatAccessMode(connection);
+          return (
+            <li key={`${identity}/${connection.accessMode}`}>
+              {hasWorkflows ? (
+                <span aria-hidden="true" className="gaggle-connection-edge">
+                  <span>{access}</span>
+                </span>
+              ) : null}
+              <article className={`gaggle-repository-node ${connection.accessMode}`}>
+                <span className="gaggle-workflow-kind">
+                  <Icon name="code" size={13} />
+                  {connection.accessMode === "read-write"
+                    ? "Target repository"
+                    : "Reference repository"}
+                </span>
+                <strong>{identity}</strong>
+                <p>{connection.repository.provider === "ado" ? "Azure DevOps" : "GitHub"}</p>
+                <span className="gaggle-repository-access">{access} access</span>
+                {hasWorkflows ? (
+                  <span className="sr-only">
+                    Connected from the configured workflows with {access.toLowerCase()} access.
+                  </span>
+                ) : null}
+              </article>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function repositoryIdentity(connection: RepositoryConnection): string {
+  const { owner, project, name } = connection.repository;
+  return [owner, project, name].filter(Boolean).join("/");
+}
+
+function formatAccessMode(connection: RepositoryConnection): string {
+  return connection.accessMode === "read-write" ? "Read / write" : "Read only";
 }
 
 function WorkflowNode({
