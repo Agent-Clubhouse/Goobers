@@ -50,27 +50,47 @@ type Injector struct {
 // NewInjector builds an Injector for runner-owned deterministic work. Only
 // grants with an empty Goober are in scope.
 func NewInjector(resolver Resolver, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
-	return newInjector(resolver, "", grants, nil, registrar)
+	return newInjector(resolver, "", grants, registrar)
 }
 
 // NewGooberInjector builds an Injector scoped to exactly goober. Grants for
 // every other goober, and runner-owned grants with an empty Goober, remain
 // unreachable even if the stage declares the same capability.
 func NewGooberInjector(resolver Resolver, goober string, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
-	return NewGooberInjectorWithCredentialKeys(resolver, goober, grants, nil, registrar)
+	if goober == "" {
+		return nil, errors.New("credentials: goober injector requires a non-empty goober identity")
+	}
+	return newInjector(resolver, goober, grants, registrar)
 }
 
 // NewGooberInjectorWithCredentialKeys builds a goober-scoped Injector that
 // always materializes the named non-capability credential keys. The caller must
 // derive these keys from that goober's explicit credential declarations.
 func NewGooberInjectorWithCredentialKeys(resolver Resolver, goober string, grants []Grant, credentialKeys []string, registrar SecretRegistrar) (*Injector, error) {
-	if goober == "" {
-		return nil, errors.New("credentials: goober injector requires a non-empty goober identity")
+	injector, err := NewGooberInjector(resolver, goober, grants, registrar)
+	if err != nil {
+		return nil, err
 	}
-	return newInjector(resolver, goober, grants, credentialKeys, registrar)
+	implicit := make([]string, 0, len(credentialKeys))
+	implicitSeen := make(map[string]bool, len(credentialKeys))
+	for _, key := range credentialKeys {
+		if key == "" {
+			return nil, errors.New("credentials: implicit credential key must not be empty")
+		}
+		if implicitSeen[key] {
+			continue
+		}
+		if _, ok := injector.grants[key]; !ok {
+			return nil, fmt.Errorf("credentials: implicit credential key %q has no grant for goober %q", key, goober)
+		}
+		implicitSeen[key] = true
+		implicit = append(implicit, key)
+	}
+	injector.credentialKeys = implicit
+	return injector, nil
 }
 
-func newInjector(resolver Resolver, goober string, grants []Grant, credentialKeys []string, registrar SecretRegistrar) (*Injector, error) {
+func newInjector(resolver Resolver, goober string, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
 	if resolver == nil {
 		return nil, errors.New("credentials: injector requires a non-nil resolver")
 	}
@@ -97,22 +117,7 @@ func newInjector(resolver Resolver, goober string, grants []Grant, credentialKey
 		}
 		byCap[g.Capability] = g.Ref
 	}
-	implicit := make([]string, 0, len(credentialKeys))
-	implicitSeen := make(map[string]bool, len(credentialKeys))
-	for _, key := range credentialKeys {
-		if key == "" {
-			return nil, errors.New("credentials: implicit credential key must not be empty")
-		}
-		if implicitSeen[key] {
-			continue
-		}
-		if _, ok := byCap[key]; !ok {
-			return nil, fmt.Errorf("credentials: implicit credential key %q has no grant for goober %q", key, goober)
-		}
-		implicitSeen[key] = true
-		implicit = append(implicit, key)
-	}
-	return &Injector{resolver: resolver, grants: byCap, credentialKeys: implicit, registrar: registrar}, nil
+	return &Injector{resolver: resolver, grants: byCap, registrar: registrar}, nil
 }
 
 // Materialize resolves credentials for the stage's declared capabilities plus
