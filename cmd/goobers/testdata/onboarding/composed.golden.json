@@ -1,7 +1,7 @@
 [
   {
     "action": "stub-sample",
-    "version": 1,
+    "version": 2,
     "created": [
       ".github/workflows/ci.yml",
       ".gitignore",
@@ -26,7 +26,7 @@
   },
   {
     "action": "seed-config-source",
-    "version": 1,
+    "version": 2,
     "created": [
       "instance.yaml.example",
       "gaggles/example/gaggle.yaml",
@@ -43,13 +43,23 @@
   },
   {
     "action": "stub-agent-instructions",
-    "version": 1,
+    "version": 2,
     "created": [
       ".goobers/agent-toolkit",
       "AGENTS.md"
     ],
     "skipped": [],
     "path": "\u003csource-tree\u003e",
-    "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'"
+    "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'",
+    "prompts": [
+      "Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: \u003cdescribe the workflow\u003e.",
+      "Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for the Goobers instance at \u003cinstance-path\u003e.",
+      "Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release."
+    ],
+    "commands": [
+      "goobers agent-kit check '\u003csource-tree\u003e'",
+      "goobers agent-kit update '\u003csource-tree\u003e'",
+      "goobers agent-kit update --write '\u003csource-tree\u003e'"
+    ]
   }
 ]

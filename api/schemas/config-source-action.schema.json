@@ -36,6 +36,16 @@
       "type": "string",
       "minLength": 1,
       "description": "Ready-to-run command that checks or validates the action result."
+    },
+    "prompts": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Ready-to-use coding-agent prompts emitted by actions that install agent assistance."
+    },
+    "commands": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Ready-to-run maintenance commands emitted by actions that install managed assets."
     }
   }
 }

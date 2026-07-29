@@ -30,8 +30,10 @@ const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --templa
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
 	"with instance.yaml or a populated config/ before prompting. It separately\n" +
 	"selects a checked-in config source and target GitHub application repository,\n" +
-	"then validates both. The source may be new or existing locally, cloned from\n" +
-	"GitHub, or optionally backed by a newly confirmed GitHub repository.\n" +
+	"then validates both. It can optionally preview and install the release-matched\n" +
+	"agent toolkit into that config source after an explicit harness and destination\n" +
+	"choice. The source may be new or existing locally, cloned from GitHub, or\n" +
+	"optionally backed by a newly confirmed GitHub repository.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +

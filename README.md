@@ -95,11 +95,14 @@ configuration source and target application repository. It creates or reuses a
 checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
 `gaggles/`), then materializes the runtime instance described in
 `docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/`, `runs/`, `scheduler/`,
-`workcopies/`, and `telemetry.db`. Populated source and instance destinations
-are never overwritten. Set the referenced credential environment variables at
-runtime and author the workforce in the selected configuration source; the
-instance records that source in `workflowSource` while runtime state remains
-outside it. After later source edits, stop the daemon and run
+`workcopies/`, and `telemetry.db`. The flow can also detect local coding-agent
+harnesses and, after an explicit harness and destination preview, install the
+release-matched agent toolkit only in the selected config source. Skipping that
+step writes no toolkit files. Populated source and instance destinations are
+never overwritten. Set the referenced credential environment variables at runtime
+and author the workforce in the selected configuration source; the instance
+records that source in `workflowSource` while runtime state remains outside it.
+After later source edits, stop the daemon and run
 `goobers config materialize ./my-instance` before restarting; this validates
 and reapplies the recorded desired state without touching runtime state. The
 `quickstart@v1` template is intentionally limited to a

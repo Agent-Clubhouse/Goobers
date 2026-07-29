@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"io"
+	"runtime"
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -109,7 +110,11 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 	default:
 		pf(stdout, "%s already contains the %s adapter reference.\n", result.InstructionPath, *harness)
 	}
-	writeAgentKitNextSteps(stdout)
+	target := "."
+	if fs.NArg() == 1 {
+		target = fs.Arg(0)
+	}
+	writeAgentKitNextSteps(stdout, absolutePath(target), "")
 	return 0
 }
 
@@ -297,11 +302,38 @@ func writeAgentKitDiff(w io.Writer, changes []agentkit.Change) error {
 	return nil
 }
 
-func writeAgentKitNextSteps(w io.Writer) {
-	pf(w, "\nNext steps:\n")
-	pf(w, "  Authoring: ask the harness to use the Goobers DSL author skill.\n")
-	pf(w, "  Run Q&A: ask it to use the Goobers run operator skill with a run ID.\n")
-	pf(w, "  Upgrade: run `goobers agent-kit check`, then review `goobers agent-kit update`.\n")
+func writeAgentKitNextSteps(w io.Writer, target, instanceRoot string) {
+	prompts := agentKitStarterPrompts(instanceRoot)
+	pf(w, "\nStarter prompts:\n")
+	pf(w, "  Authoring: %q\n", prompts[0])
+	pf(w, "  Run Q&A: %q\n", prompts[1])
+	pf(w, "  Upgrade: %q\n", prompts[2])
+	pf(w, "\nToolkit maintenance:\n")
+	commands := agentKitMaintenanceCommands(target, runtime.GOOS)
+	pf(w, "  Check:  %s\n", commands[0])
+	pf(w, "  Review: %s\n", commands[1])
+	pf(w, "  Apply:  %s\n", commands[2])
+}
+
+func agentKitStarterPrompts(instanceRoot string) []string {
+	instanceTarget := "<instance-path>"
+	if strings.TrimSpace(instanceRoot) != "" {
+		instanceTarget = absolutePath(instanceRoot)
+	}
+	return []string{
+		"Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: <describe the workflow>.",
+		"Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for the Goobers instance at " + instanceTarget + ".",
+		"Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release.",
+	}
+}
+
+func agentKitMaintenanceCommands(target, goos string) []string {
+	quotedTarget := quoteShellArg(target, goos)
+	return []string{
+		"goobers agent-kit check " + quotedTarget,
+		"goobers agent-kit update " + quotedTarget,
+		"goobers agent-kit update --write " + quotedTarget,
+	}
 }
 
 func yesNo(value bool) string {

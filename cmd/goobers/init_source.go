@@ -3,14 +3,17 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -79,6 +82,12 @@ type guidedInitResult struct {
 	RemoteCreated bool
 }
 
+type guidedAgentToolkitSelection struct {
+	Harness              string
+	Destination          string
+	InitializeRepository bool
+}
+
 func runGuidedInit(
 	root string,
 	stdin io.Reader,
@@ -101,6 +110,7 @@ func runGuidedInit(
 		cfg          *instance.Config
 		result       guidedInitResult
 		remoteCreate *guidedRemoteCreate
+		agentToolkit guidedAgentToolkitSelection
 	)
 	if source.Mode == guidedSourceNewLocal {
 		opts, promptErr := promptGuidedOptionsWithPrompter(p)
@@ -118,6 +128,10 @@ func runGuidedInit(
 		if err := confirmGuidedMapping(p, root, result); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
+		agentToolkit, err = promptGuidedAgentToolkit(p, source, "")
+		if err != nil {
+			return nil, guidedInitResult{}, 2, err
+		}
 		if _, err := executeSeedConfigSourceAction(source.Root, &opts, runtime.GOOS); err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
@@ -127,19 +141,6 @@ func runGuidedInit(
 		cfg, err = instance.LoadGuidedSourceConfig(source.Root)
 		if err != nil {
 			return nil, guidedInitResult{}, 2, fmt.Errorf("load generated config source: %w", err)
-		}
-		if remoteCreate != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-			defer cancel()
-			if err := github.Create(
-				ctx,
-				remoteCreate.Owner,
-				remoteCreate.Name,
-				remoteCreate.Visibility,
-				remoteCreate.Token,
-			); err != nil {
-				return nil, guidedInitResult{}, 2, fmt.Errorf("create GitHub config repository: %w", err)
-			}
 		}
 	} else {
 		preparation, prepareErr := prepareGuidedSource(source, stdout, stderr, github)
@@ -161,6 +162,10 @@ func runGuidedInit(
 			return nil, guidedInitResult{}, 2, err
 		}
 		if err := confirmGuidedMapping(p, root, result); err != nil {
+			return nil, guidedInitResult{}, 2, err
+		}
+		agentToolkit, err = promptGuidedAgentToolkit(p, source, preparation.validationRoot)
+		if err != nil {
 			return nil, guidedInitResult{}, 2, err
 		}
 		if preparation.cloneAfterConfirmation {
@@ -189,11 +194,247 @@ func runGuidedInit(
 		}
 	}
 
+	if err := installGuidedAgentToolkit(root, source, agentToolkit, stdout); err != nil {
+		return nil, guidedInitResult{}, 1, err
+	}
+	if remoteCreate != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		if err := github.Create(
+			ctx,
+			remoteCreate.Owner,
+			remoteCreate.Name,
+			remoteCreate.Visibility,
+			remoteCreate.Token,
+		); err != nil {
+			return nil, guidedInitResult{}, 2, fmt.Errorf("create GitHub config repository: %w", err)
+		}
+	}
+
 	res, err := instance.InitGuidedFromSource(root, source.Root, cfg)
 	if err != nil {
 		return nil, guidedInitResult{}, 2, err
 	}
 	return res, result, 0, nil
+}
+
+func promptGuidedAgentToolkit(
+	p guidedPrompter,
+	source guidedSourceSelection,
+	inspectionRoot string,
+) (guidedAgentToolkitSelection, error) {
+	pln(p.out, "")
+	pln(p.out, "Install Goobers assistance for your coding agent?")
+	pln(p.out, "Supported harnesses: copilot, claude, generic, or skip.")
+	detected := detectGuidedAgentToolkitHarnesses(inspectionRoot)
+	if len(detected) == 0 {
+		pln(p.out, "Detected harnesses: none; no harness will be selected automatically.")
+	} else {
+		pf(p.out, "Detected harnesses: %s; choose one explicitly or skip.\n", strings.Join(detected, ", "))
+	}
+	harness, err := p.ask("Agent harness", "skip", validGuidedAgentToolkitHarness)
+	if err != nil {
+		return guidedAgentToolkitSelection{}, err
+	}
+	harness = strings.ToLower(strings.TrimSpace(harness))
+	if harness == "skip" {
+		pln(p.out, "Skipping agent toolkit installation; no toolkit files will be written.")
+		return guidedAgentToolkitSelection{}, nil
+	}
+
+	destination := absolutePath(source.Root)
+	selectedDestination, err := p.ask("Confirm agent toolkit destination (must match selected config source)", destination, func(value string) bool {
+		return sameAbsolutePath(value, destination)
+	})
+	if err != nil {
+		return guidedAgentToolkitSelection{}, err
+	}
+	selectedDestination = absolutePath(selectedDestination)
+
+	bundle, err := currentAgentToolkitBundle()
+	if err != nil {
+		return guidedAgentToolkitSelection{}, fmt.Errorf("build bundled agent toolkit: %w", err)
+	}
+	adapter, ok := bundle.Adapter(harness)
+	if !ok {
+		return guidedAgentToolkitSelection{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
+	}
+	initializeRepository := source.Mode == guidedSourceNewLocal
+	state, modified, missing, err := inspectGuidedAgentToolkitState(inspectionRoot, bundle)
+	if source.Mode == guidedSourceExistingLocal && errors.Is(err, agentkit.ErrRepositoryMarkerMissing) {
+		initialize, promptErr := p.ask(
+			"Initialize the selected config source with Git for agent toolkit installation? (yes/no)",
+			"no",
+			validYesNo,
+		)
+		if promptErr != nil {
+			return guidedAgentToolkitSelection{}, promptErr
+		}
+		if !isYes(initialize) {
+			pln(p.out, "Agent toolkit installation skipped; the selected config source remains non-Git and no toolkit files were written.")
+			return guidedAgentToolkitSelection{}, nil
+		}
+		initializeRepository = true
+		state, modified, missing, err = "not-installed", nil, nil, nil
+	}
+	if err != nil {
+		return guidedAgentToolkitSelection{}, err
+	}
+	pf(p.out, `
+Agent toolkit installation preview:
+  destination:       %s
+  harness:           %s
+  bundle:            %s from Goobers %s (commit %s)
+  current state:     %s
+  product-owned:     %s (%d files including manifest)
+  user-owned:        %s (preserved; managed reference only)
+`,
+		selectedDestination,
+		harness,
+		bundle.Manifest.BundleVersion,
+		bundle.Manifest.Producer.Version,
+		bundle.Manifest.Producer.Commit,
+		state,
+		agentkit.InstalledRoot,
+		len(bundle.Manifest.Assets)+1,
+		adapter.InstructionTarget,
+	)
+	if len(modified) > 0 {
+		pf(p.out, "  modified owned:    %s\n", strings.Join(modified, ", "))
+	}
+	if len(missing) > 0 {
+		pf(p.out, "  missing owned:     %s\n", strings.Join(missing, ", "))
+	}
+	if initializeRepository {
+		pln(p.out, "  repository setup:  initialize the selected config source with Git")
+	}
+	if state != "not-installed" && state != "current" {
+		commands := agentKitMaintenanceCommands(selectedDestination, runtime.GOOS)
+		pf(p.out, "Agent toolkit installation skipped because the existing toolkit is %s; no files were written.\n", state)
+		pf(p.out, "  Check:  %s\n", commands[0])
+		pf(p.out, "  Review: %s\n", commands[1])
+		if state == "modified" {
+			pf(
+				p.out,
+				"  Apply after reviewing local changes: goobers agent-kit update --write --replace-modified %s\n",
+				quoteShellArg(selectedDestination, runtime.GOOS),
+			)
+		} else {
+			pf(p.out, "  Apply:  %s\n", commands[2])
+		}
+		return guidedAgentToolkitSelection{}, nil
+	}
+	confirmed, err := p.ask("Install this agent toolkit? (yes/no)", "no", validYesNo)
+	if err != nil {
+		return guidedAgentToolkitSelection{}, err
+	}
+	if !isYes(confirmed) {
+		pln(p.out, "Agent toolkit installation declined; no toolkit files will be written.")
+		return guidedAgentToolkitSelection{}, nil
+	}
+	return guidedAgentToolkitSelection{
+		Harness:              harness,
+		Destination:          selectedDestination,
+		InitializeRepository: initializeRepository,
+	}, nil
+}
+
+func detectGuidedAgentToolkitHarnesses(root string) []string {
+	type harnessSignal struct {
+		name        string
+		instruction string
+		executable  string
+	}
+	signals := []harnessSignal{
+		{name: "copilot", instruction: ".github/copilot-instructions.md", executable: "copilot"},
+		{name: "claude", instruction: "CLAUDE.md", executable: "claude"},
+		{name: "generic", instruction: "AGENTS.md"},
+	}
+	detected := make([]string, 0, len(signals))
+	for _, signal := range signals {
+		found := false
+		if root != "" {
+			info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(signal.instruction)))
+			found = err == nil && info.Mode().IsRegular()
+		}
+		if !found && signal.executable != "" {
+			_, err := exec.LookPath(signal.executable)
+			found = err == nil
+		}
+		if found {
+			detected = append(detected, signal.name)
+		}
+	}
+	return detected
+}
+
+func inspectGuidedAgentToolkitState(
+	root string,
+	bundle agentkit.Bundle,
+) (string, []string, []string, error) {
+	if root == "" {
+		return "not-installed", nil, nil, nil
+	}
+	repository, err := agentkit.OpenRepository(root)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf(
+			"selected config source %s cannot be inspected for agent toolkit installation: %w",
+			root,
+			err,
+		)
+	}
+	report, err := repository.Check(bundle)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("inspect agent toolkit state: %w", err)
+	}
+	state := report.State
+	switch state {
+	case "upgrade-available":
+		state = "outdated"
+	case "missing-manifest":
+		state = "not-installed"
+	}
+	return state, report.Modified, report.Missing, nil
+}
+
+func installGuidedAgentToolkit(
+	instanceRoot string,
+	source guidedSourceSelection,
+	selection guidedAgentToolkitSelection,
+	stdout io.Writer,
+) error {
+	if selection.Harness == "" {
+		return nil
+	}
+	if !sameAbsolutePath(selection.Destination, source.Root) {
+		return fmt.Errorf("agent toolkit destination must be the selected config source %s", absolutePath(source.Root))
+	}
+	if selection.InitializeRepository {
+		command := exec.Command("git", "-C", selection.Destination, "init", "--quiet")
+		if output, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("initialize config source repository: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	executed, err := executeAgentToolkitInstallAction(selection.Destination, selection.Harness, runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	if executed.Install.Installed {
+		pf(stdout, "\nInstalled Goobers agent toolkit in %s for %s.\n", executed.Action.Path, selection.Harness)
+	} else {
+		pf(stdout, "\nGoobers agent toolkit in %s is already current for %s.\n", executed.Action.Path, selection.Harness)
+	}
+	writeAgentKitNextSteps(stdout, executed.Action.Path, instanceRoot)
+	return nil
+}
+
+func validGuidedAgentToolkitHarness(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "skip" || supportedAgentKitHarness(value)
+}
+
+func sameAbsolutePath(left, right string) bool {
+	return filepath.Clean(absolutePath(left)) == filepath.Clean(absolutePath(right))
 }
 
 func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSelection, error) {
