@@ -1,6 +1,9 @@
 package instance
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,6 +14,16 @@ import (
 
 	"github.com/goobers/goobers/internal/platform/durability"
 )
+
+const legacyRuntimeMigrationStateFile = "legacy-runtime-migration.json"
+
+// RuntimeMigration reports populated legacy runtime directories moved into a
+// gaggle-scoped layout.
+type RuntimeMigration struct {
+	ID        string   `json:"id"`
+	Gaggle    string   `json:"gaggle"`
+	MovedDirs []string `json:"movedDirectories"`
+}
 
 // EnsureGaggleRuntime creates the runs and workcopies directories for gaggle.
 func (l Layout) EnsureGaggleRuntime(gaggle string) error {
@@ -108,37 +121,72 @@ func (l Layout) FindRunDir(runID string) (string, error) {
 // gaggle. Multi-gaggle instances retain populated flat roots so their legacy
 // journals and Git worktree metadata remain readable.
 func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
+	_, err := l.MigrateLegacyRuntimeWithReport(gaggles)
+	return err
+}
+
+// MigrateLegacyRuntimeWithReport performs or resumes MigrateLegacyRuntime and
+// returns its durable report until CompleteLegacyRuntimeMigration acknowledges it.
+func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigration, error) {
+	return l.migrateLegacyRuntimeWithReport(gaggles, durability.SyncDir)
+}
+
+func (l Layout) migrateLegacyRuntimeWithReport(gaggles []string, syncDir func(string) error) (RuntimeMigration, error) {
 	names, err := normalizedGaggles(gaggles)
 	if err != nil {
-		return err
+		return RuntimeMigration{}, err
 	}
 
-	legacyHasData := false
+	pending, exists, err := l.readLegacyRuntimeMigration()
+	if err != nil {
+		return RuntimeMigration{}, err
+	}
+	if exists {
+		if err := l.finishLegacyRuntimeMigration(pending.Gaggle, syncDir); err != nil {
+			return RuntimeMigration{}, err
+		}
+		for _, gaggle := range names {
+			if err := l.EnsureGaggleRuntime(gaggle); err != nil {
+				return RuntimeMigration{}, err
+			}
+		}
+		return pending, nil
+	}
+
+	var movedDirs []string
 	for _, legacy := range []string{l.RunsDir(), l.WorkcopiesDir()} {
 		if info, statErr := os.Lstat(legacy); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 		hasFiles, inspectErr := dirHasFiles(legacy)
 		if inspectErr != nil {
-			return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, inspectErr)
+			return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, inspectErr)
 		}
-		legacyHasData = legacyHasData || hasFiles
+		if hasFiles {
+			movedDirs = append(movedDirs, filepath.Base(legacy))
+		}
 	}
+	legacyHasData := len(movedDirs) > 0
 	scopedRuntimeExists, err := l.scopedRuntimeExists()
 	if err != nil {
-		return err
+		return RuntimeMigration{}, err
 	}
 	preserveLegacy := legacyHasData && scopedRuntimeExists
 	if len(names) == 1 && !preserveLegacy {
-		scoped := l.ForGaggle(names[0])
-		for _, pair := range [][2]string{
-			{l.RunsDir(), scoped.RunsDir()},
-			{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
-		} {
-			if err := migrateLegacyDir(pair[0], pair[1]); err != nil {
-				return err
+		migration := RuntimeMigration{}
+		if legacyHasData {
+			migration, err = newRuntimeMigration(names[0], movedDirs)
+			if err != nil {
+				return RuntimeMigration{}, err
+			}
+			if err := l.writeLegacyRuntimeMigration(migration); err != nil {
+				return RuntimeMigration{}, err
 			}
 		}
+		if err := l.finishLegacyRuntimeMigration(names[0], syncDir); err != nil {
+			return RuntimeMigration{}, err
+		}
+		return migration, nil
 	} else if !legacyHasData {
 		for _, legacy := range []string{l.RunsDir(), l.WorkcopiesDir()} {
 			info, err := os.Lstat(legacy)
@@ -146,32 +194,202 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
+				return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
 				continue
 			}
 			if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
+				return RuntimeMigration{}, fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
 			}
 		}
 	}
 
 	for _, gaggle := range names {
 		if err := l.EnsureGaggleRuntime(gaggle); err != nil {
+			return RuntimeMigration{}, err
+		}
+	}
+	return RuntimeMigration{}, nil
+}
+
+// CompleteLegacyRuntimeMigration clears the durable retry record after its
+// instance-journal annotation has been committed.
+func (l Layout) CompleteLegacyRuntimeMigration(migration RuntimeMigration) error {
+	return l.completeLegacyRuntimeMigration(migration, durability.SyncDir)
+}
+
+func (l Layout) completeLegacyRuntimeMigration(migration RuntimeMigration, syncDir func(string) error) error {
+	if len(migration.MovedDirs) == 0 {
+		return nil
+	}
+	if err := validateRuntimeMigration(migration); err != nil {
+		return err
+	}
+	pending, exists, err := l.readLegacyRuntimeMigration()
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if pending.ID != migration.ID ||
+		pending.Gaggle != migration.Gaggle ||
+		strings.Join(pending.MovedDirs, "\x00") != strings.Join(migration.MovedDirs, "\x00") {
+		return fmt.Errorf("complete legacy runtime migration: pending migration %q does not match %q", pending.ID, migration.ID)
+	}
+	if err := l.syncLegacyRuntimeMigrationMetadata(pending.Gaggle, syncDir); err != nil {
+		return err
+	}
+	if err := os.Remove(l.legacyRuntimeMigrationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove legacy runtime migration state: %w", err)
+	}
+	if err := durability.SyncDir(l.SchedulerDir()); err != nil {
+		return fmt.Errorf("sync legacy runtime migration state removal: %w", err)
+	}
+	return nil
+}
+
+func (l Layout) finishLegacyRuntimeMigration(gaggle string, syncDir func(string) error) error {
+	scoped := l.ForGaggle(gaggle)
+	for _, pair := range [][2]string{
+		{l.RunsDir(), scoped.RunsDir()},
+		{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
+	} {
+		if _, err := migrateLegacyDir(pair[0], pair[1]); err != nil {
 			return err
 		}
 	}
-	if len(names) == 1 && !preserveLegacy {
-		scoped := l.ForGaggle(names[0])
-		for _, pair := range [][2]string{
-			{l.RunsDir(), scoped.RunsDir()},
-			{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
-		} {
-			if err := ensureLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
-				return err
-			}
+	if err := l.EnsureGaggleRuntime(gaggle); err != nil {
+		return err
+	}
+	for _, pair := range [][2]string{
+		{l.RunsDir(), scoped.RunsDir()},
+		{l.WorkcopiesDir(), scoped.WorkcopiesDir()},
+	} {
+		if err := ensureLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
+			return err
 		}
+	}
+	return l.syncLegacyRuntimeMigrationMetadata(gaggle, syncDir)
+}
+
+func (l Layout) syncLegacyRuntimeMigrationMetadata(gaggle string, syncDir func(string) error) error {
+	scoped := l.ForGaggle(gaggle)
+	for _, dir := range []string{scoped.runtimeRoot(), l.GagglesDir(), l.Root} {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync legacy runtime migration metadata in %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func newRuntimeMigration(gaggle string, movedDirs []string) (RuntimeMigration, error) {
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return RuntimeMigration{}, fmt.Errorf("generate legacy runtime migration id: %w", err)
+	}
+	migration := RuntimeMigration{
+		ID:        hex.EncodeToString(idBytes),
+		Gaggle:    gaggle,
+		MovedDirs: append([]string(nil), movedDirs...),
+	}
+	if err := validateRuntimeMigration(migration); err != nil {
+		return RuntimeMigration{}, err
+	}
+	return migration, nil
+}
+
+func validateRuntimeMigration(migration RuntimeMigration) error {
+	id, err := hex.DecodeString(migration.ID)
+	if err != nil || len(id) != 16 {
+		return fmt.Errorf("invalid legacy runtime migration id %q", migration.ID)
+	}
+	if err := validateGagglePathName(migration.Gaggle); err != nil {
+		return err
+	}
+	lastIndex := -1
+	for _, dir := range migration.MovedDirs {
+		var index int
+		switch dir {
+		case RunsDirName:
+			index = 0
+		case WorkcopiesDirName:
+			index = 1
+		default:
+			return fmt.Errorf("invalid legacy runtime migration directory %q", dir)
+		}
+		if index <= lastIndex {
+			return fmt.Errorf("legacy runtime migration directories are duplicated or out of order")
+		}
+		lastIndex = index
+	}
+	if lastIndex < 0 {
+		return fmt.Errorf("legacy runtime migration has no moved directories")
+	}
+	return nil
+}
+
+func (l Layout) legacyRuntimeMigrationPath() string {
+	return filepath.Join(l.SchedulerDir(), legacyRuntimeMigrationStateFile)
+}
+
+func (l Layout) readLegacyRuntimeMigration() (RuntimeMigration, bool, error) {
+	data, err := os.ReadFile(l.legacyRuntimeMigrationPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return RuntimeMigration{}, false, nil
+	}
+	if err != nil {
+		return RuntimeMigration{}, false, fmt.Errorf("read legacy runtime migration state: %w", err)
+	}
+	var migration RuntimeMigration
+	if err := json.Unmarshal(data, &migration); err != nil {
+		return RuntimeMigration{}, false, fmt.Errorf("parse legacy runtime migration state: %w", err)
+	}
+	if err := validateRuntimeMigration(migration); err != nil {
+		return RuntimeMigration{}, false, err
+	}
+	return migration, true, nil
+}
+
+func (l Layout) writeLegacyRuntimeMigration(migration RuntimeMigration) error {
+	if err := validateRuntimeMigration(migration); err != nil {
+		return err
+	}
+	data, err := json.Marshal(migration)
+	if err != nil {
+		return fmt.Errorf("encode legacy runtime migration state: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		return fmt.Errorf("create legacy runtime migration state directory: %w", err)
+	}
+	if err := durability.SyncDir(l.Root); err != nil {
+		return fmt.Errorf("sync legacy runtime migration state directory: %w", err)
+	}
+	temp, err := os.CreateTemp(l.SchedulerDir(), "."+legacyRuntimeMigrationStateFile+".*")
+	if err != nil {
+		return fmt.Errorf("create legacy runtime migration state: %w", err)
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write legacy runtime migration state: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("sync legacy runtime migration state: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close legacy runtime migration state: %w", err)
+	}
+	if err := durability.ReplaceFile(tempPath, l.legacyRuntimeMigrationPath()); err != nil {
+		return fmt.Errorf("publish legacy runtime migration state: %w", err)
+	}
+	if err := durability.SyncDir(l.SchedulerDir()); err != nil {
+		return fmt.Errorf("sync legacy runtime migration state publication: %w", err)
 	}
 	return nil
 }
@@ -200,52 +418,52 @@ func (l Layout) scopedRuntimeExists() (bool, error) {
 	return false, nil
 }
 
-func migrateLegacyDir(legacy, scoped string) error {
+func migrateLegacyDir(legacy, scoped string) (bool, error) {
 	if info, err := os.Lstat(legacy); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		target, err := filepath.EvalSymlinks(legacy)
 		if err != nil {
-			return fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
+			return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
 		}
 		if isGeneratedRuntimeAlias(legacy, target) {
-			return nil
+			return false, nil
 		}
 		scopedAbs, err := filepath.EvalSymlinks(scoped)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if target != scopedAbs {
-			return fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
+			return false, fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
 		}
-		return nil
+		return false, nil
 	}
 	hasFiles, err := dirHasFiles(legacy)
 	if err != nil {
-		return fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
+		return false, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
 	}
 	if !hasFiles {
 		if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
+			return false, fmt.Errorf("remove empty legacy runtime directory %s: %w", legacy, err)
 		}
-		return os.MkdirAll(scoped, 0o755)
+		return false, os.MkdirAll(scoped, 0o755)
 	}
 
 	scopedHasFiles, err := dirHasFiles(scoped)
 	if err != nil {
-		return fmt.Errorf("inspect scoped runtime directory %s: %w", scoped, err)
+		return false, fmt.Errorf("inspect scoped runtime directory %s: %w", scoped, err)
 	}
 	if scopedHasFiles {
-		return fmt.Errorf("cannot migrate legacy runtime %s: destination %s is not empty", legacy, scoped)
+		return false, fmt.Errorf("cannot migrate legacy runtime %s: destination %s is not empty", legacy, scoped)
 	}
 	if err := os.Remove(scoped); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove empty migration destination %s: %w", scoped, err)
+		return false, fmt.Errorf("remove empty migration destination %s: %w", scoped, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(scoped), 0o755); err != nil {
-		return fmt.Errorf("create migration parent for %s: %w", scoped, err)
+		return false, fmt.Errorf("create migration parent for %s: %w", scoped, err)
 	}
 	if err := durability.Move(legacy, scoped); err != nil {
-		return fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
+		return false, fmt.Errorf("migrate legacy runtime %s to %s: %w", legacy, scoped, err)
 	}
-	return nil
+	return true, nil
 }
 
 func isGeneratedRuntimeAlias(legacy, target string) bool {
