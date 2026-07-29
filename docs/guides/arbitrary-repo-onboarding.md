@@ -121,7 +121,9 @@ The source may instead be an existing local tree or an existing GitHub config
 repository. A GitHub source is cloned to the local checkout path before it is
 validated. For a new local source, setup can optionally create an empty GitHub
 repository after displaying its owner, name, and visibility and asking for a
-second confirmation. It does not initialize git, commit, or push.
+second confirmation. Without toolkit installation, setup does not initialize
+Git, commit, or push. Installing the toolkit initializes the new local config
+source as a Git repository, but setup still does not commit or push.
 
 The checked-in source has this shape:
 
