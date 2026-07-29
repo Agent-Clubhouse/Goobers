@@ -416,6 +416,21 @@ func (r *Run) RecordArtifactBounded(name string, data []byte, maxBytes int) (Ref
 	return r.recordArtifact(Event{Type: EventArtifactRecorded, Name: name}, data, maxBytes)
 }
 
+// RecordBranchArtifact records an artifact with explicit parallel-branch
+// attribution instead of using the run's sequential branch default.
+func (r *Run) RecordBranchArtifact(branch int, name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name}, data, 0)
+}
+
+// RecordBranchArtifactBounded is RecordBranchArtifact with a post-redaction
+// byte limit.
+func (r *Run) RecordBranchArtifactBounded(branch int, name string, data []byte, maxBytes int) (Ref, error) {
+	if maxBytes <= 0 {
+		return Ref{}, fmt.Errorf("journal: artifact %q byte limit must be positive", name)
+	}
+	return r.recordArtifact(Event{Type: EventArtifactRecorded, Branch: branch, Name: name}, data, maxBytes)
+}
+
 // ContextManifestArtifactName is the stable journal name for the context
 // manifest supplied to one stage attempt.
 func ContextManifestArtifactName(stage string, attempt int) string {
@@ -428,6 +443,14 @@ func ContextManifestArtifactName(stage string, attempt int) string {
 func (r *Run) RecordStageArtifact(stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
 	return r.recordArtifact(Event{
 		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
+	}, data, 0)
+}
+
+// RecordBranchStageArtifact is RecordStageArtifact with explicit
+// parallel-branch attribution.
+func (r *Run) RecordBranchStageArtifact(branch int, stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name,
 	}, data, 0)
 }
 

@@ -232,6 +232,25 @@ func TestRecordArtifactBoundedChecksScrubbedSize(t *testing.T) {
 	}
 }
 
+func TestRecordBranchArtifactBoundedKeepsAttribution(t *testing.T) {
+	run, root := newRun(t)
+	t.Cleanup(func() { _ = run.Close() })
+	if _, err := run.RecordBranchArtifactBounded(2, "bounded.json", []byte("{}"), 2); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := events[len(events)-1]; got.Branch != 2 || got.Name != "bounded.json" {
+		t.Fatalf("bounded artifact event = %+v, want branch 2 attribution", got)
+	}
+}
+
 func TestStateCheckpoint(t *testing.T) {
 	run, root := newRun(t)
 	run.SetMachineState("implement")

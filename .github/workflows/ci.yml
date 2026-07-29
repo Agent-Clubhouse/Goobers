@@ -273,8 +273,14 @@ jobs:
           -current test-timings/unit-${{ runner.os }}.json
           -previous previous-test-timings/unit-${{ runner.os }}.json
 
+      # Diagnostic artifacts, not gates. The reads of this same timing data
+      # already tolerate failure (see "Find previous main timing run" and
+      # "Download previous timing artifact"), so a failed WRITE must not fail
+      # the merge gate either. A transient artifact-service DNS error took main
+      # red on a669fc3a while the unit suite itself had passed.
       - name: Upload test timing
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-timings-${{ runner.os }}
@@ -283,6 +289,7 @@ jobs:
 
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ runner.os }}

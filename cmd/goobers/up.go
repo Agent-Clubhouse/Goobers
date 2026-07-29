@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
@@ -708,6 +709,26 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
+	supervisorStop := make(chan error, 1)
+	supervisorStopDone := make(chan struct{})
+	go func() {
+		defer close(supervisorStopDone)
+		ticker := time.NewTicker(delegationSweepInterval)
+		defer ticker.Stop()
+		for {
+			requested, err := selfupdate.ConsumeStopRequest(root)
+			if err != nil || requested {
+				supervisorStop <- err
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
 	// Config hot-reload is opt-in. Off by default, `goobers up` keeps the V0
 	// load-once-at-startup behavior; with --watch-config the daemon watches the
 	// config dir and swaps validated edits live. This gate is interim: the
@@ -776,6 +797,13 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 	select {
 	case runErr = <-schedulerDone:
+	case stopErr := <-supervisorStop:
+		if stopErr != nil {
+			schedulerFailed = true
+			pf(stderr, "error: supervisor stop request: %v\n", stopErr)
+		}
+		stopDaemon()
+		runErr = <-schedulerDone
 	case reloadErr := <-configDone:
 		configWatcherDone = true
 		if reloadErr == nil {
@@ -846,6 +874,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	<-telemetryRetentionTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
+	<-supervisorStopDone
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}

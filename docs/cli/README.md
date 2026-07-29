@@ -41,6 +41,7 @@
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
+| [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
@@ -87,6 +88,8 @@
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
 | [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
 | [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
+| [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
+| [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
 | [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
@@ -872,6 +875,29 @@ Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
 
 ~~~console
 $ goobers examples show implementation
+~~~
+
+## `goobers explain`
+
+project field facts from an embedded JSON Schema
+
+~~~text
+Usage: goobers explain [--human] <selector>
+
+Project field guidance from the embedded schema and feature registries using
+a dotted or slash-
+separated selector such as goober.spec.capabilities or
+workflow/spec/gates[]/evaluator. Array elements use []. Output includes the
+field purpose, type, allowed values, lifecycle, and a schema-grounded example.
+JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+1 = unknown selector or output error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers explain goober.spec.capabilities
+$ goobers explain --human workflow.spec.gates[].evaluator
 ~~~
 
 ## `goobers features`
@@ -1994,6 +2020,48 @@ an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
 ~~~
 
+## `goobers schema`
+
+emit a JSON Schema embedded in this build
+
+~~~text
+Usage: goobers schema [--human] <kind>
+       goobers schema --list [--human]
+
+Emit a canonical JSON Schema embedded in this build, or list every available
+schema kind. JSON is the default and includes the build version, commit, and
+DSL version. --human prints a labeled terminal rendering. No network lookup
+or fallback to another release is performed. Exit codes: 0 = OK, 1 = unknown
+kind or output error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers schema --list
+$ goobers schema workflow
+$ goobers schema --human goober
+~~~
+
+## `goobers self-update`
+
+stage and request a supervised binary update
+
+~~~text
+Usage: goobers self-update [flags] [path]
+
+Stage and smoke-check a binary, then request supervised activation. Policies
+are manual, on-release (default), and on-main. Manual requires a release tag;
+on-main builds the configured branch. Config is never changed.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers self-update --policy on-release
+$ goobers self-update --policy manual --target v1.2.3
+~~~
+
 ## `goobers service`
 
 install and manage the platform-supervised daemon
@@ -2003,9 +2071,9 @@ Usage: goobers service <subcommand> [path]
 
 Install and manage the goobers daemon under the current platform's user
 supervisor: systemd on Linux, launchd on macOS, or the Windows Service
-Control Manager. The managed daemon runs `goobers up <path>`, receives the
-same graceful-shutdown trigger as a foreground daemon, and restarts after
-an unexpected exit with supervisor backoff.
+Control Manager. The stable service host launches the instance's mutable
+binary, receives the same graceful-shutdown trigger as a foreground daemon,
+and owns validated self-update handoff, health checks, and rollback.
 
 Subcommands:
   install     install, enable, and start the service
@@ -2035,7 +2103,8 @@ Install, enable, and start the goobers daemon for the instance at <path>.
 Linux and macOS install a per-user service so provider credentials retain
 the current user's ownership. Windows installation must run from an
 elevated terminal. An existing installation is never overwritten; uninstall
-it first when changing the binary or instance path.
+it first when changing the stable host binary or instance path. Product
+binary updates use the self-update workflow instead.
 
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.

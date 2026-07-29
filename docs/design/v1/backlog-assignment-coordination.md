@@ -119,6 +119,13 @@ what gets configured here — G3 doesn't need to wait on UNOP-7 to be useful (a 
 account name works as "self" today), but is strengthened once UNOP-7 ships. No new auth
 mechanism, no new credential — purely a string used as a filter/write value.
 
+The concrete fields are `instance.yaml`'s top-level `selfIdentity` default and
+`Gaggle.spec.selfIdentity` override. The effective value becomes a `backlog-query` task's
+`assignedTo` input only when that input is not explicitly declared; omitting both configuration
+fields leaves the input absent and preserves the opt-out behavior. Once UNOP-7 provides a
+distinct bot/App login, operators configure that login in the same field without any code or
+authentication coupling.
+
 ### G4 — Backlog-assignment canonical workflow ("scrum-master")
 
 A new canonical workflow, `backlog-assignment`, alongside the existing `work-nomination`/

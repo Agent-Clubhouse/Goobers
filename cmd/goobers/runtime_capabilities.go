@@ -217,6 +217,11 @@ func init() {
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
 			withExamples("goobers up", "goobers up --quiet --notify=all"),
+		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
+			withSynopsis(synopsisByID["self-update"]).
+			withHelp("stage and request a supervised binary update", selfUpdateHelp).
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v1.2.3"),
+		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		groupCommand(
 			"service",
 			runService,
@@ -308,6 +313,14 @@ func init() {
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
 			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
+		command("schema", apicontract.ActionReadOnlyNavigation, runSchema).
+			withSynopsis(synopsisByID["schema"]).
+			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
+			withExamples("goobers schema --list", "goobers schema workflow", "goobers schema --human goober"),
+		command("explain", apicontract.ActionReadOnlyNavigation, runExplain).
+			withSynopsis(synopsisByID["explain"]).
+			withHelp("project field facts from an embedded JSON Schema", explainHelp).
+			withExamples("goobers explain goober.spec.capabilities", "goobers explain --human workflow.spec.gates[].evaluator"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).

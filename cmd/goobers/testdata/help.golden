@@ -28,6 +28,8 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers self-update [--policy manual|on-release|on-main] [path]
+                                stage and request a supervised binary update
   goobers service install|uninstall|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
@@ -53,6 +55,8 @@ Usage:
                                 show the instance lifetime summary card
   goobers features [--json] [--dsl-version <version>] [--used] [path]
                                 list the workflow-DSL features this build supports
+  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
+  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
@@ -160,6 +164,8 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers self-update [--policy manual|on-release|on-main] [path]
+                                stage and request a supervised binary update
   goobers service install|uninstall|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
@@ -185,6 +191,8 @@ Usage:
                                 show the instance lifetime summary card
   goobers features [--json] [--dsl-version <version>] [--used] [path]
                                 list the workflow-DSL features this build supports
+  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
+  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
@@ -675,6 +683,17 @@ root is required.
 
 Exit codes: 0 = printed, 1 = unknown name or embedded catalog error,
 2 = usage error.
+
+### explain
+Usage: goobers explain [--human] <selector>
+
+Project field guidance from the embedded schema and feature registries using
+a dotted or slash-
+separated selector such as goober.spec.capabilities or
+workflow/spec/gates[]/evaluator. Array elements use []. Output includes the
+field purpose, type, allowed values, lifecycle, and a schema-grounded example.
+JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+1 = unknown selector or output error, 2 = usage error.
 
 ### features
 Usage: goobers features [--json] [--dsl-version <version>] [--used] [path]
@@ -1298,14 +1317,31 @@ Generate a valid goober or workflow in the current gaggle. path may be
 an instance root or a gaggle directory and defaults to ".". Existing
 files are never replaced unless --force is set.
 
+### schema
+Usage: goobers schema [--human] <kind>
+       goobers schema --list [--human]
+
+Emit a canonical JSON Schema embedded in this build, or list every available
+schema kind. JSON is the default and includes the build version, commit, and
+DSL version. --human prints a labeled terminal rendering. No network lookup
+or fallback to another release is performed. Exit codes: 0 = OK, 1 = unknown
+kind or output error, 2 = usage error.
+
+### self-update
+Usage: goobers self-update [flags] [path]
+
+Stage and smoke-check a binary, then request supervised activation. Policies
+are manual, on-release (default), and on-main. Manual requires a release tag;
+on-main builds the configured branch. Config is never changed.
+
 ### service
 Usage: goobers service <subcommand> [path]
 
 Install and manage the goobers daemon under the current platform's user
 supervisor: systemd on Linux, launchd on macOS, or the Windows Service
-Control Manager. The managed daemon runs `goobers up <path>`, receives the
-same graceful-shutdown trigger as a foreground daemon, and restarts after
-an unexpected exit with supervisor backoff.
+Control Manager. The stable service host launches the instance's mutable
+binary, receives the same graceful-shutdown trigger as a foreground daemon,
+and owns validated self-update handoff, health checks, and rollback.
 
 Subcommands:
   install     install, enable, and start the service
@@ -1322,7 +1358,8 @@ Install, enable, and start the goobers daemon for the instance at <path>.
 Linux and macOS install a per-user service so provider credentials retain
 the current user's ownership. Windows installation must run from an
 elevated terminal. An existing installation is never overwritten; uninstall
-it first when changing the binary or instance path.
+it first when changing the stable host binary or instance path. Product
+binary updates use the self-update workflow instead.
 
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.
