@@ -13,7 +13,14 @@ guessing.
 
 ## Safety boundary
 
-This skill is read-only. Do not start or stop the daemon, trigger, retry,
+This skill takes no action that changes a run, a work item, a repository, or
+configuration. That is a boundary on *observable state an operator relies on*,
+not a claim that every permitted command is free of side effects: `trace`
+opens the telemetry rollup and can create or migrate `telemetry.db` (see
+"Inspect each selected run" below). State that limit plainly if a user asks
+whether these commands can alter the instance.
+
+Do not start or stop the daemon, trigger, retry,
 resume, rerun, cancel, or abort a run, clear a block, release a claim, repair or
 redact a journal, update configuration, modify a repository, or mutate an issue
 or pull request. In particular, never invoke `goobers run`, `goobers up`,
@@ -51,11 +58,22 @@ content.
    <goobers> trace --json <run-id> <instance-root>
    ```
 
-   This is an in-process journal read and works when the daemon is stopped. For
+   This is an in-process read and works when the daemon is stopped. For
    daemon health, use `<goobers> status --daemon <instance-root>` as separate
    liveness evidence. A stopped daemon does not imply a failed workflow. While
    a daemon is live, use the same supported CLI reads; use `trace --json
    --follow` only when the user explicitly asks to watch a live run.
+
+   `trace` is **not** a pure read of the instance. Alongside the journal it
+   requests telemetry enrichment, and the offline reader opens the rollup
+   through `rollup.Open`, which creates `telemetry.db` if absent and applies
+   any pending forward migrations. The run's answer never depends on that
+   enrichment — it is best-effort and a missing or unreadable rollup is not an
+   error — but the call can still change on-disk telemetry state. Do not
+   present `trace` to a user as an operation that cannot modify the instance,
+   and do not run it against an instance whose telemetry state must stay
+   byte-identical (a preserved incident image, a snapshot under forensic
+   review). For those, copy the instance first and trace the copy.
 
 3. Use narrow supporting reads only when they answer the question:
 
@@ -73,10 +91,12 @@ content.
      --provider=<provider> <instance-root>` for a claim question;
    - `goobers blocked list --json <instance-root>` for a learned-block question.
 
-   When the daemon is stopped, keep local reads immutable: use bounded
-   `runs list`, selected-run `trace`, `escalations show`, and `workflow show`.
-   Report aggregate, claim, or learned-block state unavailable rather than
-   initializing or delegating an administrative store.
+   When the daemon is stopped, keep local reads bounded and non-administrative:
+   use bounded `runs list`, selected-run `trace`, `escalations show`, and
+   `workflow show`. Report aggregate, claim, or learned-block state unavailable
+   rather than initializing or delegating an administrative store. Note that
+   "non-administrative" is not the same as "leaves no trace" — `trace` may still
+   create or migrate the telemetry rollup, as described above.
 
    `workflow show` proves only what is configured. A `gate.evaluated` or
    `stage.finished` event proves what executed. Do not describe a configured
@@ -119,8 +139,21 @@ opening them unless their contents are essential to the question.
   causal stage/gate, attempt, error code, and causal sequence when present.
 - **Aborted:** phase and terminal status are `aborted`. Do not report it as a
   failure or no-work result.
-- **Escalated:** phase is `escalated` or an executed gate event has
-  `escalated: true`; use `escalations show` for the structured selector,
+- **Escalated:** classify from the **current lifecycle segment only** — the
+  events at or after the last `run.resumed`, or from the beginning when the run
+  was never resumed. Within that segment, phase is `escalated` or an executed
+  gate event has `escalated: true`. A journal keeps its pre-resume events, so a
+  gate that escalated before a resume is **history, not the current outcome**: a
+  run that was resumed and then completed successfully is a first-pass success
+  or reviewer repass, and reporting it as escalated is wrong. Report the earlier
+  escalation separately as history, with its sequence, and say it was superseded
+  by the resume.
+
+  Do not send such a run to `escalations show`. That command reads the *current*
+  phase and exits non-zero with `run <id> has phase <phase>, not escalated`,
+  which is the command correctly refusing a stale classification rather than a
+  defect to work around. Use it only once the current segment establishes
+  escalation; use it for the structured selector,
   selected branch, repass count, terminal reason, and artifact timeline.
 - **No-work:** a successful executed path records a decisive
   `stage.finished` status of `no-work` and then completes. This means the
@@ -140,16 +173,32 @@ action.
 ## Follow issue and PR references
 
 Only perform a provider read after the selected run exposes an
-`externalRef.provider`, `externalRef.kind`, and `externalRef.id`. Resolve its
-repository from the selected instance and gaggle target returned by the
-environment resolver, never from the current directory, a repository-name
-suffix, or an unverified URL.
+`externalRef.provider`, `externalRef.kind`, and `externalRef.id`. Resolve the
+repository from the selected instance and gaggle returned by the environment
+resolver, never from the current directory, a repository-name suffix, or an
+unverified URL.
 
-For GitHub, pass the exact resolved repository:
+**A gaggle has two independent targets, and `externalRef.kind` selects between
+them.** `spec.project` is the code repository; `spec.backlog.project` is the
+separate repository or project that scopes work items. They are frequently the
+same, but nothing requires it:
+
+- `kind` is an issue or work item → resolve against **`spec.backlog.project`**;
+- `kind` is a pull request → resolve against **`spec.project`**.
+
+An `externalRef` carries an id but no repository, so using one target for both
+kinds will silently read a *different, unrelated* item that happens to share
+the number — an answer that looks well-formed and cites a real URL while being
+about the wrong thing. Never fall back to the other target to make a lookup
+succeed. If the needed field is absent from the resolved configuration, or the
+`kind` does not determine which applies, report the reference unresolved and
+state which mapping was missing; do not guess.
+
+For GitHub, pass the exact resolved repository for that kind:
 
 ```text
-gh issue view <id> --repo <owner>/<repo> --json number,title,state,url,closedAt
-gh pr view <id> --repo <owner>/<repo> --json number,title,state,url,mergedAt,closedAt
+gh issue view <id> --repo <backlog-owner>/<backlog-repo> --json number,title,state,url,closedAt
+gh pr view <id> --repo <code-owner>/<code-repo> --json number,title,state,url,mergedAt,closedAt
 ```
 
 For Azure DevOps, use a structured GET and pass the exact resolved
@@ -157,15 +206,17 @@ organization, project, and repository route values. For example:
 
 ```text
 az devops invoke --http-method GET --area wit --resource workItems \
-  --route-parameters project=<project> id=<id> \
+  --route-parameters project=<backlog-project> id=<id> \
   --org <organization-url> --output json
 az devops invoke --http-method GET --area git --resource pullRequests \
-  --route-parameters project=<project> repositoryId=<repository-id> \
+  --route-parameters project=<code-project> repositoryId=<repository-id> \
   pullRequestId=<id> --org <organization-url> --output json
 ```
 
-For PR reads, `repositoryId` must be the resolver-selected repository identity;
-never infer it from the PR URL, current directory, or project name.
+The same split applies: work-item reads use the backlog project, PR reads use
+the code project. For PR reads, `repositoryId` must be the resolver-selected
+repository identity; never infer it from the PR URL, current directory, or
+project name.
 
 The journal records what the run touched at an event timestamp; the provider
 read reports current state at query time. Cite both when state may have changed.

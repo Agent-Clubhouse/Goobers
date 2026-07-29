@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -197,9 +198,21 @@ func TestRunOperatorQuestionCorpus(t *testing.T) {
 func TestRunOperatorQuestionCorpusScenarios(t *testing.T) {
 	corpus := loadRunOperatorCorpus(t)
 	binary := buildRunOperatorCLI(t)
+	// Every scenario whose evidence is journal-only is executed against a real
+	// CLI and a materialized instance, and its answer is derived from what the
+	// CLI actually printed. Two groups are still static fixture self-checks:
+	// the provider-backed cases (GitHub and Azure DevOps), which need a stubbed
+	// provider this harness does not have, and incomplete-unknown-journal,
+	// whose fixture carries an unknown-schema event that cannot be written
+	// through the schema-validating journal writer.
 	for _, name := range []string{
 		"recent-first-pass-success-stopped",
 		"reviewer-repass-live",
+		"ci-failure-stopped",
+		"defined-abort",
+		"scheduled-no-work-stopped",
+		"escalated-after-review-budget",
+		"resumed-after-escalation-completes",
 	} {
 		testCase := findRunOperatorCorpusCase(t, corpus, name)
 		t.Run(name, func(t *testing.T) {
@@ -770,10 +783,11 @@ func configureRunOperatorDaemonMode(t *testing.T, root, mode string) {
 }
 
 type runOperatorReadObservation struct {
-	DaemonRunning bool
-	RecentLimit   int
-	ListedRunIDs  map[string]struct{}
-	Trace         []byte
+	DaemonRunning   bool
+	RecentLimit     int
+	ListedRunIDs    map[string]struct{}
+	Trace           []byte
+	SupportingReads []string
 }
 
 func executeRunOperatorReads(
@@ -826,6 +840,12 @@ func executeRunOperatorReads(
 			observation.DaemonRunning = strings.Contains(stdout.String(), "daemon running:")
 		case "trace":
 			observation.Trace = append([]byte(nil), stdout.Bytes()...)
+		case "escalations", "claims":
+			// Supporting reads must succeed against the materialized instance
+			// — `escalations show` in particular rejects a run whose current
+			// phase is not escalated, which is what makes a stale pre-resume
+			// classification observable rather than merely asserted.
+			observation.SupportingReads = append(observation.SupportingReads, args[0])
 		default:
 			t.Fatalf("unsupported scenario read %q", command)
 		}
@@ -838,21 +858,60 @@ type observedRunOperatorEvent struct {
 	KnownSchema *bool `json:"knownSchema,omitempty"`
 }
 
+// runOperatorRepassCount words a small repass count the way an operator answer
+// reads, so the derived fact matches how the corpus states it.
+func runOperatorRepassCount(repasses int) string {
+	switch repasses {
+	case 0:
+		return "zero"
+	case 1:
+		return "one"
+	case 2:
+		return "two"
+	default:
+		return strconv.Itoa(repasses)
+	}
+}
+
+// observedRunOperatorCause mirrors the trace `terminalCause` object the CLI
+// emits, so a derived answer can cite the stable code and causal sequence
+// rather than restating a human message.
+type observedRunOperatorCause struct {
+	Phase          string `json:"phase"`
+	Stage          string `json:"stage"`
+	Gate           string `json:"gate"`
+	Code           string `json:"code"`
+	CausalEventSeq uint64 `json:"causalEventSeq"`
+}
+
 func answerRunOperatorObservation(observation runOperatorReadObservation) (runOperatorExpected, error) {
 	var trace struct {
-		Identity journal.RunIdentity        `json:"identity"`
-		Phase    journal.RunPhase           `json:"phase"`
-		Repasses int                        `json:"repasses"`
-		Events   []observedRunOperatorEvent `json:"events"`
+		Identity      journal.RunIdentity        `json:"identity"`
+		Phase         journal.RunPhase           `json:"phase"`
+		Repasses      int                        `json:"repasses"`
+		TerminalCause *observedRunOperatorCause  `json:"terminalCause"`
+		Events        []observedRunOperatorEvent `json:"events"`
 	}
 	if err := json.Unmarshal(observation.Trace, &trace); err != nil {
 		return runOperatorExpected{}, fmt.Errorf("decode observed trace: %w", err)
 	}
 
+	// Classification reads the current lifecycle segment only: the events at or
+	// after the last run.resumed, or every event when the run was never
+	// resumed. A journal keeps its pre-resume events, so a gate that escalated
+	// before a resume is history rather than the current outcome, and treating
+	// it as current would report a resumed-then-completed run as escalated.
+	segment := trace.Events
+	for i := range trace.Events {
+		if trace.Events[i].Type == journal.EventRunResumed {
+			segment = trace.Events[i:]
+		}
+	}
+
+	// Journal integrity is assessed across every event: a gap or an unreadable
+	// schema before a resume still limits what the run as a whole can prove.
 	var uncertainty []string
 	var previous uint64
-	var terminal *observedRunOperatorEvent
-	var needsChanges, passed *observedRunOperatorEvent
 	for i := range trace.Events {
 		event := &trace.Events[i]
 		if previous != 0 && event.Seq != previous+1 {
@@ -864,26 +923,47 @@ func answerRunOperatorObservation(observation runOperatorReadObservation) (runOp
 			uncertainty = append(uncertainty,
 				fmt.Sprintf("Sequence %d has an unknown schema.", event.Seq))
 		}
+	}
+
+	// Outcome, by contrast, is read from the current segment only.
+	var terminal *observedRunOperatorEvent
+	var needsChanges, passed, escalated, noWork, abortGate *observedRunOperatorEvent
+	for i := range segment {
+		event := &segment[i]
 		switch {
 		case event.Type == journal.EventRunFinished:
 			terminal = event
+		case event.Type == journal.EventGateEvaluated && event.Escalated:
+			escalated = event
+		case event.Type == journal.EventGateEvaluated && event.Target == "abort":
+			abortGate = event
 		case event.Type == journal.EventGateEvaluated && event.Verdict == "needs-changes":
 			needsChanges = event
 		case event.Type == journal.EventGateEvaluated && event.Verdict == "pass":
 			passed = event
+		case event.Type == journal.EventStageFinished && event.Status == "no-work":
+			noWork = event
 		}
 	}
 	if terminal == nil && trace.Phase != journal.PhaseRunning {
 		uncertainty = append(uncertainty, "No understood run.finished event is available.")
 	}
 	if len(uncertainty) > 0 {
+		citation := runOperatorCitation{Source: "trace", RunID: trace.Identity.RunID}
+		for i := range trace.Events {
+			citation.Seqs = append(citation.Seqs, trace.Events[i].Seq)
+		}
+		if n := len(trace.Events); n > 0 {
+			citation.Timestamp = trace.Events[n-1].Time.UTC().Format(time.RFC3339)
+		}
 		return runOperatorExpected{
 			Classification: "uncertain",
-			Facts:          []string{"The available evidence does not prove a certain outcome."},
+			Facts:          []string{"The available evidence does not prove successful completion."},
+			Citations:      []runOperatorCitation{citation},
 			Uncertainty:    uncertainty,
 		}, nil
 	}
-	if terminal == nil || passed == nil {
+	if terminal == nil {
 		return runOperatorExpected{}, fmt.Errorf("observed trace has no supported answer")
 	}
 
@@ -891,6 +971,89 @@ func answerRunOperatorObservation(observation runOperatorReadObservation) (runOp
 		Source:    "trace",
 		RunID:     trace.Identity.RunID,
 		Timestamp: terminal.Time.UTC().Format(time.RFC3339),
+	}
+
+	// Terminal phases that are not a success are classified before the
+	// success paths so that a failed, aborted, or escalated run can never fall
+	// through to a "completed" answer.
+	switch trace.Phase {
+	case journal.PhaseFailed:
+		cause := trace.TerminalCause
+		if cause == nil || terminal.Status != string(journal.PhaseFailed) {
+			return runOperatorExpected{}, fmt.Errorf("failed evidence is inconsistent")
+		}
+		citation.Seqs = []uint64{cause.CausalEventSeq, terminal.Seq}
+		return runOperatorExpected{
+			Classification: "failed",
+			Facts: []string{
+				fmt.Sprintf("Execution failed in %s with stable code %s.", cause.Stage, cause.Code),
+				fmt.Sprintf("The terminal cause points to event sequence %d.", cause.CausalEventSeq),
+			},
+			Citations:   []runOperatorCitation{citation},
+			Uncertainty: []string{},
+		}, nil
+	case journal.PhaseAborted:
+		cause := trace.TerminalCause
+		if cause == nil || terminal.Status != string(journal.PhaseAborted) || abortGate == nil {
+			return runOperatorExpected{}, fmt.Errorf("aborted evidence is inconsistent")
+		}
+		citation.Seqs = []uint64{abortGate.Seq, terminal.Seq}
+		return runOperatorExpected{
+			Classification: "aborted",
+			Facts: []string{
+				"The run followed a defined abort branch; it did not fail or return no-work.",
+			},
+			Citations:   []runOperatorCitation{citation},
+			Uncertainty: []string{},
+		}, nil
+	case journal.PhaseEscalated:
+		if escalated == nil {
+			return runOperatorExpected{}, fmt.Errorf("escalated phase has no escalating gate in the current segment")
+		}
+		// The structured selector comes from `escalations show`, so the
+		// citation records both sources when that supporting read was made.
+		if slices.Contains(observation.SupportingReads, "escalations") {
+			citation.Source = "trace-and-escalation"
+		}
+		citation.Seqs = []uint64{escalated.Seq, terminal.Seq}
+		return runOperatorExpected{
+			Classification: "escalated",
+			Facts: []string{
+				fmt.Sprintf("The %s gate selected its escalation branch after %s repasses.",
+					escalated.Gate, runOperatorRepassCount(trace.Repasses)),
+				fmt.Sprintf("The escalation cause is the %s event at sequence %d.",
+					escalated.Gate, escalated.Seq),
+			},
+			Citations:   []runOperatorCitation{citation},
+			Uncertainty: []string{},
+		}, nil
+	}
+
+	// A pre-resume escalation that the current segment does not carry must not
+	// reach any success classification as an escalation; it is history only.
+	if escalated != nil {
+		return runOperatorExpected{}, fmt.Errorf(
+			"gate %s escalated in the current segment but phase is %s", escalated.Gate, trace.Phase)
+	}
+
+	if noWork != nil {
+		if trace.Phase != journal.PhaseCompleted || terminal.Status != string(journal.PhaseCompleted) {
+			return runOperatorExpected{}, fmt.Errorf("no-work evidence is inconsistent")
+		}
+		citation.Seqs = []uint64{noWork.Seq, terminal.Seq}
+		return runOperatorExpected{
+			Classification: "no-work",
+			Facts: []string{
+				"The scheduled run completed successfully.",
+				"The decisive stage correctly returned no-work; this was not a failure, abort, or skipped tick.",
+			},
+			Citations:   []runOperatorCitation{citation},
+			Uncertainty: []string{},
+		}, nil
+	}
+
+	if passed == nil {
+		return runOperatorExpected{}, fmt.Errorf("observed trace has no supported answer")
 	}
 	if needsChanges != nil {
 		if !observation.DaemonRunning {

@@ -2,18 +2,32 @@
   "schemaVersion": "1",
   "defaultRecentLimit": 20,
   "allowedCommandPrefixes": [
-    "<goobers> runs list", "<goobers> status --daemon", "<goobers> trace", "<goobers> stats",
-    "<goobers> escalations show", "<goobers> claims list", "<goobers> blocked list", "<goobers> workflow show",
-    "gh issue view", "gh pr view", "az devops invoke --http-method GET"
+    "<goobers> runs list",
+    "<goobers> status --daemon",
+    "<goobers> trace",
+    "<goobers> stats",
+    "<goobers> escalations show",
+    "<goobers> claims list",
+    "<goobers> blocked list",
+    "<goobers> workflow show",
+    "gh issue view",
+    "gh pr view",
+    "az devops invoke --http-method GET"
   ],
   "mutationNegativeControls": [
-    "<goobers> run implementation <instance-root>", "<goobers> up <instance-root>",
-    "<goobers> runs cancel run-101 <instance-root>", "<goobers> runs resume run-101 <instance-root>",
-    "<goobers> runs rerun run-101 implement <instance-root>", "<goobers> claims release 1445 <instance-root>",
-    "<goobers> blocked clear 1445 <instance-root>", "<goobers> journal redact run-101 <instance-root>",
+    "<goobers> run implementation <instance-root>",
+    "<goobers> up <instance-root>",
+    "<goobers> runs cancel run-101 <instance-root>",
+    "<goobers> runs resume run-101 <instance-root>",
+    "<goobers> runs rerun run-101 implement <instance-root>",
+    "<goobers> claims release 1445 <instance-root>",
+    "<goobers> blocked clear 1445 <instance-root>",
+    "<goobers> journal redact run-101 <instance-root>",
     "<goobers> telemetry prune-orphans --delete <instance-root>",
-    "gh issue edit 1445 --repo acme/widgets --add-label triaged", "gh pr comment 42 --repo acme/widgets --body approved",
-    "gh pr merge 42 --repo acme/widgets", "az devops invoke --http-method PATCH --area wit --resource workItems",
+    "gh issue edit 1445 --repo acme/widgets --add-label triaged",
+    "gh pr comment 42 --repo acme/widgets --body approved",
+    "gh pr merge 42 --repo acme/widgets",
+    "az devops invoke --http-method PATCH --area wit --resource workItems",
     "git checkout main"
   ],
   "cases": [
@@ -21,7 +35,10 @@
       "name": "recent-first-pass-success-stopped",
       "daemonState": "stopped",
       "question": "What happened recently?",
-      "commands": ["<goobers> runs list --json --limit=20 <instance-root>", "<goobers> trace --json run-success-001 <instance-root>"],
+      "commands": [
+        "<goobers> runs list --json --limit=20 <instance-root>",
+        "<goobers> trace --json run-success-001 <instance-root>"
+      ],
       "fixture": {
         "runs": [
           {
@@ -62,12 +79,18 @@
       },
       "expected": {
         "classification": "first-pass-success",
-        "facts": ["The bounded recent window was 20 runs.", "run-success-001 completed after review passed with zero repasses."],
+        "facts": [
+          "The bounded recent window was 20 runs.",
+          "run-success-001 completed after review passed with zero repasses."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-success-001",
-            "seqs": [3, 4],
+            "seqs": [
+              3,
+              4
+            ],
             "timestamp": "2026-07-27T18:08:00Z"
           }
         ],
@@ -78,7 +101,9 @@
       "name": "ci-failure-stopped",
       "daemonState": "stopped",
       "question": "Why did run-ci-failed fail?",
-      "commands": ["<goobers> trace --json run-ci-failed <instance-root>"],
+      "commands": [
+        "<goobers> trace --json run-ci-failed <instance-root>"
+      ],
       "fixture": {
         "trace": {
           "identity": {
@@ -117,12 +142,18 @@
       },
       "expected": {
         "classification": "failed",
-        "facts": ["Execution failed in local-ci with stable code exit_status_1.", "The terminal cause points to event sequence 6."],
+        "facts": [
+          "Execution failed in local-ci with stable code exit_status_1.",
+          "The terminal cause points to event sequence 6."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-ci-failed",
-            "seqs": [6, 7],
+            "seqs": [
+              6,
+              7
+            ],
             "timestamp": "2026-07-27T19:04:01Z"
           }
         ],
@@ -133,7 +164,10 @@
       "name": "reviewer-repass-live",
       "daemonState": "live",
       "question": "Did review repass for run-repass-001?",
-      "commands": ["<goobers> status --daemon <instance-root>", "<goobers> trace --json run-repass-001 <instance-root>"],
+      "commands": [
+        "<goobers> status --daemon <instance-root>",
+        "<goobers> trace --json run-repass-001 <instance-root>"
+      ],
       "fixture": {
         "daemon": {
           "health": "running",
@@ -218,12 +252,20 @@
       },
       "expected": {
         "classification": "reviewer-repass",
-        "facts": ["Review requested changes and routed back to implement.", "The later review passed and the run completed after one repass.", "Daemon liveness is separate from the workflow outcome."],
+        "facts": [
+          "Review requested changes and routed back to implement.",
+          "The later review passed and the run completed after one repass.",
+          "Daemon liveness is separate from the workflow outcome."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-repass-001",
-            "seqs": [5, 12, 13],
+            "seqs": [
+              5,
+              12,
+              13
+            ],
             "timestamp": "2026-07-27T20:14:00Z"
           }
         ],
@@ -234,7 +276,11 @@
       "name": "escalated-after-review-budget",
       "daemonState": "stopped",
       "question": "Why did run-escalated escalate?",
-      "commands": ["<goobers> runs list --json --phase=escalated --limit=20 <instance-root>", "<goobers> trace --json run-escalated <instance-root>", "<goobers> escalations show --json run-escalated <instance-root>"],
+      "commands": [
+        "<goobers> runs list --json --phase=escalated --limit=20 <instance-root>",
+        "<goobers> trace --json run-escalated <instance-root>",
+        "<goobers> escalations show --json run-escalated <instance-root>"
+      ],
       "fixture": {
         "trace": {
           "identity": {
@@ -251,6 +297,22 @@
             "lastNeedsChangesReason": "repass budget exhausted"
           },
           "events": [
+            {
+              "seq": 16,
+              "type": "gate.evaluated",
+              "time": "2026-07-27T21:05:00Z",
+              "gate": "review",
+              "verdict": "needs-changes",
+              "target": "implement"
+            },
+            {
+              "seq": 17,
+              "type": "gate.evaluated",
+              "time": "2026-07-27T21:12:00Z",
+              "gate": "review",
+              "verdict": "needs-changes",
+              "target": "implement"
+            },
             {
               "seq": 18,
               "type": "gate.evaluated",
@@ -283,12 +345,18 @@
       },
       "expected": {
         "classification": "escalated",
-        "facts": ["The review gate selected its escalation branch after two repasses.", "The escalation cause is the review event at sequence 18."],
+        "facts": [
+          "The review gate selected its escalation branch after two repasses.",
+          "The escalation cause is the review event at sequence 18."
+        ],
         "citations": [
           {
             "source": "trace-and-escalation",
             "runId": "run-escalated",
-            "seqs": [18, 19],
+            "seqs": [
+              18,
+              19
+            ],
             "timestamp": "2026-07-27T21:20:01Z"
           }
         ],
@@ -299,7 +367,10 @@
       "name": "scheduled-no-work-stopped",
       "daemonState": "stopped",
       "question": "Did the latest scheduled nomination fail or find no work?",
-      "commands": ["<goobers> runs list --json --workflow=work-nomination --limit=20 <instance-root>", "<goobers> trace --json run-no-work <instance-root>"],
+      "commands": [
+        "<goobers> runs list --json --workflow=work-nomination --limit=20 <instance-root>",
+        "<goobers> trace --json run-no-work <instance-root>"
+      ],
       "fixture": {
         "trace": {
           "identity": {
@@ -333,12 +404,18 @@
       },
       "expected": {
         "classification": "no-work",
-        "facts": ["The scheduled run completed successfully.", "The decisive stage correctly returned no-work; this was not a failure, abort, or skipped tick."],
+        "facts": [
+          "The scheduled run completed successfully.",
+          "The decisive stage correctly returned no-work; this was not a failure, abort, or skipped tick."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-no-work",
-            "seqs": [3, 4],
+            "seqs": [
+              3,
+              4
+            ],
             "timestamp": "2026-07-27T22:00:04Z"
           }
         ],
@@ -349,7 +426,9 @@
       "name": "defined-abort",
       "daemonState": "stopped",
       "question": "What was the outcome of run-aborted?",
-      "commands": ["<goobers> trace --json run-aborted <instance-root>"],
+      "commands": [
+        "<goobers> trace --json run-aborted <instance-root>"
+      ],
       "fixture": {
         "trace": {
           "identity": {
@@ -390,12 +469,17 @@
       },
       "expected": {
         "classification": "aborted",
-        "facts": ["The run followed a defined abort branch; it did not fail or return no-work."],
+        "facts": [
+          "The run followed a defined abort branch; it did not fail or return no-work."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-aborted",
-            "seqs": [5, 6],
+            "seqs": [
+              5,
+              6
+            ],
             "timestamp": "2026-07-27T22:31:01Z"
           }
         ],
@@ -406,7 +490,10 @@
       "name": "github-pr-created",
       "daemonState": "stopped",
       "question": "What pull request resulted from run-pr-created?",
-      "commands": ["<goobers> trace --json run-pr-created <instance-root>", "gh pr view 42 --repo acme/widgets --json number,title,state,url,mergedAt,closedAt"],
+      "commands": [
+        "<goobers> trace --json run-pr-created <instance-root>",
+        "gh pr view 42 --repo acme/widgets --json number,title,state,url,mergedAt,closedAt"
+      ],
       "fixture": {
         "resolvedTarget": {
           "provider": "github",
@@ -463,12 +550,19 @@
       },
       "expected": {
         "classification": "pr-created",
-        "facts": ["The open-pr stage created GitHub PR 42 in the configured acme/widgets target.", "The provider currently reports the PR open."],
+        "facts": [
+          "The open-pr stage created GitHub PR 42 in the configured acme/widgets target.",
+          "The provider currently reports the PR open."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-pr-created",
-            "seqs": [8, 9, 10],
+            "seqs": [
+              8,
+              9,
+              10
+            ],
             "timestamp": "2026-07-27T23:09:02Z"
           },
           {
@@ -484,7 +578,10 @@
       "name": "github-pr-merged",
       "daemonState": "live",
       "question": "Did run-merged actually merge its pull request?",
-      "commands": ["<goobers> trace --json run-merged <instance-root>", "gh pr view 43 --repo acme/widgets --json number,title,state,url,mergedAt,closedAt"],
+      "commands": [
+        "<goobers> trace --json run-merged <instance-root>",
+        "gh pr view 43 --repo acme/widgets --json number,title,state,url,mergedAt,closedAt"
+      ],
       "fixture": {
         "resolvedTarget": {
           "provider": "github",
@@ -555,12 +652,20 @@
       },
       "expected": {
         "classification": "merged",
-        "facts": ["Durable merge-stage output says merged and the provider confirms PR 43 is merged.", "The run's completed phase is execution health; merged is its business outcome."],
+        "facts": [
+          "Durable merge-stage output says merged and the provider confirms PR 43 is merged.",
+          "The run's completed phase is execution health; merged is its business outcome."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-merged",
-            "seqs": [9, 10, 11, 12],
+            "seqs": [
+              9,
+              10,
+              11,
+              12
+            ],
             "timestamp": "2026-07-28T00:05:03Z"
           },
           {
@@ -576,7 +681,10 @@
       "name": "azure-devops-linked-issue",
       "daemonState": "stopped",
       "question": "Which Azure DevOps issue was linked to run-ado-issue?",
-      "commands": ["<goobers> trace --json run-ado-issue <instance-root>", "az devops invoke --http-method GET --area wit --resource workItems --route-parameters project=Widgets id=731 --org <organization-url> --output json"],
+      "commands": [
+        "<goobers> trace --json run-ado-issue <instance-root>",
+        "az devops invoke --http-method GET --area wit --resource workItems --route-parameters project=Widgets id=731 --org <organization-url> --output json"
+      ],
       "fixture": {
         "resolvedTarget": {
           "provider": "ado",
@@ -621,12 +729,18 @@
       },
       "expected": {
         "classification": "issue-linked",
-        "facts": ["The run linked Azure DevOps work item 731 in the configured Widgets project.", "The provider currently reports the work item active."],
+        "facts": [
+          "The run linked Azure DevOps work item 731 in the configured Widgets project.",
+          "The provider currently reports the work item active."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-ado-issue",
-            "seqs": [7, 8],
+            "seqs": [
+              7,
+              8
+            ],
             "timestamp": "2026-07-28T01:03:01Z"
           },
           {
@@ -642,7 +756,10 @@
       "name": "azure-devops-pr-created",
       "daemonState": "stopped",
       "question": "What Azure DevOps pull request resulted from run-ado-pr?",
-      "commands": ["<goobers> trace --json run-ado-pr <instance-root>", "az devops invoke --http-method GET --area git --resource pullRequests --route-parameters project=Widgets repositoryId=widgets-repo-id pullRequestId=84 --org <organization-url> --output json"],
+      "commands": [
+        "<goobers> trace --json run-ado-pr <instance-root>",
+        "az devops invoke --http-method GET --area git --resource pullRequests --route-parameters project=Widgets repositoryId=widgets-repo-id pullRequestId=84 --org <organization-url> --output json"
+      ],
       "fixture": {
         "resolvedTarget": {
           "provider": "ado",
@@ -699,12 +816,19 @@
       },
       "expected": {
         "classification": "pr-created",
-        "facts": ["The open-pr stage created Azure DevOps PR 84 in the resolver-selected repository.", "The provider currently reports the PR active."],
+        "facts": [
+          "The open-pr stage created Azure DevOps PR 84 in the resolver-selected repository.",
+          "The provider currently reports the PR active."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-ado-pr",
-            "seqs": [6, 7, 8],
+            "seqs": [
+              6,
+              7,
+              8
+            ],
             "timestamp": "2026-07-28T01:13:02Z"
           },
           {
@@ -720,7 +844,11 @@
       "name": "active-claim-live",
       "daemonState": "live",
       "question": "Which run currently holds the claim for issue 1445?",
-      "commands": ["<goobers> status --daemon <instance-root>", "<goobers> claims list --json --gaggle=widgets --provider=github <instance-root>", "<goobers> trace --json run-claim-holder <instance-root>"],
+      "commands": [
+        "<goobers> status --daemon <instance-root>",
+        "<goobers> claims list --json --gaggle=widgets --provider=github <instance-root>",
+        "<goobers> trace --json run-claim-holder <instance-root>"
+      ],
       "fixture": {
         "daemon": {
           "health": "running",
@@ -757,12 +885,17 @@
       },
       "expected": {
         "classification": "claim-active",
-        "facts": ["The live claim ledger assigns issue 1445 to run-claim-holder in the implementation workflow.", "The selected run is running and the lease expires at 2026-07-28T02:20:00Z."],
+        "facts": [
+          "The live claim ledger assigns issue 1445 to run-claim-holder in the implementation workflow.",
+          "The selected run is running and the lease expires at 2026-07-28T02:20:00Z."
+        ],
         "citations": [
           {
             "source": "claims-and-trace",
             "runId": "run-claim-holder",
-            "seqs": [1],
+            "seqs": [
+              1
+            ],
             "timestamp": "2026-07-28T01:20:00Z"
           }
         ],
@@ -773,7 +906,9 @@
       "name": "incomplete-unknown-journal",
       "daemonState": "stopped",
       "question": "Did run-ambiguous complete successfully?",
-      "commands": ["<goobers> trace --json run-ambiguous <instance-root>"],
+      "commands": [
+        "<goobers> trace --json run-ambiguous <instance-root>"
+      ],
       "fixture": {
         "trace": {
           "identity": {
@@ -805,12 +940,17 @@
       },
       "expected": {
         "classification": "uncertain",
-        "facts": ["The available evidence does not prove successful completion."],
+        "facts": [
+          "The available evidence does not prove successful completion."
+        ],
         "citations": [
           {
             "source": "trace",
             "runId": "run-ambiguous",
-            "seqs": [1, 3],
+            "seqs": [
+              1,
+              3
+            ],
             "timestamp": "2026-07-28T02:05:00Z"
           }
         ],
@@ -819,6 +959,77 @@
           "Sequence 3 has an unknown schema.",
           "No understood run.finished event is available."
         ]
+      }
+    },
+    {
+      "name": "resumed-after-escalation-completes",
+      "daemonState": "stopped",
+      "question": "Is run-resumed-ok still escalated?",
+      "commands": [
+        "<goobers> runs list --json --limit=20 <instance-root>",
+        "<goobers> trace --json run-resumed-ok <instance-root>"
+      ],
+      "fixture": {
+        "trace": {
+          "identity": {
+            "runId": "run-resumed-ok",
+            "workflow": "implementation",
+            "gaggle": "widgets",
+            "startedAt": "2026-07-28T03:00:00Z"
+          },
+          "phase": "completed",
+          "events": [
+            {
+              "seq": 4,
+              "type": "gate.evaluated",
+              "time": "2026-07-28T03:01:00Z",
+              "gate": "review",
+              "verdict": "fail",
+              "escalated": true,
+              "target": "escalate"
+            },
+            {
+              "seq": 5,
+              "type": "run.resumed",
+              "time": "2026-07-28T03:30:00Z",
+              "status": "escalated",
+              "target": "implement"
+            },
+            {
+              "seq": 6,
+              "type": "gate.evaluated",
+              "time": "2026-07-28T03:40:00Z",
+              "gate": "review",
+              "verdict": "pass",
+              "target": "done"
+            },
+            {
+              "seq": 7,
+              "type": "run.finished",
+              "time": "2026-07-28T03:40:01Z",
+              "status": "completed"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "classification": "first-pass-success",
+        "facts": [
+          "The bounded recent window was 20 runs.",
+          "run-resumed-ok completed after review passed with zero repasses."
+        ],
+        "citations": [
+          {
+            "source": "trace",
+            "runId": "run-resumed-ok",
+            "seqs": [
+              6,
+              7
+            ],
+            "timestamp": "2026-07-28T03:40:01Z"
+          }
+        ],
+        "uncertainty": []
       }
     }
   ]
