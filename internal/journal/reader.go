@@ -82,6 +82,17 @@ func (r *Reader) Phase() (RunPhase, error) {
 	return reconstructPhase(events), nil
 }
 
+// PhaseFromEvents reconstructs the phase from events the caller has already
+// read, using the same rules as Phase.
+//
+// A caller that both renders events and tests for terminality must use this
+// rather than calling Events and then Phase: those are two separate reads of a
+// file the writer is still appending to, so the second can observe the terminal
+// event that the first missed by microseconds. A poll loop written that way
+// stops as soon as the second read reports terminal, having never rendered the
+// final records — silently dropping the last stage's output (#1557).
+func PhaseFromEvents(events []Event) RunPhase { return reconstructPhase(events) }
+
 // Events returns every durably-committed event in seq order. A torn final record
 // from an interrupted append is skipped, not returned — the same rule Recover
 // applies — so a reader never trips over a partial write. Use Recover to detect
