@@ -51,3 +51,25 @@ repos:
 		t.Fatalf("selfIdentity = %q, want instance-bot", cfg.SelfIdentity)
 	}
 }
+
+func TestLoadConfigNeedsHumanAssignee(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+needsHumanAssignee: mason
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.NeedsHumanAssignee != "mason" {
+		t.Fatalf("needsHumanAssignee = %q, want mason", cfg.NeedsHumanAssignee)
+	}
+}

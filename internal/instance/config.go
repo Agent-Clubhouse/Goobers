@@ -59,6 +59,9 @@ type Config struct {
 	// SelfIdentity is the instance-wide provider login used when a gaggle does
 	// not declare its own identity. It is an identity value, not a credential.
 	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
+	// NeedsHumanAssignee is the provider identity assigned to work items when
+	// Goobers parks them for human attention.
+	NeedsHumanAssignee string `json:"needsHumanAssignee,omitempty" yaml:"needsHumanAssignee,omitempty"`
 	// WorkflowSource locates the definitions-as-code tree independently of the
 	// target code repositories. Nil keeps the local <instance-root>/config
 	// default.

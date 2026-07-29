@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -229,13 +230,19 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			}
 			comment = "Implementation parked for human review: " + reason
 		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		cfg, err := instance.LoadConfig(l.ConfigFile())
+		if err != nil {
+			pf(stderr, "error: load needs-human routing config: %v\n", err)
+			return 1
+		}
+		req := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
 			Repository:   backlogRepo,
 			ID:           claim.ItemID,
 			Comment:      comment,
 			AddLabels:    []string{providers.LabelNeedsHuman},
 			RemoveLabels: []string{providers.LabelReady},
-		}); err != nil {
+		}, cfg.NeedsHumanAssignee)
+		if _, err := provider.UpdateWorkItem(ctx, req); err != nil {
 			pf(stderr, "error: park work item: %v\n", err)
 			return 1
 		}

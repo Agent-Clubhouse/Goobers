@@ -679,15 +679,17 @@ var newEscalationPoster = func(token string) gate.Commenter { return providers.N
 // every ADO run's failure/park/escalation handler no-ops (token ref not found),
 // leaking the goobers/status:claimed marker and never applying needs-human.
 type escalationCommenter struct {
-	resolver credentials.Resolver
-	reg      runner.SecretRegistrar
-	layout   instance.Layout
+	resolver           credentials.Resolver
+	reg                runner.SecretRegistrar
+	layout             instance.Layout
+	needsHumanAssignee string
 }
 
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	// PR remediation uses pr/<number> as its internal claim key; provider work
 	// item endpoints use the shared bare issue/PR number.
 	req.ID = blockedLookupID(req.ID)
+	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
 		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
 		if err != nil {
@@ -743,9 +745,10 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 	}
 	return &gate.EscalationNotifier{
 		Poster: &escalationCommenter{
-			resolver: resolver,
-			reg:      reg,
-			layout:   l,
+			resolver:           resolver,
+			reg:                reg,
+			layout:             l,
+			needsHumanAssignee: cfg.NeedsHumanAssignee,
 		},
 	}
 }
@@ -776,9 +779,10 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		return nil
 	}
 	poster := &escalationCommenter{
-		resolver: resolver,
-		reg:      reg,
-		layout:   l,
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
 	}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
@@ -897,9 +901,10 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		return nil
 	}
 	poster := &escalationCommenter{
-		resolver: resolver,
-		reg:      reg,
-		layout:   l,
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
