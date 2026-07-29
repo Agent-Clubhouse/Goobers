@@ -324,11 +324,19 @@ export interface RunListOptions {
   until?: string;
   limit?: number;
   cursor?: string;
+  latestPerWorkflow?: boolean;
 }
 
 export interface RunList {
   runs: RunSummary[];
+  workflowActivity?: WorkflowRunActivity[];
   nextCursor?: string;
+}
+
+export interface WorkflowRunActivity {
+  gaggle: string;
+  workflow: string;
+  activeRuns: number;
 }
 
 export interface RunSummary {

@@ -333,7 +333,12 @@ func newWireFixtures() wireFixtures {
 			},
 		},
 		Runs: readservice.RunList{
-			Runs:       []readservice.RunSummary{runSummary},
+			Runs: []readservice.RunSummary{runSummary},
+			WorkflowActivity: []readservice.WorkflowRunActivity{{
+				Gaggle:     "core",
+				Workflow:   "implementation",
+				ActiveRuns: 1,
+			}},
 			NextCursor: "next-run",
 		},
 		RunDetail: readservice.RunDetail{

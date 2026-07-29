@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
 import type {
+  DaemonClient,
   DaemonEventStream,
   DaemonUpdateEvent,
   Instance,
@@ -44,6 +45,14 @@ class GatedRunsClient extends FixtureDaemonClient {
   }
 }
 
+class LiveSnapshotClient extends FixtureDaemonClient {
+  readonly stream = new ControlledEventStream();
+
+  override connectEvents(): Promise<DaemonEventStream> {
+    return Promise.resolve(this.stream);
+  }
+}
+
 class ControlledEventStream implements DaemonEventStream {
   private closed = false;
   private readonly events: DaemonUpdateEvent[] = [];
@@ -81,7 +90,7 @@ class ControlledEventStream implements DaemonEventStream {
   }
 }
 
-function wrapper(client: GatedRunsClient) {
+function wrapper(client: DaemonClient) {
   return ({ children }: { children: ReactNode }) => (
     <LiveDataProvider client={client} config={{ invalidationWindowMs: 0 }}>
       {children}
@@ -156,7 +165,7 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       wrapper: wrapper(client),
     });
 
-    await waitFor(() => expect(client.signals).toHaveLength(2));
+    await waitFor(() => expect(client.signals).toHaveLength(1));
     const firstSignals = [...client.signals];
 
     act(() => {
@@ -164,16 +173,16 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       result.current.retry();
     });
     await act(async () => Promise.resolve());
-    expect(client.signals).toHaveLength(2);
+    expect(client.signals).toHaveLength(1);
     expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
 
-    act(() => client.release(2));
-    await waitFor(() => expect(client.signals).toHaveLength(4));
-    const replaySignals = client.signals.slice(2);
+    act(() => client.release(1));
+    await waitFor(() => expect(client.signals).toHaveLength(2));
+    const replaySignals = client.signals.slice(1);
     unmount();
     expect(replaySignals.every((signal) => signal?.aborted === true)).toBe(true);
     expect(firstSignals.every((signal) => signal?.aborted === false)).toBe(true);
-    client.release(2);
+    client.release(1);
   });
 
   it("keeps replacement-client work out of a detached operation", async () => {
@@ -187,7 +196,7 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       },
     );
 
-    await waitFor(() => expect(firstClient.signals).toHaveLength(2));
+    await waitFor(() => expect(firstClient.signals).toHaveLength(1));
     const detachedSignals = [...firstClient.signals];
 
     rerender({ client: replacementClient });
@@ -196,16 +205,108 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
       result.current.retry();
       result.current.retry();
     });
-    await waitFor(() => expect(replacementClient.signals).toHaveLength(2));
+    await waitFor(() => expect(replacementClient.signals).toHaveLength(1));
 
-    act(() => firstClient.release(2));
+    act(() => firstClient.release(1));
     await settle();
-    expect(replacementClient.signals).toHaveLength(2);
+    expect(replacementClient.signals).toHaveLength(1);
 
-    act(() => replacementClient.release(2));
-    await waitFor(() => expect(replacementClient.signals).toHaveLength(4));
+    act(() => replacementClient.release(1));
+    await waitFor(() => expect(replacementClient.signals).toHaveLength(2));
     unmount();
-    replacementClient.release(2);
+    replacementClient.release(1);
+  });
+
+  it.each([
+    {
+      model: "run" as const,
+      expected: { gaggles: 0, goobers: 0, workflows: 0, runs: 1 },
+    },
+    {
+      model: "workflow" as const,
+      expected: { gaggles: 1, goobers: 2, workflows: 2, runs: 0 },
+    },
+    {
+      model: "instance" as const,
+      expected: { gaggles: 0, goobers: 0, workflows: 0, runs: 0 },
+    },
+  ])("honors $model invalidation request boundaries", async ({ model, expected }) => {
+    const client = new LiveSnapshotClient(populatedDaemonFixtures());
+    const getHealth = vi.spyOn(client, "getHealth");
+    const getInstance = vi.spyOn(client, "getInstance");
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
+    const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    getHealth.mockClear();
+    getInstance.mockClear();
+    listGaggles.mockClear();
+    listGoobers.mockClear();
+    listWorkflows.mockClear();
+    listRuns.mockClear();
+
+    act(() => {
+      client.stream.push({
+        id: `session:${model}`,
+        type: "invalidate",
+        data: { cursor: `session:${model}`, models: [model] },
+      });
+    });
+
+    await waitFor(() => expect(getHealth).toHaveBeenCalledOnce());
+    expect(getInstance).toHaveBeenCalledOnce();
+    expect(listGaggles).toHaveBeenCalledTimes(expected.gaggles);
+    expect(listGoobers).toHaveBeenCalledTimes(expected.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(expected.workflows);
+    expect(listRuns).toHaveBeenCalledTimes(expected.runs);
+    unmount();
+  });
+
+  it("treats production run-journal invalidations as run-only refreshes", async () => {
+    const client = new LiveSnapshotClient(populatedDaemonFixtures());
+    const getHealth = vi.spyOn(client, "getHealth");
+    const getInstance = vi.spyOn(client, "getInstance");
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
+    const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    getHealth.mockClear();
+    getInstance.mockClear();
+    listGaggles.mockClear();
+    listGoobers.mockClear();
+    listWorkflows.mockClear();
+    listRuns.mockClear();
+
+    act(() => {
+      client.stream.push({
+        id: "session:1",
+        type: "invalidate",
+        data: {
+          cursor: "session:1",
+          models: ["instance", "run", "workflow"],
+          runIds: ["run-1"],
+          workflows: [{ gaggle: "core", name: "implementation" }],
+        },
+      });
+    });
+
+    await waitFor(() => expect(getHealth).toHaveBeenCalledOnce());
+    expect(getInstance).toHaveBeenCalledOnce();
+    expect(listGaggles).not.toHaveBeenCalled();
+    expect(listGoobers).not.toHaveBeenCalled();
+    expect(listWorkflows).not.toHaveBeenCalled();
+    expect(listRuns).toHaveBeenCalledOnce();
+    unmount();
   });
 });
 
