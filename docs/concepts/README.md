@@ -69,6 +69,9 @@ The left side defines what may run: gaggles, agents, workflows, triggers,
 stages, gates, capabilities, and instructions. It can be a `config/` directory
 inside the instance, a checkout of a separate config repository, or a
 repo-relative subtree such as this project's `selfhost/` dogfood config.
+Use [Choose where an instance and its config live](../guides/instance-placement.md)
+to select among those layouts. The instance root and its runtime state stay
+outside every target repository in all three cases.
 
 The right side records what did run:
 
