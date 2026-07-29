@@ -226,11 +226,12 @@ func executeAgentToolkitInstallAction(
 			err,
 		)
 	}
-	if _, _, err := instance.LoadConfigDir(absolute); err != nil {
+	if _, report, err := instance.LoadConfigDir(absolute); err != nil {
 		return agentToolkitInstallActionResult{}, fmt.Errorf(
-			"agent toolkit destination %s is not a valid Goobers config source: %w",
+			"agent toolkit destination %s is not a valid Goobers config source: %w (report: %+v)",
 			absolute,
 			err,
+			report,
 		)
 	}
 
