@@ -131,7 +131,7 @@ func (r *configReloader) poll(now time.Time) error {
 	if err != nil {
 		return r.reject(digest, err)
 	}
-	if err := journalLegacyRuntimeMigration(r.setup.InstanceLog, runtimeMigration); err != nil {
+	if err := journalLegacyRuntimeMigration(r.layout, r.setup.InstanceLog, runtimeMigration); err != nil {
 		return r.reject(digest, fmt.Errorf("journal legacy runtime migration: %w", err))
 	}
 	definitions, err := buildSchedulerDefinitions(

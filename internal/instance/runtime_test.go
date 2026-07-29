@@ -81,6 +81,9 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 	if migration.Gaggle != "alpha" || !reflect.DeepEqual(migration.MovedDirs, []string{RunsDirName, WorkcopiesDirName}) {
 		t.Fatalf("migration report = %+v", migration)
 	}
+	if migration.ID == "" {
+		t.Fatal("migration report has no durable id")
+	}
 	scoped := layout.ForGaggle("alpha")
 	for _, path := range []string{
 		filepath.Join(scoped.RunsDir(), "run-1", "run.yaml"),
@@ -100,8 +103,18 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repeat MigrateLegacyRuntime: %v", err)
 	}
-	if migration.Gaggle != "" || len(migration.MovedDirs) != 0 {
-		t.Fatalf("repeat migration report = %+v, want empty", migration)
+	if migration.ID == "" || migration.Gaggle != "alpha" || !reflect.DeepEqual(migration.MovedDirs, []string{RunsDirName, WorkcopiesDirName}) {
+		t.Fatalf("recovered migration report = %+v", migration)
+	}
+	if err := layout.CompleteLegacyRuntimeMigration(migration); err != nil {
+		t.Fatalf("CompleteLegacyRuntimeMigration: %v", err)
+	}
+	migration, err = layout.MigrateLegacyRuntimeWithReport([]string{"alpha"})
+	if err != nil {
+		t.Fatalf("post-completion MigrateLegacyRuntime: %v", err)
+	}
+	if migration.ID != "" || migration.Gaggle != "" || len(migration.MovedDirs) != 0 {
+		t.Fatalf("post-completion migration report = %+v, want empty", migration)
 	}
 }
 

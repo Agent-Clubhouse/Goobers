@@ -226,7 +226,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
-	if err := journalLegacyRuntimeMigration(instanceLog, runtimeMigration); err != nil {
+	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	var recoveredClaims []localscheduler.ClaimEntry
@@ -312,18 +312,41 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}, nil
 }
 
-func journalLegacyRuntimeMigration(instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
+func journalLegacyRuntimeMigration(l instance.Layout, instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
 	if len(migration.MovedDirs) == 0 {
 		return nil
 	}
-	return instanceLog.Append(journal.Event{
+	events, err := journal.ReadInstanceLog(instanceLog.Dir())
+	if err != nil {
+		return fmt.Errorf("read instance log: %w", err)
+	}
+	journaled := false
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["note"] == legacyRuntimeMigrationNote &&
+			event.Runner["migrationId"] == migration.ID {
+			journaled = true
+			break
+		}
+	}
+	if !journaled {
+		if err := instanceLog.Append(legacyRuntimeMigrationEvent(migration)); err != nil {
+			return err
+		}
+	}
+	return l.CompleteLegacyRuntimeMigration(migration)
+}
+
+func legacyRuntimeMigrationEvent(migration instance.RuntimeMigration) journal.Event {
+	return journal.Event{
 		Type: journal.EventRunnerAnnotation,
 		Runner: map[string]any{
 			"note":             legacyRuntimeMigrationNote,
+			"migrationId":      migration.ID,
 			"gaggle":           migration.Gaggle,
 			"movedDirectories": migration.MovedDirs,
 		},
-	})
+	}
 }
 
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
