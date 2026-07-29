@@ -400,9 +400,8 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	// (#1237 — see
 	// computeReviewDigest). Check the selected PR's trusted status comment for a
 	// matching usable verdict. Any missing key component or lookup problem
-	// degrades to a fresh review. A matching fail verdict is reusable only while
-	// its recorded escalation still blocks: an operator clear or self-heal
-	// explicitly requires another review.
+	// degrades to a fresh review. Clearing an escalation also invalidates a
+	// matching fail verdict: the operator explicitly requested another review.
 	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, selectedLabels)
 	var cachedVerdictJSON string
 	if reviewDigest == "" {
@@ -411,46 +410,25 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
 		if cerr != nil {
 			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if !advisoryMode && cached != nil && cached.Decision == apiv1.VerdictFail &&
+			!hasAnyLabel(selectedLabels, []string{remediationEscalatedLabel}) {
+			reason := remediationEscalatedLabel + " was cleared by an operator"
+			if err := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); err != nil {
+				pf(stderr, "warning: could not mark PR #%d's operator-cleared verdict stale: %v\n", selectedNumber, err)
+			}
+			pf(stdout, "PR #%d: %s — invalidated the standing fail verdict and forcing a fresh review\n", selectedNumber, reason)
+		} else if cached != nil && !cachedBlockerVerdictStillApplies(*cached, siblings) {
+			// The head/base key still matches, but the cached verdict is a
+			// blocked-on-sibling verdict whose named blocker(s) have all resolved
+			// (merged/closed/demoted). Reusing it would keep the PR parked behind
+			// a block that no longer exists, so force a fresh review (#1237).
+			pf(stderr, "info: cached verdict's named blocker(s) have resolved; forcing a fresh review\n")
 		} else if cached != nil {
-			reuse := true
-			if !advisoryMode && cached.Decision == apiv1.VerdictFail {
-				blocked, berr := escalationStillBlocks(ctx, provider, repo, providers.PullRequestSummary{
-					Number:  selectedNumber,
-					Base:    base,
-					HeadSHA: selectedHeadSHA,
-					BaseSHA: selectedBaseSHA,
-					Labels:  selectedLabels,
-				})
-				if berr != nil {
-					reuse = false
-					pf(stderr, "warning: resolve cached fail verdict's escalation state: %v; forcing a fresh review\n", berr)
-				} else if !blocked {
-					reuse = false
-					reason := remediationEscalatedLabel + " was cleared by an operator"
-					if hasAnyLabel(selectedLabels, []string{remediationEscalatedLabel}) {
-						reason = remediationEscalatedLabel + " self-healed after the PR head or live base tip advanced"
-					}
-					if err := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); err != nil {
-						pf(stderr, "warning: could not mark PR #%d's invalidated fail verdict stale: %v\n", selectedNumber, err)
-					}
-					pf(stdout, "PR #%d: %s — invalidated the standing fail verdict and forcing a fresh review\n", selectedNumber, reason)
-				}
-			}
-			if reuse && !cachedBlockerVerdictStillApplies(*cached, siblings) {
-				// The head/base key still matches, but the cached verdict is a
-				// blocked-on-sibling verdict whose named blocker(s) have all resolved
-				// (merged/closed/demoted). Reusing it would keep the PR parked behind
-				// a block that no longer exists, so force a fresh review (#1237).
-				reuse = false
-				pf(stderr, "info: cached verdict's named blocker(s) have resolved; forcing a fresh review\n")
-			}
-			if reuse {
-				data, merr := json.Marshal(cached)
-				if merr != nil {
-					pf(stderr, "warning: marshal cached verdict: %v\n", merr)
-				} else {
-					cachedVerdictJSON = string(data)
-				}
+			data, merr := json.Marshal(cached)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
 			}
 		}
 	}

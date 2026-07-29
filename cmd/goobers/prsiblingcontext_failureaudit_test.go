@@ -24,6 +24,7 @@ var gatherSiblingFailConsumerFields = []string{
 	"advisoryMode",
 	"overlappingSiblingsCsv",
 	"reviewDigest",
+	"scopeGateParked",
 	"selectedBaseSha",
 	"selectedHeadSha",
 	"selectedNumber",
@@ -77,8 +78,8 @@ func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
 
 	sort.Strings(consumers)
 	want := []string{
-		"acme-web/merge-review: gather-sibling-context -> scope-gate[pass] -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
-		"goobers/merge-review: gather-sibling-context -> scope-gate[pass] -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
+		"acme-web/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
+		"goobers/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 	}
 	if producers != 3 {
 		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 3", producers)
