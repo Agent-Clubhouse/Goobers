@@ -8,6 +8,7 @@ payload/.goobers/agent-toolkit/api/schemas/artifact-pointer.schema.json
 payload/.goobers/agent-toolkit/api/schemas/candidate-findings-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/config-source-action.schema.json
 payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
+payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
@@ -18,6 +19,7 @@ payload/.goobers/agent-toolkit/api/schemas/manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v2.schema.json
 payload/.goobers/agent-toolkit/api/schemas/result.schema.json
+payload/.goobers/agent-toolkit/api/schemas/schema-output.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
 payload/.goobers/agent-toolkit/config-examples/README.md

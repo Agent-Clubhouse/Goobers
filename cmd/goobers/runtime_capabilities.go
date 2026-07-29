@@ -313,6 +313,14 @@ func init() {
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
 			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
+		command("schema", apicontract.ActionReadOnlyNavigation, runSchema).
+			withSynopsis(synopsisByID["schema"]).
+			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
+			withExamples("goobers schema --list", "goobers schema workflow", "goobers schema --human goober"),
+		command("explain", apicontract.ActionReadOnlyNavigation, runExplain).
+			withSynopsis(synopsisByID["explain"]).
+			withHelp("project field facts from an embedded JSON Schema", explainHelp).
+			withExamples("goobers explain goober.spec.capabilities", "goobers explain --human workflow.spec.gates[].evaluator"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
