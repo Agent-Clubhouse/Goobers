@@ -117,6 +117,16 @@ func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 			spec.MCPServers[1].URL = "https://other.example.test"
 			return spec
 		}(), instructions: "original instructions"},
+		{name: "MCP credential ref", spec: func() apiv1.GooberSpec {
+			spec := base
+			spec.MCPServers = append([]apiv1.MCPServer(nil), base.MCPServers...)
+			spec.MCPServers[0].CredentialRefs = []apiv1.MCPCredentialRef{{
+				Kind: apiv1.MCPCredentialKindBYO,
+				Ref:  "vendor-api",
+				Env:  "TOKEN",
+			}}
+			return spec
+		}(), instructions: "original instructions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			skillPackages := tc.skillPackages

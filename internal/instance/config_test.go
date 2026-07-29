@@ -1058,9 +1058,8 @@ repos:
 	}
 }
 
-// TestLoadConfigCredentialsBlock is #287: instance.yaml's credentials: block
-// parses into per-capability CredentialGrants, so an agentic stage can source
-// agent:model from a personal Copilot-Requests PAT distinct from the repo token.
+// TestLoadConfigCredentialsBlock covers first-party capability and BYO MCP
+// credential grants.
 func TestLoadConfigCredentialsBlock(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
@@ -1078,19 +1077,51 @@ credentials:
   - capability: repo:push
     token:
       file: /run/secrets/push-token
+  - mcp: sharepoint
+    token:
+      env: SHAREPOINT_MCP_TOKEN
 `)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if len(cfg.Credentials) != 2 {
-		t.Fatalf("expected 2 credentials, got %+v", cfg.Credentials)
+	if len(cfg.Credentials) != 3 {
+		t.Fatalf("expected 3 credentials, got %+v", cfg.Credentials)
 	}
 	if cfg.Credentials[0].Capability != "agent:model" || cfg.Credentials[0].Token.Env != "COPILOT_GITHUB_TOKEN" {
 		t.Fatalf("unexpected credentials[0]: %+v", cfg.Credentials[0])
 	}
 	if cfg.Credentials[1].Capability != "repo:push" || cfg.Credentials[1].Token.File != "/run/secrets/push-token" {
 		t.Fatalf("unexpected credentials[1]: %+v", cfg.Credentials[1])
+	}
+	if cfg.Credentials[2].MCP != "sharepoint" || cfg.Credentials[2].Token.Env != "SHAREPOINT_MCP_TOKEN" {
+		t.Fatalf("unexpected credentials[2]: %+v", cfg.Credentials[2])
+	}
+}
+
+func TestLoadConfigRejectsMalformedBYOMCPCredentialGrant(t *testing.T) {
+	for name, grant := range map[string]string{
+		"missing selector": `token:
+      env: MCP_TOKEN`,
+		"both selectors": `capability: agent:model
+    mcp: sharepoint
+    token:
+      env: MCP_TOKEN`,
+		"invalid name": `mcp: SharePoint
+    token:
+      env: MCP_TOKEN`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+credentials:
+  - `+grant+`
+`)
+			if _, err := LoadConfig(path); err == nil {
+				t.Fatal("malformed BYO MCP credential grant passed validation")
+			}
+		})
 	}
 }
 

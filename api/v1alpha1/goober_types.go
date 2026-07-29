@@ -26,14 +26,35 @@ const (
 	MCPHeaderSchemeBasic MCPHeaderScheme = "basic"
 )
 
-// MCPCredentialRef binds one capability-scoped credential to an MCP server
-// environment variable or HTTP header. Secret values remain in instance
-// credential configuration and are resolved only for the current invocation.
+// MCPCredentialKind identifies a non-capability MCP credential source.
+type MCPCredentialKind string
+
+const (
+	// MCPCredentialKindBYO resolves a named operator-provided credential.
+	MCPCredentialKindBYO MCPCredentialKind = "byo"
+)
+
+// MCPCredentialRef binds either one first-party capability credential or one
+// named BYO credential to an MCP server environment variable or HTTP header.
+// Secret values remain in instance credential configuration and are resolved
+// only for the current invocation.
+// +kubebuilder:validation:XValidation:rule="(has(self.capability) && !has(self.kind) && !has(self.ref)) || (!has(self.capability) && has(self.kind) && self.kind == 'byo' && has(self.ref))",message="set either capability, or kind byo with ref"
 // +kubebuilder:validation:XValidation:rule="(has(self.env) && !has(self.header) && !has(self.scheme)) || (!has(self.env) && has(self.header))",message="exactly one of env or header must be set, and scheme is only valid with header"
 type MCPCredentialRef struct {
 	// Capability is the goober capability whose scoped credential is resolved.
 	// +kubebuilder:validation:MinLength=1
-	Capability string `json:"capability" yaml:"capability"`
+	// +optional
+	Capability string `json:"capability,omitempty" yaml:"capability,omitempty"`
+	// Kind selects a non-capability credential source.
+	// +kubebuilder:validation:Enum=byo
+	// +optional
+	Kind MCPCredentialKind `json:"kind,omitempty" yaml:"kind,omitempty"`
+	// Ref names the operator-provided BYO credential.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	Ref string `json:"ref,omitempty" yaml:"ref,omitempty"`
 	// Env names the environment variable exposed to a local stdio server.
 	// +kubebuilder:validation:MinLength=1
 	// +optional
@@ -70,7 +91,7 @@ type MCPServer struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	URL string `json:"url,omitempty" yaml:"url,omitempty"`
-	// CredentialRefs bind capability-scoped credentials to this server.
+	// CredentialRefs bind first-party or named BYO credentials to this server.
 	// +optional
 	CredentialRefs []MCPCredentialRef `json:"credentialRefs,omitempty" yaml:"credentialRefs,omitempty"`
 }

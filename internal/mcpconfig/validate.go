@@ -24,8 +24,9 @@ func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declar
 	return Validate(servers, declaredCapabilities, tools)
 }
 
-// Validate checks MCP server shape, tool policy, and ensures every credential
-// reference is backed by a capability declared for the current scope.
+// Validate checks MCP server shape, tool policy, and ensures every first-party
+// credential reference is backed by a capability declared for the current
+// scope. A BYO reference is scoped by its containing server declaration.
 func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
 	if len(servers) > 0 {
 		for i, tool := range tools {
@@ -83,14 +84,22 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) e
 		headerNames := make(map[string]bool, len(server.CredentialRefs))
 		for j, ref := range server.CredentialRefs {
 			refScope := fmt.Sprintf("%s.credentialRefs[%d]", scope, j)
-			if !capability.Known(ref.Capability) {
-				return fmt.Errorf("%s.capability %q is unknown", refScope, ref.Capability)
-			}
-			if !capability.StageDeclarable(ref.Capability) {
-				return fmt.Errorf("%s.capability %q is runner-owned", refScope, ref.Capability)
-			}
-			if !declared[ref.Capability] {
-				return fmt.Errorf("%s.capability %q is not declared by the goober or invocation", refScope, ref.Capability)
+			switch {
+			case ref.Capability != "" && ref.Kind == "" && ref.Ref == "":
+				if !capability.Known(ref.Capability) {
+					return fmt.Errorf("%s.capability %q is unknown", refScope, ref.Capability)
+				}
+				if !capability.StageDeclarable(ref.Capability) {
+					return fmt.Errorf("%s.capability %q is runner-owned", refScope, ref.Capability)
+				}
+				if !declared[ref.Capability] {
+					return fmt.Errorf("%s.capability %q is not declared by the goober or invocation", refScope, ref.Capability)
+				}
+			case ref.Capability == "" && ref.Kind == apiv1.MCPCredentialKindBYO && validName(ref.Ref):
+			case ref.Capability == "" && ref.Kind == apiv1.MCPCredentialKindBYO:
+				return fmt.Errorf("%s.ref %q must be a lowercase DNS label", refScope, ref.Ref)
+			default:
+				return fmt.Errorf("%s must set either capability, or kind %q with ref", refScope, apiv1.MCPCredentialKindBYO)
 			}
 			switch {
 			case ref.Env != "" && ref.Header == "" && ref.Scheme == "":
@@ -126,6 +135,52 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) e
 		}
 	}
 	return nil
+}
+
+// CredentialKey returns the invocation-internal key used to materialize ref.
+// BYO keys are deliberately absent from internal/capability's public registry.
+func CredentialKey(ref apiv1.MCPCredentialRef) string {
+	if ref.Kind == apiv1.MCPCredentialKindBYO {
+		return BYOCredentialKey(ref.Ref)
+	}
+	return ref.Capability
+}
+
+// BYOCredentialKey namespaces a named BYO credential away from first-party
+// capability grants.
+func BYOCredentialKey(name string) string {
+	return "mcp:" + name
+}
+
+// IsBYOCredentialKey reports whether key is a well-formed internal BYO key.
+func IsBYOCredentialKey(key string) bool {
+	name, ok := strings.CutPrefix(key, "mcp:")
+	return ok && validName(name)
+}
+
+// BYOCredentialKeys returns the unique BYO keys explicitly referenced by
+// servers, preserving declaration order.
+func BYOCredentialKeys(servers []apiv1.MCPServer) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	for _, server := range servers {
+		for _, ref := range server.CredentialRefs {
+			if ref.Kind != apiv1.MCPCredentialKindBYO {
+				continue
+			}
+			key := BYOCredentialKey(ref.Ref)
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	return keys
+}
+
+// ValidBYOCredentialName reports whether name is valid for a named BYO grant.
+func ValidBYOCredentialName(name string) bool {
+	return validName(name)
 }
 
 func validName(name string) bool {

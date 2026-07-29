@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -76,7 +77,7 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 		Credentials: twoTokenCredentials(
 			t,
 			"contents:read", "local-mcp-secret",
-			"github:issues:write", "remote-mcp-secret",
+			mcpconfig.BYOCredentialKey("vendor-api"), "remote-mcp-secret",
 		),
 		MCPServers: []apiv1.MCPServer{
 			{
@@ -92,9 +93,10 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 				Name: "remote-context",
 				URL:  "https://mcp.example.test/api",
 				CredentialRefs: []apiv1.MCPCredentialRef{{
-					Capability: "github:issues:write",
-					Header:     "Authorization",
-					Scheme:     apiv1.MCPHeaderSchemeBearer,
+					Kind:   apiv1.MCPCredentialKindBYO,
+					Ref:    "vendor-api",
+					Header: "Authorization",
+					Scheme: apiv1.MCPHeaderSchemeBearer,
 				}},
 			},
 		},
@@ -405,7 +407,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 			EnvCapabilities: map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
 		},
 		mcpTestInjector(t, registry,
-			"repo:read", secret,
+			mcpconfig.BYOCredentialKey("sharepoint"), secret,
 			"agent:model", "scoped-model-token",
 		),
 		recorder,
@@ -417,9 +419,10 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 			Name: "remote-context",
 			URL:  "https://mcp.example.test/api",
 			CredentialRefs: []apiv1.MCPCredentialRef{{
-				Capability: "repo:read",
-				Header:     "Authorization",
-				Scheme:     apiv1.MCPHeaderSchemeBearer,
+				Kind:   apiv1.MCPCredentialKindBYO,
+				Ref:    "sharepoint",
+				Header: "Authorization",
+				Scheme: apiv1.MCPHeaderSchemeBearer,
 			}},
 		}}),
 	)
@@ -444,7 +447,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "repo:read", "agent:model")); err != nil {
+	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "agent:model")); err != nil {
 		t.Fatal(err)
 	}
 	span.Event("mcp.request", attribute.String("authorization", "Bearer "+secret))

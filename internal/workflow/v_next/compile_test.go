@@ -634,6 +634,25 @@ func TestCompileRequiresTaskMCPCredentialCapabilities(t *testing.T) {
 	); err != nil {
 		t.Fatalf("declared MCP credential capability should compile: %v", err)
 	}
+
+	spec.Tasks[0].Capabilities = nil
+	goobers["coder"] = apiv1.GooberSpec{
+		MCPServers: []apiv1.MCPServer{{
+			Name: "vendor",
+			URL:  "https://mcp.example.test",
+			CredentialRefs: []apiv1.MCPCredentialRef{{
+				Kind:   apiv1.MCPCredentialKindBYO,
+				Ref:    "vendor-api",
+				Header: "Authorization",
+			}},
+		}},
+	}
+	if _, err := compileAcknowledged(
+		Definition{Name: "mcp-byo", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+	); err != nil {
+		t.Fatalf("BYO MCP credential should not become a task capability: %v", err)
+	}
 }
 
 func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {

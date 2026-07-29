@@ -205,7 +205,7 @@
         "url": { "type": "string", "format": "uri", "description": "HTTP or HTTPS endpoint of a remote MCP server." },
         "credentialRefs": {
           "type": "array",
-          "description": "Capability-scoped credentials exposed to this server.",
+          "description": "Explicit first-party capability or named BYO credentials exposed to this server.",
           "items": { "$ref": "#/$defs/mcpCredentialRef" }
         }
       },
@@ -222,13 +222,12 @@
     },
     "mcpCredentialRef": {
       "type": "object",
-      "description": "Binding from one granted capability credential to either a local environment variable or a remote HTTP header.",
+      "description": "Binding from one granted first-party capability or named BYO credential to either a local environment variable or a remote HTTP header.",
       "additionalProperties": false,
-      "required": ["capability"],
       "properties": {
         "capability": {
           "type": "string",
-          "description": "Goober capability whose scoped credential is resolved.",
+          "description": "Closed first-party Goober capability whose scoped credential is resolved.",
           "enum": [
             "repo:read",
             "repo:push",
@@ -250,18 +249,45 @@
             "agent:model"
           ]
         },
+        "kind": {
+          "type": "string",
+          "description": "Credential source kind for a non-capability reference.",
+          "enum": ["byo"]
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Name of an operator-provided BYO MCP credential."
+        },
         "env": { "type": "string", "minLength": 1, "description": "Environment variable name exposed to a local stdio server. Mutually exclusive with header." },
         "header": { "type": "string", "minLength": 1, "description": "HTTP header name sent to a remote server. Mutually exclusive with env." },
         "scheme": { "type": "string", "enum": ["bearer", "basic"], "description": "Optional authorization scheme prefix for a remote header credential." }
       },
-      "oneOf": [
+      "allOf": [
         {
-          "required": ["env"],
-          "not": { "anyOf": [{ "required": ["header"] }, { "required": ["scheme"] }] }
+          "oneOf": [
+            {
+              "required": ["capability"],
+              "not": { "anyOf": [{ "required": ["kind"] }, { "required": ["ref"] }] }
+            },
+            {
+              "required": ["kind", "ref"],
+              "not": { "anyOf": [{ "required": ["capability"] }] }
+            }
+          ]
         },
         {
-          "required": ["header"],
-          "not": { "anyOf": [{ "required": ["env"] }] }
+          "oneOf": [
+            {
+              "required": ["env"],
+              "not": { "anyOf": [{ "required": ["header"] }, { "required": ["scheme"] }] }
+            },
+            {
+              "required": ["header"],
+              "not": { "anyOf": [{ "required": ["env"] }] }
+            }
+          ]
         }
       ]
     }

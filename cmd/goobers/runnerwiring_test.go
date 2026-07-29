@@ -33,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -709,6 +710,45 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
+	}
+}
+
+func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
+	t.Setenv("SHAREPOINT_MCP_TOKEN", "sharepoint-secret")
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		MCP:   "sharepoint",
+		Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	key := mcpconfig.BYOCredentialKey("sharepoint")
+	gooberGrants := buildGooberCredentialGrants("knowledge", []string{key}, grants)
+	injector, err := credentials.NewGooberInjector(resolver, "knowledge", gooberGrants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+	set, err := injector.Materialize(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	token, err := set.Token(context.Background(), key)
+	if err != nil || token != "sharepoint-secret" {
+		t.Fatalf("BYO MCP token = %q, %v", token, err)
+	}
+
+	otherGrants := buildGooberCredentialGrants("coder", nil, grants)
+	other, err := credentials.NewGooberInjector(resolver, "coder", otherGrants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector(other): %v", err)
+	}
+	otherSet, err := other.Materialize(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("Materialize(other): %v", err)
+	}
+	if _, err := otherSet.Token(context.Background(), key); !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("unreferencing goober token error = %v, want ErrNoCredentialForCapability", err)
 	}
 }
 

@@ -132,6 +132,7 @@ var constBackedEnums = []enumRule{
 	// --- api/v1alpha1 manifest / goober / common types ---
 	{schema: "manifest.schema.json", path: "properties/spec/properties/instance/properties/environment/enum", source: "api/v1alpha1.Environment", want: goConsts("api/v1alpha1/manifest_types.go", "Environment")},
 	{schema: "goober.schema.json", path: "properties/spec/properties/harness/enum", source: "api/v1alpha1.Harness", want: goConsts("api/v1alpha1/goober_types.go", "Harness")},
+	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/kind/enum", source: "api/v1alpha1.MCPCredentialKind", want: goConsts("api/v1alpha1/goober_types.go", "MCPCredentialKind")},
 	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/scheme/enum", source: "api/v1alpha1.MCPHeaderScheme", want: goConsts("api/v1alpha1/goober_types.go", "MCPHeaderScheme")},
 	{schema: "gaggle.schema.json", path: "$defs/repoRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "gaggle.schema.json", path: "$defs/backlogRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},

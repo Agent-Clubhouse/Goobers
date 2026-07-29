@@ -112,13 +112,14 @@ spec:
                       minLength: 1
                       type: string
                     credentialRefs:
-                      description: CredentialRefs bind capability-scoped credentials
+                      description: CredentialRefs bind first-party or named BYO credentials
                         to this server.
                       items:
                         description: |-
-                          MCPCredentialRef binds one capability-scoped credential to an MCP server
-                          environment variable or HTTP header. Secret values remain in instance
-                          credential configuration and are resolved only for the current invocation.
+                          MCPCredentialRef binds either one first-party capability credential or one
+                          named BYO credential to an MCP server environment variable or HTTP header.
+                          Secret values remain in instance credential configuration and are resolved
+                          only for the current invocation.
                         properties:
                           capability:
                             description: Capability is the goober capability whose
@@ -135,6 +136,18 @@ spec:
                               server.
                             minLength: 1
                             type: string
+                          kind:
+                            description: Kind selects a non-capability credential
+                              source.
+                            enum:
+                            - byo
+                            type: string
+                          ref:
+                            description: Ref names the operator-provided BYO credential.
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
                           scheme:
                             description: |-
                               Scheme optionally prefixes a remote header credential with "Bearer " or
@@ -143,10 +156,12 @@ spec:
                             - bearer
                             - basic
                             type: string
-                        required:
-                        - capability
                         type: object
                         x-kubernetes-validations:
+                        - message: set either capability, or kind byo with ref
+                          rule: (has(self.capability) && !has(self.kind) && !has(self.ref))
+                            || (!has(self.capability) && has(self.kind) && self.kind
+                            == 'byo' && has(self.ref))
                         - message: exactly one of env or header must be set, and scheme
                             is only valid with header
                           rule: (has(self.env) && !has(self.header) && !has(self.scheme))

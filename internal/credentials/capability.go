@@ -27,9 +27,9 @@ type SecretRegistrar interface {
 	Register(secret []byte)
 }
 
-// Grant maps one goober's capability name (e.g. "github:issues:write", as
-// declared on a Goober/Task — docs/requirements/goober.md GBO-052) to the token
-// ref that backs it. Goober is empty only for runner-owned deterministic work.
+// Grant maps one goober's credential key to the token ref that backs it. Keys
+// are canonical capabilities or invocation-internal named MCP keys. Goober is
+// empty only for runner-owned deterministic work.
 type Grant struct {
 	Goober     string
 	Capability string
@@ -37,10 +37,9 @@ type Grant struct {
 }
 
 // Injector resolves credentials scoped to one identity and a stage's declared
-// capabilities. It never materializes another goober's grant or a credential
-// for a capability that was not declared, and it registers every value it
-// resolves with its SecretRegistrar before handing it back — nothing bypasses
-// the scrubber.
+// credential keys. It never materializes another goober's grant or an
+// undeclared key, and it registers every value it resolves with its
+// SecretRegistrar before handing it back — nothing bypasses the scrubber.
 type Injector struct {
 	resolver  Resolver
 	grants    map[string]string // capability -> ref name

@@ -78,9 +78,10 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 			if req.Credentials == nil {
 				return nil, fmt.Errorf("harness: copilot-cli: MCP server %q requires credentials but none were materialized", server.Name)
 			}
-			token, err := req.Credentials.Token(ctx, ref.Capability)
+			key := mcpconfig.CredentialKey(ref)
+			token, err := req.Credentials.Token(ctx, key)
 			if err != nil {
-				return nil, fmt.Errorf("harness: copilot-cli: resolve MCP server %q credential %q: %w", server.Name, ref.Capability, err)
+				return nil, fmt.Errorf("harness: copilot-cli: resolve MCP server %q credential %q: %w", server.Name, key, err)
 			}
 			envName := fmt.Sprintf("GOOBERS_MCP_CREDENTIAL_%d_%d", serverIndex, refIndex)
 			env = overrideEnv(env, envName, token)
