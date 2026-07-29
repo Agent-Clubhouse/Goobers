@@ -1,6 +1,6 @@
 {
   "action": "seed-config-source",
-  "version": 1,
+  "version": 2,
   "created": [],
   "skipped": [
     "instance.yaml.example",

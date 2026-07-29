@@ -194,7 +194,7 @@ func runGuidedInit(
 		}
 	}
 
-	if err := installGuidedAgentToolkit(source, agentToolkit, stdout); err != nil {
+	if err := installGuidedAgentToolkit(root, source, agentToolkit, stdout); err != nil {
 		return nil, guidedInitResult{}, 1, err
 	}
 	if remoteCreate != nil {
@@ -398,6 +398,7 @@ func inspectGuidedAgentToolkitState(
 }
 
 func installGuidedAgentToolkit(
+	instanceRoot string,
 	source guidedSourceSelection,
 	selection guidedAgentToolkitSelection,
 	stdout io.Writer,
@@ -423,7 +424,7 @@ func installGuidedAgentToolkit(
 	} else {
 		pf(stdout, "\nGoobers agent toolkit in %s is already current for %s.\n", executed.Action.Path, selection.Harness)
 	}
-	writeAgentKitNextSteps(stdout, executed.Action.Path)
+	writeAgentKitNextSteps(stdout, executed.Action.Path, instanceRoot)
 	return nil
 }
 

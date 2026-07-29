@@ -121,6 +121,7 @@ func TestAgentKitCLIInstallPreservesUserInstructions(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Added the claude adapter reference to existing CLAUDE.md") ||
 		!strings.Contains(stdout, "Starter prompts:") ||
+		!strings.Contains(stdout, "Goobers instance at <instance-path>") ||
 		!strings.Contains(stdout, "goobers agent-kit check") ||
 		!strings.Contains(stdout, "goobers agent-kit update --write") {
 		t.Fatalf("install stdout = %q", stdout)

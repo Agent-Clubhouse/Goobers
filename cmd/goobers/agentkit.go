@@ -114,7 +114,7 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 1 {
 		target = fs.Arg(0)
 	}
-	writeAgentKitNextSteps(stdout, absolutePath(target))
+	writeAgentKitNextSteps(stdout, absolutePath(target), "")
 	return 0
 }
 
@@ -302,8 +302,8 @@ func writeAgentKitDiff(w io.Writer, changes []agentkit.Change) error {
 	return nil
 }
 
-func writeAgentKitNextSteps(w io.Writer, target string) {
-	prompts := agentKitStarterPrompts()
+func writeAgentKitNextSteps(w io.Writer, target, instanceRoot string) {
+	prompts := agentKitStarterPrompts(instanceRoot)
 	pf(w, "\nStarter prompts:\n")
 	pf(w, "  Authoring: %q\n", prompts[0])
 	pf(w, "  Run Q&A: %q\n", prompts[1])
@@ -315,10 +315,14 @@ func writeAgentKitNextSteps(w io.Writer, target string) {
 	pf(w, "  Apply:  %s\n", commands[2])
 }
 
-func agentKitStarterPrompts() []string {
+func agentKitStarterPrompts(instanceRoot string) []string {
+	instanceTarget := "<instance-path>"
+	if strings.TrimSpace(instanceRoot) != "" {
+		instanceTarget = absolutePath(instanceRoot)
+	}
 	return []string{
 		"Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: <describe the workflow>.",
-		"Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for this Goobers instance.",
+		"Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for the Goobers instance at " + instanceTarget + ".",
 		"Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release.",
 	}
 }

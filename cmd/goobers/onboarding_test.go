@@ -161,6 +161,7 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 			if len(result.Prompts) != 3 ||
 				!strings.Contains(result.Prompts[0], "DSL author") ||
 				!strings.Contains(result.Prompts[1], "run operator") ||
+				!strings.Contains(result.Prompts[1], "<instance-path>") ||
 				!strings.Contains(result.Prompts[2], "workflow upgrade") {
 				t.Fatalf("starter prompts = %v", result.Prompts)
 			}

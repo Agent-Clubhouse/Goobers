@@ -26,7 +26,8 @@ import (
 )
 
 const (
-	onboardingActionVersion       = 1
+	onboardingActionVersion       = 2
+	onboardingIssueSeedVersion    = 1 // Keep stable so envelope changes do not duplicate starter issues.
 	seedConfigSourceAction        = "seed-config-source"
 	stubAgentInstructionsAction   = "stub-agent-instructions"
 	stubSampleAction              = "stub-sample"
@@ -202,7 +203,7 @@ func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer)
 		return 0
 	}
 	printOnboardingActionResult(stdout, executed.Action)
-	writeAgentKitNextSteps(stdout, executed.Action.Path)
+	writeAgentKitNextSteps(stdout, executed.Action.Path, "")
 	return 0
 }
 
@@ -265,7 +266,7 @@ func executeAgentToolkitInstallAction(
 		Skipped:     []string{},
 		Path:        absolute,
 		NextCommand: "goobers agent-kit check " + quoteShellArg(absolute, goos),
-		Prompts:     agentKitStarterPrompts(),
+		Prompts:     agentKitStarterPrompts(""),
 		Commands:    agentKitMaintenanceCommands(absolute, goos),
 	}
 	if installed.Installed {
@@ -820,7 +821,7 @@ func onboardingSeedRunID(catalog onboardingSeedCatalog, issue onboardingSeedIssu
 	return fmt.Sprintf(
 		"onboarding/%s/v%d/%s@%s/%s",
 		stubSampleAction,
-		onboardingActionVersion,
+		onboardingIssueSeedVersion,
 		catalog.Sample.ID,
 		catalog.Sample.Version,
 		issue.ID,

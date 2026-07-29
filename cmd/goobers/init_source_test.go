@@ -150,6 +150,7 @@ func TestGuidedInitInstallsAgentToolkitForEachHarness(t *testing.T) {
 				"Starter prompts:",
 				"Goobers DSL author skill",
 				"Goobers run operator skill",
+				"Goobers instance at " + instanceRoot,
 				"Goobers workflow upgrade skill",
 				"goobers agent-kit check",
 				"goobers agent-kit update --write",
