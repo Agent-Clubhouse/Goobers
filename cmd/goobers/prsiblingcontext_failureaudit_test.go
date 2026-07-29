@@ -260,10 +260,22 @@ func TestGatherSiblingContextFatalProviderPathsKeepGenericEnvelope(t *testing.T)
 			},
 		},
 		{
-			name:      "sibling check state",
+			name:      "sibling check state combined status",
 			operation: "check state for PR #11",
 			match: func(r *http.Request) bool {
 				return r.Method == http.MethodGet && r.URL.Path == prefix+"/commits/sha11/status"
+			},
+		},
+		{
+			// RefCheckState resolves a ref from two sequential paged requests:
+			// the legacy combined status above, then check-runs. Injecting into
+			// the first never exercises the second, because the first error
+			// returns before it is issued — so this case is the only coverage
+			// of a failure after the combined status already succeeded.
+			name:      "sibling check state check runs",
+			operation: "check state for PR #11",
+			match: func(r *http.Request) bool {
+				return r.Method == http.MethodGet && r.URL.Path == prefix+"/commits/sha11/check-runs"
 			},
 		},
 		{
