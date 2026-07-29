@@ -121,9 +121,12 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"reviewDigest and checks the PR's own most recent verdict comment for a\n" +
 	"matching one (issue #523's verdict-level cache) — a match is emitted as\n" +
 	"cachedVerdictJson, letting the runner skip the reviewer gate's LLM call\n" +
-	"entirely; --no-verdict-cache skips that lookup, always forcing a fresh\n" +
-	"review. Exit codes: 0 = context gathered (possibly empty — no siblings\n" +
-	"is not an error), 1 = business error, 2 = usage/IO error.\n"
+	"entirely. For a managed PR, however, a matching fail verdict is marked\n" +
+	"stale and not emitted when an operator has cleared goobers:merge-escalated,\n" +
+	"so the stage forces a fresh review instead; --no-verdict-cache skips that\n" +
+	"lookup, always forcing a fresh review. Exit codes: 0 = context gathered\n" +
+	"(possibly empty — no siblings is not an error), 1 = business error,\n" +
+	"2 = usage/IO error.\n"
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
