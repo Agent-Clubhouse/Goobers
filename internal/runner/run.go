@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -381,6 +382,10 @@ type Config struct {
 	// only default-prefix gaggles needs no entries and behaves exactly as
 	// before. See Runner.branchNamespaceFor.
 	BranchNamespaces map[string]string
+	// BacklogQueryAssignedTo is the configured provider login supplied as the
+	// assignedTo default to backlog-query tasks. An explicit task input wins;
+	// empty leaves assignment-aware selection opted out.
+	BacklogQueryAssignedTo string
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -2655,6 +2660,27 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 	return ctx, span
 }
 
+func defaultBacklogQueryAssignedTo(task apiv1.Task, inputs map[string]string, assignedTo string) map[string]string {
+	const assignedToInput = "assignedTo"
+	if assignedTo == "" {
+		return inputs
+	}
+	if _, overridden := inputs[assignedToInput]; overridden {
+		return inputs
+	}
+	if task.Run == nil || len(task.Run.Command) < 2 ||
+		filepath.Base(task.Run.Command[0]) != "goobers" ||
+		task.Run.Command[1] != "backlog-query" {
+		return inputs
+	}
+	resolved := make(map[string]string, len(inputs)+1)
+	for key, value := range inputs {
+		resolved[key] = value
+	}
+	resolved[assignedToInput] = assignedTo
+	return resolved
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -2692,6 +2718,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
 	}
+	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil

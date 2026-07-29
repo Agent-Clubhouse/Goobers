@@ -1450,6 +1450,24 @@ func TestGaggleSchemaAcceptsCICommandAndRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestGaggleSchemaAcceptsSelfIdentity(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"selfIdentity": "web-bot",
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle selfIdentity rejected: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 	v := newV(t)
 	workflow := `{

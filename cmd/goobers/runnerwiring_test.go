@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -2687,5 +2688,24 @@ func TestBranchNamespacesByGaggle(t *testing.T) {
 		if got[gaggle] != wantNS {
 			t.Errorf("gaggle %q namespace = %q, want %q", gaggle, got[gaggle], wantNS)
 		}
+	}
+}
+
+func TestSelfIdentitiesByGaggle(t *testing.T) {
+	cfg := &instance.Config{SelfIdentity: "instance-bot"}
+	set := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "inherits"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "overrides"}, Spec: apiv1.GaggleSpec{SelfIdentity: "gaggle-bot"}},
+		},
+	}
+
+	got := selfIdentitiesByGaggle(cfg, set)
+	want := map[string]string{
+		"inherits":  "instance-bot",
+		"overrides": "gaggle-bot",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("selfIdentitiesByGaggle = %#v, want %#v", got, want)
 	}
 }
