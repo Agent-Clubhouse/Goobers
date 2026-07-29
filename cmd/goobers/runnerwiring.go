@@ -454,6 +454,19 @@ func buildGooberCredentialGrants(gooberName string, keys []string, sources []cre
 	return grants
 }
 
+// deterministicCredentialGrants excludes named BYO MCP credential sources.
+// Those sources are reachable only after buildGooberCredentialGrants binds
+// them to a goober that explicitly references the named MCP server.
+func deterministicCredentialGrants(sources []credentials.Grant) []credentials.Grant {
+	grants := make([]credentials.Grant, 0, len(sources))
+	for _, source := range sources {
+		if !mcpconfig.IsBYOCredentialKey(source.Capability) {
+			grants = append(grants, source)
+		}
+	}
+	return grants
+}
+
 func credentialGrantKey(grant instance.CredentialGrant) (string, error) {
 	switch {
 	case grant.Capability != "" && grant.MCP == "":
@@ -1650,6 +1663,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
+	deterministicGrants := deterministicCredentialGrants(grants)
 	// The clone-URL derivation the runner will use (the test seam when set, else
 	// the runner default) — the worktree auth resolver must key on the identical
 	// URLs the runner hands WorkingCopy.
@@ -1746,7 +1760,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// journal (via reg) and from the span exporter / instance log (via
 			// sharedReg) alike (#117 Piece B).
 			reg = teeRegistrar{run: reg, shared: sharedReg}
-			injector, err := credentials.NewInjector(resolver, grants, reg)
+			injector, err := credentials.NewInjector(resolver, deterministicGrants, reg)
 			if err != nil {
 				return nil, err
 			}

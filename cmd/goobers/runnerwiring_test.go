@@ -752,6 +752,38 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 	}
 }
 
+func TestDeterministicCredentialsRejectForgedBYOMCPEnvelope(t *testing.T) {
+	t.Setenv("SHAREPOINT_MCP_TOKEN", "sharepoint-secret")
+	t.Setenv("PUSH_TOKEN", "push-secret")
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{
+		{MCP: "sharepoint", Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"}},
+		{Capability: string(capability.RepoPush), Token: instance.TokenRef{Env: "PUSH_TOKEN"}},
+	}}
+	resolver, sources, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(sources), &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	key := mcpconfig.BYOCredentialKey("sharepoint")
+	forged := apiv1.InvocationEnvelope{
+		Capabilities: []string{key, string(capability.RepoPush)},
+	}
+	set, err := injector.Materialize(context.Background(), forged.Capabilities)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if _, err := set.Token(context.Background(), key); !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("forged deterministic BYO MCP token error = %v, want ErrNoCredentialForCapability", err)
+	}
+	token, err := set.Token(context.Background(), string(capability.RepoPush))
+	if err != nil || token != "push-secret" {
+		t.Fatalf("first-party deterministic token = %q, %v, want push-secret", token, err)
+	}
+}
+
 // TestBuildCredentialsStoreBackedRepoToken pins #683 at the main composition
 // root: a store-backed repo token backs the credentialed capabilities exactly
 // like an env/file token, the value reaches the injector's registrar (the
