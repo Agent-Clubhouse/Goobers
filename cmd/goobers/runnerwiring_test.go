@@ -1476,7 +1476,11 @@ func TestJournalLegacyRuntimeMigrationReconcilesAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer instanceLog.Close()
+	t.Cleanup(func() {
+		if err := instanceLog.Close(); err != nil {
+			t.Errorf("close instance log: %v", err)
+		}
+	})
 	if err := instanceLog.Append(legacyRuntimeMigrationEvent(recovered)); err != nil {
 		t.Fatal(err)
 	}

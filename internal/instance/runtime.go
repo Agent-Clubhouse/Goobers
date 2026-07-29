@@ -289,7 +289,7 @@ func validateRuntimeMigration(migration RuntimeMigration) error {
 	}
 	lastIndex := -1
 	for _, dir := range migration.MovedDirs {
-		index := -1
+		var index int
 		switch dir {
 		case RunsDirName:
 			index = 0
