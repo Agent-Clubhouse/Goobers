@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -82,6 +83,15 @@ func (t wallHeartbeatTicker) Stop()                   { t.ticker.Stop() }
 type journalAppender interface {
 	Append(journal.Event) error
 	ObserveActivity()
+}
+
+type executionJournal interface {
+	journalAppender
+	Dir() string
+	RecordArtifact(name string, data []byte) (journal.Ref, error)
+	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)
+	RepairAppendBoundary() error
+	SetMachineState(state string)
 }
 
 type stageHeartbeat struct {
@@ -372,6 +382,10 @@ type Config struct {
 	// only default-prefix gaggles needs no entries and behaves exactly as
 	// before. See Runner.branchNamespaceFor.
 	BranchNamespaces map[string]string
+	// BacklogQueryAssignedTo is the configured provider login supplied as the
+	// assignedTo default to backlog-query tasks. An explicit task input wins;
+	// empty leaves assignment-aware selection opted out.
+	BacklogQueryAssignedTo string
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -851,7 +865,7 @@ func (r *Runner) branchNamespaceFor(gaggle string) string {
 	return providers.NormalizeBranchNamespace(r.cfg.BranchNamespaces[gaggle])
 }
 
-func (r *Runner) recordRunBranch(jr *journal.Run, in StartInput) error {
+func (r *Runner) recordRunBranch(jr journalAppender, in StartInput) error {
 	return jr.Append(journal.Event{
 		Type: journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{
@@ -961,6 +975,85 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	fanIn := seed.fanIn
 	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
 	steps := 0
+	var stepBudget atomic.Int64
+	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
+		if err := validateConcurrentParallelWorkspaces(in.Machine, p); err != nil {
+			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, fmt.Errorf("runner: %w", err))
+			return res, true, failErr
+		}
+		if !branchRecorded && machineUsesRepo(in.Machine) {
+			if err := r.recordRunBranch(jr, in); err != nil {
+				res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps,
+					fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err))
+				return res, true, failErr
+			}
+			branchRecorded = true
+		}
+		outcome, err := r.runConcurrentParallel(
+			ctx, jr, in, p, existing, pointers, lastStage, lastResult,
+			completed, workspaceBranch, reg, &stepBudget,
+		)
+		steps = int(stepBudget.Load())
+		if err != nil {
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, p.Name, steps); stalled {
+				return stalledResult, true, stalledErr
+			}
+			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, err)
+			return res, true, failErr
+		}
+		if outcome.paused {
+			if err := jr.Checkpoint(); err != nil {
+				return Result{}, true, fmt.Errorf("runner: checkpoint parallel drain at %q: %w", p.Name, err)
+			}
+			return Result{Phase: journal.PhaseRunning, FinalState: p.Name, Steps: steps}, true, nil
+		}
+		pointers, completed = outcome.pointers, outcome.completed
+		lastStage, lastResult = outcome.lastStage, outcome.lastResult
+		par = nil
+		if outcome.runJoin {
+			fanIn = outcome.parallel
+		} else {
+			fanIn = nil
+		}
+		if terminal := outcome.terminalTask; terminal != nil {
+			next, res, advance, transitionErr := r.taskOutcome(
+				ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item,
+				terminal.task, terminal.result, steps,
+			)
+			if transitionErr != nil || !advance {
+				return res, true, transitionErr
+			}
+			state = next
+			return Result{}, false, nil
+		}
+		if terminal := outcome.terminalGate; terminal != nil {
+			next, res, advance, transitionErr := r.gateTransition(
+				ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item,
+				terminal.result, terminal.lastStage, terminal.lastResult, steps,
+			)
+			if transitionErr != nil || !advance {
+				return res, true, transitionErr
+			}
+			state = next
+			return Result{}, false, nil
+		}
+		switch outcome.target {
+		case workflow.TargetAbort:
+			res, finishErr := r.finish(in.RunID, jr, journal.PhaseAborted, p.Name, steps)
+			return res, true, finishErr
+		case workflow.TargetEscalate:
+			res, finishErr := r.finish(in.RunID, jr, journal.PhaseEscalated, p.Name, steps)
+			return res, true, finishErr
+		}
+		state = outcome.target
+		return Result{}, false, nil
+	}
+	if par != nil && par.spec.MaxConcurrentBranches > 1 {
+		result, done, err := runConcurrent(par.spec, par)
+		if done || err != nil {
+			return result, err
+		}
+	}
 	if par != nil {
 		jr.SetBranchCursors(par.cursors())
 		if current := par.current(); current != nil {
@@ -978,10 +1071,10 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 	}
 
 	for {
-		steps++
-		if steps > r.maxSteps {
+		if stepBudget.Add(1) > int64(r.maxSteps) {
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
+		steps = int(stepBudget.Load())
 		// A branch reached @join: settle it and move to the next declared
 		// branch, or close the parallel and continue at its join state.
 		if state == workflow.TargetJoin {
@@ -1070,9 +1163,11 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
 			}
 			if p.MaxConcurrentBranches > 1 {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
-					fmt.Errorf("runner: parallel %q: maxConcurrentBranches %d is declared but concurrent branch execution is not yet implemented; branches run sequentially",
-						p.Name, p.MaxConcurrentBranches))
+				result, done, err := runConcurrent(p, nil)
+				if done || err != nil {
+					return result, err
+				}
+				continue
 			}
 			par = newParallelExec(p)
 			fanIn = nil
@@ -2030,7 +2125,7 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 	return t.Next, Result{}, true, nil
 }
 
-func journalToleratedFailure(jr *journal.Run, stage string) error {
+func journalToleratedFailure(jr executionJournal, stage string) error {
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return err
@@ -2227,7 +2322,7 @@ func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnv
 	return verdict, errors.Join(reviewErr, heartbeatErr)
 }
 
-func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
+func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, removeErr error) error {
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
 		if err := jr.RepairAppendBoundary(); err != nil {
@@ -2264,7 +2359,7 @@ func finishTaskDispatch(jr *journal.Run, heartbeat stageHeartbeat, stage string,
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	var usageLimits apiv1.Limits
 	if t.Type == apiv1.TaskAgentic {
 		var err error
@@ -2500,7 +2595,7 @@ func retryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.Attem
 	}
 }
 
-func routeRetryDecision(jr *journal.Run, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
+func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
 	if !retryable || result.Outcome == gate.OutcomePass || result.Escalated {
 		return "", false, nil
 	}
@@ -2565,6 +2660,27 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 	return ctx, span
 }
 
+func defaultBacklogQueryAssignedTo(task apiv1.Task, inputs map[string]string, assignedTo string) map[string]string {
+	const assignedToInput = "assignedTo"
+	if assignedTo == "" {
+		return inputs
+	}
+	if _, overridden := inputs[assignedToInput]; overridden {
+		return inputs
+	}
+	if task.Run == nil || len(task.Run.Command) < 2 ||
+		filepath.Base(task.Run.Command[0]) != "goobers" ||
+		task.Run.Command[1] != "backlog-query" {
+		return inputs
+	}
+	resolved := make(map[string]string, len(inputs)+1)
+	for key, value := range inputs {
+		resolved[key] = value
+	}
+	resolved[assignedToInput] = assignedTo
+	return resolved
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -2596,12 +2712,13 @@ func (r *Runner) startTaskSpan(ctx context.Context, in StartInput, t apiv1.Task,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr *journal.Run, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
 	}
+	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
@@ -2767,7 +2884,7 @@ func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.Resul
 // diff error, or an empty diff (a pre-commit timeout) — in which case the
 // caller falls back to the normal timeout path (retry per Task.Retry, then
 // fail).
-func (r *Runner) salvageTimeout(ctx context.Context, jr *journal.Run, in StartInput, t apiv1.Task, workspace *stageWorkspace, attempt int, class journal.AttemptClass, cause error) (apiv1.ResultEnvelope, bool) {
+func (r *Runner) salvageTimeout(ctx context.Context, jr executionJournal, in StartInput, t apiv1.Task, workspace *stageWorkspace, attempt int, class journal.AttemptClass, cause error) (apiv1.ResultEnvelope, bool) {
 	if workspace == nil || workspace.worktree == nil {
 		return apiv1.ResultEnvelope{}, false
 	}
@@ -2801,7 +2918,7 @@ type contextManifest struct {
 	ContextPointers []apiv1.ContextPointer `json:"contextPointers"`
 }
 
-func recordContextManifest(jr *journal.Run, env apiv1.InvocationEnvelope, stage string, attempt int, class journal.AttemptClass) error {
+func recordContextManifest(jr executionJournal, env apiv1.InvocationEnvelope, stage string, attempt int, class journal.AttemptClass) error {
 	pointers := make([]apiv1.ContextPointer, len(env.ContextPointers))
 	copy(pointers, env.ContextPointers)
 	data, err := json.Marshal(contextManifest{ContextPointers: pointers})
@@ -2943,7 +3060,7 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
-func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
+func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
@@ -3159,8 +3276,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr *journal.Run, gateEval *ga
 // diff is computed by the runner from the actual commits — never self-reported
 // by the implementer's model — so the reviewer judges the real change with the
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
-// when the branch carries no change vs. base (nothing to attach).
+// when the gate has no repository worktree or the branch carries no change vs.
+// base (nothing to attach).
 func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+	if wt == nil {
+		return nil, nil
+	}
 	baseRef := in.RepoRef.Branch
 	if baseRef == "" {
 		baseRef = "main"

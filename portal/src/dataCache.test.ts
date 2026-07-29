@@ -31,6 +31,40 @@ describe("SessionDataCache", () => {
     expect(cache.get(key)).toBeUndefined();
   });
 
+  it("keeps a long-lived resource after the default cache tier expires", () => {
+    const cache = new SessionDataCache(5_000);
+    const runKey = dataCacheKey("run-detail", "run-1");
+    const inventoryKey = dataCacheKey("operational-inventory");
+    cache.set(runKey, "run", [{ model: "run" }]);
+    cache.set(
+      inventoryKey,
+      "inventory",
+      [{ model: "inventory" }],
+      undefined,
+      60_000,
+    );
+
+    vi.setSystemTime(6_000);
+
+    expect(cache.get(runKey)).toBeUndefined();
+    expect(cache.get(inventoryKey)).toBe("inventory");
+  });
+
+  it("coalesces concurrent loads for the same resource", async () => {
+    const cache = new SessionDataCache();
+    const key = dataCacheKey("operational-inventory");
+    const load = vi.fn(async () => {
+      await Promise.resolve();
+      return "inventory";
+    });
+
+    const first = cache.getOrLoad(key, [{ model: "workflow" }], load, 60_000);
+    const second = cache.getOrLoad(key, [{ model: "workflow" }], load, 60_000);
+
+    await expect(Promise.all([first, second])).resolves.toEqual(["inventory", "inventory"]);
+    expect(load).toHaveBeenCalledOnce();
+  });
+
   it("evicts expired entries and pending write metadata without another read", async () => {
     const cache = new SessionDataCache(5_000);
     const key = dataCacheKey("run-detail", "run-1");
@@ -70,6 +104,26 @@ describe("SessionDataCache", () => {
     expect(cache.get(workflowOne)).toBeUndefined();
     expect(cache.get(runTwo)).toBe("run two");
     expect(cache.get(workflowTwo)).toBe("tools workflow");
+  });
+
+  it("invalidates inventory only for a definition-wide workflow update", () => {
+    const cache = new SessionDataCache();
+    const inventory = dataCacheKey("operational-inventory");
+    cache.set(inventory, "inventory", [{ model: "inventory" }], undefined, 60_000);
+
+    cache.invalidate({
+      cursor: "session:1",
+      models: ["instance", "run", "workflow"],
+      runIds: ["run-1"],
+      workflows: [{ gaggle: "core", name: "implementation" }],
+    });
+    expect(cache.get(inventory)).toBe("inventory");
+
+    cache.invalidate({
+      cursor: "session:2",
+      models: ["instance", "workflow"],
+    });
+    expect(cache.get(inventory)).toBeUndefined();
   });
 
   it("rejects a response that started before its resource was invalidated", () => {

@@ -56,6 +56,9 @@ type Config struct {
 	APIVersion string    `json:"apiVersion" yaml:"apiVersion"`
 	Kind       string    `json:"kind" yaml:"kind"`
 	Repos      []RepoRef `json:"repos" yaml:"repos"`
+	// SelfIdentity is the instance-wide provider login used when a gaggle does
+	// not declare its own identity. It is an identity value, not a credential.
+	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
 	// WorkflowSource locates the definitions-as-code tree independently of the
 	// target code repositories. Nil keeps the local <instance-root>/config
 	// default.
@@ -130,6 +133,19 @@ type WorkcopiesConfig struct {
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// EffectiveSelfIdentity returns the provider login configured for gaggle,
+// falling back to the instance-wide default. Empty means assignment-aware
+// backlog selection remains opted out.
+func EffectiveSelfIdentity(c *Config, gaggle *apiv1.Gaggle) string {
+	if gaggle != nil && gaggle.Spec.SelfIdentity != "" {
+		return gaggle.Spec.SelfIdentity
+	}
+	if c == nil {
+		return ""
+	}
+	return c.SelfIdentity
 }
 
 // EffectiveSpeechConfig returns the configured speech settings or disabled

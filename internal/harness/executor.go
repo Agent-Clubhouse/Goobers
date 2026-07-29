@@ -341,20 +341,21 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, err
 	}
 	req := RunRequest{
-		Mode:               mode,
-		Envelope:           env,
-		Instructions:       e.instructions,
-		Model:              e.model,
-		HarnessOptions:     e.harnessOptions,
-		MCPServers:         copyMCPServers(e.mcpServers),
-		Tools:              append([]string(nil), e.tools...),
-		Workspace:          env.Workspace,
-		CompletionPath:     completionPath,
-		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
-		Credentials:        creds,
-		ContextPaths:       contextPaths,
-		Timeout:            invocationTimeout(env, e.timeout),
-		MaxTranscriptBytes: e.transcriptLimit,
+		Mode:                  mode,
+		Envelope:              env,
+		Instructions:          e.instructions,
+		Model:                 e.model,
+		HarnessOptions:        e.harnessOptions,
+		HarnessConfigResolved: true,
+		MCPServers:            copyMCPServers(e.mcpServers),
+		Tools:                 append([]string(nil), e.tools...),
+		Workspace:             env.Workspace,
+		CompletionPath:        completionPath,
+		TelemetryDir:          telemetry.PrepareStageTelemetryDir(env.Workspace),
+		Credentials:           creds,
+		ContextPaths:          contextPaths,
+		Timeout:               invocationTimeout(env, e.timeout),
+		MaxTranscriptBytes:    e.transcriptLimit,
 	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced

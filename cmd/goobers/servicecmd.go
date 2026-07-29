@@ -14,9 +14,9 @@ import (
 const serviceHelp = "Usage: goobers service <subcommand> [path]\n\n" +
 	"Install and manage the goobers daemon under the current platform's user\n" +
 	"supervisor: systemd on Linux, launchd on macOS, or the Windows Service\n" +
-	"Control Manager. The managed daemon runs `goobers up <path>`, receives the\n" +
-	"same graceful-shutdown trigger as a foreground daemon, and restarts after\n" +
-	"an unexpected exit with supervisor backoff.\n\n" +
+	"Control Manager. The stable service host launches the instance's mutable\n" +
+	"binary, receives the same graceful-shutdown trigger as a foreground daemon,\n" +
+	"and owns validated self-update handoff, health checks, and rollback.\n\n" +
 	"Subcommands:\n" +
 	"  install     install, enable, and start the service\n" +
 	"  uninstall   gracefully stop, disable, and remove the service\n" +
@@ -29,7 +29,8 @@ const serviceInstallHelp = "Usage: goobers service install [path]\n\n" +
 	"Linux and macOS install a per-user service so provider credentials retain\n" +
 	"the current user's ownership. Windows installation must run from an\n" +
 	"elevated terminal. An existing installation is never overwritten; uninstall\n" +
-	"it first when changing the binary or instance path.\n\n" +
+	"it first when changing the stable host binary or instance path. Product\n" +
+	"binary updates use the self-update workflow instead.\n\n" +
 	"Exit codes: 0 = installed and running, 1 = installation/start error,\n" +
 	"2 = usage error or not an instance root.\n"
 

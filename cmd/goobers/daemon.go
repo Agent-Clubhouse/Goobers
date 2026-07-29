@@ -88,6 +88,7 @@ type schedulerDefinitions struct {
 	Entries           []localscheduler.WorkflowEntry
 	Machines          map[localscheduler.WorkflowIdentity]*workflow.Machine
 	GooberDigests     map[localscheduler.WorkflowIdentity]string
+	Goobers           map[string]apiv1.GooberSpec
 	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
 	OpenPRRefresher   *localscheduler.OpenPRRefresher
 	Worktrees         *worktree.Manager
@@ -263,7 +264,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
+		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
@@ -360,9 +361,14 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
-	machines, gooberDigests, err := compiledMachinesWithGooberDigests(l.ConfigDir(), set, goobers, instructions)
+	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
+		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough,
+	)
 	if err != nil {
 		return nil, err
+	}
+	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
+		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
 	harnessInfo, err := preflightHarnesses(goobers, set.Workflows)
 	if err != nil {
@@ -377,6 +383,7 @@ func buildSchedulerDefinitions(
 		wtManagers = make(map[string]*worktree.Manager)
 	}
 	branchNamespaces := branchNamespacesByGaggle(set)
+	selfIdentities := selfIdentitiesByGaggle(cfg, set)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
@@ -392,9 +399,9 @@ func buildSchedulerDefinitions(
 	for _, gaggle := range configuredGaggleNames(set) {
 		scoped := l.ForGaggle(gaggle)
 		rn, manager, err := buildRuntimeRunner(
-			scoped, cfg, goobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle],
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle],
 		)
 		if err != nil {
 			return nil, err
@@ -533,6 +540,7 @@ func buildSchedulerDefinitions(
 		Entries:           entries,
 		Machines:          machines,
 		GooberDigests:     gooberDigests,
+		Goobers:           resolvedGoobers,
 		RepoRefs:          repoRefs,
 		OpenPRRefresher:   openPRRefresher,
 		Worktrees:         firstWorktrees,
@@ -544,6 +552,7 @@ func buildRetainedLegacyRunner(
 	l instance.Layout,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
 	tel *telemetry.Client,
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
@@ -558,7 +567,6 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, nil, err
@@ -569,6 +577,7 @@ func buildRetainedLegacyRunner(
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
+		instance.EffectiveSelfIdentity(cfg, nil),
 	)
 }
 
@@ -605,6 +614,7 @@ func buildRuntimeRunner(
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
 	sandboxPosture instance.SandboxPosture,
+	selfIdentity string,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
 		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture,
@@ -612,6 +622,7 @@ func buildRuntimeRunner(
 	if err != nil {
 		return nil, nil, err
 	}
+	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err

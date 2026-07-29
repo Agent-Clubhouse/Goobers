@@ -211,6 +211,9 @@ func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
 	}
 	rec := &fakeRecorder{}
 	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		if !req.HarnessConfigResolved {
+			return fmt.Errorf("executor did not mark harness configuration as resolved")
+		}
 		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 	}}
 	executor, err := NewExecutor(

@@ -309,6 +309,12 @@ spec:
                     - enforced
                     type: string
                 type: object
+              selfIdentity:
+                description: |-
+                  SelfIdentity is this gaggle's provider login for assignment-aware backlog
+                  operations. Empty inherits the instance-wide selfIdentity default.
+                minLength: 1
+                type: string
             required:
             - backlog
             - isolation

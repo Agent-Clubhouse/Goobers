@@ -207,12 +207,30 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		diagnostics.add(file, "/spec/instructions", "GBO004", string(validate.Error), err.Error())
 		return 1
 	}
-	if _, _, err := compiledMachinesWithGooberDigests(configDir, set, goobers, instructions); err != nil {
+	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough,
+	)
+	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		file, path, code := compiledConfigDiagnostic(root, configDir, set, err)
 		diagnostics.add(file, path, code, string(validate.Error), err.Error())
 		return 1
 	}
+	codedWarnings, err := appendGooberHarnessWarnings(report, harnessWarnings)
+	if err != nil {
+		pf(stderr, "error: append harness validation warnings: %v\n", err)
+		return 2
+	}
+	for _, warning := range codedWarnings {
+		diagnostics.add(
+			gooberDiagnosticFile(root, configDir, set, strings.TrimPrefix(warning.Scope, "Goober/")),
+			"/spec/harnessOptions/fallback-to-default",
+			string(warning.Code),
+			string(warning.Severity),
+			warning.Explanation,
+		)
+	}
+	printValidationWarnings(stdout, codedWarnings)
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds

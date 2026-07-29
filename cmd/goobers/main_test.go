@@ -361,7 +361,7 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 7 goober(s), 7 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 7 goober(s), 8 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)

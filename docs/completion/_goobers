@@ -27,6 +27,7 @@ _goobers_completion()
             'config:inspect, materialize, and compare instance configuration'
             'speech:preflight and test local speech notifications'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
+            'self-update:stage and request a supervised binary update'
             'service:install and manage the platform-supervised daemon'
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
             'dashboard:serve and open the local operations portal'
@@ -37,6 +38,8 @@ _goobers_completion()
             'status:validate config, show warnings, list runs, or report daemon health'
             'stats:show the instance lifetime summary card'
             'features:list the workflow-DSL features this build supports'
+            'schema:emit a JSON Schema embedded in this build'
+            'explain:project field facts from an embedded JSON Schema'
             'reset-rate-limit:clear the hourly run-rate budget without deleting runs/'
             'blocked:inspect and clear the learned blocked-item ledger'
             'claims:inspect and force-release claim leases'
@@ -160,6 +163,12 @@ _goobers_completion()
             ;;
         features)
             flags+=(--json --dsl-version --used)
+            ;;
+        schema)
+            flags+=(--list --human)
+            ;;
+        explain)
+            flags+=(--human)
             ;;
         blocked)
             case "${words[3]:-}" in

@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS EXPLAIN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers explain \- project field facts from an embedded JSON Schema
+.SH SYNOPSIS
+\fBgoobers explain\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers explain [--human] <selector>
+
+Project field guidance from the embedded schema and feature registries using
+a dotted or slash-
+separated selector such as goober.spec.capabilities or
+workflow/spec/gates[]/evaluator. Array elements use []. Output includes the
+field purpose, type, allowed values, lifecycle, and a schema-grounded example.
+JSON is the default; --human prints a terminal rendering. Exit codes: 0 = OK,
+1 = unknown selector or output error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers explain goober.spec.capabilities
+goobers explain --human workflow.spec.gates[].evaluator
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

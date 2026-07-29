@@ -9,7 +9,7 @@
   "properties": {
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this workflow definition." },
     "kind": { "const": "Workflow", "description": "Definition kind; always Workflow." },
-    "dslVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "Workflow DSL version in major.minor form. Omit to use the current supported version." },
+    "dslVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "examples": ["1.4"], "description": "Workflow DSL version in major.minor form. Omit to use the current supported version." },
     "metadata": { "$ref": "#/$defs/metadata", "description": "Identity and optional labels or annotations for this workflow." },
     "spec": {
       "type": "object",
@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "required": ["gaggle", "triggers", "start"],
       "properties": {
-        "gaggle": { "type": "string", "minLength": 1, "description": "Name of the gaggle this workflow belongs to." },
+        "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Name of the gaggle this workflow belongs to." },
         "displayName": { "type": "string", "description": "Human-facing workflow name shown in the portal." },
         "triggers": {
           "type": "array",
@@ -50,7 +50,7 @@
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
-        "start": { "type": "string", "minLength": 1, "description": "Name of the first task, gate, or parallel state." },
+        "start": { "type": "string", "minLength": 1, "examples": ["act"], "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
           "type": "array",
           "description": "In-repo documentation roots this workflow keeps current (docs-updater, #472/#1016). Ordered repo-relative paths (files or directories); the run's writes are confined to these roots. Each must be non-empty and must not escape the repository.",
@@ -94,7 +94,7 @@
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
         "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared branch budget used only for compile-time task-timeout coherence checks. The runner does not currently enforce a branch wall-clock timeout." },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Branch execution limit. Omit or set to 1 for the local runner's supported sequential execution; values greater than 1 are rejected because concurrent branch execution is not yet implemented." }
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." }
       },
       "allOf": [
         {
@@ -109,7 +109,7 @@
       "type": "object",
       "required": ["name"],
       "properties": {
-        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "description": "DNS-label-compatible workflow name, unique within its gaggle." },
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "examples": ["offline-workflow"], "description": "DNS-label-compatible workflow name, unique within its gaggle." },
         "labels": { "type": "object", "description": "String labels used to organize this workflow.", "additionalProperties": { "type": "string" } },
         "annotations": { "type": "object", "description": "Non-identifying string metadata attached to this workflow.", "additionalProperties": { "type": "string" } }
       }
@@ -167,16 +167,16 @@
       "additionalProperties": false,
       "required": ["name", "type", "goal"],
       "properties": {
-        "name": { "type": "string", "minLength": 1, "description": "State name, unique within this workflow." },
+        "name": { "type": "string", "minLength": 1, "examples": ["act"], "description": "State name, unique within this workflow." },
         "type": { "type": "string", "enum": ["deterministic", "agentic"], "description": "Execution kind: deterministic runs declared code; agentic invokes a goober." },
-        "goal": { "type": "string", "minLength": 1, "description": "Intended outcome supplied to the stage invocation." },
+        "goal": { "type": "string", "minLength": 1, "examples": ["Run the offline-authored step."], "description": "Intended outcome supplied to the stage invocation." },
         "goober": { "type": "string", "description": "Goober definition invoked by an agentic task. Forbidden for deterministic tasks." },
         "run": {
           "type": "object",
           "description": "Host command or script executed by a deterministic task. Forbidden for agentic tasks.",
           "additionalProperties": false,
           "properties": {
-            "command": { "type": "array", "minItems": 1, "description": "Executable followed by its arguments, invoked without shell interpretation.", "items": { "type": "string" } },
+            "command": { "type": "array", "minItems": 1, "examples": [["sh", "-c", "true"]], "description": "Executable followed by its arguments, invoked without shell interpretation.", "items": { "type": "string" } },
             "script": { "type": "string", "minLength": 1, "description": "Inline script executed by the host's native command interpreter. Mutually exclusive with command." },
             "env": { "type": "object", "description": "Explicit environment variables added to the runner's minimal environment and scoped credentials.", "additionalProperties": { "type": "string" } },
             "network": { "type": "string", "enum": ["none"], "description": "Network policy for the command. Set to none to deny network access." },
