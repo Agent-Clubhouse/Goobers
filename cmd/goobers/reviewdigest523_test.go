@@ -253,6 +253,7 @@ func TestGatherSiblingContextInvalidatesFailVerdictAfterOperatorClearsEscalation
 	defer server.mu.Unlock()
 	comments := server.issues[10].comments
 	if len(comments) != 1 || !strings.Contains(comments[0], "**merge-review verdict: stale**") ||
+		!strings.Contains(comments[0], "The last published verdict no longer stands:") ||
 		!strings.Contains(comments[0], remediationEscalatedLabel+" was cleared by an operator") {
 		t.Fatalf("comments = %q, want the standing fail verdict marked stale with the operator-clear reason", comments)
 	}

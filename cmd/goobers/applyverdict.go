@@ -824,7 +824,7 @@ func markMergeReviewVerdictStale(ctx context.Context, provider *providers.GitHub
 		return nil
 	}
 	body := fmt.Sprintf(
-		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer describes this pull request: %s.\n\n"+
+		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer stands: %s.\n\n"+
 			"No current review stands. merge-review will re-review this PR on its next cycle; "+
 			"findings from the superseded review may already be resolved and should not be acted on.",
 		mergeReviewStatusMarker, reason)
