@@ -309,21 +309,16 @@ mapped above) is complete only when automated fixtures demonstrate:
 
 ## Follow-up backlog
 
-Each implementation slice is independently reviewable and must link both
-#1197 and #1883:
+Each filed issue links both #1197 and #1883, states its dependencies and
+non-goals, and carries independently testable acceptance criteria:
 
-1. **Projection schema and query primitives:** add complete run-summary and
-   run-stage facts, supporting indexes, direct row projection, and parity tests.
-2. **Write-through updater and freshness:** project active/terminal journal
-   changes before scoped SSE publication and expose unhealthy/lagging state
-   without a full-scan fallback.
-3. **Background reconcile and shadow rebuild:** persist watermarks/cursors,
-   remove reconciliation from `ListRuns`, and make backfill/rebuild resumable.
-4. **Workflow latest-outcome aggregate:** add the bounded read-service query and
-   migrate Workflows/Gaggle consumers; coordinate with #1712.
-5. **Scale and conformance harness:** add the 100k-run/filter, workflow fan-out,
-   scoped-invalidation, crash, and rebuild-equivalence fixtures above. The
-   component-level burst/coalescing cases stay with #1712, #1882, and #1665.
+| Slice | Issue | Depends on | Boundary |
+|---|---|---|---|
+| Projection schema and query primitives | [#1888](https://github.com/Agent-Clubhouse/Goobers/issues/1888) | - | Complete summary/stage facts, indexed filters, direct row projection, and parity/query-plan tests. |
+| Write-through updater and freshness | [#1889](https://github.com/Agent-Clubhouse/Goobers/issues/1889) | #1888 | Idempotent per-run projection before scoped SSE publication, with explicit health/lag and no full-scan fallback. |
+| Background reconcile and shadow rebuild | [#1890](https://github.com/Agent-Clubhouse/Goobers/issues/1890) | #1888, #1889 | Bounded resumable repair outside HTTP reads and atomic shadow-generation rebuild/backfill. |
+| Workflow latest-outcome aggregate | [#1891](https://github.com/Agent-Clubhouse/Goobers/issues/1891) | #1888, #1889 | One bounded aggregate for Workflows/Gaggle consumers; coordinates with but does not absorb #1712. |
+| Scale and conformance harness | [#1892](https://github.com/Agent-Clubhouse/Goobers/issues/1892) | #1888-#1891 | The 100k-run/filter, workflow fan-out, scoped-invalidation, crash, and rebuild-equivalence fixtures above. Component hook burst/coalescing remains with #1712, #1882, and #1665. |
 
 #1782 and #1741 can land before slices 1-3 as immediate bounds. #1712, #1882,
 #1439, and #1665 remain separately actionable at the boundaries in the table
