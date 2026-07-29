@@ -1380,6 +1380,138 @@ func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing
 	}
 }
 
+func TestBuildSchedulerSetupJournalsLegacyRuntimeMigration(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "legacy-run", Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacyWorkcopy := filepath.Join(layout.WorkcopiesDir(), "legacy-repo", "repo.git", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(legacyWorkcopy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyWorkcopy, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), layout, &wg)
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup: %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["note"] == legacyRuntimeMigrationNote {
+			notes = append(notes, event)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("legacy runtime migration notes = %d, want 1: %+v", len(notes), events)
+	}
+	if notes[0].Runner["gaggle"] != "example" {
+		t.Fatalf("migration gaggle = %v, want example", notes[0].Runner["gaggle"])
+	}
+	moved, ok := notes[0].Runner["movedDirectories"].([]any)
+	if !ok || !slices.Equal(moved, []any{instance.RunsDirName, instance.WorkcopiesDirName}) {
+		t.Fatalf("moved directories = %#v, want runs and workcopies", notes[0].Runner["movedDirectories"])
+	}
+	pending, err := layout.MigrateLegacyRuntimeWithReport([]string{"example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.ID != "" || len(pending.MovedDirs) != 0 {
+		t.Fatalf("journaled migration remained pending: %+v", pending)
+	}
+}
+
+func TestJournalLegacyRuntimeMigrationReconcilesAfterRestart(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	legacyWorkcopy := filepath.Join(layout.WorkcopiesDir(), "legacy-repo", "repo.git", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(legacyWorkcopy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyWorkcopy, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := layout.MigrateLegacyRuntimeWithReport([]string{"example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instanceLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journalLegacyRuntimeMigration(layout, instanceLog, migration); err == nil {
+		t.Fatal("journalLegacyRuntimeMigration with closed log succeeded")
+	}
+
+	recovered, err := layout.MigrateLegacyRuntimeWithReport([]string{"example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.ID != migration.ID ||
+		recovered.Gaggle != migration.Gaggle ||
+		!slices.Equal(recovered.MovedDirs, migration.MovedDirs) {
+		t.Fatalf("recovered migration = %+v, want %+v", recovered, migration)
+	}
+
+	instanceLog, _, err = journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := instanceLog.Close(); err != nil {
+			t.Errorf("close instance log: %v", err)
+		}
+	})
+	if err := instanceLog.Append(legacyRuntimeMigrationEvent(recovered)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journalLegacyRuntimeMigration(layout, instanceLog, recovered); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["note"] == legacyRuntimeMigrationNote &&
+			event.Runner["migrationId"] == recovered.ID {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("legacy runtime migration notes = %d, want 1: %+v", notes, events)
+	}
+	pending, err := layout.MigrateLegacyRuntimeWithReport([]string{"example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.ID != "" || len(pending.MovedDirs) != 0 {
+		t.Fatalf("reconciled migration remained pending: %+v", pending)
+	}
+}
+
 // TestBuildCredentialsAgentModel: a credentials: entry for agent:model adds a
 // grant sourced from its own token, leaving the repo-backed capabilities intact
 // — the two-tokens-one-subprocess case (#287).
