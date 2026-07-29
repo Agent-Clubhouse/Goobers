@@ -175,7 +175,7 @@ function ConnectionTopology({
   return (
     <section
       aria-label={`${gaggleDisplayName} repository connections`}
-      className="gaggle-connection-topology"
+      className={`gaggle-connection-topology${hasWorkflows ? "" : " without-workflows"}`}
     >
       <h3>External connections</h3>
       <ul>

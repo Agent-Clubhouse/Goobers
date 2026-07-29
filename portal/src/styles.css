@@ -2022,6 +2022,10 @@ a.telemetry-error-row:hover {
   min-width: 0;
 }
 
+.gaggle-connection-topology.without-workflows li {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .gaggle-connection-edge {
   border-top: 1px solid var(--accent);
   display: block;
@@ -4358,6 +4362,12 @@ a.telemetry-error-row:hover {
   }
 }
 
+@media (max-width: 940px) {
+  .gaggle-workflow-topology {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 820px) {
   .portal-frame {
     grid-template-columns: 1fr;
@@ -4696,7 +4706,6 @@ a.telemetry-error-row:hover {
     padding-right: 12px;
   }
 
-  .gaggle-workflow-topology,
   .gaggle-workflow-node dl {
     grid-template-columns: 1fr;
   }

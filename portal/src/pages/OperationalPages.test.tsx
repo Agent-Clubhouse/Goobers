@@ -243,6 +243,15 @@ describe("workflow and gaggle inventory", () => {
       await screen.findByText("No workflows are provisioned for this gaggle."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Core product workflows" })).not.toBeInTheDocument();
+    const connections = screen.getByRole("region", {
+      name: "Core product repository connections",
+    });
+    expect(connections).toHaveClass("without-workflows");
+    expect(within(connections).getByText("Agent-Clubhouse/Goobers")).toBeInTheDocument();
+    expect(within(connections).getByText("Agent-Clubhouse/Clubhouse")).toBeInTheDocument();
+    expect(
+      within(connections).queryByText(/Connected from the configured workflows/),
+    ).not.toBeInTheDocument();
   });
 
   it("reports an unknown gaggle without substituting another inventory", async () => {
