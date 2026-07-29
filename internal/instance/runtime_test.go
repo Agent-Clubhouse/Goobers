@@ -118,6 +118,99 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyRuntimeRetainsRetryStateUntilMetadataIsDurable(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	legacyRun := filepath.Join(layout.RunsDir(), "run-1", "run.yaml")
+	legacyRepo := filepath.Join(layout.WorkcopiesDir(), "repo", "repo.git", "HEAD")
+	for _, path := range []string{legacyRun, legacyRepo} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("legacy\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scopedRoot := layout.ForGaggle("alpha").runtimeRoot()
+	syncFailure := errors.New("injected metadata sync failure")
+	var attempted []string
+	_, err := layout.migrateLegacyRuntimeWithReport([]string{"alpha"}, func(path string) error {
+		if _, statErr := os.Stat(layout.legacyRuntimeMigrationPath()); statErr != nil {
+			t.Fatalf("retry state missing before metadata sync of %s: %v", path, statErr)
+		}
+		attempted = append(attempted, path)
+		if path == layout.Root {
+			return syncFailure
+		}
+		return nil
+	})
+	if !errors.Is(err, syncFailure) {
+		t.Fatalf("MigrateLegacyRuntimeWithReport error = %v, want %v", err, syncFailure)
+	}
+	if want := []string{scopedRoot, layout.GagglesDir(), layout.Root}; !reflect.DeepEqual(attempted, want) {
+		t.Fatalf("metadata sync attempts = %v, want %v", attempted, want)
+	}
+	for _, path := range []string{
+		filepath.Join(scopedRoot, RunsDirName, "run-1", "run.yaml"),
+		filepath.Join(scopedRoot, WorkcopiesDirName, "repo", "repo.git", "HEAD"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("migrated path missing before metadata became durable: %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("compatibility alias missing before metadata became durable: %s: %v", path, err)
+		}
+	}
+	pending, exists, err := layout.readLegacyRuntimeMigration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("metadata sync failure cleared migration retry state")
+	}
+
+	attempted = nil
+	recovered, err := layout.migrateLegacyRuntimeWithReport([]string{"alpha"}, func(path string) error {
+		if _, statErr := os.Stat(layout.legacyRuntimeMigrationPath()); statErr != nil {
+			t.Fatalf("retry state missing during restart sync of %s: %v", path, statErr)
+		}
+		attempted = append(attempted, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("restart MigrateLegacyRuntimeWithReport: %v", err)
+	}
+	if !reflect.DeepEqual(recovered, pending) {
+		t.Fatalf("recovered migration = %+v, want %+v", recovered, pending)
+	}
+	if want := []string{scopedRoot, layout.GagglesDir(), layout.Root}; !reflect.DeepEqual(attempted, want) {
+		t.Fatalf("restart metadata sync attempts = %v, want %v", attempted, want)
+	}
+	err = layout.completeLegacyRuntimeMigration(recovered, func(path string) error {
+		if _, statErr := os.Stat(layout.legacyRuntimeMigrationPath()); statErr != nil {
+			t.Fatalf("retry state missing during completion sync of %s: %v", path, statErr)
+		}
+		if path == layout.Root {
+			return syncFailure
+		}
+		return nil
+	})
+	if !errors.Is(err, syncFailure) {
+		t.Fatalf("CompleteLegacyRuntimeMigration error = %v, want %v", err, syncFailure)
+	}
+	if _, err := os.Stat(layout.legacyRuntimeMigrationPath()); err != nil {
+		t.Fatalf("completion sync failure cleared migration retry state: %v", err)
+	}
+	if err := layout.CompleteLegacyRuntimeMigration(recovered); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(layout.legacyRuntimeMigrationPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("migration retry state after completion: %v", err)
+	}
+}
+
 func TestMigrateLegacyRuntimePreservesPopulatedRootForMultipleGaggles(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	legacyPaths := []string{

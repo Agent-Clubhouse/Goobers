@@ -128,6 +128,10 @@ func (l Layout) MigrateLegacyRuntime(gaggles []string) error {
 // MigrateLegacyRuntimeWithReport performs or resumes MigrateLegacyRuntime and
 // returns its durable report until CompleteLegacyRuntimeMigration acknowledges it.
 func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigration, error) {
+	return l.migrateLegacyRuntimeWithReport(gaggles, durability.SyncDir)
+}
+
+func (l Layout) migrateLegacyRuntimeWithReport(gaggles []string, syncDir func(string) error) (RuntimeMigration, error) {
 	names, err := normalizedGaggles(gaggles)
 	if err != nil {
 		return RuntimeMigration{}, err
@@ -138,7 +142,7 @@ func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigrati
 		return RuntimeMigration{}, err
 	}
 	if exists {
-		if err := l.finishLegacyRuntimeMigration(pending.Gaggle); err != nil {
+		if err := l.finishLegacyRuntimeMigration(pending.Gaggle, syncDir); err != nil {
 			return RuntimeMigration{}, err
 		}
 		for _, gaggle := range names {
@@ -179,7 +183,7 @@ func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigrati
 				return RuntimeMigration{}, err
 			}
 		}
-		if err := l.finishLegacyRuntimeMigration(names[0]); err != nil {
+		if err := l.finishLegacyRuntimeMigration(names[0], syncDir); err != nil {
 			return RuntimeMigration{}, err
 		}
 		return migration, nil
@@ -212,6 +216,10 @@ func (l Layout) MigrateLegacyRuntimeWithReport(gaggles []string) (RuntimeMigrati
 // CompleteLegacyRuntimeMigration clears the durable retry record after its
 // instance-journal annotation has been committed.
 func (l Layout) CompleteLegacyRuntimeMigration(migration RuntimeMigration) error {
+	return l.completeLegacyRuntimeMigration(migration, durability.SyncDir)
+}
+
+func (l Layout) completeLegacyRuntimeMigration(migration RuntimeMigration, syncDir func(string) error) error {
 	if len(migration.MovedDirs) == 0 {
 		return nil
 	}
@@ -230,6 +238,9 @@ func (l Layout) CompleteLegacyRuntimeMigration(migration RuntimeMigration) error
 		strings.Join(pending.MovedDirs, "\x00") != strings.Join(migration.MovedDirs, "\x00") {
 		return fmt.Errorf("complete legacy runtime migration: pending migration %q does not match %q", pending.ID, migration.ID)
 	}
+	if err := l.syncLegacyRuntimeMigrationMetadata(pending.Gaggle, syncDir); err != nil {
+		return err
+	}
 	if err := os.Remove(l.legacyRuntimeMigrationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove legacy runtime migration state: %w", err)
 	}
@@ -239,7 +250,7 @@ func (l Layout) CompleteLegacyRuntimeMigration(migration RuntimeMigration) error
 	return nil
 }
 
-func (l Layout) finishLegacyRuntimeMigration(gaggle string) error {
+func (l Layout) finishLegacyRuntimeMigration(gaggle string, syncDir func(string) error) error {
 	scoped := l.ForGaggle(gaggle)
 	for _, pair := range [][2]string{
 		{l.RunsDir(), scoped.RunsDir()},
@@ -258,6 +269,16 @@ func (l Layout) finishLegacyRuntimeMigration(gaggle string) error {
 	} {
 		if err := ensureLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
 			return err
+		}
+	}
+	return l.syncLegacyRuntimeMigrationMetadata(gaggle, syncDir)
+}
+
+func (l Layout) syncLegacyRuntimeMigrationMetadata(gaggle string, syncDir func(string) error) error {
+	scoped := l.ForGaggle(gaggle)
+	for _, dir := range []string{scoped.runtimeRoot(), l.GagglesDir(), l.Root} {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync legacy runtime migration metadata in %s: %w", dir, err)
 		}
 	}
 	return nil
