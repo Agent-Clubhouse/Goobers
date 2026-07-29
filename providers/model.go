@@ -27,6 +27,7 @@ const (
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
 	LabelNeedsHuman = "goobers:needs-human"
+	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"
 	LabelTracking   = "tracking"
 )

@@ -966,6 +966,37 @@ func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryReconciliationPolicyActions(t *testing.T) {
+	cases := []struct {
+		name         string
+		workflowName string
+		args         []string
+		inputs       map[string]string
+		inputsFrom   map[string]string
+		want         string
+	}{
+		{name: "direct reconciliation", args: []string{"--reconcile"}, want: "claim-backlog-items,close-issue"},
+		{name: "curation claim defaults to reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, want: "claim-backlog-items,close-issue"},
+		{name: "curation claim conservatively declares reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, inputs: map[string]string{"reconcileMetadata": "false"}, want: "claim-backlog-items,close-issue"},
+		{name: "curation claim has dynamic reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, inputsFrom: map[string]string{"reconcileMetadata": "enabled"}, want: "claim-backlog-items,close-issue"},
+		{name: "non-curation claim", workflowName: "implementation", args: []string{"--claim"}, want: "claim-backlog-items"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{
+				Run:        &apiv1.DeterministicRun{Command: append([]string{"goobers", "backlog-query"}, tc.args...)},
+				Inputs:     tc.inputs,
+				InputsFrom: tc.inputsFrom,
+			}
+			got := strings.Join(prescribedCommandPolicyActions(task, tc.workflowName), ",")
+			if got != tc.want {
+				t.Fatalf("policy actions = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompileBacklogHealthFeedbackRequiresUpdateAction(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
@@ -1043,11 +1074,11 @@ func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 		Run:        &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
 		InputsFrom: map[string]string{"deleteBranches": "enabled"},
 	}
-	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "delete-branch" {
+	if got := prescribedCommandPolicyActions(task, ""); len(got) != 1 || got[0] != "delete-branch" {
 		t.Fatalf("dynamic deleteBranches actions = %v, want [delete-branch]", got)
 	}
 	task.Run.Command = append(task.Run.Command, "--delete=false")
-	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
+	if got := prescribedCommandPolicyActions(task, ""); len(got) != 0 {
 		t.Fatalf("explicitly disabled dynamic deleteBranches actions = %v, want none", got)
 	}
 

@@ -83,8 +83,9 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 		"feedback": {"update-issue"},
 	},
 	"backlog-query": {
-		"claim":   {"claim-backlog-items"},
-		"release": {"release-backlog-claim"},
+		"claim":     {"claim-backlog-items"},
+		"reconcile": {"claim-backlog-items", "close-issue"},
+		"release":   {"release-backlog-claim"},
 	},
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
@@ -122,7 +123,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 		}
 
 		command := policyCommand(task)
-		for _, action := range prescribedCommandPolicyActions(task) {
+		for _, action := range prescribedCommandPolicyActions(task, def.Name) {
 			if !declared[action] {
 				problems = append(problems, fmt.Sprintf(
 					"task %q command %q prescribes policy action %q but policyActions does not declare it",
@@ -246,7 +247,7 @@ func policyCommand(task apiv1.Task) string {
 	return task.Run.Command[1]
 }
 
-func prescribedCommandPolicyActions(task apiv1.Task) []string {
+func prescribedCommandPolicyActions(task apiv1.Task, workflowName string) []string {
 	command := policyCommand(task)
 	actions := append([]string(nil), commandPolicyActions[command]...)
 	argumentActions := commandArgumentPolicyActions[command]
@@ -295,6 +296,9 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		if enabled[name] {
 			actions = append(actions, argumentActions[name]...)
 		}
+	}
+	if command == "backlog-query" && enabled["claim"] && workflowName == "backlog-curation" {
+		actions = append(actions, "close-issue")
 	}
 	return actions
 }

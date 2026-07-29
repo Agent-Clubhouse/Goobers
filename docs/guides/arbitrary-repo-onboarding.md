@@ -197,6 +197,7 @@ create_label "goobers:ready" "1D76DB" "Curated and scoped; eligible for implemen
 create_label "goobers:claimed" "FBCA04" "Currently claimed by an in-flight run"
 create_label "goobers:nominated" "5319E7" "Filed by a nominator; awaiting approval"
 create_label "goobers:needs-human" "D93F0B" "Needs a human decision"
+create_label "goobers:auto-close" "0E8A16" "Close a tracking issue after all children close"
 create_label "goobers/status:in-review" "BFDADC" "Implementation PR is awaiting merge"
 create_label "type:bug" "D73A4A" "Defect in existing behavior"
 create_label "type:feature" "A2EEEF" "New capability"
@@ -211,7 +212,10 @@ label taxonomy during a run.
 
 Only a maintainer should apply `goobers:approved`. The curator may add
 `goobers:ready` or `goobers:needs-human`, but its instructions must continue to
-forbid self-approval.
+forbid self-approval. Apply `goobers:auto-close` to a `tracking` issue only when
+it should close automatically after reconciliation verifies that all native and
+checklist children are closed. Without that opt-in, reconciliation only removes
+the completed parent's `tracking` label.
 
 ## 6. Validate before any live cycle
 
