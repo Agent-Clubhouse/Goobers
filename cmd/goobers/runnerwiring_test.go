@@ -33,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -709,6 +710,83 @@ func TestBuildCredentialsRejectsRunnerOnlyOverride(t *testing.T) {
 	if _, _, err := buildCredentials(cfg, nil, "", "", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), `"configrepo:read" cannot be stage-scoped`) {
 		t.Fatalf("buildCredentials error = %v, want runner-only override rejection", err)
+	}
+}
+
+func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
+	t.Setenv("SHAREPOINT_MCP_TOKEN", "sharepoint-secret")
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{{
+		MCP:   "sharepoint",
+		Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	key := mcpconfig.BYOCredentialKey("sharepoint")
+	gooberGrants := buildGooberCredentialGrants("knowledge", []string{key}, grants)
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(
+		resolver,
+		"knowledge",
+		gooberGrants,
+		[]string{key},
+		&escTestRegistrar{},
+	)
+	if err != nil {
+		t.Fatalf("NewGooberInjectorWithCredentialKeys: %v", err)
+	}
+	set, err := injector.Materialize(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	token, err := set.Token(context.Background(), key)
+	if err != nil || token != "sharepoint-secret" {
+		t.Fatalf("BYO MCP token = %q, %v", token, err)
+	}
+
+	otherGrants := buildGooberCredentialGrants("coder", nil, grants)
+	other, err := credentials.NewGooberInjector(resolver, "coder", otherGrants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector(other): %v", err)
+	}
+	otherSet, err := other.Materialize(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("Materialize(other): %v", err)
+	}
+	if _, err := otherSet.Token(context.Background(), key); !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("unreferencing goober token error = %v, want ErrNoCredentialForCapability", err)
+	}
+}
+
+func TestDeterministicCredentialsRejectForgedBYOMCPEnvelope(t *testing.T) {
+	t.Setenv("SHAREPOINT_MCP_TOKEN", "sharepoint-secret")
+	t.Setenv("PUSH_TOKEN", "push-secret")
+	cfg := &instance.Config{Credentials: []instance.CredentialGrant{
+		{MCP: "sharepoint", Token: instance.TokenRef{Env: "SHAREPOINT_MCP_TOKEN"}},
+		{Capability: string(capability.RepoPush), Token: instance.TokenRef{Env: "PUSH_TOKEN"}},
+	}}
+	resolver, sources, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, deterministicCredentialGrants(sources), &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	key := mcpconfig.BYOCredentialKey("sharepoint")
+	forged := apiv1.InvocationEnvelope{
+		Capabilities: []string{key, string(capability.RepoPush)},
+	}
+	set, err := injector.Materialize(context.Background(), forged.Capabilities)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if _, err := set.Token(context.Background(), key); !errors.Is(err, credentials.ErrNoCredentialForCapability) {
+		t.Fatalf("forged deterministic BYO MCP token error = %v, want ErrNoCredentialForCapability", err)
+	}
+	token, err := set.Token(context.Background(), string(capability.RepoPush))
+	if err != nil || token != "push-secret" {
+		t.Fatalf("first-party deterministic token = %q, %v, want push-secret", token, err)
 	}
 }
 

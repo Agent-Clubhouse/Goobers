@@ -21,11 +21,15 @@ func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declar
 	if len(servers) > 0 && harness != apiv1.HarnessCopilot {
 		return fmt.Errorf("mcpServers are only supported by harness %q; harness %q must not declare them", apiv1.HarnessCopilot, harness)
 	}
-	return Validate(servers, declaredCapabilities, tools)
+	if err := Validate(servers, declaredCapabilities, tools); err != nil {
+		return err
+	}
+	return validateCopilotCredentialIsolation(servers)
 }
 
-// Validate checks MCP server shape, tool policy, and ensures every credential
-// reference is backed by a capability declared for the current scope.
+// Validate checks MCP server shape, tool policy, and ensures every first-party
+// credential reference is backed by a capability declared for the current
+// scope. A BYO reference is scoped by its containing server declaration.
 func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
 	if len(servers) > 0 {
 		for i, tool := range tools {
@@ -83,14 +87,22 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) e
 		headerNames := make(map[string]bool, len(server.CredentialRefs))
 		for j, ref := range server.CredentialRefs {
 			refScope := fmt.Sprintf("%s.credentialRefs[%d]", scope, j)
-			if !capability.Known(ref.Capability) {
-				return fmt.Errorf("%s.capability %q is unknown", refScope, ref.Capability)
-			}
-			if !capability.StageDeclarable(ref.Capability) {
-				return fmt.Errorf("%s.capability %q is runner-owned", refScope, ref.Capability)
-			}
-			if !declared[ref.Capability] {
-				return fmt.Errorf("%s.capability %q is not declared by the goober or invocation", refScope, ref.Capability)
+			switch {
+			case ref.Capability != "" && ref.Kind == "" && ref.Ref == "":
+				if !capability.Known(ref.Capability) {
+					return fmt.Errorf("%s.capability %q is unknown", refScope, ref.Capability)
+				}
+				if !capability.StageDeclarable(ref.Capability) {
+					return fmt.Errorf("%s.capability %q is runner-owned", refScope, ref.Capability)
+				}
+				if !declared[ref.Capability] {
+					return fmt.Errorf("%s.capability %q is not declared by the goober or invocation", refScope, ref.Capability)
+				}
+			case ref.Capability == "" && ref.Kind == apiv1.MCPCredentialKindBYO && validName(ref.Ref):
+			case ref.Capability == "" && ref.Kind == apiv1.MCPCredentialKindBYO:
+				return fmt.Errorf("%s.ref %q must be a lowercase DNS label", refScope, ref.Ref)
+			default:
+				return fmt.Errorf("%s must set either capability, or kind %q with ref", refScope, apiv1.MCPCredentialKindBYO)
 			}
 			switch {
 			case ref.Env != "" && ref.Header == "" && ref.Scheme == "":
@@ -126,6 +138,86 @@ func Validate(servers []apiv1.MCPServer, declaredCapabilities, tools []string) e
 		}
 	}
 	return nil
+}
+
+// CredentialKey returns the invocation-internal key used to materialize ref.
+// BYO keys are deliberately absent from internal/capability's public registry.
+func CredentialKey(ref apiv1.MCPCredentialRef) string {
+	if ref.Kind == apiv1.MCPCredentialKindBYO {
+		return BYOCredentialKey(ref.Ref)
+	}
+	return ref.Capability
+}
+
+// BYOCredentialKey namespaces a named BYO credential away from first-party
+// capability grants.
+func BYOCredentialKey(name string) string {
+	return "mcp:" + name
+}
+
+// IsBYOCredentialKey reports whether key is a well-formed internal BYO key.
+func IsBYOCredentialKey(key string) bool {
+	name, ok := strings.CutPrefix(key, "mcp:")
+	return ok && validName(name)
+}
+
+// BYOCredentialKeys returns the unique BYO keys explicitly referenced by
+// servers, preserving declaration order.
+func BYOCredentialKeys(servers []apiv1.MCPServer) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	for _, server := range servers {
+		for _, ref := range server.CredentialRefs {
+			if ref.Kind != apiv1.MCPCredentialKindBYO {
+				continue
+			}
+			key := BYOCredentialKey(ref.Ref)
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	return keys
+}
+
+// Copilot launches every local MCP server with its own environment, so each
+// local server must be explicitly authorized for every credential in the
+// shared Copilot process environment.
+func validateCopilotCredentialIsolation(servers []apiv1.MCPServer) error {
+	keys := make([]string, 0)
+	seen := make(map[string]bool)
+	serverKeys := make([]map[string]bool, len(servers))
+	for i, server := range servers {
+		serverKeys[i] = make(map[string]bool, len(server.CredentialRefs))
+		for _, ref := range server.CredentialRefs {
+			key := CredentialKey(ref)
+			serverKeys[i][key] = true
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	for i, server := range servers {
+		if server.Command == "" {
+			continue
+		}
+		for _, key := range keys {
+			if !serverKeys[i][key] {
+				return fmt.Errorf(
+					"mcpServers[%d] local stdio server %q cannot isolate credential %q granted to another server because harness %q uses one shared process environment; add an explicit credentialRef for that credential or use a remote server",
+					i, server.Name, key, apiv1.HarnessCopilot,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidBYOCredentialName reports whether name is valid for a named BYO grant.
+func ValidBYOCredentialName(name string) bool {
+	return validName(name)
 }
 
 func validName(name string) bool {

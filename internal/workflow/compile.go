@@ -143,7 +143,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 	var opts []vcurrent.Option
 	if config.goobersSet {
-		opts = append(opts, vcurrent.WithGoobers(config.goobers))
+		opts = append(opts, vcurrent.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
 	}
 	if config.knownChecksSet {
 		opts = append(opts, vcurrent.WithKnownChecks(config.knownChecks))
@@ -160,7 +160,7 @@ func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	var opts []vnext.Option
 	if config.goobersSet {
-		opts = append(opts, vnext.WithGoobers(config.goobers))
+		opts = append(opts, vnext.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
 	}
 	if config.knownChecksSet {
 		opts = append(opts, vnext.WithKnownChecks(config.knownChecks))

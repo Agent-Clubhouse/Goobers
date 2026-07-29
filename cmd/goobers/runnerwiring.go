@@ -311,13 +311,12 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 // unchanged. By default the first configured repo's token backs every
 // credentialed capability (V0 single-target-repo simplification, ARCHITECTURE.md
 // §6). instance.yaml's credentials: block then sources individual capabilities
-// from their own token refs (#287): a new capability (e.g. agent:model) gains a
-// grant, and one the repo token already backs is overridden — so an agentic
-// stage can hold a personal Copilot-Requests PAT for the model alongside the
-// org-repo token for the github tool, both fail-closed per capability admission.
+// or named BYO MCP credentials from their own token refs. Capability entries
+// override repo-token defaults; BYO entries remain unreachable until a goober's
+// MCP server explicitly references the matching name.
 // The returned Grants are runner-owned (empty Goober); buildGooberCredentialGrants
-// binds these sources to each goober's own declared capabilities before an
-// agentic injector can use them.
+// binds these sources to each goober's own declared capability and MCP keys
+// before an agentic injector can use them.
 // buildCredentials builds the resolver and runner-owned grants for one gaggle,
 // whose project repo is (gaggleOwner, gaggleName). Repo capabilities are granted
 // that gaggle's OWN repo token (per-repo credential scoping, MGV-5 #1012) rather
@@ -378,13 +377,14 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
-	// Per-capability credential refs (#287): each sources one capability from
-	// its own token, named distinctly so it never collides with a repo ref.
+	// Explicit credential refs: each sources one capability or named BYO MCP
+	// credential from its own token, namespaced away from repo refs.
 	for _, cg := range cfg.Credentials {
-		if !capability.StageDeclarable(cg.Capability) {
-			return nil, nil, fmt.Errorf("build credentials: capability %q cannot be stage-scoped", cg.Capability)
+		key, err := credentialGrantKey(cg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %w", err)
 		}
-		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(cg.Capability)))
+		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(key)))
 	}
 	resolver, err := credentials.NewResolverWith(refs, stores, sources)
 	if err != nil {
@@ -397,7 +397,11 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	}
 	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
 	for _, cg := range cfg.Credentials {
-		overrides = append(overrides, credentials.Grant{Capability: cg.Capability, Ref: credentialRefName(cg.Capability)})
+		key, err := credentialGrantKey(cg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build credentials: %w", err)
+		}
+		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
 	grants := credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, caps, overrides)
 	// Read-only reference repos (MGV-10, #1285): each of the gaggle's
@@ -419,30 +423,30 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 }
 
 // buildGooberCredentialGrants binds the configured credential sources to one
-// goober's definition-level capability grants. The resulting grants carry the
-// goober identity, so a forged stage envelope cannot make this injector reach a
-// capability granted only to another goober.
-func buildGooberCredentialGrants(gooberName string, capabilities []string, sources []credentials.Grant) []credentials.Grant {
+// goober's definition-level capability and MCP credential keys. The resulting
+// grants carry the goober identity, so a forged stage envelope cannot make this
+// injector reach a key granted only to another goober.
+func buildGooberCredentialGrants(gooberName string, keys []string, sources []credentials.Grant) []credentials.Grant {
 	refs := make(map[string]string, len(sources))
 	for _, source := range sources {
 		if source.Goober == "" {
 			refs[source.Capability] = source.Ref
 		}
 	}
-	grants := make([]credentials.Grant, 0, len(capabilities))
-	seen := make(map[string]bool, len(capabilities))
-	for _, cap := range capabilities {
-		if seen[cap] {
+	grants := make([]credentials.Grant, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
 			continue
 		}
-		seen[cap] = true
-		if !capability.StageDeclarable(cap) {
+		seen[key] = true
+		if !capability.StageDeclarable(key) && !mcpconfig.IsBYOCredentialKey(key) {
 			continue
 		}
-		if ref, ok := refs[cap]; ok {
+		if ref, ok := refs[key]; ok {
 			grants = append(grants, credentials.Grant{
 				Goober:     gooberName,
-				Capability: cap,
+				Capability: key,
 				Ref:        ref,
 			})
 		}
@@ -450,9 +454,36 @@ func buildGooberCredentialGrants(gooberName string, capabilities []string, sourc
 	return grants
 }
 
-// credentialRefName is the resolver ref name for a per-capability credentials:
-// entry (#287) — namespaced so it can never collide with a repo ref (owner/name).
-func credentialRefName(cap string) string { return "credential:" + cap }
+// deterministicCredentialGrants excludes named BYO MCP credential sources.
+// Those sources are reachable only after buildGooberCredentialGrants binds
+// them to a goober that explicitly references the named MCP server.
+func deterministicCredentialGrants(sources []credentials.Grant) []credentials.Grant {
+	grants := make([]credentials.Grant, 0, len(sources))
+	for _, source := range sources {
+		if !mcpconfig.IsBYOCredentialKey(source.Capability) {
+			grants = append(grants, source)
+		}
+	}
+	return grants
+}
+
+func credentialGrantKey(grant instance.CredentialGrant) (string, error) {
+	switch {
+	case grant.Capability != "" && grant.MCP == "":
+		if !capability.StageDeclarable(grant.Capability) {
+			return "", fmt.Errorf("capability %q cannot be stage-scoped", grant.Capability)
+		}
+		return grant.Capability, nil
+	case grant.Capability == "" && mcpconfig.ValidBYOCredentialName(grant.MCP):
+		return mcpconfig.BYOCredentialKey(grant.MCP), nil
+	default:
+		return "", errors.New("credential grant must set exactly one valid capability or mcp name")
+	}
+}
+
+// credentialRefName is the resolver ref name for an explicit credentials entry,
+// namespaced so it can never collide with a repo ref (owner/name).
+func credentialRefName(key string) string { return "credential:" + key }
 
 // newGitHubAppTokenSource builds the installation-token minting source for a
 // github-app repo (#686). A package var so CLI tests substitute an
@@ -1632,6 +1663,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
+	deterministicGrants := deterministicCredentialGrants(grants)
 	// The clone-URL derivation the runner will use (the test seam when set, else
 	// the runner default) — the worktree auth resolver must key on the identical
 	// URLs the runner hands WorkingCopy.
@@ -1728,7 +1760,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// journal (via reg) and from the span exporter / instance log (via
 			// sharedReg) alike (#117 Piece B).
 			reg = teeRegistrar{run: reg, shared: sharedReg}
-			injector, err := credentials.NewInjector(resolver, grants, reg)
+			injector, err := credentials.NewInjector(resolver, deterministicGrants, reg)
 			if err != nil {
 				return nil, err
 			}
@@ -1798,8 +1830,16 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// the shared instance registry (#117 Piece B). reg (not the tee) is
 			// kept below for the journal.Scrubber assertion — it still accumulates
 			// every secret, since the tee forwards to it.
-			gooberGrants := buildGooberCredentialGrants(gooberName, spec.Capabilities, grants)
-			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
+			credentialKeys := append([]string(nil), spec.Capabilities...)
+			credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
+			gooberGrants := buildGooberCredentialGrants(gooberName, credentialKeys, grants)
+			injector, err := credentials.NewGooberInjectorWithCredentialKeys(
+				resolver,
+				gooberName,
+				gooberGrants,
+				mcpconfig.BYOCredentialKeys(spec.MCPServers),
+				teeRegistrar{run: reg, shared: sharedReg},
+			)
 			if err != nil {
 				return nil, err
 			}

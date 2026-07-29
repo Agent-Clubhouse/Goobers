@@ -70,6 +70,47 @@ func TestMaterializeOnlyGrantsDeclaredCapabilities(t *testing.T) {
 	}
 }
 
+func TestGooberInjectorMaterializesExplicitCredentialKeys(t *testing.T) {
+	t.Setenv("BYO_MCP_TOKEN", "vendor-secret")
+	resolver, err := NewResolver([]TokenRef{{Name: "vendor-token", Env: "BYO_MCP_TOKEN"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	inj, err := NewGooberInjectorWithCredentialKeys(
+		resolver,
+		"coder",
+		[]Grant{{Goober: "coder", Capability: "mcp:vendor", Ref: "vendor-token"}},
+		[]string{"mcp:vendor"},
+		&spyRegistrar{},
+	)
+	if err != nil {
+		t.Fatalf("NewGooberInjectorWithCredentialKeys: %v", err)
+	}
+	set, err := inj.Materialize(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if token, err := set.Token(context.Background(), "mcp:vendor"); err != nil || token != "vendor-secret" {
+		t.Fatalf("Token(mcp:vendor) = %q, %v", token, err)
+	}
+}
+
+func TestGooberInjectorRejectsCredentialKeyWithoutGrant(t *testing.T) {
+	resolver, err := NewResolver(nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	if _, err := NewGooberInjectorWithCredentialKeys(
+		resolver,
+		"coder",
+		nil,
+		[]string{"mcp:missing"},
+		&spyRegistrar{},
+	); err == nil {
+		t.Fatal("NewGooberInjectorWithCredentialKeys: want missing grant error")
+	}
+}
+
 func TestMaterializeFailsClosedOnUnresolvableGrantedCapability(t *testing.T) {
 	resolver, err := NewResolver([]TokenRef{{Name: "github-issues", Env: "GH_TOKEN_UNSET_FOR_TEST_XYZ"}})
 	if err != nil {

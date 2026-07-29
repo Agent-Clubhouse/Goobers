@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -31,13 +32,17 @@ func mcpTestInjector(t *testing.T, registrar credentials.SecretRegistrar, capabi
 		refName := fmt.Sprintf("mcp-token-%d", i/2)
 		t.Setenv(envName, capabilityTokens[i+1])
 		refs = append(refs, credentials.TokenRef{Name: refName, Env: envName})
-		grants = append(grants, credentials.Grant{Capability: capabilityTokens[i], Ref: refName})
+		grants = append(grants, credentials.Grant{Goober: "test", Capability: capabilityTokens[i], Ref: refName})
 	}
 	resolver, err := credentials.NewResolver(refs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	injector, err := credentials.NewInjector(resolver, grants, registrar)
+	keys := make([]string, 0, len(capabilityTokens)/2)
+	for i := 0; i < len(capabilityTokens); i += 2 {
+		keys = append(keys, capabilityTokens[i])
+	}
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, "test", grants, keys, registrar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,25 +81,33 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 		Credentials: twoTokenCredentials(
 			t,
 			"contents:read", "local-mcp-secret",
-			"github:issues:write", "remote-mcp-secret",
+			mcpconfig.BYOCredentialKey("vendor-api"), "remote-mcp-secret",
 		),
 		MCPServers: []apiv1.MCPServer{
 			{
 				Name:    "local-context",
 				Command: "context-server",
 				Args:    []string{"--stdio"},
-				CredentialRefs: []apiv1.MCPCredentialRef{{
-					Capability: "contents:read",
-					Env:        "CONTEXT_TOKEN",
-				}},
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{
+						Capability: "contents:read",
+						Env:        "CONTEXT_TOKEN",
+					},
+					{
+						Kind: apiv1.MCPCredentialKindBYO,
+						Ref:  "vendor-api",
+						Env:  "VENDOR_TOKEN",
+					},
+				},
 			},
 			{
 				Name: "remote-context",
 				URL:  "https://mcp.example.test/api",
 				CredentialRefs: []apiv1.MCPCredentialRef{{
-					Capability: "github:issues:write",
-					Header:     "Authorization",
-					Scheme:     apiv1.MCPHeaderSchemeBearer,
+					Kind:   apiv1.MCPCredentialKindBYO,
+					Ref:    "vendor-api",
+					Header: "Authorization",
+					Scheme: apiv1.MCPHeaderSchemeBearer,
 				}},
 			},
 		},
@@ -137,7 +150,8 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	if local.Type != "local" || local.Command != "context-server" ||
 		!slices.Equal(local.Args, []string{"--stdio"}) ||
 		!slices.Equal(local.Tools, []string{"reachability"}) ||
-		local.Env["CONTEXT_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_0}" {
+		local.Env["CONTEXT_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_0}" ||
+		local.Env["VENDOR_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_1}" {
 		t.Fatalf("local server config = %#v", local)
 	}
 	remote := config.MCPServers["remote-context"]
@@ -151,11 +165,40 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	}
 	for _, want := range []string{
 		"GOOBERS_MCP_CREDENTIAL_0_0=local-mcp-secret",
+		"GOOBERS_MCP_CREDENTIAL_0_1=remote-mcp-secret",
 		"GOOBERS_MCP_CREDENTIAL_1_0=remote-mcp-secret",
 	} {
 		if !slices.Contains(env, want) {
 			t.Fatalf("scoped environment missing %q: %v", want, env)
 		}
+	}
+}
+
+func TestPrepareCopilotMCPRejectsCredentialExposureToLocalSibling(t *testing.T) {
+	workspace := t.TempDir()
+	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:    testEnvelope(workspace),
+		Workspace:   workspace,
+		Credentials: mcpTestCredentials(t, mcpconfig.BYOCredentialKey("vendor-api"), "remote-mcp-secret"),
+		MCPServers: []apiv1.MCPServer{
+			{Name: "local-context", Command: "context-server"},
+			{
+				Name: "vendor-context",
+				URL:  "https://vendor.example.test/mcp",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Kind:   apiv1.MCPCredentialKindBYO,
+					Ref:    "vendor-api",
+					Header: "Authorization",
+				}},
+			},
+		},
+	}, nil)
+	if err == nil ||
+		!strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) {
+		t.Fatalf("prepareCopilotMCP error = %v, want local credential-isolation rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe MCP configuration reached materialization: %v", statErr)
 	}
 }
 
@@ -405,7 +448,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 			EnvCapabilities: map[string]string{"agent:model": "COPILOT_MODEL_TOKEN"},
 		},
 		mcpTestInjector(t, registry,
-			"repo:read", secret,
+			mcpconfig.BYOCredentialKey("sharepoint"), secret,
 			"agent:model", "scoped-model-token",
 		),
 		recorder,
@@ -417,9 +460,10 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 			Name: "remote-context",
 			URL:  "https://mcp.example.test/api",
 			CredentialRefs: []apiv1.MCPCredentialRef{{
-				Capability: "repo:read",
-				Header:     "Authorization",
-				Scheme:     apiv1.MCPHeaderSchemeBearer,
+				Kind:   apiv1.MCPCredentialKindBYO,
+				Ref:    "sharepoint",
+				Header: "Authorization",
+				Scheme: apiv1.MCPHeaderSchemeBearer,
 			}},
 		}}),
 	)
@@ -444,7 +488,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "repo:read", "agent:model")); err != nil {
+	if _, err := executor.Invoke(ctx, testEnvelope(workspace, "agent:model")); err != nil {
 		t.Fatal(err)
 	}
 	span.Event("mcp.request", attribute.String("authorization", "Bearer "+secret))
