@@ -21,7 +21,10 @@ func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declar
 	if len(servers) > 0 && harness != apiv1.HarnessCopilot {
 		return fmt.Errorf("mcpServers are only supported by harness %q; harness %q must not declare them", apiv1.HarnessCopilot, harness)
 	}
-	return Validate(servers, declaredCapabilities, tools)
+	if err := Validate(servers, declaredCapabilities, tools); err != nil {
+		return err
+	}
+	return validateCopilotCredentialIsolation(servers)
 }
 
 // Validate checks MCP server shape, tool policy, and ensures every first-party
@@ -176,6 +179,40 @@ func BYOCredentialKeys(servers []apiv1.MCPServer) []string {
 		}
 	}
 	return keys
+}
+
+// Copilot launches every local MCP server with its own environment, so each
+// local server must be explicitly authorized for every credential in the
+// shared Copilot process environment.
+func validateCopilotCredentialIsolation(servers []apiv1.MCPServer) error {
+	keys := make([]string, 0)
+	seen := make(map[string]bool)
+	serverKeys := make([]map[string]bool, len(servers))
+	for i, server := range servers {
+		serverKeys[i] = make(map[string]bool, len(server.CredentialRefs))
+		for _, ref := range server.CredentialRefs {
+			key := CredentialKey(ref)
+			serverKeys[i][key] = true
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
+	}
+	for i, server := range servers {
+		if server.Command == "" {
+			continue
+		}
+		for _, key := range keys {
+			if !serverKeys[i][key] {
+				return fmt.Errorf(
+					"mcpServers[%d] local stdio server %q cannot isolate credential %q granted to another server because harness %q uses one shared process environment; add an explicit credentialRef for that credential or use a remote server",
+					i, server.Name, key, apiv1.HarnessCopilot,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 // ValidBYOCredentialName reports whether name is valid for a named BYO grant.

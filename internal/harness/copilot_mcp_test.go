@@ -88,10 +88,17 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 				Name:    "local-context",
 				Command: "context-server",
 				Args:    []string{"--stdio"},
-				CredentialRefs: []apiv1.MCPCredentialRef{{
-					Capability: "contents:read",
-					Env:        "CONTEXT_TOKEN",
-				}},
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{
+						Capability: "contents:read",
+						Env:        "CONTEXT_TOKEN",
+					},
+					{
+						Kind: apiv1.MCPCredentialKindBYO,
+						Ref:  "vendor-api",
+						Env:  "VENDOR_TOKEN",
+					},
+				},
 			},
 			{
 				Name: "remote-context",
@@ -143,7 +150,8 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	if local.Type != "local" || local.Command != "context-server" ||
 		!slices.Equal(local.Args, []string{"--stdio"}) ||
 		!slices.Equal(local.Tools, []string{"reachability"}) ||
-		local.Env["CONTEXT_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_0}" {
+		local.Env["CONTEXT_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_0}" ||
+		local.Env["VENDOR_TOKEN"] != "${GOOBERS_MCP_CREDENTIAL_0_1}" {
 		t.Fatalf("local server config = %#v", local)
 	}
 	remote := config.MCPServers["remote-context"]
@@ -157,11 +165,40 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	}
 	for _, want := range []string{
 		"GOOBERS_MCP_CREDENTIAL_0_0=local-mcp-secret",
+		"GOOBERS_MCP_CREDENTIAL_0_1=remote-mcp-secret",
 		"GOOBERS_MCP_CREDENTIAL_1_0=remote-mcp-secret",
 	} {
 		if !slices.Contains(env, want) {
 			t.Fatalf("scoped environment missing %q: %v", want, env)
 		}
+	}
+}
+
+func TestPrepareCopilotMCPRejectsCredentialExposureToLocalSibling(t *testing.T) {
+	workspace := t.TempDir()
+	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:    testEnvelope(workspace),
+		Workspace:   workspace,
+		Credentials: mcpTestCredentials(t, mcpconfig.BYOCredentialKey("vendor-api"), "remote-mcp-secret"),
+		MCPServers: []apiv1.MCPServer{
+			{Name: "local-context", Command: "context-server"},
+			{
+				Name: "vendor-context",
+				URL:  "https://vendor.example.test/mcp",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Kind:   apiv1.MCPCredentialKindBYO,
+					Ref:    "vendor-api",
+					Header: "Authorization",
+				}},
+			},
+		},
+	}, nil)
+	if err == nil ||
+		!strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) {
+		t.Fatalf("prepareCopilotMCP error = %v, want local credential-isolation rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe MCP configuration reached materialization: %v", statErr)
 	}
 }
 

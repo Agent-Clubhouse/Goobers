@@ -24,6 +24,7 @@ const (
 	mcpClientHelperEnv = "GOOBERS_MCP_CLIENT_HELPER"
 	stdioMCPMarkerArg  = "goobers-mcp-stdio"
 	stdioMCPTokenEnv   = "STDIO_MCP_TOKEN"
+	remoteMCPTokenEnv  = "REMOTE_MCP_TOKEN"
 	mcpModelToken      = "opaque-model-token"
 	stdioMCPSecret     = "opaque-stdio-mcp-secret"
 	remoteMCPSecret    = "opaque-remote-mcp-secret"
@@ -163,10 +164,16 @@ func TestCopilotAdapterReachesOnlyInvocationScopedMCPServersAndTools(t *testing.
 					stdioMCPMarkerArg,
 					stdioMarker,
 				},
-				CredentialRefs: []apiv1.MCPCredentialRef{{
-					Capability: "contents:read",
-					Env:        stdioMCPTokenEnv,
-				}},
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{
+						Capability: "contents:read",
+						Env:        stdioMCPTokenEnv,
+					},
+					{
+						Capability: "github:issues:write",
+						Env:        remoteMCPTokenEnv,
+					},
+				},
 			},
 			{
 				Name: "declared-remote",

@@ -1125,6 +1125,34 @@ credentials:
 	}
 }
 
+func TestConfigRejectsStageExposedBYOMCPCredentialEnv(t *testing.T) {
+	tests := []struct {
+		name           string
+		tokenEnv       string
+		envPassthrough []string
+	}{
+		{name: "explicit passthrough", tokenEnv: "SHAREPOINT_MCP_TOKEN", envPassthrough: []string{"SHAREPOINT_MCP_TOKEN"}},
+		{name: "built-in allowlist", tokenEnv: "HOME"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{
+				Runner: RunnerConfig{EnvPassthrough: test.envPassthrough},
+				Credentials: []CredentialGrant{{
+					MCP:   "sharepoint",
+					Token: TokenRef{Env: test.tokenEnv},
+				}},
+			}
+			err := cfg.Validate()
+			if err == nil ||
+				!strings.Contains(err.Error(), `credentials[0] (MCP credential "sharepoint")`) ||
+				!strings.Contains(err.Error(), "must not be exposed to stages") {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
 // TestLoadConfigCredentialsRejectsInlineSecret is #287's fail-closed guard: an
 // inline value under a credentials token ref is an unknown field, rejected at
 // load like a repo token's would be (CFG-009/SEC-010).

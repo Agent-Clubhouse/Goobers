@@ -1151,6 +1151,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
 		}
+		if cg.MCP != "" &&
+			cg.Token.Env != "" &&
+			stageEnvironmentAllows(cg.Token.Env, c.Runner.EnvPassthrough) {
+			return fmt.Errorf(
+				"credentials[%d] (%s): token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				i, label, cg.Token.Env,
+			)
+		}
 		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), cg.Token, stores); err != nil {
 			return err
 		}

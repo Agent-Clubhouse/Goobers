@@ -50,15 +50,9 @@ cloud cluster without change.
 Credentials are references, never inline values:
 
 ```yaml
-capabilities: [contents:read, github:issues:write]
+capabilities: [github:issues:write]
 tools: [lookup-issue, read-context]
 mcpServers:
-  - name: local-context
-    command: context-server
-    args: [--stdio]
-    credentialRefs:
-      - capability: contents:read
-        env: CONTEXT_TOKEN
   - name: remote-context
     url: https://mcp.example.test/api
     credentialRefs:
@@ -100,7 +94,12 @@ list denies all external MCP tools.
 
 External MCP servers currently require `harness: copilot` (or the default
 Copilot harness). Other harnesses reject non-empty `mcpServers` declarations
-until their adapters implement equivalent invocation-scoped isolation.
+until their adapters implement equivalent invocation-scoped isolation. Because
+Copilot starts local stdio servers from one process environment, a local server
+must explicitly reference every credential used by any server in the same
+goober declaration; otherwise admission fails closed rather than exposing a
+sibling server's credential. A remote server avoids that subprocess-inheritance
+limitation.
 
 The scoped Copilot home intentionally excludes ambient OAuth and BYOK
 credentials. A Copilot invocation with external MCP servers therefore requires
