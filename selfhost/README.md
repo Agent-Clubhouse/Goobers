@@ -150,6 +150,7 @@ admin can touch.
      "goobers:claimed:FBCA04:Currently claimed by an in-flight run" \
      "goobers:nominated:5319E7:Filed by the nominator — awaiting maintainer approval" \
      "goobers:needs-human:D93F0B:Needs a decision only a human can make" \
+    "goobers:auto-close:0E8A16:Close a tracking issue after all children close" \
    ; do
      IFS=: read -r ns name color desc <<<"$l"
      gh label create "$ns:$name" --color "$color" --description "$desc" \

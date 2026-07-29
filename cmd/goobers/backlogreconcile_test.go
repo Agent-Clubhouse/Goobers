@@ -158,6 +158,116 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 
+func TestReconcileBacklogMetadataAutoClosesOptedInTrackingParent(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	server.addIssue(7, "Completed opted-in tracker", "goobers:approved", providers.LabelTracking, providers.LabelAutoClose)
+	server.addIssue(8, "Closed native child")
+	server.addIssue(9, "Closed checklist child")
+	server.addChild(7, 8)
+
+	server.addIssue(10, "Incomplete opted-in tracker", "goobers:approved", providers.LabelTracking, providers.LabelAutoClose)
+	server.addIssue(11, "Open child")
+	server.addChild(10, 11)
+
+	server.addIssue(12, "Completed non-opted tracker", "goobers:approved", providers.LabelTracking)
+	server.addIssue(13, "Closed child")
+	server.addChild(12, 13)
+
+	server.mu.Lock()
+	server.issues[7].body = "- [x] #9"
+	server.issues[8].state = "closed"
+	server.issues[9].state = "closed"
+	server.issues[13].state = "closed"
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	reconciled, err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+	)
+	if err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	if reconciled != 2 {
+		t.Fatalf("reconciliations = %d, want 2", reconciled)
+	}
+
+	assertFakeIssueState(t, server, 7, "closed")
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelAutoClose}, []string{providers.LabelTracking})
+	assertFakeIssueState(t, server, 10, "open")
+	assertFakeIssueLabels(t, server, 10, []string{providers.LabelTracking, providers.LabelAutoClose}, nil)
+	assertFakeIssueState(t, server, 12, "open")
+	assertFakeIssueLabels(t, server, 12, nil, []string{providers.LabelTracking})
+}
+
+func TestReconcileBacklogMetadataRechecksChildrenAndChecklistBeforeAutoClose(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Tracker", "goobers:approved", providers.LabelTracking, providers.LabelAutoClose)
+	server.addIssue(8, "Closed native child")
+	server.addIssue(9, "New open checklist child")
+	server.addChild(7, 8)
+	server.setIssueState(8, "closed")
+
+	parentRefreshes := 0
+	childChecks := 0
+	baseHandler := server.server.Config.Handler
+	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7") {
+			parentRefreshes++
+			if parentRefreshes == 2 {
+				server.mu.Lock()
+				server.issues[7].body = "- [ ] #9"
+				server.mu.Unlock()
+			}
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7/sub_issues") {
+			childChecks++
+		}
+		baseHandler.ServeHTTP(w, r)
+	})
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	reconciled, err := reconcileBacklogMetadata(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+	)
+	if err != nil {
+		t.Fatalf("reconcileBacklogMetadata: %v", err)
+	}
+	if reconciled != 0 {
+		t.Fatalf("reconciliations = %d, want 0", reconciled)
+	}
+	if parentRefreshes != 2 {
+		t.Fatalf("parent refreshes = %d, want 2", parentRefreshes)
+	}
+	if childChecks != 2 {
+		t.Fatalf("native child checks = %d, want 2", childChecks)
+	}
+	assertFakeIssueState(t, server, 7, "open")
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelTracking, providers.LabelAutoClose}, nil)
+}
+
 func TestBacklogReconcileWritesActualCorrectionCount(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -479,5 +589,15 @@ func assertFakeIssueLabels(t *testing.T, server *fakeGitHubServer, id int, want,
 		if hasAllLabels(labels, []string{label}) {
 			t.Fatalf("issue %d labels = %v, reject %q", id, labels, label)
 		}
+	}
+}
+
+func assertFakeIssueState(t *testing.T, server *fakeGitHubServer, id int, want string) {
+	t.Helper()
+	server.mu.Lock()
+	got := server.issues[id].state
+	server.mu.Unlock()
+	if got != want {
+		t.Fatalf("issue %d state = %q, want %q", id, got, want)
 	}
 }

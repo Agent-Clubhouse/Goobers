@@ -23,11 +23,19 @@ var trackingChecklistIssuePattern = regexp.MustCompile(`(?m)^\s*[-*+]\s+\[[ xX]\
 
 var backlogReconcileReservationSequence atomic.Uint64
 
+const (
+	trackingOpenReadyReason = "removed `goobers:ready` because a tracking issue with open children is not directly implementable"
+	trackingCompleteReason  = "removed `tracking` because the issue has no open provider or checklist children"
+	trackingAutoCloseReason = "closed the opted-in tracking issue because it has no open provider or checklist children"
+)
+
 type backlogMetadataCorrection struct {
-	removeLabels  []string
-	reasons       []string
-	checkClaim    bool
-	orphanedClaim bool
+	removeLabels        []string
+	reasons             []string
+	checkClaim          bool
+	orphanedClaim       bool
+	trackingComplete    bool
+	closeTrackingParent bool
 }
 
 type inspectedBacklogItem struct {
@@ -87,6 +95,12 @@ func reconcileBacklogMetadata(
 	for _, inspectedItem := range inspected {
 		current := inspectedItem.item
 		correction := inspectedItem.correction
+		if correction.trackingComplete {
+			correction, err = revalidateCompletedTrackingItem(ctx, provider, repo, current.ID, correction)
+			if err != nil {
+				return reconciled, fmt.Errorf("revalidate tracking issue #%s: %w", current.ID, err)
+			}
+		}
 		var reservation *backlogReconcileReservation
 		if correction.checkClaim {
 			var acquired bool
@@ -104,10 +118,14 @@ func reconcileBacklogMetadata(
 			}
 		}
 		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
-		if len(correction.removeLabels) == 0 {
+		if len(correction.removeLabels) == 0 && !correction.closeTrackingParent {
 			continue
 		}
 		comment := reconciliationComment(correction.reasons)
+		state := ""
+		if correction.closeTrackingParent {
+			state = "closed"
+		}
 		var correctionErr error
 		if correction.orphanedClaim {
 			_, correctionErr = provider.ReconcileOrphanedWorkItemClaim(
@@ -117,11 +135,19 @@ func reconcileBacklogMetadata(
 				correction.removeLabels,
 				comment,
 			)
+			if correctionErr == nil && correction.closeTrackingParent {
+				_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+					Repository: repo,
+					ID:         current.ID,
+					State:      state,
+				})
+			}
 		} else {
 			_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 				Repository:   repo,
 				ID:           current.ID,
 				RemoveLabels: correction.removeLabels,
+				State:        state,
 				Comment:      comment,
 			})
 		}
@@ -233,13 +259,12 @@ func inspectBacklogMetadata(
 			validTracking = true
 			if item.HasLabel(providers.LabelReady) {
 				correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
-				correction.reasons = append(correction.reasons,
-					"removed `goobers:ready` because a tracking issue with open children is not directly implementable")
+				correction.reasons = append(correction.reasons, trackingOpenReadyReason)
 			}
 		} else {
+			correction.trackingComplete = true
 			correction.removeLabels = append(correction.removeLabels, providers.LabelTracking)
-			correction.reasons = append(correction.reasons,
-				"removed `tracking` because the issue has no open provider or checklist children")
+			correction.reasons = append(correction.reasons, trackingCompleteReason)
 		}
 	}
 	if !validTracking && item.HasLabel(providers.LabelReady) && item.HasLabel(providers.LabelNeedsHuman) {
@@ -280,6 +305,44 @@ func inspectBacklogMetadata(
 		}
 	}
 	return correction, botLogin, nil
+}
+
+func revalidateCompletedTrackingItem(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	itemID string,
+	correction backlogMetadataCorrection,
+) (backlogMetadataCorrection, error) {
+	item, err := provider.GetWorkItem(ctx, repo, itemID)
+	if err != nil {
+		return correction, err
+	}
+	if !item.HasLabel(providers.LabelTracking) {
+		correction.removeLabels = withoutString(correction.removeLabels, providers.LabelTracking)
+		correction.reasons = withoutString(correction.reasons, trackingCompleteReason)
+		correction.trackingComplete = false
+		return correction, nil
+	}
+	hasOpenChildren, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
+	if err != nil {
+		return correction, err
+	}
+	if hasOpenChildren {
+		correction.removeLabels = withoutString(correction.removeLabels, providers.LabelTracking)
+		correction.reasons = withoutString(correction.reasons, trackingCompleteReason)
+		if item.HasLabel(providers.LabelReady) {
+			correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
+			correction.reasons = append(correction.reasons, trackingOpenReadyReason)
+		}
+		correction.trackingComplete = false
+		return correction, nil
+	}
+	if item.HasLabel(providers.LabelAutoClose) && strings.EqualFold(item.State, "open") {
+		correction.closeTrackingParent = true
+		correction.reasons = append(correction.reasons, trackingAutoCloseReason)
+	}
+	return correction, nil
 }
 
 func trackingItemHasOpenChildren(
@@ -329,6 +392,16 @@ func trackingChecklistIssueIDs(body string) []string {
 		}
 	}
 	return ids
+}
+
+func withoutString(values []string, reject string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != reject {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func uniqueSortedLabels(labels []string) []string {
