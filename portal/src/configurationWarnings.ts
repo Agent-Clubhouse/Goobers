@@ -22,6 +22,8 @@ export interface ConfigurationWarningClient {
   ): Promise<Pick<WorkflowDetail, "warnings">>;
 }
 
+type WarningRefresh = () => Promise<boolean>;
+
 export function configurationWarningKey(warning: ValidationWarning): string {
   return JSON.stringify([
     warning.scope,
@@ -50,7 +52,6 @@ export function useConfigurationWarnings(
   const sourceKey = warningSourceKey(source);
   const sourceGaggle = source.kind === "workflow" ? source.gaggle : "";
   const sourceWorkflow = source.kind === "workflow" ? source.workflow : "";
-  const request = useRef<AbortController | undefined>(undefined);
   const { subscribe } = useLiveData();
   const [dismissedWarningKeys, setDismissedWarningKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -63,82 +64,80 @@ export function useConfigurationWarnings(
     state: client ? { status: "loading" } : warningState(fixtureWarnings),
   }));
 
-  const refreshWarnings = useCallback(async (): Promise<boolean> => {
-    request.current?.abort();
-    request.current = undefined;
-    if (source.kind === "none") {
-      setQuery({ sourceKey, state: { status: "empty" } });
-      return true;
-    }
-    if (!client) {
-      setQuery({ sourceKey, state: warningState(fixtureWarnings) });
-      return true;
-    }
-
-    const controller = new AbortController();
-    request.current = controller;
-    setQuery((current) => ({
-      sourceKey,
-      state:
-        current.sourceKey === sourceKey &&
-        (current.state.status === "ready" || current.state.status === "stale")
-          ? { status: "stale", data: current.state.data }
-          : { status: "loading" },
-    }));
-
-    try {
-      const warnings = await readWarnings(client, source, { signal: controller.signal });
-      if (controller.signal.aborted) {
+  const performRefresh = useCallback(
+    async (signal: AbortSignal): Promise<boolean> => {
+      if (source.kind === "none") {
+        setQuery({ sourceKey, state: { status: "empty" } });
         return true;
       }
-      setQuery({ sourceKey, state: warningState(warnings) });
-      return true;
-    } catch (cause: unknown) {
-      if (controller.signal.aborted) {
+      if (!client) {
+        setQuery({ sourceKey, state: warningState(fixtureWarnings) });
         return true;
       }
-      const error =
-        cause instanceof Error ? cause : new Error("Unable to read configuration warnings.");
+
       setQuery((current) => ({
         sourceKey,
         state:
-          current.sourceKey === sourceKey && current.state.status === "stale"
-            ? { status: "stale", data: current.state.data, error }
-            : { status: "error", error },
+          current.sourceKey === sourceKey &&
+          (current.state.status === "ready" || current.state.status === "stale")
+            ? { status: "stale", data: current.state.data }
+            : { status: "loading" },
       }));
-      return false;
-    } finally {
-      if (request.current === controller) {
-        request.current = undefined;
+
+      try {
+        const warnings = await readWarnings(client, source, { signal });
+        if (signal.aborted) {
+          return true;
+        }
+        setQuery({ sourceKey, state: warningState(warnings) });
+        return true;
+      } catch (cause: unknown) {
+        if (signal.aborted) {
+          return true;
+        }
+        const error =
+          cause instanceof Error ? cause : new Error("Unable to read configuration warnings.");
+        setQuery((current) => ({
+          sourceKey,
+          state:
+            current.sourceKey === sourceKey && current.state.status === "stale"
+              ? { status: "stale", data: current.state.data, error }
+              : { status: "error", error },
+        }));
+        return false;
       }
-    }
-  }, [
-    client,
-    fixtureWarnings,
-    sourceGaggle,
-    source.kind,
-    sourceWorkflow,
-    sourceKey,
-  ]);
+    },
+    [
+      client,
+      fixtureWarnings,
+      sourceGaggle,
+      source.kind,
+      sourceWorkflow,
+      sourceKey,
+    ],
+  );
+  const refreshWarnings = useCoalescedWarningRefresh(performRefresh);
 
   useEffect(() => {
     if (source.kind === "none") {
       void refreshWarnings();
       return;
     }
-    const unsubscribe = subscribe(
+    return subscribe(
       [source.kind === "instance" ? "instance" : "workflow"],
       refreshWarnings,
       source.kind === "workflow"
         ? { gaggle: source.gaggle, workflow: source.workflow }
         : undefined,
     );
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-      request.current = undefined;
-    };
-  }, [refreshWarnings, source.kind, subscribe]);
+  }, [
+    performRefresh,
+    refreshWarnings,
+    sourceGaggle,
+    source.kind,
+    sourceWorkflow,
+    subscribe,
+  ]);
 
   const dismiss = useCallback((warning: ValidationWarning) => {
     setDismissedWarningKeys((current) => {
@@ -161,6 +160,71 @@ export function useConfigurationWarnings(
     }),
     [dismiss, dismissedWarningKeys, query, refresh, sourceKey],
   );
+}
+
+function useCoalescedWarningRefresh(
+  task: (signal: AbortSignal) => Promise<boolean>,
+): WarningRefresh {
+  const taskRef = useRef(task);
+  taskRef.current = task;
+  const active = useRef<
+    { controller: AbortController; generation: number; promise: Promise<boolean> } | undefined
+  >(undefined);
+  const pending = useRef(false);
+  const enabled = useRef(true);
+  const generation = useRef(0);
+
+  const refresh = useCallback(() => {
+    if (!enabled.current) {
+      return Promise.resolve(false);
+    }
+
+    pending.current = true;
+    if (active.current) {
+      return active.current.promise;
+    }
+
+    const operation = {
+      controller: new AbortController(),
+      generation: generation.current,
+      promise: Promise.resolve(false),
+    };
+    const promise = (async () => {
+      let refreshed = false;
+      while (
+        enabled.current &&
+        generation.current === operation.generation &&
+        pending.current
+      ) {
+        const controller = new AbortController();
+        operation.controller = controller;
+        pending.current = false;
+        refreshed = await taskRef.current(controller.signal);
+      }
+      return refreshed;
+    })().finally(() => {
+      if (active.current === operation) {
+        active.current = undefined;
+      }
+    });
+    operation.promise = promise;
+    active.current = operation;
+    return promise;
+  }, []);
+
+  useEffect(() => {
+    enabled.current = true;
+    return () => {
+      enabled.current = false;
+      generation.current += 1;
+      pending.current = false;
+      const operation = active.current;
+      active.current = undefined;
+      operation?.controller.abort();
+    };
+  }, [task]);
+
+  return refresh;
 }
 
 async function readWarnings(
