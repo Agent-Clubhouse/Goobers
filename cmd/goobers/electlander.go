@@ -154,11 +154,9 @@ const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
 // elected=false, routing to apply-verdict unchanged (blocked-on-sibling for the
 // non-elected members, needs-remediation for a verdict with real defects).
 //
-// selectedNumber/selectedHeadSha/selectedBaseSha/reviewDigest are threaded
-// through as outputs so BOTH downstream stages resolve their single-hop
-// inputsFrom on this branch: merge-pr on the elected path, apply-verdict on the
-// parked path — the same pass-through post-merge/queue-watch already do for the
-// merge-gate convergence.
+// selectedNumber/selectedHeadSha/selectedBaseSha/reviewDigest and the scope-gate
+// decision are threaded through as outputs so apply-verdict resolves its
+// single-hop inputsFrom on this branch.
 func runElectLander(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("elect-lander", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -201,6 +199,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// apply-verdict on the parked (not-elected) branch resolves it too.
 	overlappingSiblingsCsv := providerInput("overlappingSiblings", "")
 	overlappingSiblings := parseOverlappingSiblings(overlappingSiblingsCsv)
+	scopeGateParked := providerInput("scopeGateParked", "")
 
 	// #834/#1028/#1029: the lander-election policy is workflow-configurable.
 	// fifo/newest are pure functions; most-blockers/fewest-overlaps score every
@@ -219,6 +218,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 			"reviewDigest":           reviewDigest,
 			"overlappingSiblingsCsv": overlappingSiblingsCsv,
 			"advisoryMode":           strconv.FormatBool(advisoryMode),
+			"scopeGateParked":        scopeGateParked,
 		})
 		if err != nil {
 			pf(stderr, "error: marshal election result: %v\n", err)

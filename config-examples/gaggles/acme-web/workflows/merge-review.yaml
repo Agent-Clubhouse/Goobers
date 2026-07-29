@@ -88,10 +88,10 @@ spec:
         # #990: deterministic file-overlap set, threaded to elect-lander +
         # apply-verdict. Empty string when nothing overlaps.
         - overlappingSiblingsCsv
-        # #1313: whether this PR is currently parked before review for
-        # exceeding the size threshold — scope-gate branches on this.
+        # #1313/#1814: whether this PR is currently barred from merging for
+        # exceeding the size threshold. Review still runs to produce findings.
         - scopeGateParked
-      next: scope-gate
+      next: review
 
     - name: apply-verdict
       type: deterministic
@@ -108,6 +108,9 @@ spec:
         reviewDigest: reviewDigest
         # #990: same deterministic overlap set the election used.
         overlappingSiblings: overlappingSiblingsCsv
+        # #1814: preserve the deterministic scope decision through verdict
+        # publication so scope-gate guards only the merge path.
+        scopeGateParked: scopeGateParked
       inputs:
         resultFile: "verdict-result.json"
         # MUST match elect-lander's electionPolicy. apply-verdict re-derives
@@ -130,6 +133,7 @@ spec:
         - decision
         - verdictAuthor
         - priorityDispatchRequested
+        - scopeGateParked
       next: advisory-verdict
 
     # #833: deterministic cross-PR winner-election. Crowns one lander of a
@@ -148,6 +152,8 @@ spec:
         reviewDigest: reviewDigest
         # #990: deterministic overlap set; passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
+        # #1814: retain the scope decision on the election path too.
+        scopeGateParked: scopeGateParked
       inputs:
         # Outputs reach the runner ONLY through a declared result file — a
         # stage without one always reports empty Outputs, however much its
@@ -167,6 +173,7 @@ spec:
         - reviewDigest
         # Passed through for apply-verdict on the parked branch (#990).
         - overlappingSiblingsCsv
+        - scopeGateParked
       next: elect-gate
 
     - name: merge-pr
@@ -288,12 +295,9 @@ spec:
         - demote-pr
 
   gates:
-    # #1313: escalates the advisory goobers:scope-drift flag (#1111) into an
-    # actual gate. gather-sibling-context already reconciled the
-    # goobers:scope-gate label/comment; this just routes on scopeGateParked —
-    # not parked proceeds to review unchanged, parked completes the run
-    # cleanly this cycle (self-heals next cycle once the diff shrinks or an
-    # operator acks it).
+    # #1313/#1814: gather-sibling-context reconciles the scope label before
+    # review. This gate evaluates the carried decision only after a pass
+    # verdict has been published, blocking merge without suppressing review.
     - name: scope-gate
       evaluator: automated
       automated:
@@ -302,7 +306,7 @@ spec:
           key: scopeGateParked
           equals: "false"
       branches:
-        pass: review
+        pass: merge-pr
         fail: ""
 
     - name: review
@@ -358,7 +362,7 @@ spec:
           key: decision
           equals: pass
       branches:
-        pass: merge-pr
+        pass: scope-gate
         fail: ""
 
     - name: advisory-verdict

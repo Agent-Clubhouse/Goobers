@@ -134,6 +134,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				gatherSiblings.InputsFrom["advisoryMode"] != "advisoryMode" {
 				t.Errorf("gather-sibling-context advisory wiring = inputs %v inputsFrom %v", gatherSiblings.Inputs, gatherSiblings.InputsFrom)
 			}
+			if gatherSiblings.Next != "review" {
+				t.Errorf("gather-sibling-context.next = %q, want review so oversized PRs are still reviewed", gatherSiblings.Next)
+			}
 
 			review, ok := m.Gate("review")
 			if !ok {
@@ -153,12 +156,8 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 
 			// #833: elect-lander runs the deterministic winner-election and hands
-			// off to elect-gate, which routes the crowned lander straight to
-			// merge-pr (deliberately bypassing #825's apply-verdict/
-			// published-verdict native-review chain on this override path —
-			// the verdict that got it here was needs-changes, not pass) and
-			// everything else to apply-verdict (park blocked-on-sibling /
-			// needs-remediation).
+			// off to elect-gate. Both outcomes publish through apply-verdict;
+			// crowned landers receive a derived pass, while the others park.
 			electLander, ok := m.Task("elect-lander")
 			if !ok {
 				t.Fatal("elect-lander task not found")
@@ -171,6 +170,12 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if electLander.InputsFrom["advisoryMode"] != "advisoryMode" {
 				t.Errorf("elect-lander advisoryMode input = %q, want advisoryMode", electLander.InputsFrom["advisoryMode"])
+			}
+			if electLander.InputsFrom["scopeGateParked"] != "scopeGateParked" {
+				t.Errorf("elect-lander scopeGateParked input = %q, want scopeGateParked", electLander.InputsFrom["scopeGateParked"])
+			}
+			if !containsString(electLander.ExpectedOutputs, "scopeGateParked") {
+				t.Errorf("elect-lander expectedOutputs = %v, want scopeGateParked pass-through", electLander.ExpectedOutputs)
 			}
 			electGate, ok := m.Gate("elect-gate")
 			if !ok {
@@ -215,9 +220,13 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				"advisoryMode":        "advisoryMode",
 				"reviewDigest":        "reviewDigest",
 				"overlappingSiblings": "overlappingSiblingsCsv",
+				"scopeGateParked":     "scopeGateParked",
 			}
 			if !reflect.DeepEqual(applyVerdict.InputsFrom, wantApplyInputs) {
 				t.Errorf("apply-verdict inputsFrom = %v, want %v", applyVerdict.InputsFrom, wantApplyInputs)
+			}
+			if !containsString(applyVerdict.ExpectedOutputs, "scopeGateParked") {
+				t.Errorf("apply-verdict expectedOutputs = %v, want scopeGateParked pass-through", applyVerdict.ExpectedOutputs)
 			}
 			advisoryVerdict, ok := m.Gate("advisory-verdict")
 			if !ok {
@@ -244,9 +253,23 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				publishedVerdict.Automated.Params["equals"] != "pass" {
 				t.Errorf("published-verdict check = %+v, want decision == pass", publishedVerdict.Automated)
 			}
-			wantPublishedBranches := map[string]string{"pass": "merge-pr", "fail": TerminalComplete}
+			wantPublishedBranches := map[string]string{"pass": "scope-gate", "fail": TerminalComplete}
 			if !reflect.DeepEqual(publishedVerdict.Branches, wantPublishedBranches) {
 				t.Errorf("published-verdict branches = %v, want %v", publishedVerdict.Branches, wantPublishedBranches)
+			}
+			scopeGate, ok := m.Gate("scope-gate")
+			if !ok {
+				t.Fatal("scope-gate gate not found")
+			}
+			if scopeGate.Automated == nil ||
+				scopeGate.Automated.Check != "output-equals" ||
+				scopeGate.Automated.Params["key"] != "scopeGateParked" ||
+				scopeGate.Automated.Params["equals"] != "false" {
+				t.Errorf("scope-gate check = %+v, want scopeGateParked == false", scopeGate.Automated)
+			}
+			wantScopeBranches := map[string]string{"pass": "merge-pr", "fail": TerminalComplete}
+			if !reflect.DeepEqual(scopeGate.Branches, wantScopeBranches) {
+				t.Errorf("scope-gate branches = %v, want %v", scopeGate.Branches, wantScopeBranches)
 			}
 
 			mergePR, ok := m.Task("merge-pr")

@@ -333,11 +333,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Scope gate (#1313): escalates the advisory flag above into an actual
-	// merge-review gate — a PR meeting or exceeding the threshold on EITHER
-	// dimension (files or lines, whichever trips first) is parked before
-	// review, not merely flagged. Reuses the same already-fetched files (no
-	// extra provider call); best-effort, same contract as the advisory flag.
+	// Scope gate (#1313/#1814): a PR meeting or exceeding the threshold on
+	// EITHER dimension is barred from merging but remains reviewable. Reuses
+	// the same already-fetched files; best-effort, like the advisory flag.
 	scopeGateFilesThreshold := defaultScopeGateFilesThreshold
 	if v := providerInput("scopeGateFilesThreshold", ""); v != "" {
 		if n, cerr := strconv.Atoi(v); cerr == nil {
@@ -476,11 +474,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// gate's second magnitude, computed from the same PullRequestFiles
 		// data selectedChangedFiles already comes from.
 		"selectedChangedLines": strconv.Itoa(selectedLines),
-		// scopeGateParked: whether reconcileScopeGate currently parks this
-		// PR before review (#1313) — merge-review's scope-gate branches on
-		// this via the generic "output-equals" check rather than a new
-		// custom one, since the label/comment reconciliation already lives
-		// here.
+		// scopeGateParked: whether reconcileScopeGate currently bars this PR
+		// from merging (#1313/#1814). The workflow carries it through review
+		// publication to its pre-merge scope gate.
 		"scopeGateParked": strconv.FormatBool(scopeGateParked),
 	}
 	if cachedVerdictJSON != "" {

@@ -146,12 +146,11 @@ spec:
         # reviewer's classification. Empty string when nothing overlaps (same
         # always-emitted, possibly-empty shape as reviewDigest above).
         - overlappingSiblingsCsv
-        # scopeGateParked (#1313): whether this PR is currently parked before
-        # review for exceeding the size threshold — scope-gate branches on
-        # this directly, so a stale/missing value here would silently let an
-        # oversized diff reach review.
+        # scopeGateParked (#1313/#1814): whether this PR is currently barred
+        # from merging for exceeding the size threshold. Review still runs so
+        # remediation receives fresh findings and can converge.
         - scopeGateParked
-      next: scope-gate
+      next: review
 
     - name: apply-verdict
       type: deterministic
@@ -177,6 +176,9 @@ spec:
         # gather-sibling-context emits it on the review-gate branch,
         # elect-lander passes it through on the parked branch.
         overlappingSiblings: overlappingSiblingsCsv
+        # #1814: preserve the deterministic scope decision through verdict
+        # publication so scope-gate can guard only the merge path.
+        scopeGateParked: scopeGateParked
       inputs:
         resultFile: "verdict-result.json"
         # MUST match elect-lander's electionPolicy below. apply-verdict
@@ -204,6 +206,7 @@ spec:
         - decision
         - verdictAuthor
         - priorityDispatchRequested
+        - scopeGateParked
       next: advisory-verdict
 
     - name: elect-lander
@@ -223,6 +226,9 @@ spec:
         # green file-collision reaches sequencing even if the reviewer
         # under-named the blockers). Passed through below for apply-verdict.
         overlappingSiblings: overlappingSiblingsCsv
+        # #1814: the needs-changes/election path must retain the same merge
+        # gate state as a direct review pass.
+        scopeGateParked: scopeGateParked
       inputs:
         # Outputs reach the runner ONLY through a declared result file: the
         # shell executor harvests them inside `if resultFile != ""` and a
@@ -256,6 +262,7 @@ spec:
         # Passed through so apply-verdict on the parked (not-elected) branch
         # resolves the same deterministic overlap set (#990).
         - overlappingSiblingsCsv
+        - scopeGateParked
       next: elect-gate
 
     - name: merge-pr
@@ -414,15 +421,10 @@ spec:
       # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:
-    # Scope gate (#1313): escalates the advisory goobers:scope-drift flag
-    # (#1111) into an actual merge-review gate. gather-sibling-context
-    # already reconciled the goobers:scope-gate label/comment and reports
-    # the outcome as scopeGateParked — this gate just routes on it:
-    # not-parked proceeds to the ordinary review path unchanged; parked
-    # skips review entirely this cycle (the label/comment already explains
-    # why, and the run completes cleanly — merge-review re-evaluates fresh
-    # next cycle, self-healing the moment the diff shrinks or an operator
-    # acks it).
+    # Scope gate (#1313/#1814): gather-sibling-context reconciles the label and
+    # computes scopeGateParked before review. The value is carried through
+    # verdict publication and checked only here, immediately before merge, so
+    # oversized PRs still receive fresh review findings without being landed.
     - name: scope-gate
       evaluator: automated
       automated:
@@ -431,7 +433,7 @@ spec:
           key: scopeGateParked
           equals: "false"
       branches:
-        pass: review
+        pass: merge-pr
         fail: ""
 
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
@@ -521,7 +523,7 @@ spec:
           key: decision
           equals: pass
       branches:
-        pass: merge-pr
+        pass: scope-gate
         fail: ""
 
     - name: advisory-verdict
