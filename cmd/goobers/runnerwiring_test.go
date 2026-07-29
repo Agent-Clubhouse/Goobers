@@ -725,11 +725,17 @@ func TestBuildCredentialsScopesBYOMCPGrantToReferencingGoober(t *testing.T) {
 	}
 	key := mcpconfig.BYOCredentialKey("sharepoint")
 	gooberGrants := buildGooberCredentialGrants("knowledge", []string{key}, grants)
-	injector, err := credentials.NewGooberInjector(resolver, "knowledge", gooberGrants, &escTestRegistrar{})
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(
+		resolver,
+		"knowledge",
+		gooberGrants,
+		[]string{key},
+		&escTestRegistrar{},
+	)
 	if err != nil {
-		t.Fatalf("NewGooberInjector: %v", err)
+		t.Fatalf("NewGooberInjectorWithCredentialKeys: %v", err)
 	}
-	set, err := injector.Materialize(context.Background(), []string{key})
+	set, err := injector.Materialize(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}

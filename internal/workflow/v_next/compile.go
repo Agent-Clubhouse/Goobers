@@ -465,9 +465,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		requiredMCPCapabilities := map[string]bool{}
 		for _, server := range g.MCPServers {
 			for _, ref := range server.CredentialRefs {
-				if ref.Capability != "" {
-					requiredMCPCapabilities[ref.Capability] = true
-				}
+				requiredMCPCapabilities[ref.Capability] = true
 			}
 		}
 		requiredNames := make([]string, 0, len(requiredMCPCapabilities))

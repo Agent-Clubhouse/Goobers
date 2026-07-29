@@ -46,7 +46,7 @@ func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec)
 	if err != nil {
 		return []string{err.Error()}
 	}
-	return interpreter.checkWorkflowAdmission(def, goobers)
+	return interpreter.checkWorkflowAdmission(def, goobersForCapabilityAdmission(goobers))
 }
 
 // CheckGateParameters reports invalid built-in gate parameters.

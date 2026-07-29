@@ -16,7 +16,6 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -324,9 +323,8 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	}
 }
 
-// run materializes capability-scoped and explicitly referenced BYO MCP
-// credentials, drives the adapter, and records whatever transcript was captured
-// — even on failure, so a runner has
+// run materializes capability-scoped credentials, drives the adapter, and
+// records whatever transcript was captured — even on failure, so a runner has
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, error) {
@@ -334,9 +332,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
-	credentialKeys := append([]string(nil), env.Capabilities...)
-	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(e.mcpServers)...)
-	creds, err := e.injector.Materialize(ctx, credentialKeys)
+	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
 		return Outcome{}, nil, fmt.Errorf("harness: materialize credentials: %w", err)
 	}

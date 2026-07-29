@@ -1833,7 +1833,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			credentialKeys := append([]string(nil), spec.Capabilities...)
 			credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
 			gooberGrants := buildGooberCredentialGrants(gooberName, credentialKeys, grants)
-			injector, err := credentials.NewGooberInjector(resolver, gooberName, gooberGrants, teeRegistrar{run: reg, shared: sharedReg})
+			injector, err := credentials.NewGooberInjectorWithCredentialKeys(
+				resolver,
+				gooberName,
+				gooberGrants,
+				mcpconfig.BYOCredentialKeys(spec.MCPServers),
+				teeRegistrar{run: reg, shared: sharedReg},
+			)
 			if err != nil {
 				return nil, err
 			}

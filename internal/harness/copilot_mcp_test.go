@@ -32,13 +32,17 @@ func mcpTestInjector(t *testing.T, registrar credentials.SecretRegistrar, capabi
 		refName := fmt.Sprintf("mcp-token-%d", i/2)
 		t.Setenv(envName, capabilityTokens[i+1])
 		refs = append(refs, credentials.TokenRef{Name: refName, Env: envName})
-		grants = append(grants, credentials.Grant{Capability: capabilityTokens[i], Ref: refName})
+		grants = append(grants, credentials.Grant{Goober: "test", Capability: capabilityTokens[i], Ref: refName})
 	}
 	resolver, err := credentials.NewResolver(refs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	injector, err := credentials.NewInjector(resolver, grants, registrar)
+	keys := make([]string, 0, len(capabilityTokens)/2)
+	for i := 0; i < len(capabilityTokens); i += 2 {
+		keys = append(keys, capabilityTokens[i])
+	}
+	injector, err := credentials.NewGooberInjectorWithCredentialKeys(resolver, "test", grants, keys, registrar)
 	if err != nil {
 		t.Fatal(err)
 	}
