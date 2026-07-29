@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -287,6 +288,9 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	if len(comments) != 1 || !strings.Contains(comments[0], reason) {
 		t.Fatalf("issue comments = %v, want exactly one containing reviewer reason %q", comments, reason)
 	}
+	if parked.assignee != "" {
+		t.Fatalf("issue assignee = %q, want unchanged when needsHumanAssignee is unconfigured", parked.assignee)
+	}
 
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
 	if err != nil {
@@ -306,6 +310,50 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	}
 	if !strings.Contains(stdout, "claimed 8") {
 		t.Fatalf("next backlog-query stdout = %q, want issue 8 claimed instead of parked FIFO head", stdout)
+	}
+}
+
+func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.NeedsHumanAssignee = "mason"
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Rejected implementation", "goobers:approved", "goobers:ready", "goobers:claimed")
+
+	const runID = "run-rejected"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for human review.")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	parked := server.issues[7]
+	server.mu.Unlock()
+	if parked.assignee != "mason" {
+		t.Fatalf("issue assignee = %q, want mason", parked.assignee)
+	}
+	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
 	}
 }
 

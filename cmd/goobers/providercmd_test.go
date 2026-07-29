@@ -545,6 +545,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	case len(parts) == 1 && r.Method == http.MethodPatch:
 		var body struct {
 			Labels    *[]string `json:"labels"`
+			Assignees *[]string `json:"assignees"`
 			State     string    `json:"state"`
 			Milestone *int      `json:"milestone"`
 		}
@@ -565,6 +566,12 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		if body.State != "" {
 			issue.state = body.State
+		}
+		if body.Assignees != nil {
+			issue.assignee = ""
+			if len(*body.Assignees) > 0 {
+				issue.assignee = (*body.Assignees)[0]
+			}
 		}
 		if body.Milestone != nil {
 			issue.milestone = *body.Milestone

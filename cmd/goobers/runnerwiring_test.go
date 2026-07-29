@@ -1725,6 +1725,32 @@ func TestEscalationCommenterResolvesTokenPerCall(t *testing.T) {
 	}
 }
 
+func TestWithNeedsHumanAssignee(t *testing.T) {
+	for _, provider := range []providers.ProviderKind{providers.ProviderGitHub, providers.ProviderADO} {
+		t.Run(string(provider), func(t *testing.T) {
+			repository := providers.RepositoryRef{Provider: provider}
+			configured := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
+				Repository: repository,
+				AddLabels:  []string{providers.LabelNeedsHuman},
+			}, "mason")
+			if configured.Assignee == nil || *configured.Assignee != "mason" {
+				t.Fatalf("configured Assignee = %v, want mason", configured.Assignee)
+			}
+
+			unconfigured := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
+				Repository: repository,
+				AddLabels:  []string{providers.LabelNeedsHuman},
+			}, "")
+			if unconfigured.Assignee != nil {
+				t.Fatalf("unconfigured Assignee = %q, want nil", *unconfigured.Assignee)
+			}
+			if !slices.Equal(unconfigured.AddLabels, []string{providers.LabelNeedsHuman}) {
+				t.Fatalf("unconfigured AddLabels = %v, want needs-human unchanged", unconfigured.AddLabels)
+			}
+		})
+	}
+}
+
 // TestEscalationCommenterRoutesADOAwayFromGitHubToken verifies the ADO branch
 // added for the Example.Repo loop: an ADO driving repo must NOT hit the
 // GitHub token-resolve path (there is no static token for azure-cli auth, which
@@ -1913,7 +1939,7 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 		{Provider: "github", Owner: "acme", Name: "api", Token: instance.TokenRef{Env: "BLOCKED_SECONDARY_TOK"}},
-	}}
+	}, NeedsHumanAssignee: "mason"}
 	t.Setenv("BLOCKED_TOK", "blocked-primary-token")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{
 		{Name: "acme/web", Env: "BLOCKED_TOK"},
@@ -1953,6 +1979,9 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	}
 	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
 		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	if got.Assignee == nil || *got.Assignee != "mason" {
+		t.Fatalf("Assignee = %v, want mason", got.Assignee)
 	}
 	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
 	if !slices.Equal(got.RemoveLabels, wantRemoved) {
