@@ -211,10 +211,33 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		RunControls:            controls.Overrides(),
 	}
 	if ev.Item != nil {
-		bi := backlog.FromWorkItem(*ev.Item)
+		item := *ev.Item
+		item.Integrity = providers.IntegrityForLabels(item.Labels, directBacklogTrustLabel(def.Spec))
+		bi := backlog.FromWorkItem(item)
 		in.Item = &bi
 	}
 	return in, nil
+}
+
+func directBacklogTrustLabel(spec apiv1.WorkflowSpec) string {
+	var trustLabel string
+	for _, trigger := range spec.Triggers {
+		if trigger.Type != apiv1.TriggerBacklogItem {
+			continue
+		}
+		// Selector values have no semantics, so a direct-item workflow can
+		// identify its trust signal only when exactly one label is selected.
+		if len(trigger.Selector) != 1 {
+			return ""
+		}
+		for label := range trigger.Selector {
+			if trustLabel != "" && trustLabel != label {
+				return ""
+			}
+			trustLabel = label
+		}
+	}
+	return trustLabel
 }
 
 // startSpan opens a scheduler span for the dispatch, if telemetry is configured.
