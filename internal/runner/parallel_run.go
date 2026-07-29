@@ -714,7 +714,9 @@ func (r *Runner) runParallelBranch(
 			}
 			if retry {
 				if !replayed && gr.VerdictArtifact != nil {
-					result.pointers = append(result.pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+					result.pointers = append(result.pointers, apiv1.ContextPointer{
+						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+					})
 					result.artifacts++
 					result.produced = true
 				}
@@ -722,7 +724,9 @@ func (r *Runner) runParallelBranch(
 				continue
 			}
 			if !replayed && gr.VerdictArtifact != nil {
-				result.pointers = append(result.pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+				result.pointers = append(result.pointers, apiv1.ContextPointer{
+					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+				})
 				result.artifacts++
 				result.produced = true
 			}

@@ -408,7 +408,8 @@ type CheckAnnotation struct {
 // status or check run. Legacy commit statuses do not support annotations.
 type CIFailureDetail struct {
 	CheckDetail
-	Annotations []CheckAnnotation `json:"annotations"`
+	Annotations []CheckAnnotation  `json:"annotations"`
+	Integrity   apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
@@ -857,7 +858,8 @@ type ChangedFile struct {
 	// text (with hunk line-numbers normalized out), not from the PR's raw
 	// head SHA, so a clean rebase — which changes the head SHA but not the
 	// actual patch content — still produces a cache hit.
-	Patch string `json:"patch,omitempty"`
+	Patch     string             `json:"patch,omitempty"`
+	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // CompareResult is the result of comparing two commits/refs: their common
@@ -866,8 +868,9 @@ type ChangedFile struct {
 // this PR's own merge-base," the delta-aware replacement for a raw base-SHA
 // comparison).
 type CompareResult struct {
-	MergeBaseSHA string        `json:"mergeBaseSha"`
-	Files        []ChangedFile `json:"files"`
+	MergeBaseSHA string             `json:"mergeBaseSha"`
+	Files        []ChangedFile      `json:"files"`
+	Integrity    apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.

@@ -1607,6 +1607,7 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 		out = append(out, ChangedFile{
 			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
 			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -1677,11 +1678,16 @@ func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef,
 	}); err != nil {
 		return CompareResult{}, err
 	}
-	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
+	out := CompareResult{
+		MergeBaseSHA: mergeBaseSHA,
+		Files:        make([]ChangedFile, 0, len(files)),
+		Integrity:    apiintegrity.Unapproved,
+	}
 	for _, f := range files {
 		out.Files = append(out.Files, ChangedFile{
 			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
 			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -1815,6 +1821,7 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 		failures = append(failures, CIFailureDetail{
 			CheckDetail: check.CheckDetail,
 			Annotations: annotations,
+			Integrity:   apiintegrity.Unapproved,
 		})
 	}
 	return failures, nil

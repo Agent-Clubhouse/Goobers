@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
 // spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
@@ -1202,11 +1204,13 @@ func TestGitHubProviderCIFailuresIncludesAnnotationsWithoutFetchingLogs(t *testi
 		t.Fatalf("len(failures) = %d, want 2: %+v", len(failures), failures)
 	}
 	if got := failures[0]; got.Name != "legacy-ci" || got.Conclusion != "error" ||
-		got.Summary != "compiler exited 2" || len(got.Annotations) != 0 {
+		got.Summary != "compiler exited 2" || len(got.Annotations) != 0 ||
+		got.Integrity != apiintegrity.Unapproved {
 		t.Fatalf("legacy failure = %+v, want summary-only legacy status", got)
 	}
 	check := failures[1]
-	if check.Name != "unit" || check.Conclusion != "failure" || check.Summary != "two tests failed" {
+	if check.Name != "unit" || check.Conclusion != "failure" ||
+		check.Summary != "two tests failed" || check.Integrity != apiintegrity.Unapproved {
 		t.Fatalf("check failure = %+v", check)
 	}
 	if len(check.Annotations) != 2 ||
@@ -1523,7 +1527,10 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	mux.HandleFunc("/repos/acme/app/pulls/12/files", func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
 		writeJSON(t, w, []map[string]interface{}{
-			{"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3},
+			{
+				"filename": "internal/runner/run.go", "status": "modified", "additions": 12, "deletions": 3,
+				"patch": "@@ -1 +1 @@\n-old\n+new",
+			},
 			{
 				"filename": "cmd/goobers/new.go", "previous_filename": "cmd/goobers/old.go",
 				"status": "renamed", "additions": 40, "deletions": 0,
@@ -1541,11 +1548,50 @@ func TestGitHubProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	if len(files) != 2 {
 		t.Fatalf("len(files) = %d, want 2", len(files))
 	}
-	if files[0].Path != "internal/runner/run.go" || files[0].Status != "modified" || files[0].Additions != 12 || files[0].Deletions != 3 {
+	if files[0].Path != "internal/runner/run.go" || files[0].Status != "modified" ||
+		files[0].Additions != 12 || files[0].Deletions != 3 ||
+		files[0].Patch != "@@ -1 +1 @@\n-old\n+new" {
 		t.Fatalf("unexpected file[0]: %+v", files[0])
 	}
-	if files[1].PreviousPath != "cmd/goobers/old.go" {
+	if files[0].Integrity != apiintegrity.Unapproved ||
+		files[1].Integrity != apiintegrity.Unapproved ||
+		files[1].PreviousPath != "cmd/goobers/old.go" {
 		t.Fatalf("file[1] = %+v, want previous rename path", files[1])
+	}
+}
+
+func TestGitHubProviderCompareCommitsGradesPatchContentUnapproved(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/compare/base...head", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"merge_base_commit": map[string]string{"sha": "merge-base"},
+			"files": []map[string]interface{}{{
+				"filename": "internal/runner/run.go",
+				"status":   "modified",
+				"patch":    "@@ -1 +1 @@\n-old\n+new",
+			}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.CompareCommits(
+		context.Background(),
+		RepositoryRef{Owner: "acme", Name: "app"},
+		"base",
+		"head",
+	)
+	if err != nil {
+		t.Fatalf("CompareCommits: %v", err)
+	}
+	if result.Integrity != apiintegrity.Unapproved ||
+		result.MergeBaseSHA != "merge-base" ||
+		len(result.Files) != 1 ||
+		result.Files[0].Integrity != apiintegrity.Unapproved ||
+		result.Files[0].Patch != "@@ -1 +1 @@\n-old\n+new" {
+		t.Fatalf("CompareCommits result = %+v, want unapproved aggregate and file grades", result)
 	}
 }
 

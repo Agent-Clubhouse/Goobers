@@ -725,8 +725,9 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 				return nil, fmt.Errorf("ado pull request %s iteration %d returned a change without a path", pullID, latestIteration)
 			}
 			files = append(files, ChangedFile{
-				Path:   strings.TrimPrefix(change.Item.Path, "/"),
-				Status: adoChangedFileStatus(change.ChangeType),
+				Path:      strings.TrimPrefix(change.Item.Path, "/"),
+				Status:    adoChangedFileStatus(change.ChangeType),
+				Integrity: apiintegrity.Unapproved,
 			})
 		}
 		if page.NextSkip == 0 {

@@ -336,6 +336,18 @@ type parallelRunResult struct {
 	err    error
 }
 
+type collateCapturingDeterministic struct {
+	delegate invoke.Deterministic
+	env      chan<- apiv1.InvocationEnvelope
+}
+
+func (c *collateCapturingDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if strings.HasSuffix(env.TaskID, ":collate") {
+		c.env <- env
+	}
+	return c.delegate.Run(ctx, env, run)
+}
+
 func parallelRunnerMachine(t *testing.T, maxConcurrent int32, firstWorkspace apiv1.WorkspaceMode) *workflow.Machine {
 	t.Helper()
 	branchTask := func(name string, workspace apiv1.WorkspaceMode) apiv1.Task {
@@ -396,6 +408,108 @@ func newParallelTestRunner(t *testing.T, newDet NewDeterministicFunc) (*Runner, 
 		t.Fatalf("new parallel runner: %v", err)
 	}
 	return r, runsDir
+}
+
+func parallelAgenticBranchGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "parallel-agentic-branch-gate", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "demo",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("lens-a", "review-a"),
+				task("lens-b", workflow.TargetJoin),
+				task("collate", workflow.TerminalComplete),
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "review-a",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic: &apiv1.AgenticGate{
+					Goober: "reviewer", Workspace: apiv1.WorkspaceScratch,
+				},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TargetJoin,
+					string(apiv1.VerdictNeedsChanges): workflow.TargetJoin,
+					string(apiv1.VerdictFail):         workflow.TargetAbort,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				MaxConcurrentBranches: 2,
+				Join:                  "collate",
+				Branches: []apiv1.Branch{
+					{Name: "a", Start: "lens-a"},
+					{Name: "b", Start: "lens-b"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile parallel agentic branch-gate fixture: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerParallelGateVerdictContextPointerPreservesIntegrity(t *testing.T) {
+	const runID = "parallel-verdict-integrity"
+	results := map[string]stubTaskResult{
+		runID + ":lens-a":  {status: apiv1.ResultSuccess},
+		runID + ":lens-b":  {status: apiv1.ResultSuccess},
+		runID + ":collate": {status: apiv1.ResultSuccess},
+	}
+	collateEnv := make(chan apiv1.InvocationEnvelope, 1)
+	r, _ := newRerunTestRunner(t,
+		func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return &fixedVerdictReviewer{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}, nil
+		},
+		func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &collateCapturingDeterministic{
+				delegate: &stubDeterministic{rec: rec, byTask: results},
+				env:      collateEnv,
+			}, nil
+		},
+	)
+	r.cfg.ScratchDir = t.TempDir()
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Gaggle: "demo", Machine: parallelAgenticBranchGateMachine(t),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+
+	var env apiv1.InvocationEnvelope
+	select {
+	case env = <-collateEnv:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("collate invocation was not captured")
+	}
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name != "review-a.verdict" {
+			continue
+		}
+		if pointer.Branch != 1 || pointer.BranchName != "a" ||
+			pointer.Integrity != apiv1.IntegrityDerived ||
+			pointer.Artifact == nil ||
+			pointer.Artifact.Integrity != apiv1.IntegrityDerived {
+			t.Fatalf("verdict pointer = %+v, want derived pointer and artifact integrity from branch a", pointer)
+		}
+		return
+	}
+	t.Fatalf("collate context pointers = %+v, want review-a.verdict", env.ContextPointers)
 }
 
 func TestRunnerExecutesReadOnlyParallelWithinDeclaredBound(t *testing.T) {
