@@ -79,10 +79,10 @@ sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on 
 
 ## 3. Scaffold and configure an instance
 
-Keep the instance root outside the target repository. If you need reviewed,
-versioned definitions, choose an instance-local config directory, in-repo
-subtree, or separate config repository using the
-[instance and config placement guide](instance-placement.md).
+Keep the instance root outside the target repository. For reviewed, versioned
+definitions, use an in-repo subtree or separate config repository; reserve
+instance-local config for private, single-operator use. Compare the options in
+the [instance and config placement guide](instance-placement.md).
 
 ```sh
 goobers init ./my-instance
