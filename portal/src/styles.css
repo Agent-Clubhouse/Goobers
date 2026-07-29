@@ -1889,11 +1889,22 @@ a.telemetry-error-row:hover {
   border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
+  gap: 28px;
+  grid-template-columns: minmax(250px, 1fr) minmax(260px, 0.8fr);
+  padding: 24px;
+}
+
+.gaggle-workflow-list {
+  display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   list-style: none;
   margin: 0;
-  padding: 24px;
+  padding: 0;
+}
+
+.gaggle-workflow-column > .inline-empty {
+  margin: 0;
 }
 
 .gaggle-workflow-node {
@@ -1982,6 +1993,93 @@ a.telemetry-error-row:hover {
 .gaggle-workflow-no-runs {
   color: var(--muted);
   font-weight: 500;
+}
+
+.gaggle-connection-topology {
+  min-width: 0;
+}
+
+.gaggle-connection-topology h3 {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  margin: 0 0 12px;
+  text-transform: uppercase;
+}
+
+.gaggle-connection-topology ul {
+  display: grid;
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.gaggle-connection-topology li {
+  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(72px, 0.35fr) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.gaggle-connection-edge {
+  border-top: 1px solid var(--accent);
+  display: block;
+  height: 0;
+  position: relative;
+}
+
+.gaggle-connection-edge::after {
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid var(--accent);
+  border-top: 4px solid transparent;
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: -4px;
+}
+
+.gaggle-connection-edge > span {
+  background: var(--surface);
+  color: var(--accent-ink);
+  font-size: 8px;
+  padding: 0 4px;
+  position: absolute;
+  right: 8px;
+  top: -15px;
+  white-space: nowrap;
+}
+
+.gaggle-repository-node {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.gaggle-repository-node.read-only {
+  border-left-color: var(--muted);
+}
+
+.gaggle-repository-node strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gaggle-repository-node p {
+  color: var(--muted);
+  font-size: 9px;
+  margin: 0;
+}
+
+.gaggle-repository-access {
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .graph-panel,

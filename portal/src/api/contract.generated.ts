@@ -7,6 +7,7 @@ export const apiRoutes = {
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },
+  "gaggleConnections": { method: "GET", path: "/api/v1/gaggles/{gaggle}/connections", actionClass: "read-only-navigation" },
   "workflowDetail": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}", actionClass: "read-only-navigation" },
   "runs": { method: "GET", path: "/api/v1/runs", actionClass: "read-only-navigation" },
   "runDetail": { method: "GET", path: "/api/v1/runs/{run}", actionClass: "read-only-navigation" },

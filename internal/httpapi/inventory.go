@@ -73,6 +73,20 @@ func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog
 		writeJSON(w, http.StatusOK, value)
 	})
 
+	router.Handle(apicontract.RouteGaggleConnections, func(w http.ResponseWriter, request *http.Request) {
+		gaggle := request.PathValue("gaggle")
+		if !validIdentifier(gaggle) {
+			writeError(w, http.StatusBadRequest, "invalid_identifier", "gaggle identifier is invalid")
+			return
+		}
+		value, err := reader.Connections(request.Context(), gaggle)
+		if err != nil {
+			writeInventoryReadError(w, errorLog, "connections", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, value)
+	})
+
 	router.Handle(apicontract.RouteWorkflowDetail, func(w http.ResponseWriter, request *http.Request) {
 		gaggle := request.PathValue("gaggle")
 		name := request.PathValue("workflow")

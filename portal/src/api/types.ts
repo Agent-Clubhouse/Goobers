@@ -171,6 +171,25 @@ export interface GagglePage {
   page: PageInfo;
 }
 
+export type RepositoryAccessMode = "read-write" | "read-only";
+
+export interface RepositoryIdentity {
+  provider: Provider;
+  owner: string;
+  project?: string;
+  name: string;
+}
+
+export interface RepositoryConnection {
+  repository: RepositoryIdentity;
+  accessMode: RepositoryAccessMode;
+}
+
+export interface GaggleConnections {
+  gaggle: string;
+  repositories: RepositoryConnection[];
+}
+
 export interface WorkflowReference {
   gaggle: string;
   name: string;
@@ -734,6 +753,7 @@ export interface DaemonClient {
   listGaggles(request?: PageRequest, options?: RequestOptions): Promise<GagglePage>;
   listGoobers(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<GooberPage>;
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;
+  getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;

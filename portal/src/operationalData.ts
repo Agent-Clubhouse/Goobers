@@ -13,6 +13,7 @@ import type {
   Goober,
   Health,
   Instance,
+  RepositoryConnection,
   RunPhase,
   RunSummary,
   UpdateModel,
@@ -68,6 +69,7 @@ export interface GaggleInventory {
   gaggle: Gaggle;
   goobers: Goober[];
   workflows: WorkflowSummary[];
+  connections: RepositoryConnection[];
 }
 
 export interface OperationalSnapshot {
@@ -704,11 +706,12 @@ async function loadOperationalInventory(
   const gaggles = await loadGaggles(client, cache, signal);
   return Promise.all(
     gaggles.map(async (gaggle) => {
-      const [goobers, workflows] = await Promise.all([
+      const [goobers, workflows, connections] = await Promise.all([
         loadGoobers(client, gaggle.name, cache, signal),
         loadWorkflows(client, gaggle.name, cache, signal),
+        loadConnections(client, gaggle.name, cache, signal),
       ]);
-      return { gaggle, goobers, workflows };
+      return { gaggle, goobers, workflows, connections };
     }),
   );
 }
@@ -841,6 +844,21 @@ function loadWorkflows(
         activeRuns: activeRuns.get(workflow.identity.name) ?? 0,
       },
     })),
+  );
+}
+
+function loadConnections(
+  client: DaemonClient,
+  gaggle: string,
+  cache?: SessionDataCache,
+  signal?: AbortSignal,
+): Promise<RepositoryConnection[]> {
+  return loadInventoryCollection(
+    cache,
+    dataCacheKey("operational-inventory", "connections", gaggle),
+    async (requestSignal) =>
+      (await client.getGaggleConnections(gaggle, { signal: requestSignal })).repositories,
+    signal,
   );
 }
 
