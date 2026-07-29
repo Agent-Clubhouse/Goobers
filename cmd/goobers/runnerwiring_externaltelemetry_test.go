@@ -200,7 +200,8 @@ func TestBuildExternalTelemetryExecutorRejectsUnregisteredPlugin(t *testing.T) {
 }
 
 type externalTelemetryTestRecorder struct {
-	data []byte
+	data      []byte
+	integrity apiv1.Integrity
 }
 
 func (r *externalTelemetryTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
@@ -209,8 +210,15 @@ func (r *externalTelemetryTestRecorder) RecordArtifact(name string, data []byte)
 }
 
 func (r *externalTelemetryTestRecorder) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	return r.RecordArtifactBoundedWithIntegrity(name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+func (r *externalTelemetryTestRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error) {
 	if len(data) > maxBytes {
 		return journal.Ref{}, errors.New("artifact exceeds byte limit")
 	}
-	return r.RecordArtifact(name, data)
+	ref, err := r.RecordArtifact(name, data)
+	ref.Integrity = integrity
+	r.integrity = integrity
+	return ref, err
 }

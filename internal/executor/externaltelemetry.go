@@ -108,9 +108,10 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode external telemetry artifact: %w", err)
 	}
-	ref, err := e.Journal.RecordArtifactBounded(
+	ref, err := e.Journal.RecordArtifactBoundedWithIntegrity(
 		ExternalTelemetryArtifactName,
 		data,
+		apiv1.IntegrityUnapproved,
 		artifact.Metadata.MaxBytes,
 	)
 	if err != nil {

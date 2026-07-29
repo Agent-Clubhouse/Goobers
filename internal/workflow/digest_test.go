@@ -54,7 +54,7 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 var goldenDigests = map[string]string{
 	// #401: await-ci explicitly declares the github:pr:write capability used
 	// to poll the pull request's checks.
-	"implementation.yaml":   "sha256:23e39af6998f0901a3a1c82e525c111bff6389b9c530f857f4a0aa7976c48d9c",
+	"implementation.yaml":   "sha256:ea2b42297f0261502d1cb7b444ea9008f334ee5a4f94e8ccd365182bc34d1c65",
 	"backlog-curation.yaml": "sha256:38a219bae84d738acba00d8bde4695a311f712fabb36c430ff6bb8143eab24c1",
 	"work-nomination.yaml":  "sha256:67eb702aba404b995e806964a9aaf52f9a176a497fc24848fc8ac3b217d65b73",
 }

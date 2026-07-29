@@ -43,6 +43,10 @@ func TestTelemetryQueryExecutorRunsFakePointQuery(t *testing.T) {
 	if len(result.Artifacts) != 1 {
 		t.Fatalf("artifacts = %+v", result.Artifacts)
 	}
+	if result.Artifacts[0].Integrity != apiv1.IntegrityUnapproved ||
+		recorder.integrity[ExternalTelemetryArtifactName] != apiv1.IntegrityUnapproved {
+		t.Fatalf("external telemetry integrity = %q, recorded %q", result.Artifacts[0].Integrity, recorder.integrity[ExternalTelemetryArtifactName])
+	}
 	var artifact externaltelemetry.ResultArtifact
 	if err := json.Unmarshal(recorder.recorded[ExternalTelemetryArtifactName], &artifact); err != nil {
 		t.Fatal(err)

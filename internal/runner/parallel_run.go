@@ -34,12 +34,24 @@ func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, e
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }
 
+func (j *branchJournal) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return j.run.RecordBranchArtifactWithIntegrity(j.branch, name, data, integrity)
+}
+
 func (j *branchJournal) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
 	return j.run.RecordBranchArtifactBounded(j.branch, name, data, maxBytes)
 }
 
+func (j *branchJournal) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error) {
+	return j.run.RecordBranchArtifactBoundedWithIntegrity(j.branch, name, data, integrity, maxBytes)
+}
+
 func (j *branchJournal) RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchStageArtifact(j.branch, stage, attempt, class, name, data)
+}
+
+func (j *branchJournal) RecordStageArtifactWithIntegrity(stage string, attempt int, class journal.AttemptClass, name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return j.run.RecordBranchStageArtifactWithIntegrity(j.branch, stage, attempt, class, name, data, integrity)
 }
 
 func (j *branchJournal) ObserveActivity()            { j.run.ObserveActivity() }
