@@ -340,7 +340,9 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // longer exists is void, not actionable). Managed PRs receive a SHA-pinned
 // native GitHub review plus the existing prose comment handoff consumed by
 // merge, cache, and remediation paths; non-pass verdicts additionally retain
-// their decision labels. Advisory PRs receive only the non-blocking comment.
+// their decision labels, except that an active merge escalation suppresses
+// needs-remediation until the escalation is cleared or self-heals. Advisory
+// PRs receive only the non-blocking comment.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -639,6 +641,19 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	comment += "\n\n" + historyPayload
 	label := verdictLabel(posted.Decision, effective.Findings)
+	escalationSuppressedRemediation := false
+	addLabels := []string{label}
+	var removeLabels []string
+	if label == needsRemediationLabel {
+		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
+		}
+		if escalationSuppressedRemediation {
+			addLabels = nil
+			removeLabels = []string{needsRemediationLabel}
+		}
+	}
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
 		// symmetric union of every overlapping sibling (#991) — otherwise a 3+
@@ -704,9 +719,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// absence of an exclusion label leaves the PR eligible for a later
 	// merge-review run instead of stranding it without a platform verdict.
 	update := providers.UpdateWorkItemRequest{
-		Repository: repo,
-		ID:         strconv.Itoa(selectedNumber),
-		AddLabels:  []string{label},
+		Repository:   repo,
+		ID:           strconv.Itoa(selectedNumber),
+		AddLabels:    addLabels,
+		RemoveLabels: removeLabels,
 	}
 	if oscillated {
 		update.RemoveLabels = []string{needsRemediationLabel}
@@ -730,8 +746,24 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "queued an immediate %s re-tick so the crowned lander is selected without waiting for the next poll\n", workflowName)
 	}
 
-	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
+	if escalationSuppressedRemediation {
+		pf(stdout, "published %s verdict for PR #%d without re-applying %s because %s is still active\n",
+			posted.Decision, selectedNumber, needsRemediationLabel, remediationEscalatedLabel)
+	} else {
+		pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
+	}
 	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
+}
+
+// verdictEscalationStillBlocks keeps the escalation read compatible with the
+// routed provider handle while the GitHub-only verdict path still owns the
+// concrete self-heal protocol.
+func verdictEscalationStillBlocks(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+	githubProvider, ok := provider.(*providers.GitHubProvider)
+	if !ok {
+		return false, fmt.Errorf("provider %q does not support merge-escalation state", repo.Provider)
+	}
+	return escalationStillBlocks(ctx, githubProvider, repo, pr)
 }
 
 func applyAdvisoryVerdict(
