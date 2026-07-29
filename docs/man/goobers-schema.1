@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SCHEMA" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers schema \- emit a JSON Schema embedded in this build
+.SH SYNOPSIS
+\fBgoobers schema\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers schema [--human] <kind>
+       goobers schema --list [--human]
+
+Emit a canonical JSON Schema embedded in this build, or list every available
+schema kind. JSON is the default and includes the build version, commit, and
+DSL version. --human prints a labeled terminal rendering. No network lookup
+or fallback to another release is performed. Exit codes: 0 = OK, 1 = unknown
+kind or output error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers schema --list
+goobers schema workflow
+goobers schema --human goober
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
