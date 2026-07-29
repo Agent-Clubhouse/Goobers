@@ -40,7 +40,7 @@ install the release-matched agent toolkit
 review or explicitly apply an agent toolkit update
 .TP
 \fBgoobers apply-verdict\fR
-publish a merge-review verdict as a native review (a workflow stage)
+publish a managed or advisory merge-review verdict (a workflow stage)
 .TP
 \fBgoobers backlog-dedupe\fR
 surface ranked duplicate candidates for curator judgment (a workflow stage)
@@ -126,6 +126,9 @@ list canonical embedded workflow examples
 \fBgoobers examples show\fR
 print a canonical embedded workflow example
 .TP
+\fBgoobers explain\fR
+project field facts from an embedded JSON Schema
+.TP
 \fBgoobers features\fR
 list the workflow-DSL features this build supports
 .TP
@@ -175,7 +178,7 @@ lint config via the single authoritative validation engine (alias for validate)
 conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 .TP
 \fBgoobers merge-queue-poll\fR
-watch an enqueued PR until merged or evicted (a workflow stage)
+watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 .TP
 \fBgoobers onboarding\fR
 run non-interactive onboarding actions
@@ -193,7 +196,7 @@ open or update the run's PR (a workflow stage)
 post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
 \fBgoobers pr-select\fR
-select one eligible open PR for merge-review (a workflow stage)
+select one managed or advisory open PR for merge-review (a workflow stage)
 .TP
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
@@ -263,6 +266,12 @@ scaffold a goober in a gaggle
 .TP
 \fBgoobers scaffold workflow\fR
 scaffold a workflow in a gaggle
+.TP
+\fBgoobers schema\fR
+emit a JSON Schema embedded in this build
+.TP
+\fBgoobers self-update\fR
+stage and request a supervised binary update
 .TP
 \fBgoobers service\fR
 install and manage the platform-supervised daemon
@@ -381,6 +390,7 @@ show a workflow as a text DAG
 \fBgoobers-examples\fR(1),
 \fBgoobers-examples-list\fR(1),
 \fBgoobers-examples-show\fR(1),
+\fBgoobers-explain\fR(1),
 \fBgoobers-features\fR(1),
 \fBgoobers-fix\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
@@ -427,6 +437,8 @@ show a workflow as a text DAG
 \fBgoobers-scaffold\fR(1),
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
+\fBgoobers-schema\fR(1),
+\fBgoobers-self-update\fR(1),
 \fBgoobers-service\fR(1),
 \fBgoobers-service-install\fR(1),
 \fBgoobers-service-status\fR(1),

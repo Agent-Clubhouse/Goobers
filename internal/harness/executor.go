@@ -341,20 +341,21 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, err
 	}
 	req := RunRequest{
-		Mode:               mode,
-		Envelope:           env,
-		Instructions:       e.instructions,
-		Model:              e.model,
-		HarnessOptions:     e.harnessOptions,
-		MCPServers:         copyMCPServers(e.mcpServers),
-		Tools:              append([]string(nil), e.tools...),
-		Workspace:          env.Workspace,
-		CompletionPath:     completionPath,
-		TelemetryDir:       telemetry.PrepareStageTelemetryDir(env.Workspace),
-		Credentials:        creds,
-		ContextPaths:       contextPaths,
-		Timeout:            invocationTimeout(env, e.timeout),
-		MaxTranscriptBytes: e.transcriptLimit,
+		Mode:                  mode,
+		Envelope:              env,
+		Instructions:          e.instructions,
+		Model:                 e.model,
+		HarnessOptions:        e.harnessOptions,
+		HarnessConfigResolved: true,
+		MCPServers:            copyMCPServers(e.mcpServers),
+		Tools:                 append([]string(nil), e.tools...),
+		Workspace:             env.Workspace,
+		CompletionPath:        completionPath,
+		TelemetryDir:          telemetry.PrepareStageTelemetryDir(env.Workspace),
+		Credentials:           creds,
+		ContextPaths:          contextPaths,
+		Timeout:               invocationTimeout(env, e.timeout),
+		MaxTranscriptBytes:    e.transcriptLimit,
 	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -393,7 +394,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	invoke.ReportAgentUsage(ctx, out.Metrics)
 	if out.TranscriptSchema == "" {
-		prompt := e.scrubber.Scrub([]byte(renderPrompt(req)))
+		prompt := out.RenderedPrompt
+		if len(prompt) == 0 {
+			prompt = []byte(renderPrompt(req))
+		}
+		prompt = e.scrubber.Scrub(prompt)
 		output := e.scrubber.Scrub(out.Transcript)
 		out.Transcript, err = composedTranscript(string(prompt), output, req.Model, out.TranscriptTruncated)
 		if err != nil {

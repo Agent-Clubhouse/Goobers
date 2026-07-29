@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
@@ -162,11 +164,12 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 func TestRegisterEngineWiresGooberActivities(t *testing.T) {
 	fw := &fakeTemporalWorker{}
 	goober := fakeGoober{}
+	scheduleService := &fakeWorkflowService{}
 
-	registerEngine(fw, goober)
+	registerEngine(fw, fakeTemporalClient{service: scheduleService}, goober)
 
-	if len(fw.workflows) != 1 {
-		t.Fatalf("registered workflows = %d, want 1", len(fw.workflows))
+	if len(fw.workflows) != 4 {
+		t.Fatalf("registered workflows = %d, want 4", len(fw.workflows))
 	}
 	if len(fw.activities) != 1 {
 		t.Fatalf("registered activities = %d, want 1", len(fw.activities))
@@ -177,6 +180,9 @@ func TestRegisterEngineWiresGooberActivities(t *testing.T) {
 	}
 	if activities.Goober != goober {
 		t.Fatal("registered engine activities did not receive the runtime goober seam")
+	}
+	if activities.ScheduleService != scheduleService {
+		t.Fatal("registered engine activities did not receive the Temporal schedule service")
 	}
 }
 
@@ -227,6 +233,19 @@ func (fakeGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdi
 type fakeTemporalWorker struct {
 	workflows  []interface{}
 	activities []interface{}
+}
+
+type fakeTemporalClient struct {
+	client.Client
+	service workflowservice.WorkflowServiceClient
+}
+
+func (f fakeTemporalClient) WorkflowService() workflowservice.WorkflowServiceClient {
+	return f.service
+}
+
+type fakeWorkflowService struct {
+	workflowservice.WorkflowServiceClient
 }
 
 var _ worker.Worker = (*fakeTemporalWorker)(nil)

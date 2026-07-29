@@ -265,6 +265,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "stage.external-telemetry",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "stage.resultFile",
       "stability": "ga",
       "sinceVersion": "dev"

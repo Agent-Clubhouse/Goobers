@@ -14,12 +14,15 @@ import (
 	"testing"
 	"time"
 
+	copilotsdk "github.com/github/copilot-sdk/go"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
-
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 const (
@@ -56,6 +59,37 @@ type fakeProcessRunner struct {
 	act     func(req ProcessRequest) error
 	result  ProcessResult
 	err     error
+}
+
+type fakeCopilotModelLister struct {
+	models    []CopilotModelInfo
+	responses [][]CopilotModelInfo
+	err       error
+	calls     int
+}
+
+func (f *fakeCopilotModelLister) ListModels(context.Context, []string, []string) ([]CopilotModelInfo, error) {
+	response := f.models
+	if len(f.responses) > 0 {
+		response = f.responses[min(f.calls, len(f.responses)-1)]
+	}
+	f.calls++
+	return append([]CopilotModelInfo(nil), response...), f.err
+}
+
+func testCopilotModelList() []CopilotModelInfo {
+	maxEffort := []string{"none", "low", "medium", "high", "xhigh", "max"}
+	return []CopilotModelInfo{
+		{ID: "claude-fable-5", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-sonnet-5", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-sonnet-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
+		{ID: "claude-sonnet-4.5"},
+		{ID: "claude-opus-4.8-fast", SupportedReasoningEfforts: maxEffort},
+		{ID: "claude-opus-4.5"},
+		{ID: "future-model"},
+		{ID: "kimi-k2.7-code"},
+		{ID: "mai-code-1-flash-picker"},
+	}
 }
 
 func testHarnessOptions(t *testing.T, values map[string]interface{}) map[string]apiextensionsv1.JSON {
@@ -520,6 +554,9 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		if arg == "--allow-all-tools" {
 			found = true
 		}
+		if strings.HasPrefix(arg, "--available-tools") {
+			t.Fatalf("empty tool declaration changed the default command: %v", runner.lastReq.Command)
+		}
 	}
 	if !found {
 		t.Fatalf("expected --allow-all-tools in default extra args: %v", runner.lastReq.Command)
@@ -560,6 +597,498 @@ func TestCopilotAdapterRendersPromptAndCollectsResult(t *testing.T) {
 		if strings.Contains(arg, "push-token-value") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
 		}
+	}
+}
+
+func TestCopilotAdapterToolAllowlist(t *testing.T) {
+	tests := []struct {
+		name             string
+		model            string
+		harnessOptions   map[string]apiextensionsv1.JSON
+		tools            []string
+		wantAvailable    []string
+		wantIncluded     []string
+		wantOmitted      []string
+		wantCommandParts []string
+		wantIssues       bool
+		externalMCP      bool
+	}{
+		{
+			name:  "explicit empty preserves default",
+			tools: []string{},
+		},
+		{
+			name:          "concrete tools omit undeclared mutation",
+			tools:         []string{"view", "glob"},
+			wantAvailable: []string{"view", "glob"},
+			wantOmitted:   []string{"create"},
+		},
+		{
+			name:           "model configuration survives tool constraints",
+			model:          "claude-sonnet-5",
+			harnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
+			tools:          []string{"view"},
+			wantAvailable:  []string{"view"},
+			wantCommandParts: []string{
+				"--model claude-sonnet-5",
+				"--context long_context",
+				"--reasoning-effort xhigh",
+			},
+		},
+		{
+			name:         "shipped shell group expands",
+			tools:        []string{"shell"},
+			wantIncluded: []string{"bash", "view", "create", "apply_patch", "rg", "glob"},
+			wantOmitted:  []string{"github-mcp-server-issue_write"},
+		},
+		{
+			name:         "shipped github group excludes shell",
+			tools:        []string{"github"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
+			wantOmitted:  []string{"bash", "powershell"},
+			wantIssues:   true,
+		},
+		{
+			name:         "shipped github and telemetry groups expand independently",
+			tools:        []string{"github", "telemetry"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
+			wantOmitted:  []string{"bash", "powershell", "create"},
+			wantIssues:   true,
+		},
+		{
+			name:         "external MCP tools are server-qualified without disabling declared GitHub",
+			tools:        []string{"github", "reachability"},
+			wantIncluded: []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
+			wantOmitted:  []string{"create", "context-github-mcp-server-issue_read"},
+			wantIssues:   true,
+			externalMCP:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			var capturedStdout bool
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0},
+				act: func(req ProcessRequest) error {
+					if len(tc.tools) == 0 {
+						if req.StdoutCapture != nil {
+							t.Fatal("empty tool declaration configured response capture")
+						}
+						return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+					}
+					if req.StdoutCapture == nil {
+						return errors.New("tool-constrained run did not capture stdout")
+					}
+					capturedStdout = true
+					_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+					return err
+				},
+			}
+			adapter := &CopilotAdapter{
+				Command:         []string{"copilot"},
+				Runner:          runner,
+				EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+			}
+			envelope := testEnvelope(workspace)
+			var mcpServers []apiv1.MCPServer
+			var creds *credentials.Set
+			if tc.externalMCP {
+				envelope = testEnvelope(workspace, "agent:model")
+				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
+				creds = mcpTestCredentials(t, "agent:model", "model-token")
+			}
+
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:              envelope,
+				Model:                 tc.model,
+				HarnessOptions:        tc.harnessOptions,
+				HarnessConfigResolved: true,
+				Workspace:             workspace,
+				CompletionPath:        DefaultResultPath,
+				Tools:                 tc.tools,
+				MCPServers:            mcpServers,
+				Credentials:           creds,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			const prefix = "--available-tools="
+			var available []string
+			for _, arg := range runner.lastReq.Command {
+				if value, ok := strings.CutPrefix(arg, prefix); ok {
+					available = strings.Split(value, ",")
+				}
+			}
+			if len(tc.tools) == 0 {
+				if available != nil || slices.Contains(runner.lastReq.Command, "--silent") {
+					t.Fatalf("empty tool declaration changed the default command: %v", runner.lastReq.Command)
+				}
+				return
+			}
+			if !capturedStdout {
+				t.Fatal("tool-constrained run did not use response completion")
+			}
+			if tc.wantAvailable != nil && !slices.Equal(available, tc.wantAvailable) {
+				t.Fatalf("available tools = %v, want %v", available, tc.wantAvailable)
+			}
+			command := strings.Join(runner.lastReq.Command, " ")
+			for _, want := range tc.wantCommandParts {
+				if !strings.Contains(command, want) {
+					t.Errorf("command = %q, want %q", command, want)
+				}
+			}
+			for _, want := range tc.wantIncluded {
+				if !slices.Contains(available, want) {
+					t.Errorf("available tools missing %q: %v", want, available)
+				}
+			}
+			for _, omitted := range tc.wantOmitted {
+				if slices.Contains(available, omitted) {
+					t.Fatalf("omitted tool %q is available: %v", omitted, available)
+				}
+			}
+			if !slices.Contains(runner.lastReq.Command, "--allow-all-tools") {
+				t.Fatalf("non-interactive permission flag missing: %v", runner.lastReq.Command)
+			}
+			if !slices.Contains(runner.lastReq.Command, "--silent") ||
+				!slices.Contains(runner.lastReq.Command, "--output-format=text") {
+				t.Fatalf("response completion flags missing: %v", runner.lastReq.Command)
+			}
+			if got := slices.Contains(runner.lastReq.Command, "--add-github-mcp-toolset=issues"); got != tc.wantIssues {
+				t.Fatalf("GitHub issues toolset enabled = %t, want %t: %v", got, tc.wantIssues, runner.lastReq.Command)
+			}
+			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
+				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
+			}
+			promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+			if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+				t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
+			}
+			prompt := runner.lastReq.Command[promptIndex+1]
+			if !strings.Contains(prompt, "return your result as the entire final response") ||
+				strings.Contains(prompt, "write your result as JSON to") {
+				t.Fatalf("tool-constrained prompt does not use response completion: %q", prompt)
+			}
+			if got := string(out.Payload); got != `{"status":"success","summary":"done"}` {
+				t.Fatalf("payload = %q", got)
+			}
+			if _, err := os.Stat(filepath.Join(workspace, DefaultResultPath)); !os.IsNotExist(err) {
+				t.Fatalf("tool-constrained run wrote a completion file: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterConstrainedRunUsesAdmittedFallback(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "available-model"}}}
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if req.StdoutCapture == nil {
+				return errors.New("tool-constrained run did not capture stdout")
+			}
+			_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+			return err
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	resolution, err := adapter.ResolveConfig("retired-model", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+		Tools:                 []string{"view"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want admitted harness default", runner.lastReq.Command)
+	}
+	if !slices.Contains(runner.lastReq.Command, "--available-tools=view") ||
+		!slices.Contains(runner.lastReq.Command, "--output-format=text") {
+		t.Fatalf("command = %q, want constrained response completion", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{
+			ExitCode:   0,
+			Transcript: []byte("copilot completed the task"),
+		},
+		act: func(req ProcessRequest) error {
+			if req.StdoutCapture == nil {
+				return errors.New("tool-constrained run did not capture stdout")
+			}
+			_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+			return err
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+		WithTools([]string{"view"}),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+
+	if _, err := exec.Invoke(context.Background(), testEnvelope(workspace)); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(rec.spans) != 1 {
+		t.Fatalf("recorded spans = %d, want 1", len(rec.spans))
+	}
+	events := decodeTranscriptEvents(t, rec.spans[0].data)
+	if len(events) != 2 {
+		t.Fatalf("transcript events = %#v, want user and assistant events", events)
+	}
+	promptIndex := slices.Index(runner.lastReq.Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(runner.lastReq.Command) {
+		t.Fatalf("command missing prompt: %v", runner.lastReq.Command)
+	}
+	if events[0].Role != "user" || events[0].Content != runner.lastReq.Command[promptIndex+1] {
+		t.Fatalf("transcript prompt = %#v, want exact command prompt", events[0])
+	}
+	if !strings.Contains(events[0].Content, "return your result as the entire final response") ||
+		strings.Contains(events[0].Content, "write your result as JSON to") {
+		t.Fatalf("transcript recorded the wrong completion contract: %q", events[0].Content)
+	}
+}
+
+func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "goober.yaml"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read curator definition: %v", err)
+			}
+			var curator apiv1.Goober
+			if err := yaml.Unmarshal(raw, &curator); err != nil {
+				t.Fatalf("unmarshal curator definition: %v", err)
+			}
+			if want := []string{"github", "shell"}; !slices.Equal(curator.Spec.Tools, want) {
+				t.Fatalf("curator tools = %v, want %v", curator.Spec.Tools, want)
+			}
+
+			available := copilotAvailableTools(RunRequest{Tools: curator.Spec.Tools})
+			for _, required := range []string{
+				"github-mcp-server-issue_read",
+				"view",
+				"bash",
+			} {
+				if !slices.Contains(available, required) {
+					t.Errorf("curator tool expansion missing %q: %v", required, available)
+				}
+			}
+		})
+	}
+}
+
+func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "nominator", "goober.yaml"),
+		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read nominator definition: %v", err)
+			}
+			var nominator apiv1.Goober
+			if err := yaml.Unmarshal(raw, &nominator); err != nil {
+				t.Fatalf("unmarshal nominator definition: %v", err)
+			}
+			if want := []string{"github", "telemetry", "shell"}; !slices.Equal(nominator.Spec.Tools, want) {
+				t.Fatalf("nominator tools = %v, want %v", nominator.Spec.Tools, want)
+			}
+
+			available := copilotAvailableTools(RunRequest{Tools: nominator.Spec.Tools})
+			for _, required := range []string{
+				"github-mcp-server-issue_write",
+				"view",
+				"bash",
+			} {
+				if !slices.Contains(available, required) {
+					t.Errorf("nominator tool expansion missing %q: %v", required, available)
+				}
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
+	run := func(tools []string) []string {
+		workspace := t.TempDir()
+		runner := &fakeProcessRunner{
+			result: ProcessResult{ExitCode: 0},
+			act: func(req ProcessRequest) error {
+				return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+			},
+		}
+		adapter := &CopilotAdapter{
+			Command: []string{"copilot", "--session-id", "00000000-0000-4000-8000-000000000001"},
+			Runner:  runner,
+		}
+		if _, err := adapter.Run(context.Background(), RunRequest{
+			Envelope:       testEnvelope(workspace),
+			Workspace:      workspace,
+			CompletionPath: DefaultResultPath,
+			Tools:          tools,
+		}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return runner.lastReq.Command
+	}
+
+	absent := run(nil)
+	empty := run([]string{})
+	if !slices.Equal(absent, empty) {
+		t.Fatalf("empty tool allowlist changed command:\nabsent: %v\nempty:  %v", absent, empty)
+	}
+}
+
+func TestCopilotAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
+	runner := &fakeProcessRunner{}
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"view,bash"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not contain a comma") {
+		t.Fatalf("Run error = %v, want comma-delimited tool rejection", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("process ran with ambiguous tool allowlist: %v", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterToolAllowlistRejectsConflictingConfiguredArgs(t *testing.T) {
+	for _, conflictingArg := range []string{"--available-tools=view", "--output-format=json"} {
+		t.Run(conflictingArg, func(t *testing.T) {
+			runner := &fakeProcessRunner{}
+			workspace := t.TempDir()
+			adapter := &CopilotAdapter{
+				Command:   []string{"copilot"},
+				ExtraArgs: []string{conflictingArg},
+				Runner:    runner,
+			}
+
+			_, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+				Tools:          []string{"view"},
+			})
+			if err == nil || !strings.Contains(err.Error(), conflictingArg) {
+				t.Fatalf("Run error = %v, want configured argument conflict", err)
+			}
+			if len(runner.lastReq.Command) != 0 {
+				t.Fatalf("process ran with conflicting tool constraints: %v", runner.lastReq.Command)
+			}
+		})
+	}
+}
+
+func TestCopilotAdapterRecoversInvalidResponseCompletionInSameSession(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("COPILOT_HOME", "")
+	workspace := t.TempDir()
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		if len(calls) == 1 {
+			_, _ = req.StdoutCapture.Write([]byte(`{"message":"not a result envelope"}`))
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(req.Dir, DefaultResultPath)), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(req.Dir, DefaultResultPath), []byte(`{}`), 0o600); err != nil {
+				return err
+			}
+		} else {
+			_, _ = req.StdoutCapture.Write([]byte(`{"status":"success","outputs":{},"summary":"done","metrics":{}}`))
+		}
+		return nil
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"view"},
+		Timeout:        time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(out.Payload); got != `{"status":"success","outputs":{},"summary":"done","metrics":{}}` {
+		t.Fatalf("payload = %q", got)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus one recovery", len(calls))
+	}
+	firstSession, firstOK := nativeSessionID(calls[0])
+	secondSession, secondOK := nativeSessionID(calls[1])
+	if !firstOK || !secondOK || firstSession != secondSession {
+		t.Fatalf("recovery did not resume the initial session: first=%q second=%q", firstSession, secondSession)
+	}
+	promptIndex := slices.Index(calls[1].Command, defaultPromptFlag)
+	if promptIndex < 0 || promptIndex+1 >= len(calls[1].Command) {
+		t.Fatalf("recovery command missing prompt: %v", calls[1].Command)
+	}
+	if prompt := calls[1].Command[promptIndex+1]; !strings.Contains(prompt, "entire response") ||
+		!strings.Contains(prompt, "without returning the mandatory completion") {
+		t.Fatalf("recovery prompt = %q", prompt)
+	}
+}
+
+func TestCopilotAdapterResponseCompletionRejectsTruncation(t *testing.T) {
+	capture := newTranscriptBuffer(8)
+	_, _ = capture.Write([]byte(`{"status":"success"}`))
+
+	_, err := readCopilotResponseCompletion(ModeInvoke, capture)
+	if !errors.Is(err, ErrNoCompletion) {
+		t.Fatalf("read completion error = %v, want ErrNoCompletion", err)
 	}
 }
 
@@ -715,7 +1244,8 @@ func TestMergeProcessResultsPreservesRecoveryAndDroppedByteAccounting(t *testing
 }
 
 func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
-	adapter := &CopilotAdapter{}
+	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
 	for _, tc := range []struct {
 		name    string
 		model   string
@@ -723,15 +1253,20 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
+		{name: "available model ignores fallback", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true})},
 		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
 		{name: "fable model supported", model: "claude-fable-5"},
 		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
 		{name: "opus 4.5 model supported", model: "claude-opus-4.5"},
 		{name: "kimi model supported", model: "kimi-k2.7-code"},
-		{name: "mai CLI model supported", model: "mai-code-1-flash"},
-		{name: "non-CLI model alias rejected", model: "mai-code-1-flash-picker", wantErr: "unknown model"},
+		{name: "discovered MAI model supported", model: "mai-code-1-flash-picker"},
+		{name: "newly discovered model supported", model: "future-model"},
+		{name: "model absent from discovery rejected", model: "mai-code-1-flash", wantErr: "unknown model"},
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
+		{name: "fallback must be boolean", model: "not-a-model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: "yes"}), wantErr: "must be a boolean"},
+		{name: "fallback must not be null", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: nil}), wantErr: "must be a boolean"},
+		{name: "fallback requires model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}), wantErr: "requires an explicit model"},
 		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
 		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
 		{name: "long context unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
@@ -751,6 +1286,9 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 			}
 		})
 	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want one cached query", modelLister.calls)
+	}
 
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
@@ -759,7 +1297,12 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
 	}
-	adapter = &CopilotAdapter{Command: []string{"copilot"}, ExtraArgs: []string{}, Runner: runner}
+	adapter = &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		Runner:      runner,
+		ModelLister: &fakeCopilotModelLister{models: testCopilotModelList()},
+	}
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Model:          "claude-sonnet-5",
@@ -780,6 +1323,262 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 			t.Errorf("command = %q, want %q", command, want)
 		}
 	}
+}
+
+func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
+	options := testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+		"context":               "default",
+	})
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "gpt-5.4"}}}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := adapter.ResolveConfig("claude-sonnet-5", options)
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if resolution.Model != "" {
+		t.Fatalf("resolved model = %q, want harness default", resolution.Model)
+	}
+	if _, ok := resolution.HarnessOptions[fallbackToDefaultOption]; ok {
+		t.Fatalf("resolved options retain admission-only fallback flag: %v", resolution.HarnessOptions)
+	}
+	if got := string(resolution.HarnessOptions["context"].Raw); got != `"default"` {
+		t.Fatalf("resolved context = %s, want default", got)
+	}
+	if len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback ||
+		!strings.Contains(resolution.Warnings[0].Message, `"claude-sonnet-5"`) {
+		t.Fatalf("warnings = %+v, want one model fallback warning", resolution.Warnings)
+	}
+
+	if _, err := adapter.ResolveConfig("claude-sonnet-5", nil); err == nil ||
+		!strings.Contains(err.Error(), "valid models: auto, gpt-5.4") {
+		t.Fatalf("unknown model error = %v, want sorted valid-model list", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter = &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		Runner:      runner,
+		ModelLister: modelLister,
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Model:          "claude-sonnet-5",
+		HarnessOptions: options,
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want harness default without --model", runner.lastReq.Command)
+	}
+	contextIndex := slices.Index(runner.lastReq.Command, "--context")
+	if contextIndex < 0 || contextIndex+1 >= len(runner.lastReq.Command) || runner.lastReq.Command[contextIndex+1] != "default" {
+		t.Fatalf("command = %q, want retained --context default", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterTreatsPolicyDisabledModelsAsUnavailable(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{
+		{ID: "disabled-model", PolicyState: copilotModelPolicyDisabled},
+	}}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+
+	_, err := adapter.ResolveConfig("disabled-model", nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown model "disabled-model"`) {
+		t.Fatalf("strict disabled model error = %v, want unknown-model error", err)
+	}
+	if !strings.Contains(err.Error(), "valid models: auto") ||
+		strings.Contains(err.Error(), "valid models: auto, disabled-model") {
+		t.Fatalf("strict disabled model error = %v, want valid list excluding disabled model", err)
+	}
+
+	resolution, err := adapter.ResolveConfig("disabled-model", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("fallback disabled model: %v", err)
+	}
+	if resolution.Model != "" || len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback {
+		t.Fatalf("fallback disabled model resolution = %+v, want default with model-fallback warning", resolution)
+	}
+}
+
+func TestCopilotAdapterTreatsPolicyDisabledAutoAsUnavailable(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{models: []CopilotModelInfo{
+			{ID: "auto", PolicyState: copilotModelPolicyDisabled},
+			{ID: "gpt-5.4"},
+		}},
+	}
+
+	_, err := adapter.ResolveConfig("auto", nil)
+	if err == nil || !strings.Contains(err.Error(), `unknown model "auto"; valid models: gpt-5.4`) {
+		t.Fatalf("strict disabled auto error = %v, want valid list excluding auto", err)
+	}
+	resolution, err := adapter.ResolveConfig("auto", testHarnessOptions(t, map[string]interface{}{
+		fallbackToDefaultOption: true,
+	}))
+	if err != nil {
+		t.Fatalf("fallback disabled auto: %v", err)
+	}
+	if resolution.Model != "" || len(resolution.Warnings) != 1 ||
+		resolution.Warnings[0].Kind != ConfigWarningModelFallback {
+		t.Fatalf("fallback disabled auto resolution = %+v, want harness default with warning", resolution)
+	}
+}
+
+func TestCopilotSDKModelMappingPreservesPolicyState(t *testing.T) {
+	got := mapCopilotModelInfo(copilotsdk.ModelInfo{
+		ID:     "disabled-model",
+		Policy: &copilotsdk.ModelPolicy{State: copilotModelPolicyDisabled},
+	})
+	if got.ID != "disabled-model" || got.PolicyState != copilotModelPolicyDisabled {
+		t.Fatalf("mapped model = %+v, want disabled policy state", got)
+	}
+}
+
+func TestCopilotAdapterRunsAdmittedResolutionWithoutRediscovery(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+		{{ID: "claude-sonnet-5"}},
+	}}
+	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := admissionAdapter.ResolveConfig(
+		"claude-sonnet-5",
+		testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}),
+	)
+	if err != nil {
+		t.Fatalf("admission ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	runtimeAdapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	if _, err := runtimeAdapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("run admitted resolution: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	if slices.Contains(runner.lastReq.Command, "--model") {
+		t.Fatalf("command = %q, want admitted harness default", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterRunsAdmittedExplicitModelWithoutRediscovery(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+		{{ID: "claude-sonnet-5"}},
+	}}
+	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
+	resolution, err := admissionAdapter.ResolveConfig("gpt-5.4", nil)
+	if err != nil {
+		t.Fatalf("admission ResolveConfig: %v", err)
+	}
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	runtimeAdapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ExtraArgs:   []string{},
+		ModelLister: modelLister,
+		Runner:      runner,
+	}
+	if _, err := runtimeAdapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		Model:                 resolution.Model,
+		HarnessOptions:        resolution.HarnessOptions,
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("run admitted resolution: %v", err)
+	}
+	if modelLister.calls != 1 {
+		t.Fatalf("model discovery calls = %d, want admission query only", modelLister.calls)
+	}
+	modelIndex := slices.Index(runner.lastReq.Command, "--model")
+	if modelIndex < 0 || modelIndex+1 >= len(runner.lastReq.Command) ||
+		runner.lastReq.Command[modelIndex+1] != "gpt-5.4" {
+		t.Fatalf("command = %q, want admitted --model gpt-5.4", runner.lastReq.Command)
+	}
+}
+
+// TestCopilotAdapterFailsClosedOnlyWhenTheHarnessAnswers pins the distinction
+// this adapter draws between two outcomes that were originally conflated:
+//
+//   - the harness answered and did not offer the model -> fail closed, because
+//     the catalogue is authoritative and the model is genuinely wrong;
+//   - the harness could not be reached at all -> accept unverified, because
+//     "cannot determine availability" is not evidence of an invalid model.
+//
+// The original behaviour failed closed in both cases. That made config validity
+// depend on whether a Copilot CLI happened to be installed and authenticated on
+// the validating machine, so `goobers validate` and the checks CI gate rejected
+// configs on every runner without the CLI while accepting them on a developer
+// laptop.
+func TestCopilotAdapterFailsClosedOnlyWhenTheHarnessAnswers(t *testing.T) {
+	t.Run("harness answered without the model", func(t *testing.T) {
+		adapter := &CopilotAdapter{
+			Command:     []string{"copilot"},
+			ModelLister: &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "gpt-5.4"}}},
+		}
+		_, err := adapter.ResolveConfig("no-such-model", nil)
+		if err == nil || !strings.Contains(err.Error(), `unknown model "no-such-model"`) {
+			t.Fatalf("ResolveConfig error = %v, want unknown-model rejection", err)
+		}
+	})
+
+	t.Run("harness unreachable", func(t *testing.T) {
+		adapter := &CopilotAdapter{
+			Command:     []string{"copilot"},
+			ModelLister: &fakeCopilotModelLister{err: errors.New("runtime unavailable")},
+		}
+		resolution, err := adapter.ResolveConfig("gpt-5.4", nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig error = %v, want the model accepted unverified", err)
+		}
+		if len(resolution.Warnings) != 1 ||
+			resolution.Warnings[0].Kind != ConfigWarningModelUnverified ||
+			!strings.Contains(resolution.Warnings[0].Message, "runtime unavailable") {
+			t.Fatalf("Warnings = %+v, want one %s warning naming the discovery failure",
+				resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	})
 }
 
 func TestCopilotAdapterUndeclaredCapabilityNeverResolved(t *testing.T) {
@@ -1164,5 +1963,91 @@ func TestCopilotAdapterPreflightNoAuthProbeByDefault(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one probe (--version), got %d — no auth probe should run by default", calls)
+	}
+}
+
+// TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable covers config
+// admission on a machine where the Copilot CLI cannot be reached at all — no
+// binary on PATH, or no authenticated session. That is the state of every CI
+// runner, and it is not reproducible on a developer machine that has the CLI
+// installed, so it is asserted explicitly rather than left to integration
+// coverage.
+//
+// An unreachable harness means "cannot determine availability", which must not
+// be reported as an invalid model: otherwise a config's validity depends on
+// what happens to be installed on the validating machine.
+func TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable(t *testing.T) {
+	discoveryErr := errors.New(`start Copilot model discovery: failed to start CLI server: ` +
+		`exec: "copilot": executable file not found in $PATH`)
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: discoveryErr},
+	}
+
+	resolution, err := adapter.ResolveConfig("gpt-5.4", nil)
+	if err != nil {
+		t.Fatalf("ResolveConfig with unreachable harness = %v, want nil", err)
+	}
+	if resolution.Model != "gpt-5.4" {
+		t.Fatalf("Model = %q, want the requested model preserved", resolution.Model)
+	}
+	if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+		t.Fatalf("Warnings = %+v, want one %s warning", resolution.Warnings, ConfigWarningModelUnverified)
+	}
+
+	// ValidateConfig is the config-admission entry point and must agree.
+	if err := adapter.ValidateConfig("gpt-5.4", nil); err != nil {
+		t.Fatalf("ValidateConfig with unreachable harness = %v, want nil", err)
+	}
+}
+
+// TestCopilotResolveConfigUnverifiedStillRejectsMalformedOptions guards the
+// other half: skipping the model check must not skip option validation. Only
+// the capability-dependent checks are unknowable when discovery fails; option
+// shape is not.
+func TestCopilotResolveConfigUnverifiedStillRejectsMalformedOptions(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: errors.New("copilot unavailable")},
+	}
+
+	if _, err := adapter.ResolveConfig("gpt-5.4", map[string]apiextensionsv1.JSON{
+		"nonsense": {Raw: []byte(`"value"`)},
+	}); err == nil {
+		t.Fatal("unknown harness option accepted while discovery was unavailable; " +
+			"shape validation must still run")
+	}
+
+	if _, err := adapter.ResolveConfig("gpt-5.4", map[string]apiextensionsv1.JSON{
+		"context": {Raw: []byte(`"not_a_context"`)},
+	}); err == nil {
+		t.Fatal("invalid context value accepted while discovery was unavailable")
+	}
+}
+
+// TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions pins the
+// reason the unverified path uses normalizeResolvedCopilotConfig rather than
+// normalizeCopilotConfig. Capabilities are unknown here, so running the
+// capability checks against a zero-value struct would reject long_context and
+// every reasoningEffort value — turning "cannot verify" into "invalid" through
+// a different door.
+func TestCopilotResolveConfigUnverifiedAllowsCapabilityGatedOptions(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: &fakeCopilotModelLister{err: errors.New("copilot unavailable")},
+	}
+
+	for _, option := range []struct {
+		name  string
+		value map[string]apiextensionsv1.JSON
+	}{
+		{"long context", map[string]apiextensionsv1.JSON{"context": {Raw: []byte(`"long_context"`)}}},
+		{"reasoning effort", map[string]apiextensionsv1.JSON{"reasoningEffort": {Raw: []byte(`"high"`)}}},
+	} {
+		t.Run(option.name, func(t *testing.T) {
+			if _, err := adapter.ResolveConfig("gpt-5.4", option.value); err != nil {
+				t.Fatalf("ResolveConfig = %v, want nil (capability unknown, not unsupported)", err)
+			}
+		})
 	}
 }

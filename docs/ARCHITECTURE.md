@@ -4,10 +4,11 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-07-12 · Descriptive/prescriptive status annotated 2026-07-23:
-> §4–§7 (as amended) describe shipped, verified behavior of the local runner;
-> §3.2, §10, and the V1/V2 parts of §12 are prescriptive roadmap — mandated, not
-> yet built.
+> Last updated: 2026-07-28 · Descriptive/prescriptive status annotated 2026-07-23:
+> §4–§7 (as amended) describe shipped, verified behavior of the local runner,
+> except the capability namespace rule in §5, which is prescriptive pending its
+> atomic migration; §3.2, §10, and the V1/V2 parts of §12 are prescriptive
+> roadmap — mandated, not yet built.
 
 ## 1. One system, three deployment tiers
 
@@ -222,6 +223,14 @@ Contract rules:
   into both the action and its capability. The compiler rejects unknown
   actions, omitted command/persona actions, and actions whose canonical
   capability is not declared by both the task and its goober.
+- **Capability namespaces follow the operation surface:** a stage that dispatches
+  an operation through the configured repository provider declares
+  `provider:<resource>:<verb>`; a stage that uses provider-specific behavior
+  declares `<provider>:<resource>:<verb>`. The two spellings are not aliases,
+  and a stage may not declare both spellings of the same operation. Migrating a
+  built-in to provider-neutral behavior updates its contract and bundled
+  definitions atomically; workflow-version pinning preserves already-started
+  runs. See [ADR 0002](adr/0002-provider-neutral-capability-namespaces.md).
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 - **Run-control inheritance is explicit:** `runConditions` supplies instance

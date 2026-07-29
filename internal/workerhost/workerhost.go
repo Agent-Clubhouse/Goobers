@@ -82,7 +82,7 @@ func New(cfg Config) (*Host, error) {
 	h.dial = bootstrap.DialTemporal
 	h.newWorker = func(c client.Client, taskQueue string, opts worker.Options) managedWorker {
 		w := worker.New(c, taskQueue, opts)
-		bootstrap.RegisterEngine(w, cfg.Deps)
+		bootstrap.RegisterEngine(w, c, cfg.Deps)
 		return w
 	}
 	return h, nil

@@ -79,6 +79,9 @@ type JournalProjection struct {
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
+	// SchedulerOps are instance-journal events decided by the same history.
+	// Scheduled runs carry one trigger.fired event; ordinary runs carry none.
+	SchedulerOps []JournalOp `json:"schedulerOps,omitempty"`
 }
 
 // runJournal accumulates the journal projection as the workflow walks. All
@@ -152,6 +155,17 @@ func (r *runJournal) append(ctx workflow.Context, ev journal.Event) {
 func (r *runJournal) appendAt(at time.Time, ev journal.Event) {
 	e := ev
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opAppend, Event: &e, Time: at})
+}
+
+func (r *runJournal) triggerFiredAt(at time.Time, in RunInput) {
+	ev := journal.Event{
+		Type:     journal.EventTriggerFired,
+		Workflow: in.WorkflowName,
+		Gaggle:   in.Gaggle,
+		RunID:    in.RunID,
+		Reason:   "scheduled",
+	}
+	r.proj.SchedulerOps = append(r.proj.SchedulerOps, JournalOp{Kind: opAppend, Event: &ev, Time: at})
 }
 
 func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {

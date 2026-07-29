@@ -217,6 +217,11 @@ func init() {
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
 			withExamples("goobers up", "goobers up --quiet --notify=all"),
+		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
+			withSynopsis(synopsisByID["self-update"]).
+			withHelp("stage and request a supervised binary update", selfUpdateHelp).
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v1.2.3"),
+		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		groupCommand(
 			"service",
 			runService,
@@ -308,6 +313,14 @@ func init() {
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
 			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
+		command("schema", apicontract.ActionReadOnlyNavigation, runSchema).
+			withSynopsis(synopsisByID["schema"]).
+			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
+			withExamples("goobers schema --list", "goobers schema workflow", "goobers schema --human goober"),
+		command("explain", apicontract.ActionReadOnlyNavigation, runExplain).
+			withSynopsis(synopsisByID["explain"]).
+			withHelp("project field facts from an embedded JSON Schema", explainHelp).
+			withExamples("goobers explain goober.spec.capabilities", "goobers explain --human workflow.spec.gates[].evaluator"),
 		command("reset-rate-limit", apicontract.ActionMaintenance, runResetRateLimit).
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
@@ -482,7 +495,7 @@ func init() {
 			withExamples("goobers record-merge-refusal"),
 		command("merge-queue-poll", apicontract.ActionWorkflowExecution, runMergeQueuePoll).
 			withSynopsis(synopsisByID["merge-queue-poll"]).
-			withHelp("watch an enqueued PR until merged or evicted (a workflow stage)", mergeQueuePollHelp).
+			withHelp("watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)", mergeQueuePollHelp).
 			withExamples("goobers merge-queue-poll"),
 		command("reconcile-post-merge", apicontract.ActionWorkflowExecution, runReconcilePostMerge).
 			withSynopsis(synopsisByID["reconcile-post-merge"]).
@@ -506,7 +519,7 @@ func init() {
 			withExamples("goobers ios-simulator-test --project App.xcodeproj --scheme AppUITests"),
 		command("pr-select", apicontract.ActionWorkflowExecution, runPRSelect).
 			withSynopsis(synopsisByID["pr-select"]).
-			withHelp("select one eligible open PR for merge-review (a workflow stage)", prSelectHelp).
+			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
 		command("gather-sibling-context", apicontract.ActionWorkflowExecution, runGatherSiblingContext).
 			withSynopsis(synopsisByID["gather-sibling-context"]).
@@ -518,7 +531,7 @@ func init() {
 			withExamples("goobers gather-implement-context"),
 		command("apply-verdict", apicontract.ActionWorkflowExecution, runApplyVerdict).
 			withSynopsis(synopsisByID["apply-verdict"]).
-			withHelp("publish a merge-review verdict as a native review (a workflow stage)", applyVerdictHelp).
+			withHelp("publish a managed or advisory merge-review verdict (a workflow stage)", applyVerdictHelp).
 			withExamples("goobers apply-verdict"),
 		command("elect-lander", apicontract.ActionWorkflowExecution, runElectLander).
 			withSynopsis(synopsisByID["elect-lander"]).

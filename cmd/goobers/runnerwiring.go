@@ -17,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/externaltelemetry/adx"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/githubapp"
@@ -36,6 +38,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	connectorapi "github.com/goobers/goobers/telemetryconnector/v1alpha1"
 )
 
 // buildTelemetryClient constructs the OTel client that spans the runner walk
@@ -258,6 +261,8 @@ func buildEnvCapabilities() map[string]string {
 	return envCaps
 }
 
+var copilotModelLister harness.CopilotModelLister
+
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
@@ -266,6 +271,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:         []string{"copilot"},
 		AuthCheckArgs:   copilotAuthCheckArgs,
+		ModelLister:     copilotModelLister,
 		EnvCapabilities: envCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
@@ -607,6 +613,52 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
 	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
+}
+
+// buildExternalTelemetryExecutor validates every registered plugin
+// configuration before a run and constructs the registered query kind.
+func buildExternalTelemetryExecutor(
+	config externaltelemetry.Configuration,
+	recorder executor.ArtifactRecorder,
+	registrar externaltelemetry.SecretRegistrar,
+) (executor.KindExecutor, error) {
+	if recorder == nil {
+		return nil, errors.New("build external telemetry executor: artifact recorder is nil")
+	}
+	registry, err := buildExternalTelemetryRegistry(config, registrar)
+	if err != nil {
+		return nil, err
+	}
+	query, err := executor.NewTelemetryQueryExecutor(&externaltelemetry.Host{
+		Registry: registry,
+	}, recorder)
+	if err != nil {
+		return nil, err
+	}
+	return query, nil
+}
+
+func buildExternalTelemetryRegistry(
+	config externaltelemetry.Configuration,
+	registrar externaltelemetry.SecretRegistrar,
+) (*externaltelemetry.Registry, error) {
+	registry := externaltelemetry.NewRegistry()
+	factories := []externaltelemetry.Factory{
+		externaltelemetry.FakeFactory{},
+		adx.Factory{},
+	}
+	factories = append(factories, connectorapi.RegisteredFactories()...)
+	for _, factory := range factories {
+		if err := registry.Register(factory); err != nil {
+			return nil, err
+		}
+	}
+	for _, connector := range config.Connectors {
+		if err := registry.Configure(connector, nil, registrar); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
 // newEscalationPoster constructs the provider the escalation notifier posts
@@ -1610,6 +1662,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
+		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
+	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
 		return runner.Config{}, nil, fmt.Errorf("resolve instance root: %w", err)
@@ -1713,6 +1768,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if err := kinds.Register(executor.KindCIPoll, ciPoll); err != nil {
 				return nil, err
 			}
+			telemetryQuery, err := buildExternalTelemetryExecutor(cfg.ExternalTelemetry, rec, reg)
+			if err != nil {
+				return nil, err
+			}
+			if err := kinds.Register(executor.KindExternalTelemetry, telemetryQuery); err != nil {
+				return nil, err
+			}
 			return executor.NewTaskExecutor(kinds)
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
@@ -1739,9 +1801,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			adapter, err := adapterRegistry.Get(string(harnessName))
 			if err != nil {
 				return nil, fmt.Errorf("resolve goober %q harness: %w", gooberName, err)
-			}
-			if err := harness.ValidateConfig(adapter, spec.Model, spec.HarnessOptions); err != nil {
-				return nil, fmt.Errorf("validate goober %q harness config: %w", gooberName, err)
 			}
 			if newAgenticAdapter != nil {
 				adapter = newAgenticAdapter(gooberName, envCaps)
@@ -2006,6 +2065,11 @@ func (e *gooberHarnessConfigError) Unwrap() error {
 	return e.Err
 }
 
+type gooberHarnessWarning struct {
+	Goober  string
+	Warning harness.ConfigWarning
+}
+
 type workflowCompileError struct {
 	Gaggle   string
 	Workflow string
@@ -2020,37 +2084,24 @@ func (e *workflowCompileError) Unwrap() error {
 	return e.Err
 }
 
-// compiledMachines compiles every workflow in set, admission-checked against
-// goobers (capabilities, harness, gate-outcome coverage, and known automated
-// check names — #124), keyed by gaggle and workflow name. WorkflowVersion is
-// registry-assigned (per-name monotonic, WF-016); no registry is wired at the
-// instance level yet, so this pins version 1 for every workflow, matching
-// run.go's existing limitation until a follow-up introduces one.
-func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+// compiledMachinesWithWarnings compiles every workflow in set,
+// admission-checked against goobers (capabilities, harness, gate-outcome
+// coverage, and known automated check names — #124), keyed by gaggle and
+// workflow name. WorkflowVersion is registry-assigned (per-name monotonic,
+// WF-016); no registry is wired at the instance level yet, so this pins
+// version 1 for every workflow, matching run.go's existing limitation until a
+// follow-up introduces one.
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	adapterRegistry, err := buildHarnessRegistry(nil, nil, "", "")
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, "", "")
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	gooberNames := make([]string, 0, len(goobers))
-	for name := range goobers {
-		gooberNames = append(gooberNames, name)
-	}
-	sort.Strings(gooberNames)
-	for _, name := range gooberNames {
-		spec := goobers[name]
-		harnessName := spec.Harness
-		if harnessName == "" {
-			harnessName = apiv1.HarnessCopilot
-		}
-		if err := adapterRegistry.ValidateConfig(string(harnessName), spec.Model, spec.HarnessOptions); err != nil {
-			return nil, &gooberHarnessConfigError{Goober: name, Err: err}
-		}
-		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
-			return nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
-		}
+	resolvedGoobers, warnings, err := admitGooberHarnessConfigs(adapterRegistry, goobers)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
@@ -2065,11 +2116,42 @@ func compiledMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSp
 			workflow.WithPreviewFeatures(allowPreview),
 		)
 		if err != nil {
-			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
-	return machines, nil
+	return machines, resolvedGoobers, warnings, nil
+}
+
+func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+	gooberNames := make([]string, 0, len(goobers))
+	for name := range goobers {
+		gooberNames = append(gooberNames, name)
+	}
+	sort.Strings(gooberNames)
+	resolvedGoobers := make(map[string]apiv1.GooberSpec, len(goobers))
+	var warnings []gooberHarnessWarning
+	for _, name := range gooberNames {
+		spec := goobers[name]
+		harnessName := spec.Harness
+		if harnessName == "" {
+			harnessName = apiv1.HarnessCopilot
+		}
+		resolution, err := adapterRegistry.ResolveConfig(string(harnessName), spec.Model, spec.HarnessOptions)
+		if err != nil {
+			return nil, nil, &gooberHarnessConfigError{Goober: name, Err: err}
+		}
+		spec.Model = resolution.Model
+		spec.HarnessOptions = resolution.HarnessOptions
+		resolvedGoobers[name] = spec
+		for _, warning := range resolution.Warnings {
+			warnings = append(warnings, gooberHarnessWarning{Goober: name, Warning: warning})
+		}
+		if err := mcpconfig.ValidateForHarness(harnessName, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+			return nil, nil, fmt.Errorf("validate goober %q MCP config: %w", name, err)
+		}
+	}
+	return resolvedGoobers, warnings, nil
 }
 
 // repoRefsByWorkflow resolves each workflow's RepoRef via its Gaggle's

@@ -464,6 +464,118 @@ func TestRequiredValueHandoffNamesMissingOrMisthreadedMapping(t *testing.T) {
 	}
 }
 
+func TestScenarioScriptShapesConsecutiveAutomatedGateOutputs(t *testing.T) {
+	t.Parallel()
+	definition := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Tasks: []apiv1.Task{{
+				Name:            "apply-verdict",
+				ExpectedOutputs: []string{"advisoryMode", "decision"},
+				Next:            "advisory-verdict",
+			}},
+			Gates: []apiv1.Gate{
+				{
+					Name:      "advisory-verdict",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{
+						Check:  "output-equals",
+						Params: map[string]string{"key": "advisoryMode", "equals": "true"},
+					},
+					Branches: map[string]string{
+						gate.OutcomePass: workflow.TerminalComplete,
+						gate.OutcomeFail: "published-verdict",
+					},
+				},
+				{
+					Name:      "published-verdict",
+					Evaluator: apiv1.EvaluatorAutomated,
+					Automated: &apiv1.AutomatedGate{
+						Check:  "output-equals",
+						Params: map[string]string{"key": "decision", "equals": "pass"},
+					},
+					Branches: map[string]string{
+						gate.OutcomePass: "merge-pr",
+						gate.OutcomeFail: workflow.TerminalComplete,
+					},
+				},
+			},
+		},
+	}
+	definition.Name = "merge-review"
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{
+			"advisory-verdict":  {gate.OutcomeFail},
+			"published-verdict": {gate.OutcomeFail},
+		},
+	})
+
+	got, err := script.deterministic("apply-verdict", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", got.exitCode)
+	}
+	want := map[string]any{
+		"advisoryMode": false,
+		"decision":     "contract-not-pass",
+	}
+	if !reflect.DeepEqual(got.outputs, want) {
+		t.Fatalf("outputs = %v, want %v", got.outputs, want)
+	}
+}
+
+func TestScenarioScriptFailureEmitsOnlyErrorEnvelope(t *testing.T) {
+	t.Parallel()
+	definition := apiv1.Workflow{
+		Spec: apiv1.WorkflowSpec{
+			Tasks: []apiv1.Task{{
+				Name:            "local-ci",
+				ExpectedOutputs: []string{"report"},
+				Next:            "local-gate",
+			}},
+			Gates: []apiv1.Gate{{
+				Name:      "local-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			}},
+		},
+	}
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{"local-gate": {gate.OutcomeFail}},
+	})
+
+	got, err := script.deterministic("local-ci", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", got.exitCode)
+	}
+	want := map[string]any{
+		executor.OutputErrorCode:      "CONTRACT_FAILURE",
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+	}
+	if !reflect.DeepEqual(got.outputs, want) {
+		t.Fatalf("outputs = %v, want production-shaped failure envelope %v", got.outputs, want)
+	}
+}
+
+func TestFailedStageIncludesExplicitClassifierExtras(t *testing.T) {
+	t.Parallel()
+	got := failedStage("RATE_LIMITED", map[string]any{"rateLimitReset": "contract-reset"})
+	want := map[string]any{
+		executor.OutputErrorCode:      "RATE_LIMITED",
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+		"rateLimitReset":              "contract-reset",
+	}
+	if !reflect.DeepEqual(got.outputs, want) {
+		t.Fatalf("outputs = %v, want explicit classifier extras in failure envelope %v", got.outputs, want)
+	}
+}
+
 func TestTerminalScenariosDiscoverInsertedLinearStages(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -997,18 +1109,14 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (sta
 		return stageScript{}, err
 	}
 	if stage == s.scenario.escalationTask {
-		return failedStage(outputs, "ISSUE_OVER_SCOPE"), nil
+		return failedStage("ISSUE_OVER_SCOPE", nil), nil
 	}
-	if gateDefinition, desired, ok := s.desiredGateAfter(task); ok {
-		if gateDefinition.Automated == nil {
-			return stageScript{}, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
-		}
-		if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
-			return failedStage(outputs, "CONTRACT_FAILURE"), nil
-		}
-		if err := shapeGateOutputs(outputs, *gateDefinition.Automated, desired); err != nil {
-			return stageScript{}, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
-		}
+	failed, err := s.shapeAutomatedGateChain(task, outputs)
+	if err != nil {
+		return stageScript{}, err
+	}
+	if failed {
+		return failedStage("CONTRACT_FAILURE", nil), nil
 	}
 	return stageScript{outputs: outputs}, nil
 }
@@ -1074,23 +1182,49 @@ func contractOutputValue(key string) any {
 	}
 }
 
-func failedStage(outputs map[string]any, code string) stageScript {
-	outputs[executor.OutputErrorCode] = code
-	outputs[executor.OutputErrorMessage] = "scripted wired-workflow contract outcome"
-	outputs[executor.OutputErrorRetryable] = false
+func failedStage(code string, classifierExtras map[string]any) stageScript {
+	outputs := map[string]any{
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   "scripted wired-workflow contract outcome",
+		executor.OutputErrorRetryable: false,
+	}
+	for key, value := range classifierExtras {
+		outputs[key] = value
+	}
 	return stageScript{
 		outputs:  outputs,
 		exitCode: 1,
 	}
 }
 
-func (s *scenarioScript) desiredGateAfter(task apiv1.Task) (apiv1.Gate, string, bool) {
-	gateDefinition, ok := s.gates[task.Next]
-	if !ok || gateDefinition.Evaluator != apiv1.EvaluatorAutomated {
-		return apiv1.Gate{}, "", false
+func (s *scenarioScript) shapeAutomatedGateChain(task apiv1.Task, outputs map[string]any) (bool, error) {
+	next := task.Next
+	seen := map[string]bool{}
+	failed := false
+	for {
+		gateDefinition, ok := s.gates[next]
+		if !ok || gateDefinition.Evaluator != apiv1.EvaluatorAutomated {
+			return failed, nil
+		}
+		if seen[next] {
+			return false, fmt.Errorf("task %q reaches automated gate cycle at %q", task.Name, next)
+		}
+		seen[next] = true
+		desired, ok := s.nextGateOutcome(gateDefinition.Name)
+		if !ok {
+			return failed, nil
+		}
+		if gateDefinition.Automated == nil {
+			return false, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
+		}
+		if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
+			failed = true
+		}
+		if err := shapeGateOutputs(outputs, *gateDefinition.Automated, desired); err != nil {
+			return false, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
+		}
+		next = gateDefinition.Branches[desired]
 	}
-	desired, ok := s.nextGateOutcome(gateDefinition.Name)
-	return gateDefinition, desired, ok
 }
 
 func shapeGateOutputs(outputs map[string]any, automated apiv1.AutomatedGate, desired string) error {
@@ -1217,15 +1351,16 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 			result.Error = &apiv1.ErrorInfo{
 				Code: "ISSUE_OVER_SCOPE", Message: "scripted wired-workflow escalation", Retryable: false,
 			}
-		} else if gateDefinition, desired, ok := s.desiredGateAfter(task); ok {
-			if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
+		} else {
+			failed, err := s.shapeAutomatedGateChain(task, result.Outputs)
+			if err != nil {
+				return err
+			}
+			if failed {
 				result.Status = apiv1.ResultFailure
 				result.Error = &apiv1.ErrorInfo{
 					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: false,
 				}
-			}
-			if err := shapeGateOutputs(result.Outputs, *gateDefinition.Automated, desired); err != nil {
-				return fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
 			}
 		}
 		if err := commitAgentChange(request.Workspace, stage, call); err != nil {

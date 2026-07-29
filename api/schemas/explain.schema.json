@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/explain.schema.json",
+  "title": "ExplainOutput",
+  "description": "Release-pinned field guidance emitted by goobers explain.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "version", "commit", "dslVersion", "selector", "description", "type", "stability", "sinceVersion", "example"],
+  "properties": {
+    "schemaVersion": { "const": "goobers.dev/explain/v1", "description": "Version of the explain-command output contract." },
+    "version": { "type": "string", "minLength": 1, "description": "Goobers build version that embedded the selected schema." },
+    "commit": { "type": "string", "minLength": 1, "description": "Source commit of the Goobers build that embedded the selected schema." },
+    "dslVersion": { "type": "string", "minLength": 1, "description": "Current workflow DSL version of the producing build." },
+    "selector": { "type": "string", "minLength": 1, "description": "Requested dotted or slash-separated schema selector." },
+    "description": { "type": "string", "minLength": 1, "description": "Purpose of the selected field, sourced from its embedded schema or field-purpose registry." },
+    "type": {
+      "description": "JSON Schema type declared or implied by the selected node, including composition unions.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      ]
+    },
+    "allowedValues": {
+      "type": "array",
+      "description": "Exact enum values, or the single const value, declared by the selected schema node or its array item schema.",
+      "items": {}
+    },
+    "default": { "description": "Exact default annotation from the selected schema node." },
+    "required": { "type": "boolean", "description": "Whether the selected property appears in its parent schema's required list." },
+    "stability": {
+      "type": "string",
+      "enum": ["preview", "ga", "deprecated", "removed"],
+      "description": "Lifecycle stability from the built-in DSL feature registry or embedded schema registry."
+    },
+    "sinceVersion": { "type": "string", "minLength": 1, "description": "Release in which the field's current lifecycle began." },
+    "example": { "description": "Minimal example projected from the selected schema node." }
+  }
+}

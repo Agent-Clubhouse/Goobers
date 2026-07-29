@@ -22,15 +22,29 @@ import (
 // directory needed.
 type fakeRecorder struct {
 	recorded map[string][]byte
+	maxBytes map[string]int
 }
 
-func newFakeRecorder() *fakeRecorder { return &fakeRecorder{recorded: map[string][]byte{}} }
+func newFakeRecorder() *fakeRecorder {
+	return &fakeRecorder{
+		recorded: map[string][]byte{},
+		maxBytes: map[string]int{},
+	}
+}
 
 func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	f.recorded[name] = cp
 	return journal.Ref{Path: name, Digest: journal.Digest(cp), Size: int64(len(cp))}, nil
+}
+
+func (f *fakeRecorder) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	if len(data) > maxBytes {
+		return journal.Ref{}, errors.New("artifact exceeds byte limit")
+	}
+	f.maxBytes[name] = maxBytes
+	return f.RecordArtifact(name, data)
 }
 
 // noopRegistrar satisfies credentials.SecretRegistrar for tests that don't

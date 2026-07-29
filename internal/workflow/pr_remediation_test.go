@@ -110,6 +110,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := checkpointGate.Branches["pass"]; got != "gather-review-threads" {
 		t.Errorf("checkpoint-gate pass -> %q, want gather-review-threads", got)
 	}
+	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "continueRemediation" {
+		t.Errorf("checkpoint-gate input = %+v, want continueRemediation", checkpointGate.Automated)
+	}
 	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
 		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
 	}

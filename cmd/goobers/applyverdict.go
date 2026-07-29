@@ -321,9 +321,10 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 	"Read the holistic review gate's Verdict from this run's own journal,\n" +
 	"cross-check its optional SHA echo against the deterministic review\n" +
 	"pin, re-check that pin against the PR's current head/base, and — if\n" +
-	"still valid — post the verdict as a native GitHub review and retain\n" +
-	"the PR-comment handoff. Non-pass verdicts also apply a remediation\n" +
-	"label. A\n" +
+	"still valid — publish the verdict. Managed PRs receive a native GitHub\n" +
+	"review plus the PR-comment handoff; non-pass verdicts also receive a\n" +
+	"remediation label. advisoryMode=true publishes only the non-blocking\n" +
+	"comment, without closing, labeling, electing, or merging the PR. A\n" +
 	"stale SHA pin voids the verdict: no comment, no label, exit 0 (this\n" +
 	"cycle's work is simply moot, not an error — merge-review re-reviews\n" +
 	"next tick). Requires selectedNumber, selectedHeadSha, and\n" +
@@ -336,10 +337,10 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // new plumbing), cross-checks its SHA echo against gather-sibling-context's
 // authoritative pin, and re-checks that pin against the PR's CURRENT head/base
 // before acting (design doc §6 D6: a verdict computed against a state that no
-// longer exists is void, not actionable). It then publishes the verdict as a
-// SHA-pinned native GitHub review. Every verdict also retains the existing prose
-// comment handoff consumed by merge, cache, and remediation paths; non-pass
-// verdicts additionally retain their decision labels.
+// longer exists is void, not actionable). Managed PRs receive a SHA-pinned
+// native GitHub review plus the existing prose comment handoff consumed by
+// merge, cache, and remediation paths; non-pass verdicts additionally retain
+// their decision labels. Advisory PRs receive only the non-blocking comment.
 //
 // Before posting, a verdict missing Digest/SourceRunID (issue #523: every
 // genuinely fresh, reviewer-produced verdict — a cache-hit verdict already
@@ -388,6 +389,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
 		return 1
 	}
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
 
 	runID, workflowName, err := providerRunContext()
 	if err != nil {
@@ -426,10 +432,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	provider := newCachedGitHubProvider(root, token)
 
-	base := providerInput("base", "main")
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	if advisoryMode {
+		return applyAdvisoryVerdict(
+			ctx, provider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
+			*verdict, runID, resultFile, stdout, stderr,
+		)
+	}
+
+	base := providerInput("base", "main")
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,
 	})
@@ -457,6 +470,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if current.State != "open" || current.Merged {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
+	}
+	if hasAnyLabel(current.Labels, []string{noMergeReviewLabel}) {
+		pln(stdout, "PR opted out of merge-review since selection — verdict moot, nothing to apply")
+		return writeApplyVerdictResultWithReason(
+			resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "",
+			"PR carries "+noMergeReviewLabel, stderr,
+		)
 	}
 
 	// D6: gather-sibling-context's deterministic pin is authoritative. The
@@ -712,6 +732,61 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
 	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
+}
+
+func applyAdvisoryVerdict(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	selectedNumberStr, selectedHeadSHA, selectedBaseSHA string,
+	verdict apiv1.Verdict,
+	runID, resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — verdict moot, nothing to apply")
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", stderr)
+	}
+	if hasAnyLabel(current.Labels, []string{noMergeReviewLabel}) {
+		pln(stdout, "PR opted out of merge-review since selection — verdict moot, nothing to apply")
+		return writeApplyVerdictResultWithReason(
+			resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "",
+			"PR carries "+noMergeReviewLabel, stderr,
+		)
+	}
+	if reason := verdictPinVoidReason(verdict, selectedHeadSHA, selectedBaseSHA, current.HeadSHA, current.BaseSHA); reason != "" {
+		pf(stdout, "verdict void for PR #%d: %s — skipping, will re-review next cycle\n", selectedNumber, reason)
+		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
+	}
+	if _, err := nativeReviewDecision(verdict.Decision); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	verdict.HeadSHA = selectedHeadSHA
+	verdict.BaseSHA = selectedBaseSHA
+	if verdict.Digest == "" {
+		verdict.Digest = providerInput("reviewDigest", "")
+	}
+	if verdict.SourceRunID == "" {
+		verdict.SourceRunID = runID
+	}
+	comment := renderVerdictComment(verdict)
+	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
+	}
+	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post advisory verdict comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "published advisory %s verdict for PR #%d at %s; no remediation or merge action taken\n",
+		verdict.Decision, selectedNumber, current.HeadSHA)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), verdictAuthor, stderr)
 }
 
 // reconcileMergeReviewStatusComment keeps the oldest marked comment authored
@@ -1196,12 +1271,14 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 }
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
+	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
 	out := map[string]string{
 		"selectedNumber":            strconv.Itoa(selectedNumber),
 		"selectedHeadSha":           headSHA,
 		"selectedBaseSha":           baseSHA,
 		"decision":                  decision,
 		"verdictAuthor":             verdictAuthor,
+		"advisoryMode":              strconv.FormatBool(advisoryMode),
 		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
 	}
 	if reason != "" {

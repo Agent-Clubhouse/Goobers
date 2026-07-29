@@ -114,6 +114,8 @@ Provide:
 The `instructions` path is relative to the goober definition directory. Keep
 the role, scope, completion contract, and safety limits in that markdown file;
 keep harness, tools, grants, scale, and workflow association in YAML.
+Set `harnessOptions.fallback-to-default: true` only when using the harness
+default is preferable to rejecting an unavailable requested model.
 
 ### Workflow
 

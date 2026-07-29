@@ -1,12 +1,24 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
+
+var _ executor.BoundedArtifactRecorder = (*branchJournal)(nil)
 
 func TestNewParallelExecAssignsIdsByDeclarationOrder(t *testing.T) {
 	p := newParallelExec(apiv1.Parallel{
@@ -292,4 +304,678 @@ func TestParallelCursorsProjectLivePositions(t *testing.T) {
 	if cursors[0].MachineState != "" || cursors[0].Status != journal.BranchSucceeded {
 		t.Errorf("settled cursor = %+v, want no resume position and a terminal status", cursors[0])
 	}
+}
+
+type parallelBlockingDeterministic struct {
+	started chan string
+	release <-chan struct{}
+	active  atomic.Int32
+	max     atomic.Int32
+	calls   atomic.Int32
+}
+
+func (d *parallelBlockingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.calls.Add(1)
+	if strings.HasSuffix(env.TaskID, ":collate") {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	active := d.active.Add(1)
+	for current := d.max.Load(); active > current && !d.max.CompareAndSwap(current, active); current = d.max.Load() {
+	}
+	d.started <- env.TaskID
+	<-d.release
+	d.active.Add(-1)
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]any{"stage": env.TaskID},
+	}, nil
+}
+
+type parallelRunResult struct {
+	result Result
+	err    error
+}
+
+func parallelRunnerMachine(t *testing.T, maxConcurrent int32, firstWorkspace apiv1.WorkspaceMode) *workflow.Machine {
+	t.Helper()
+	branchTask := func(name string, workspace apiv1.WorkspaceMode) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: workspace},
+			Next: workflow.TargetJoin,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "parallel-runner-fixture", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "demo",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				branchTask("lens-a", firstWorkspace),
+				branchTask("lens-b", apiv1.WorkspaceScratch),
+				branchTask("lens-c", apiv1.WorkspaceScratch),
+				{
+					Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: workflow.TerminalComplete,
+				},
+			},
+			Parallels: []apiv1.Parallel{{
+				Name:                  "fan",
+				FailurePolicy:         apiv1.BranchContinueOnError,
+				MaxConcurrentBranches: maxConcurrent,
+				Join:                  "collate",
+				Branches: []apiv1.Branch{
+					{Name: "a", Start: "lens-a"},
+					{Name: "b", Start: "lens-b"},
+					{Name: "c", Start: "lens-c"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile parallel fixture: %v", err)
+	}
+	return machine
+}
+
+func newParallelTestRunner(t *testing.T, newDet NewDeterministicFunc) (*Runner, string) {
+	t.Helper()
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewDeterministic: newDet,
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		ScratchDir:       t.TempDir(),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			return fixtureRepo, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new parallel runner: %v", err)
+	}
+	return r, runsDir
+}
+
+func TestRunnerExecutesReadOnlyParallelWithinDeclaredBound(t *testing.T) {
+	release := make(chan struct{})
+	det := &parallelBlockingDeterministic{
+		started: make(chan string, 4),
+		release: release,
+	}
+	r, runsDir := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+	)
+	const runID = "parallel-bounded"
+	done := make(chan error, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID: runID, Gaggle: "demo",
+			Machine: parallelRunnerMachine(t, 2, apiv1.WorkspaceRepoReadOnly),
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			},
+		})
+		if err == nil && result.Phase != journal.PhaseCompleted {
+			err = fmt.Errorf("phase = %q, want completed", result.Phase)
+		}
+		done <- err
+	}()
+
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-det.started:
+		case err := <-done:
+			t.Fatalf("parallel run ended before two branches overlapped: %v", err)
+		case <-time.After(runnerTestWaitTimeout):
+			t.Fatalf("two branches did not overlap (maximum observed concurrency %d)", det.max.Load())
+		}
+	}
+	select {
+	case stage := <-det.started:
+		t.Fatalf("third branch %q started before a concurrency slot was released", stage)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("parallel run: %v", err)
+		}
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("parallel run did not finish")
+	}
+	if got := det.max.Load(); got != 2 {
+		t.Fatalf("maximum concurrent branches = %d, want 2", got)
+	}
+
+	rd, err := journal.OpenRead(runsDir + "/" + runID)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	wantBranch := map[string]int{"lens-a": 1, "lens-b": 2, "lens-c": 3, "collate": 0}
+	for _, event := range events {
+		if want, ok := wantBranch[event.Stage]; ok && event.Branch != want {
+			t.Errorf("%s for stage %q has branch %d, want %d", event.Type, event.Stage, event.Branch, want)
+		}
+		if (event.Type == journal.EventParallelStarted || event.Type == journal.EventParallelFinished ||
+			event.Type == journal.EventRunFinished) && event.Branch != 0 {
+			t.Errorf("%s has branch %d, want root attribution", event.Type, event.Branch)
+		}
+	}
+}
+
+func TestRunnerRejectsWritableConcurrentParallelBeforeDispatch(t *testing.T) {
+	var calls atomic.Int32
+	r, _ := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			calls.Add(1)
+			return &countingDeterministic{}, nil
+		},
+	)
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "parallel-writable", Gaggle: "demo",
+		Machine: parallelRunnerMachine(t, 2, ""),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err == nil || !strings.Contains(err.Error(), `task "lens-a" resolves to workspace "repo"`) {
+		t.Fatalf("error = %v, want writable-workspace rejection", err)
+	}
+	if result.Phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", result.Phase)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("executor constructions = %d, want no branch dispatch", got)
+	}
+}
+
+func TestRunnerConcurrentBranchGateKeepsAttributionAndNotifiesEscalation(t *testing.T) {
+	base := branchGateFanInMachine(t)
+	def := base.Def
+	def.Spec.Parallels[0].MaxConcurrentBranches = 2
+	def.Spec.Gates[0].MaxRepasses = 1
+	def.Spec.Gates[0].Branches[gate.OutcomeFail] = "review-security"
+	disposition := def.Spec.Tasks[1]
+	disposition.Name = "park-security"
+	def.Spec.Tasks = append(def.Spec.Tasks, disposition)
+	def.Spec.Gates[0].Branches[workflow.BranchEscalate] = disposition.Name
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile concurrent branch-gate fixture: %v", err)
+	}
+	const runID = "parallel-branch-gate"
+	byTask := map[string]stubTaskResult{
+		runID + ":review-security": {
+			status:    apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{Code: "review_failed", Message: "review requires gate approval"},
+		},
+		runID + ":review-performance": {status: apiv1.ResultSuccess},
+		runID + ":park-security":      {status: apiv1.ResultSuccess},
+		runID + ":collate":            {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newParallelTestRunner(t,
+		func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+	)
+	commenter := &recordingCommenter{}
+	r.cfg.Automated = fixedOutcomeAutomated(gate.OutcomeFail)
+	r.cfg.Escalation = &gate.EscalationNotifier{Poster: commenter}
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Gaggle: "demo", Machine: machine,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+		},
+		Item: &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	rd, err := journal.OpenRead(runsDir + "/" + runID)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	for _, event := range events {
+		if event.Gate == "accept-security" && event.Branch != 1 {
+			t.Errorf("%s for gate %q has branch %d, want 1", event.Type, event.Gate, event.Branch)
+		}
+	}
+	if len(commenter.requests) != 1 || !strings.Contains(commenter.requests[0].Comment, "repass budget exhausted") {
+		t.Fatalf("escalation notifications = %+v, want one canonical gate notification", commenter.requests)
+	}
+}
+
+func parallelFailFastMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	base := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
+	def := base.Def
+	def.Spec.Parallels[0].FailurePolicy = apiv1.BranchFailFast
+	def.Spec.Parallels[0].OnFailure = workflow.TargetAbort
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile fail-fast fixture: %v", err)
+	}
+	return machine
+}
+
+type failFastDeterministic struct {
+	bStarted   chan struct{}
+	aFailed    chan struct{}
+	releaseB   chan struct{}
+	lensCCalls atomic.Int32
+}
+
+func (d *failFastDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	switch {
+	case strings.HasSuffix(env.TaskID, ":lens-a"):
+		<-d.bStarted
+		close(d.aFailed)
+		return apiv1.ResultEnvelope{
+			Status: apiv1.ResultFailure,
+			Error:  &apiv1.ErrorInfo{Code: "lens_failed", Message: "lens failed"},
+		}, nil
+	case strings.HasSuffix(env.TaskID, ":lens-b"):
+		close(d.bStarted)
+		<-d.releaseB
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"findings": 1}}, nil
+	case strings.HasSuffix(env.TaskID, ":lens-c"):
+		d.lensCCalls.Add(1)
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	default:
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+}
+
+func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
+	det := &failFastDeterministic{
+		bStarted: make(chan struct{}),
+		aFailed:  make(chan struct{}),
+		releaseB: make(chan struct{}),
+	}
+	r, runsDir := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+	)
+	const runID = "parallel-fail-fast"
+	done := make(chan parallelRunResult, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID: runID, Gaggle: "demo", Machine: parallelFailFastMachine(t),
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		})
+		done <- parallelRunResult{result: result, err: err}
+	}()
+	select {
+	case <-det.aFailed:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("failing branch did not finish")
+	}
+	deadline := time.Now().Add(runnerTestWaitTimeout)
+	for {
+		rd, err := journal.OpenRead(runsDir + "/" + runID)
+		if err == nil {
+			events, readErr := rd.Events()
+			if readErr != nil {
+				t.Fatalf("read live journal: %v", readErr)
+			}
+			cancelled := false
+			for _, event := range events {
+				cancelled = cancelled || (event.Type == journal.EventBranchFinished &&
+					event.Branch == 3 && event.BranchStatus == journal.BranchCancelled)
+			}
+			if cancelled {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued branch was not cancelled after first branch failed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(det.releaseB)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Start: %v", got.err)
+		}
+		if got.result.Phase != journal.PhaseAborted {
+			t.Fatalf("phase = %q, want aborted through reserved onFailure", got.result.Phase)
+		}
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("fail-fast run did not finish")
+	}
+	if calls := det.lensCCalls.Load(); calls != 0 {
+		t.Fatalf("queued lens-c calls = %d, want 0", calls)
+	}
+
+	completeness := parallelCompleteness(t, runsDir, runID)
+	want := []journal.BranchStatus{
+		journal.BranchFailed,
+		journal.BranchCancelled,
+		journal.BranchCancelled,
+	}
+	for i, status := range want {
+		if completeness[i].Status != status {
+			t.Errorf("branch %d status = %q, want %q", i+1, completeness[i].Status, status)
+		}
+	}
+}
+
+func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
+	const runID = "parallel-blocked"
+	byTask := map[string]stubTaskResult{
+		runID + ":lens-a": {
+			status:    apiv1.ResultBlocked,
+			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issue #42 must merge first"},
+			outputs:   map[string]interface{}{OutputBlockedBy: "42"},
+		},
+		runID + ":lens-b": {status: apiv1.ResultSuccess},
+		runID + ":lens-c": {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newParallelTestRunner(t,
+		func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+	)
+	var blocked *BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, outcome BlockedOutcome) error {
+		blocked = &outcome
+		return nil
+	}
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Gaggle: "demo",
+		Machine: parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		Item:    &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", result.Phase)
+	}
+	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
+		t.Fatalf("BlockedOutcome = %+v", blocked)
+	}
+
+	rd, err := journal.OpenRead(runsDir + "/" + runID)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	for _, event := range events {
+		if (event.Type == journal.EventParallelFinished || event.Type == journal.EventRunFinished ||
+			(event.Type == journal.EventError && event.Error != nil && event.Error.Code == "blocked_by_agent")) &&
+			event.Branch != 0 {
+			t.Errorf("%s has branch %d, want root attribution", event.Type, event.Branch)
+		}
+	}
+}
+
+func TestRunnerResumeConcurrentBlockedTerminalBeforeParallelFinished(t *testing.T) {
+	const runID = "parallel-blocked-resume"
+	machine := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
+	var constructions atomic.Int32
+	r, runsDir := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			constructions.Add(1)
+			return &countingDeterministic{}, nil
+		},
+	)
+	var blocked *BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, outcome BlockedOutcome) error {
+		blocked = &outcome
+		return nil
+	}
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        machine.Def.Name,
+		WorkflowVersion: machine.Def.Version,
+		WorkflowDigest:  machine.Digest(),
+		Gaggle:          "demo",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("fan")
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventParallelStarted, Parallel: "fan",
+			Completeness: []journal.BranchOutcome{
+				{Branch: 1, Name: "a"}, {Branch: 2, Name: "b"}, {Branch: 3, Name: "c"},
+			},
+		},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "a", Stage: "lens-a"},
+		{Type: journal.EventStageStarted, Branch: 1, Stage: "lens-a", Attempt: 1},
+		{
+			Type: journal.EventStageFinished, Branch: 1, Stage: "lens-a", Attempt: 1,
+			Status:  string(apiv1.ResultBlocked),
+			Outputs: map[string]any{OutputBlockedBy: "42"},
+			Error:   &journal.ErrorDetail{Code: "DEPENDENCY_NOT_MET", Message: "issue #42 must merge first"},
+		},
+		{
+			Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "a",
+			BranchStatus: journal.BranchFailed,
+		},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Type, err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", result.Phase)
+	}
+	if got := constructions.Load(); got != 0 {
+		t.Fatalf("executor constructions = %d, want no branch replay", got)
+	}
+	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
+		t.Fatalf("BlockedOutcome = %+v", blocked)
+	}
+}
+
+func TestRunnerConcurrentBranchesShareRunStepBudget(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	det := &parallelBlockingDeterministic{started: make(chan string, 3), release: release}
+	r, _ := newParallelTestRunner(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil })
+	r.maxSteps = 3
+	_, err := r.Start(context.Background(), StartInput{
+		RunID: "parallel-shared-step-budget", Gaggle: "demo",
+		Machine: parallelRunnerMachine(t, 3, apiv1.WorkspaceScratch),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if calls := det.calls.Load(); err == nil || !strings.Contains(err.Error(), "exceeded max steps (3)") || calls != 2 {
+		t.Fatalf("Start error = %v, task calls = %d; want shared max-steps failure after 2 branch tasks", err, calls)
+	}
+}
+
+type parallelResumeDeterministic struct {
+	mu      sync.Mutex
+	calls   map[string]int
+	started chan string
+	release <-chan struct{}
+}
+
+func (d *parallelResumeDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.mu.Lock()
+	d.calls[env.TaskID]++
+	d.mu.Unlock()
+	if strings.HasSuffix(env.TaskID, ":collate") {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	d.started <- env.TaskID
+	<-d.release
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]any{"stage": env.TaskID},
+	}, nil
+}
+
+func (d *parallelResumeDeterministic) callCount(taskID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls[taskID]
+}
+
+func TestRunnerResumeConcurrentParallelDoesNotRepeatFinishedStages(t *testing.T) {
+	release := make(chan struct{})
+	det := &parallelResumeDeterministic{
+		calls:   map[string]int{},
+		started: make(chan string, 8),
+		release: release,
+	}
+	r, _ := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+	)
+	const runID = "parallel-resume-finished"
+	machine := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan parallelRunResult, 1)
+	go func() {
+		result, err := r.Start(ctx, StartInput{
+			RunID: runID, Gaggle: "demo", Machine: machine,
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		})
+		done <- parallelRunResult{result: result, err: err}
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-det.started:
+		case <-time.After(runnerTestWaitTimeout):
+			t.Fatal("parallel branches did not start before drain")
+		}
+	}
+	cancel()
+	close(release)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("drain parallel: %v", got.err)
+		}
+		if got.result.Phase != journal.PhaseRunning {
+			t.Fatalf("drained phase = %q, want running", got.result.Phase)
+		}
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("parallel drain did not return")
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("resumed phase = %q, want completed", result.Phase)
+	}
+	for _, stage := range []string{"lens-a", "lens-b", "lens-c", "collate"} {
+		if got := det.callCount(runID + ":" + stage); got != 1 {
+			t.Errorf("%s calls = %d, want 1", stage, got)
+		}
+	}
+}
+
+func TestRunnerArtifactCompletenessMatchesConcurrencySetting(t *testing.T) {
+	byTask := map[string]stubTaskResult{}
+	for _, runID := range []string{"parallel-artifacts-one", "parallel-artifacts-two"} {
+		for _, stage := range []string{"lens-a", "lens-b", "lens-c"} {
+			byTask[runID+":"+stage] = stubTaskResult{
+				status: apiv1.ResultSuccess, artifactName: stage + ".txt", artifactData: []byte(stage),
+			}
+		}
+		byTask[runID+":collate"] = stubTaskResult{status: apiv1.ResultSuccess}
+	}
+	r, runsDir := newParallelTestRunner(t,
+		func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+	)
+	for _, tc := range []struct {
+		runID string
+		max   int32
+	}{
+		{runID: "parallel-artifacts-one", max: 1},
+		{runID: "parallel-artifacts-two", max: 2},
+	} {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID: tc.runID, Gaggle: "demo",
+			Machine: parallelRunnerMachine(t, tc.max, apiv1.WorkspaceScratch),
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.runID, err)
+		}
+		if result.Phase != journal.PhaseCompleted {
+			t.Fatalf("%s phase = %q, want completed", tc.runID, result.Phase)
+		}
+	}
+	sequential := parallelCompleteness(t, runsDir, "parallel-artifacts-one")
+	concurrent := parallelCompleteness(t, runsDir, "parallel-artifacts-two")
+	for i := range sequential {
+		if sequential[i].Status != journal.BranchSucceeded || sequential[i].Artifacts != 1 {
+			t.Errorf("sequential branch %d = %+v, want succeeded with one artifact", i+1, sequential[i])
+		}
+		if concurrent[i].Status != sequential[i].Status || concurrent[i].Artifacts != sequential[i].Artifacts {
+			t.Errorf("branch %d differs by concurrency: sequential=%+v concurrent=%+v", i+1, sequential[i], concurrent[i])
+		}
+	}
+}
+
+func parallelCompleteness(t *testing.T, runsDir, runID string) []journal.BranchOutcome {
+	t.Helper()
+	rd, err := journal.OpenRead(runsDir + "/" + runID)
+	if err != nil {
+		t.Fatalf("open %s journal: %v", runID, err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("read %s journal: %v", runID, err)
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventParallelFinished {
+			return events[i].Completeness
+		}
+	}
+	t.Fatalf("%s has no parallel.finished event", runID)
+	return nil
 }
