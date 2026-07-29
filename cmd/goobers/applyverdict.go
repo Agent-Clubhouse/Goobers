@@ -835,7 +835,7 @@ func reconcileMergeReviewStatusComment(ctx context.Context, provider *providers.
 }
 
 // markMergeReviewVerdictStale rewrites the standing merge-review status comment
-// to say its verdict no longer describes the PR's current head, naming why.
+// to say its verdict no longer stands, naming why.
 //
 // It edits the existing comment rather than posting a new one, so a PR whose
 // head moves repeatedly does not accumulate a comment per voided cycle. If no
@@ -856,7 +856,7 @@ func markMergeReviewVerdictStale(ctx context.Context, provider *providers.GitHub
 		return nil
 	}
 	body := fmt.Sprintf(
-		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer describes this pull request: %s.\n\n"+
+		"%s\n**merge-review verdict: stale**\n\nThe last published verdict no longer stands: %s.\n\n"+
 			"No current review stands. merge-review will re-review this PR on its next cycle; "+
 			"findings from the superseded review may already be resolved and should not be acted on.",
 		mergeReviewStatusMarker, reason)

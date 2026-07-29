@@ -862,7 +862,7 @@ func TestCompileSetMilestoneRequiresRoadmapPolicy(t *testing.T) {
 	}
 }
 
-func TestCompileGatherSiblingContextRequiresScopeDriftAction(t *testing.T) {
+func TestCompileGatherSiblingContextRequiresPolicyActions(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Start:  "gather",
@@ -876,22 +876,26 @@ func TestCompileGatherSiblingContextRequiresScopeDriftAction(t *testing.T) {
 	}
 
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	const wantAction = `command "goobers gather-sibling-context" prescribes policy action "flag-scope-drift" but policyActions does not declare it`
-	if err == nil || !strings.Contains(err.Error(), wantAction) {
-		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	for _, action := range []string{"flag-scope-drift", "route-verdict"} {
+		want := fmt.Sprintf(`command "goobers gather-sibling-context" prescribes policy action %q but policyActions does not declare it`, action)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
 	}
 
-	spec.Tasks[0].PolicyActions = []string{"flag-scope-drift"}
+	spec.Tasks[0].PolicyActions = []string{"flag-scope-drift", "route-verdict"}
 	spec.Tasks[0].Capabilities = nil
 	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	const wantCapability = `policy action "flag-scope-drift" requires capability "github:pr:write", but the task does not declare it`
-	if err == nil || !strings.Contains(err.Error(), wantCapability) {
-		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	for _, action := range spec.Tasks[0].PolicyActions {
+		want := fmt.Sprintf(`policy action %q requires capability "github:pr:write", but the task does not declare it`, action)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
 	}
 
 	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
-		t.Fatalf("declared scope-drift action and capability should compile: %v", err)
+		t.Fatalf("declared gather-sibling-context actions and capability should compile: %v", err)
 	}
 }
 

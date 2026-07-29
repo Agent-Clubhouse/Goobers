@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -142,8 +143,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if got := siblings.Next; got != "rebase-pr" {
 		t.Errorf("gather-sibling-context next = %q, want rebase-pr", got)
 	}
-	if len(siblings.PolicyActions) != 1 || siblings.PolicyActions[0] != "flag-scope-drift" {
-		t.Errorf("gather-sibling-context policyActions = %v, want [flag-scope-drift]", siblings.PolicyActions)
+	if want := []string{"flag-scope-drift", "route-verdict"}; !reflect.DeepEqual(siblings.PolicyActions, want) {
+		t.Errorf("gather-sibling-context policyActions = %v, want %v", siblings.PolicyActions, want)
 	}
 	for _, output := range []string{
 		"selectedNumber", "head", "base", "hasSubstantiveFindings",
