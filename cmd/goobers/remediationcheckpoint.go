@@ -296,21 +296,34 @@ func escalationStillBlocks(ctx context.Context, provider *providers.GitHubProvid
 		return false, err
 	}
 	state, _, found := latestRemediationState(rawComments)
-	if !found || !state.Escalated {
-		// Labeled but no recorded escalation snapshot — a PR escalated
-		// before this fix shipped, or a human applied the label by hand.
-		// Fail closed: still blocks until a human clears the label, since
-		// there is no snapshot to compare against.
+	head, base := state.EscalatedHeadSHA, state.EscalatedBaseSHA
+	if found && (!state.Escalated || head == "") {
+		// The remediation-state comment is sticky and edited IN PLACE, so a
+		// later non-escalation checkpoint overwrites the escalation snapshot
+		// outright rather than sitting alongside it. Treating that as "no
+		// snapshot" and failing closed parks the PR permanently: the head
+		// comparison below is never reached, so moving the head — the exit
+		// this label's own comment advertises — cannot release it.
+		//
+		// Every checkpoint records the PR's head/base at the moment it was
+		// written, so fall back to those. That keeps the intended semantics
+		// (an unchanged PR stays parked) while restoring the exit (#1855).
+		head, base = state.HeadSHA, state.BaseSHA
+	}
+	if !found || head == "" {
+		// Genuinely nothing to compare — a PR escalated before this payload
+		// shipped, or a human applied the label by hand. Fail closed: still
+		// blocks until a human clears the label.
 		return true, nil
 	}
-	if state.EscalatedHeadSHA != pr.HeadSHA {
+	if head != pr.HeadSHA {
 		return false, nil
 	}
 	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
 	if err != nil {
 		return false, err
 	}
-	if state.EscalatedBaseSHA != liveBaseTip {
+	if base != liveBaseTip {
 		return false, nil
 	}
 	return true, nil
