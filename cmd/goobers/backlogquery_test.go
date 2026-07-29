@@ -551,8 +551,9 @@ func TestBacklogQueryUnlabeledItemNeverClaimed(t *testing.T) {
 	assertNoWorkResultFile(t, workDir)
 }
 
-// assertNoWorkResultFile confirms the default resultFile carries only the
-// structured no-work outcome, not a generic provider failure envelope.
+// assertNoWorkResultFile confirms the default resultFile carries the
+// structured no-work outcome and its provenance, not a generic provider
+// failure envelope.
 func assertNoWorkResultFile(t *testing.T, workDir string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
@@ -569,6 +570,9 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 	if got["claimed"] != false {
 		t.Fatalf("claimed-item.json = %v, want claimed:false", got)
 	}
+	if got["integrity"] != string(apiintegrity.Unapproved) {
+		t.Fatalf("claimed-item.json = %v, want unapproved integrity", got)
+	}
 	for _, key := range []string{
 		executor.OutputErrorCode,
 		executor.OutputErrorMessage,
@@ -578,8 +582,8 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 			t.Fatalf("claimed-item.json = %v, business no-work must not use the generic provider failure envelope", got)
 		}
 	}
-	if len(got) != 2 {
-		t.Fatalf("claimed-item.json = %v, want only claimed and noWork", got)
+	if len(got) != 3 {
+		t.Fatalf("claimed-item.json = %v, want only claimed, noWork, and integrity", got)
 	}
 }
 

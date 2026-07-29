@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -387,7 +388,10 @@ func assertGenericProviderErrorResult(t *testing.T, path, operation string) {
 	if !strings.Contains(message, operation) || !strings.Contains(message, "status 422") {
 		t.Fatalf("errorMessage = %q, want operation %q and provider status", message, operation)
 	}
-	if len(out) != 3 {
-		t.Fatalf("%s = %v, want only the generic provider failure envelope", path, out)
+	if out["integrity"] != string(apiintegrity.Unapproved) {
+		t.Fatalf("%s integrity = %v, want unapproved", path, out["integrity"])
+	}
+	if len(out) != 4 {
+		t.Fatalf("%s = %v, want only the generic provider failure envelope and integrity", path, out)
 	}
 }
