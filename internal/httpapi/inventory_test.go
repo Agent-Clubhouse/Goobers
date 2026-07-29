@@ -28,6 +28,17 @@ func TestInventoryHandlersUseSharedReader(t *testing.T) {
 				Identity: readservice.WorkflowReference{Gaggle: "alpha", Name: "deploy"},
 			}},
 		},
+		connections: readservice.GaggleConnections{
+			Gaggle: "alpha",
+			Repositories: []readservice.RepositoryConnection{{
+				Repository: readservice.RepositoryIdentity{
+					Provider: "github",
+					Owner:    "example",
+					Name:     "alpha",
+				},
+				AccessMode: readservice.RepositoryAccessReadWrite,
+			}},
+		},
 		workflow: readservice.WorkflowDetail{WorkflowSummary: readservice.WorkflowSummary{
 			Identity: readservice.WorkflowReference{Gaggle: "alpha", Name: "deploy"},
 		}},
@@ -66,6 +77,12 @@ func TestInventoryHandlersUseSharedReader(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, Prefix+"/gaggles/alpha/workflows", nil))
 	if response.Code != http.StatusOK || reader.lastGaggle != "alpha" {
 		t.Fatalf("workflows status/gaggle = %d / %q, body = %s", response.Code, reader.lastGaggle, response.Body)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, Prefix+"/gaggles/alpha/connections", nil))
+	if response.Code != http.StatusOK || reader.lastGaggle != "alpha" {
+		t.Fatalf("connections status/gaggle = %d / %q, body = %s", response.Code, reader.lastGaggle, response.Body)
 	}
 
 	response = httptest.NewRecorder()
@@ -212,6 +229,12 @@ func TestInventoryHandlerErrorsUseStandardEnvelope(t *testing.T) {
 		{
 			name:       "invalid gaggle identifier",
 			path:       Prefix + "/gaggles/Bad_Name/goobers",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_identifier",
+		},
+		{
+			name:       "invalid connections gaggle identifier",
+			path:       Prefix + "/gaggles/Bad_Name/connections",
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "invalid_identifier",
 		},

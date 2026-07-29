@@ -11,6 +11,7 @@ import type {
   DaemonUpdateEvent,
   EventList,
   EventStreamRequest,
+  GaggleConnections,
   GagglePage,
   GooberPage,
   Health,
@@ -42,6 +43,7 @@ export interface DaemonFixtures {
   gaggles: GagglePage;
   goobers?: Record<string, GooberPage>;
   workflows?: Record<string, WorkflowPage>;
+  connections?: Record<string, GaggleConnections>;
   workflowDetails?: Record<string, WorkflowDetail>;
   runs: RunList;
   runDetails?: Record<string, RunDetail>;
@@ -138,6 +140,13 @@ export class FixtureDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<WorkflowPage> {
     return fixture(required(this.fixtures.workflows, gaggle, "workflows"), options);
+  }
+
+  async getGaggleConnections(
+    gaggle: string,
+    options?: RequestOptions,
+  ): Promise<GaggleConnections> {
+    return fixture(required(this.fixtures.connections, gaggle, "connections"), options);
   }
 
   async getWorkflow(

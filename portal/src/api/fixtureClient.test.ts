@@ -45,6 +45,7 @@ function fixtures(): DaemonFixtures {
       items: [],
       page: { limit: 50, total: 0, hasMore: false, nextCursor: "" },
     },
+    connections: {},
     runs: { runs: [] },
     runDetails: {
       "run-1": {

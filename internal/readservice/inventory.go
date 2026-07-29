@@ -114,6 +114,39 @@ type GagglePage struct {
 	Page  PageInfo `json:"page"`
 }
 
+// RepositoryAccessMode is the credential-routing posture for a gaggle's
+// connection to one repository.
+type RepositoryAccessMode string
+
+const (
+	// RepositoryAccessReadWrite is the gaggle's primary project repository.
+	RepositoryAccessReadWrite RepositoryAccessMode = "read-write"
+	// RepositoryAccessReadOnly is an additional reference repository.
+	RepositoryAccessReadOnly RepositoryAccessMode = "read-only"
+)
+
+// RepositoryIdentity is the secret-free subset of a configured repository
+// reference that is safe to expose through the read API.
+type RepositoryIdentity struct {
+	Provider apiv1.Provider `json:"provider"`
+	Owner    string         `json:"owner"`
+	Project  string         `json:"project,omitempty"`
+	Name     string         `json:"name"`
+}
+
+// RepositoryConnection describes how one gaggle reaches a repository without
+// exposing its credential or token reference.
+type RepositoryConnection struct {
+	Repository RepositoryIdentity   `json:"repository"`
+	AccessMode RepositoryAccessMode `json:"accessMode"`
+}
+
+// GaggleConnections is the repository topology for one configured gaggle.
+type GaggleConnections struct {
+	Gaggle       string                 `json:"gaggle"`
+	Repositories []RepositoryConnection `json:"repositories"`
+}
+
 // WorkflowReference identifies a workflow within its gaggle.
 type WorkflowReference struct {
 	Gaggle string `json:"gaggle"`
@@ -495,6 +528,43 @@ func (s *Local) Workflows(ctx context.Context, gaggle string, request PageReques
 		return WorkflowPage{}, err
 	}
 	return WorkflowPage{Items: page, Page: info}, nil
+}
+
+// Connections returns the secret-free repository routing topology for one gaggle.
+func (s *Local) Connections(ctx context.Context, gaggle string) (GaggleConnections, error) {
+	if err := ctx.Err(); err != nil {
+		return GaggleConnections{}, err
+	}
+	inventory := s.definitions.Load().inventory
+	var def *apiv1.Gaggle
+	for i := range inventory.definitions.Gaggles {
+		if inventory.definitions.Gaggles[i].Name == gaggle {
+			def = &inventory.definitions.Gaggles[i]
+			break
+		}
+	}
+	if def == nil {
+		return GaggleConnections{}, fmt.Errorf("%w: gaggle %q", ErrNotFound, gaggle)
+	}
+
+	repositories := make([]RepositoryConnection, 0, len(def.Spec.AdditionalRepos)+1)
+	repositories = append(repositories, repositoryConnection(def.Spec.Project, RepositoryAccessReadWrite))
+	for _, repo := range def.Spec.AdditionalRepos {
+		repositories = append(repositories, repositoryConnection(repo, RepositoryAccessReadOnly))
+	}
+	return GaggleConnections{Gaggle: gaggle, Repositories: repositories}, nil
+}
+
+func repositoryConnection(repo apiv1.RepoRef, accessMode RepositoryAccessMode) RepositoryConnection {
+	return RepositoryConnection{
+		Repository: RepositoryIdentity{
+			Provider: repo.Provider,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		},
+		AccessMode: accessMode,
+	}
 }
 
 // Workflow returns current workflow detail, scoped by gaggle.

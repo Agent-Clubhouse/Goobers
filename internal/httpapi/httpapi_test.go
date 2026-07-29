@@ -43,6 +43,7 @@ type fakeReader struct {
 	gaggles      readservice.GagglePage
 	goobers      readservice.GooberPage
 	workflows    readservice.WorkflowPage
+	connections  readservice.GaggleConnections
 	workflow     readservice.WorkflowDetail
 	err          error
 	called       int
@@ -147,6 +148,12 @@ func (f *fakeReader) Workflows(_ context.Context, gaggle string, page readservic
 	f.lastGaggle = gaggle
 	f.lastPage = page
 	return f.workflows, f.err
+}
+
+func (f *fakeReader) Connections(_ context.Context, gaggle string) (readservice.GaggleConnections, error) {
+	f.called++
+	f.lastGaggle = gaggle
+	return f.connections, f.err
 }
 
 func (f *fakeReader) Workflow(_ context.Context, gaggle, workflow string) (readservice.WorkflowDetail, error) {

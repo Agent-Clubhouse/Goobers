@@ -22,6 +22,7 @@ import type {
   DaemonUpdateEvent,
   EventList,
   EventStreamRequest,
+  GaggleConnections,
   GagglePage,
   GooberPage,
   Health,
@@ -55,6 +56,7 @@ const clientRoutes = {
   gaggles: apiRoutes.gaggles,
   gaggleGoobers: apiRoutes.gaggleGoobers,
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
+  gaggleConnections: apiRoutes.gaggleConnections,
   workflowDetail: apiRoutes.workflowDetail,
   runs: apiRoutes.runs,
   runDetail: apiRoutes.runDetail,
@@ -212,6 +214,13 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<WorkflowPage> {
     return this.getJSON(clientRoutes.gaggleWorkflows, pageQuery(request), options, { gaggle });
+  }
+
+  getGaggleConnections(
+    gaggle: string,
+    options?: RequestOptions,
+  ): Promise<GaggleConnections> {
+    return this.getJSON(clientRoutes.gaggleConnections, undefined, options, { gaggle });
   }
 
   getWorkflow(

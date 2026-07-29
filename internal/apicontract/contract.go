@@ -24,6 +24,7 @@ const (
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
+	GaggleConnectionsPath        = V1Prefix + "/gaggles/{gaggle}/connections"
 	WorkflowDetailPath           = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
 	RunsPath                     = V1Prefix + "/runs"
 	RunDetailPath                = V1Prefix + "/runs/{run}"
@@ -57,6 +58,7 @@ const (
 	RouteGaggles                  RouteID = "gaggles"
 	RouteGaggleGoobers            RouteID = "gaggleGoobers"
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
+	RouteGaggleConnections        RouteID = "gaggleConnections"
 	RouteWorkflowDetail           RouteID = "workflowDetail"
 	RouteRuns                     RouteID = "runs"
 	RouteRunDetail                RouteID = "runDetail"
@@ -90,6 +92,7 @@ var v1Routes = []Route{
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation},
+	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation},
