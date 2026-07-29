@@ -242,6 +242,7 @@ export class HttpDaemonClient implements DaemonClient {
         until: request.until,
         limit: request.limit,
         cursor: request.cursor,
+        latestPerWorkflow: request.latestPerWorkflow ? "true" : undefined,
       },
       options,
     );

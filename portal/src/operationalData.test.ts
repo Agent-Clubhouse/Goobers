@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import type { RequestOptions, RunList, RunListOptions } from "./api/types";
+import type { UpdateModel } from "./api/types";
 import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
 import {
   INVENTORY_CACHE_TTL_MS,
@@ -9,26 +9,8 @@ import {
 } from "./operationalData";
 import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
-class ConcurrencyTrackingClient extends FixtureDaemonClient {
-  readonly requests: (RunListOptions | undefined)[] = [];
-  maxConcurrentRuns = 0;
-  private activeRuns = 0;
-
-  override async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
-    this.requests.push(request);
-    this.activeRuns += 1;
-    this.maxConcurrentRuns = Math.max(this.maxConcurrentRuns, this.activeRuns);
-    await Promise.resolve();
-    try {
-      return await super.listRuns(request, options);
-    } finally {
-      this.activeRuns -= 1;
-    }
-  }
-}
-
 describe("loadOperationalSnapshot", () => {
-  it("fetches a bounded recent window for each workflow and keeps one terminal outcome (#1664)", async () => {
+  it("fetches latest workflow outcomes in one request regardless of workflow count", async () => {
     const client = new FixtureDaemonClient(
       largeJournalFixtures({
         completed: 80,
@@ -42,15 +24,15 @@ describe("loadOperationalSnapshot", () => {
 
     const snapshot = await loadOperationalSnapshot(client);
 
-    expect(listRuns.mock.calls.map(([request]) => request)).toEqual([
-      { gaggle: "core", workflow: "implementation", limit: 5 },
-      { gaggle: "tools", workflow: "implementation", limit: 5 },
-    ]);
-    expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
+    expect(listRuns).toHaveBeenCalledOnce();
+    expect(listRuns).toHaveBeenCalledWith(
+      { gaggle: undefined, workflow: undefined, latestPerWorkflow: true },
+      { signal: undefined },
+    );
     expect(snapshot.runs.map((run) => run.id)).toEqual(["01JZTEST000000079"]);
   });
 
-  it("caps concurrent outcome requests with a large workflow inventory (#1679)", async () => {
+  it("does not grow run request count with a large workflow inventory", async () => {
     const fixtures = populatedDaemonFixtures();
     const coreGaggle = fixtures.gaggles.items.find((gaggle) => gaggle.name === "core");
     const coreGoobers = fixtures.goobers?.core;
@@ -76,17 +58,68 @@ describe("loadOperationalSnapshot", () => {
         page: { ...coreWorkflows.page, total: workflowCount },
       },
     };
-    const client = new ConcurrencyTrackingClient(fixtures);
+    const client = new FixtureDaemonClient(fixtures);
+    const listRuns = vi.spyOn(client, "listRuns");
 
     await loadOperationalSnapshot(client);
 
-    expect(client.requests).toHaveLength(workflowCount);
-    expect(client.maxConcurrentRuns).toBe(4);
-    expect(
-      client.requests.every(
-        (request) => request?.limit === 5 && request.cursor === undefined,
-      ),
-    ).toBe(true);
+    expect(listRuns).toHaveBeenCalledOnce();
+  });
+
+  it("loads only the requested gaggle's subordinate inventory and outcomes", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    const snapshot = await loadOperationalSnapshot(client, undefined, {
+      scope: { gaggle: "core" },
+    });
+
+    expect(snapshot.inventories.map(({ gaggle }) => gaggle.name)).toEqual(["core"]);
+    expect(listGoobers.mock.calls.map(([gaggle]) => gaggle)).toEqual(["core"]);
+    expect(listWorkflows.mock.calls.map(([gaggle]) => gaggle)).toEqual(["core"]);
+    expect(listRuns).toHaveBeenCalledWith(
+      { gaggle: "core", workflow: undefined, latestPerWorkflow: true },
+      { signal: undefined },
+    );
+    expect(snapshot.runs.every((run) => run.gaggle === "core")).toBe(true);
+  });
+
+  it.each([
+    {
+      model: "run" as UpdateModel,
+      expected: { gaggles: 0, goobers: 0, workflows: 0, runs: 1 },
+    },
+    {
+      model: "workflow" as UpdateModel,
+      expected: { gaggles: 1, goobers: 2, workflows: 2, runs: 0 },
+    },
+    {
+      model: "instance" as UpdateModel,
+      expected: { gaggles: 1, goobers: 2, workflows: 2, runs: 0 },
+    },
+  ])("issues only the requests required by a $model invalidation", async ({ model, expected }) => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalSnapshot(client);
+    const getHealth = vi.spyOn(client, "getHealth");
+    const getInstance = vi.spyOn(client, "getInstance");
+    const listGaggles = vi.spyOn(client, "listGaggles");
+    const listGoobers = vi.spyOn(client, "listGoobers");
+    const listWorkflows = vi.spyOn(client, "listWorkflows");
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    await loadOperationalSnapshot(client, undefined, {
+      previous,
+      models: new Set([model]),
+    });
+
+    expect(getHealth).toHaveBeenCalledOnce();
+    expect(getInstance).toHaveBeenCalledOnce();
+    expect(listGaggles).toHaveBeenCalledTimes(expected.gaggles);
+    expect(listGoobers).toHaveBeenCalledTimes(expected.goobers);
+    expect(listWorkflows).toHaveBeenCalledTimes(expected.workflows);
+    expect(listRuns).toHaveBeenCalledTimes(expected.runs);
   });
 });
 
@@ -163,7 +196,7 @@ describe("loadOperationalOverview", () => {
 
     try {
       const [snapshot, overview] = await Promise.allSettled([
-        loadOperationalSnapshot(client, undefined, cache),
+        loadOperationalSnapshot(client, undefined, { cache }),
         loadOperationalOverview(client, undefined, { cache }),
       ]);
 
@@ -258,7 +291,7 @@ describe("operational inventory cache", () => {
       listWorkflows.mockClear();
 
       vi.setSystemTime(1_000 + DATA_CACHE_TTL_MS + 1);
-      await loadOperationalSnapshot(client, undefined, cache);
+      await loadOperationalSnapshot(client, undefined, { cache });
 
       expect(listGaggles).not.toHaveBeenCalled();
       expect(listGoobers).toHaveBeenCalledTimes(2);

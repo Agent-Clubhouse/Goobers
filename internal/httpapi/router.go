@@ -439,17 +439,25 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 	if err != nil {
 		return readservice.RunListOptions{}, fmt.Errorf("%w: %w", readservice.ErrInvalidArgument, err)
 	}
+	latestPerWorkflow := false
+	if value := query.Get("latestPerWorkflow"); value != "" {
+		latestPerWorkflow, err = strconv.ParseBool(value)
+		if err != nil {
+			return readservice.RunListOptions{}, fmt.Errorf("%w: latestPerWorkflow must be a boolean", readservice.ErrInvalidArgument)
+		}
+	}
 	options := readservice.RunListOptions{
-		Gaggle:          query.Get("gaggle"),
-		Workflow:        query.Get("workflow"),
-		Stage:           query.Get("stage"),
-		Outcome:         readservice.OutcomeFilter(query.Get("outcome")),
-		StagePopulation: readservice.StagePopulation(query.Get("population")),
-		Phase:           readservice.RunPhase(query.Get("phase")),
-		Trigger:         readservice.TriggerKind(query.Get("trigger")),
-		Since:           since,
-		Until:           until,
-		Cursor:          query.Get("cursor"),
+		Gaggle:            query.Get("gaggle"),
+		Workflow:          query.Get("workflow"),
+		Stage:             query.Get("stage"),
+		Outcome:           readservice.OutcomeFilter(query.Get("outcome")),
+		StagePopulation:   readservice.StagePopulation(query.Get("population")),
+		Phase:             readservice.RunPhase(query.Get("phase")),
+		Trigger:           readservice.TriggerKind(query.Get("trigger")),
+		Since:             since,
+		Until:             until,
+		Cursor:            query.Get("cursor"),
+		LatestPerWorkflow: latestPerWorkflow,
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

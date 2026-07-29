@@ -349,6 +349,7 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 		path string
 	}{
 		{name: "list", path: RunsPath + "?workflow=implementation&gaggle=goobers&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00:00:00Z&until=2026-07-08T00:00:00Z&limit=10&cursor=next"},
+		{name: "latest workflow outcomes", path: RunsPath + "?gaggle=goobers&latestPerWorkflow=true"},
 		{name: "detail", path: RunsPath + "/run-1"},
 		{name: "events", path: RunsPath + "/run-1/events"},
 		{name: "attempts", path: RunsPath + "/run-1/stages/implement/attempts"},
@@ -365,6 +366,8 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 			}
 		})
 	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tests[0].path, nil))
 	if reader.options.Workflow != "implementation" ||
 		reader.options.Gaggle != "goobers" ||
 		reader.options.Stage != "implement" ||
@@ -378,11 +381,16 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 		!reader.options.Until.Equal(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("list options = %+v", reader.options)
 	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tests[1].path, nil))
+	if !reader.options.LatestPerWorkflow || reader.options.Gaggle != "goobers" {
+		t.Fatalf("latest workflow options = %+v", reader.options)
+	}
 	if reader.runID != "run-1" || reader.stage != "implement" {
 		t.Fatalf("path values = run %q, stage %q", reader.runID, reader.stage)
 	}
 
-	response := httptest.NewRecorder()
+	response = httptest.NewRecorder()
 	handler.ServeHTTP(
 		response,
 		httptest.NewRequest(http.MethodGet, RunsPath+"/run-1/artifacts/sha256:abc", nil),
@@ -488,6 +496,15 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			reader:     &fakeReader{},
 			method:     http.MethodGet,
 			path:       RunsPath + "?since=yesterday",
+			authorizer: AllowAll,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_argument",
+		},
+		{
+			name:       "invalid latest workflow aggregate",
+			reader:     &fakeReader{},
+			method:     http.MethodGet,
+			path:       RunsPath + "?latestPerWorkflow=sometimes",
 			authorizer: AllowAll,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "invalid_argument",

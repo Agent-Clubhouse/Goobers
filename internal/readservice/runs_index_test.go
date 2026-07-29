@@ -323,6 +323,8 @@ func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 		{Phase: journal.PhaseCompleted, Gaggle: "goobers", Limit: 2}, // mixed
 		{Stage: "implement", Outcome: OutcomeSuccess, Limit: 3},      // stage/outcome (journal-applied)
 		{Since: time.Date(2026, 7, 1, 12, 5, 0, 0, time.UTC), Limit: 4},
+		{LatestPerWorkflow: true},
+		{Gaggle: "acme-web", LatestPerWorkflow: true},
 	}
 	for i, opts := range cases {
 		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {

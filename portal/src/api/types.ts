@@ -305,6 +305,7 @@ export interface RunListOptions {
   until?: string;
   limit?: number;
   cursor?: string;
+  latestPerWorkflow?: boolean;
 }
 
 export interface RunList {

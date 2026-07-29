@@ -107,17 +107,18 @@ func NewOfflineRuns(layout instance.Layout) (OfflineRuns, error) {
 
 // RunListOptions controls deterministic run filtering and keyset pagination.
 type RunListOptions struct {
-	Gaggle          string
-	Workflow        string
-	Stage           string
-	Outcome         OutcomeFilter
-	StagePopulation StagePopulation
-	Phase           journal.RunPhase
-	Trigger         journal.TriggerKind
-	Since           time.Time
-	Until           time.Time
-	Limit           int
-	Cursor          string
+	Gaggle            string
+	Workflow          string
+	Stage             string
+	Outcome           OutcomeFilter
+	StagePopulation   StagePopulation
+	Phase             journal.RunPhase
+	Trigger           journal.TriggerKind
+	Since             time.Time
+	Until             time.Time
+	Limit             int
+	Cursor            string
+	LatestPerWorkflow bool
 }
 
 // RunList is one deterministic page of run summaries.
@@ -330,6 +331,24 @@ type runRead struct {
 // ListRuns returns newest-first summaries, with RunID ascending as the stable
 // tie-breaker.
 func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, error) {
+	if options.LatestPerWorkflow {
+		if options.Stage != "" ||
+			options.Outcome != "" ||
+			options.StagePopulation != "" ||
+			options.Phase != "" ||
+			options.Trigger != "" ||
+			!options.Since.IsZero() ||
+			!options.Until.IsZero() ||
+			options.Limit != 0 ||
+			options.Cursor != "" {
+			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
+		}
+		if s.sources.Telemetry != nil {
+			return s.listLatestWorkflowOutcomesIndexed(ctx, options)
+		}
+		return s.listLatestWorkflowOutcomesScanning(ctx, options)
+	}
+
 	limit := options.Limit
 	if limit == 0 {
 		limit = defaultRunLimit
@@ -374,6 +393,70 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
 	return s.listRunsScanning(ctx, options, cursor, limit)
+}
+
+func (s *Local) listLatestWorkflowOutcomesScanning(ctx context.Context, options RunListOptions) (RunList, error) {
+	summaries, err := s.runSummaries(ctx, false)
+	if err != nil {
+		return RunList{}, err
+	}
+	return latestWorkflowOutcomes(summaries, options), nil
+}
+
+func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options RunListOptions) (RunList, error) {
+	if err := s.reconcileIndex(ctx); err != nil {
+		return RunList{}, err
+	}
+	refs, err := s.sources.Telemetry.LatestTerminalRunRefs(options.Gaggle, options.Workflow)
+	if err != nil {
+		return RunList{}, err
+	}
+
+	observedAt := s.now().UTC()
+	summaries := make([]RunSummary, 0, len(refs))
+	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return RunList{}, err
+		}
+		run, err := s.openRun(ref.RunID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return RunList{}, err
+		}
+		summary, err := summarizeRunForStage(run, observedAt, "")
+		if err != nil {
+			return RunList{}, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
+		}
+		summaries = append(summaries, summary)
+	}
+	return latestWorkflowOutcomes(summaries, options), nil
+}
+
+func latestWorkflowOutcomes(summaries []RunSummary, options RunListOptions) RunList {
+	runs := make([]RunSummary, 0, len(summaries))
+	seen := make(map[string]struct{}, len(summaries))
+	for _, summary := range summaries {
+		if !summary.Terminal ||
+			(options.Gaggle != "" && summary.Gaggle != options.Gaggle) ||
+			(options.Workflow != "" && summary.Workflow != options.Workflow) {
+			continue
+		}
+		key := summary.Gaggle + "\x00" + summary.Workflow
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		runs = append(runs, summary)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].ID < runs[j].ID
+		}
+		return runs[i].StartedAt.After(runs[j].StartedAt)
+	})
+	return RunList{Runs: runs}
 }
 
 // runMatches reports whether summary satisfies every option filter. The

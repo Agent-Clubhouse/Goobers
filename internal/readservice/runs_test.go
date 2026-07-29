@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,6 +292,23 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	if len(completed.Runs) != 1 || completed.Runs[0].ID != "run-a" {
 		t.Fatalf("completed runs = %+v", completed.Runs)
 	}
+	latest, err := service.ListRuns(context.Background(), RunListOptions{LatestPerWorkflow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runIDs(latest); fmt.Sprint(got) != "[run-e run-b run-c]" {
+		t.Fatalf("latest workflow outcomes = %v", got)
+	}
+	scopedLatest, err := service.ListRuns(context.Background(), RunListOptions{
+		Gaggle:            "goobers",
+		LatestPerWorkflow: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runIDs(scopedLatest); fmt.Sprint(got) != "[run-e run-b]" {
+		t.Fatalf("scoped latest workflow outcomes = %v", got)
+	}
 
 	if _, err := service.ListRuns(context.Background(), RunListOptions{Cursor: "not-base64"}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("malformed cursor error = %v", err)
@@ -309,6 +327,12 @@ func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 		Until: base,
 	}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("reversed window error = %v", err)
+	}
+	if _, err := service.ListRuns(context.Background(), RunListOptions{
+		LatestPerWorkflow: true,
+		Limit:             1,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("paginated latest-per-workflow error = %v", err)
 	}
 	if _, err := service.GetRun(context.Background(), "partial-run"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("partial run error = %v", err)

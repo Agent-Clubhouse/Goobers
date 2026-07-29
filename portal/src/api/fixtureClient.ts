@@ -168,6 +168,21 @@ export class FixtureDaemonClient implements DaemonClient {
       ),
     );
     runs = [...runs].sort(compareRunsNewestFirst);
+    if (request?.latestPerWorkflow) {
+      const seen = new Set<string>();
+      runs = runs.filter((run) => {
+        if (!run.terminal) {
+          return false;
+        }
+        const key = fixtureKey(run.gaggle, run.workflow);
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      return structuredClone({ runs });
+    }
     if (request?.cursor) {
       const cursor = decodeFixtureCursor(request.cursor);
       runs = runs.filter((run) => runAfterCursor(run, cursor));
