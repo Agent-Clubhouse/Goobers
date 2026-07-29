@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -27,12 +28,11 @@ type branchState struct {
 	settled   bool
 }
 
-// parallelExec is the runner's live state for one parallel. It is deliberately
-// a plain value threaded through walk rather than a goroutine pool: at
-// maxConcurrentBranches=1 (the default) branches run SEQUENTIALLY, which is
-// what makes this slice's journal trivially deterministic and sidesteps the
-// worktree collision entirely (docs/design/static-fan-out-fan-in.md §6.3, §6.5).
+// parallelExec is the runner's live state for one parallel. The default
+// maxConcurrentBranches=1 path advances it sequentially; wider read-only
+// parallels update it from bounded branch workers.
 type parallelExec struct {
+	mu       sync.Mutex
 	spec     apiv1.Parallel
 	branches []*branchState
 	active   int
@@ -55,6 +55,12 @@ func newParallelExec(spec apiv1.Parallel) *parallelExec {
 }
 
 func (p *parallelExec) current() *branchState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.currentLocked()
+}
+
+func (p *parallelExec) currentLocked() *branchState {
 	if p.active < 0 || p.active >= len(p.branches) {
 		return nil
 	}
@@ -62,6 +68,8 @@ func (p *parallelExec) current() *branchState {
 }
 
 func (p *parallelExec) branch(name string) *branchState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, branch := range p.branches {
 		if branch.name == name {
 			return branch
@@ -71,7 +79,9 @@ func (p *parallelExec) branch(name string) *branchState {
 }
 
 func (p *parallelExec) currentPointers(root []apiv1.ContextPointer) []apiv1.ContextPointer {
-	current := p.current()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
 	size := len(root)
 	if current != nil {
 		size += len(current.pointers)
@@ -85,7 +95,9 @@ func (p *parallelExec) currentPointers(root []apiv1.ContextPointer) []apiv1.Cont
 }
 
 func (p *parallelExec) recordCurrent(outputs map[string]any, pointers []apiv1.ContextPointer) {
-	current := p.current()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
 	if current == nil {
 		return
 	}
@@ -105,38 +117,34 @@ func (p *parallelExec) recordCurrentPointer(pointer apiv1.ContextPointer) {
 }
 
 func (p *parallelExec) markCurrentFailed() {
-	if current := p.current(); current != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if current := p.currentLocked(); current != nil {
 		current.failed = true
 	}
 }
 
 func (p *parallelExec) markCurrentNoOutput() {
-	if current := p.current(); current != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if current := p.currentLocked(); current != nil {
 		current.noOutput = true
 	}
 }
 
 func (p *parallelExec) currentStatus() journal.BranchStatus {
-	current := p.current()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
 	if current == nil {
 		return journal.BranchCancelled
 	}
-	if current.settled && current.status != "" {
-		return current.status
-	}
-	if current.failed {
-		return journal.BranchFailed
-	}
-	if current.noOutput {
-		return journal.BranchNoOutput
-	}
-	if current.produced {
-		return journal.BranchSucceeded
-	}
-	return journal.BranchNoOutput
+	return branchStatus(current)
 }
 
 func (p *parallelExec) joinPointers(root []apiv1.ContextPointer) []apiv1.ContextPointer {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	size := len(root)
 	for _, branch := range p.branches {
 		size += len(branch.pointers)
@@ -153,10 +161,70 @@ func (p *parallelExec) joinPointers(root []apiv1.ContextPointer) []apiv1.Context
 	return out
 }
 
+func branchStatus(branch *branchState) journal.BranchStatus {
+	if branch.settled && branch.status != "" {
+		return branch.status
+	}
+	if branch.failed {
+		return journal.BranchFailed
+	}
+	if branch.noOutput || !branch.produced {
+		return journal.BranchNoOutput
+	}
+	return journal.BranchSucceeded
+}
+
+func (p *parallelExec) branchSnapshot(index int) branchState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	branch := *p.branches[index]
+	branch.pointers = append([]apiv1.ContextPointer(nil), branch.pointers...)
+	return branch
+}
+
+func (p *parallelExec) startBranch(index int) (branchState, []journal.BranchCursor) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	branch := p.branches[index]
+	branch.started = true
+	snapshot := *branch
+	snapshot.pointers = append([]apiv1.ContextPointer(nil), branch.pointers...)
+	return snapshot, p.cursorsLocked()
+}
+
+func (p *parallelExec) moveBranch(branchID int, state string) []journal.BranchCursor {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if branchID > 0 && branchID <= len(p.branches) && !p.branches[branchID-1].settled {
+		p.branches[branchID-1].machine = state
+	}
+	return p.cursorsLocked()
+}
+
+func (p *parallelExec) settleBranch(branchID int, status journal.BranchStatus, artifacts int, pointers []apiv1.ContextPointer, produced, failed, noOutput bool) []journal.BranchCursor {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if branchID <= 0 || branchID > len(p.branches) {
+		return p.cursorsLocked()
+	}
+	branch := p.branches[branchID-1]
+	branch.machine = ""
+	branch.status = status
+	branch.artifacts = artifacts
+	branch.pointers = append([]apiv1.ContextPointer(nil), pointers...)
+	branch.produced = produced
+	branch.failed = failed
+	branch.noOutput = noOutput
+	branch.settled = true
+	return p.cursorsLocked()
+}
+
 // advance settles the active branch and moves to the next unsettled one.
 // It reports whether another branch is now running.
 func (p *parallelExec) advance(status journal.BranchStatus) (*branchState, bool) {
-	if cur := p.current(); cur != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cur := p.currentLocked(); cur != nil {
 		cur.settled = true
 		cur.status = status
 		cur.machine = ""
@@ -171,6 +239,12 @@ func (p *parallelExec) advance(status journal.BranchStatus) (*branchState, bool)
 
 // cursors projects the live branch positions for the run checkpoint.
 func (p *parallelExec) cursors() []journal.BranchCursor {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cursorsLocked()
+}
+
+func (p *parallelExec) cursorsLocked() []journal.BranchCursor {
 	out := make([]journal.BranchCursor, 0, len(p.branches))
 	for _, b := range p.branches {
 		out = append(out, journal.BranchCursor{
@@ -188,6 +262,8 @@ func (p *parallelExec) cursors() []journal.BranchCursor {
 // the order that assigns ids, and therefore normative. It is what makes "did
 // every branch report?" answerable from the journal alone.
 func (p *parallelExec) completeness() []journal.BranchOutcome {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	out := make([]journal.BranchOutcome, 0, len(p.branches))
 	for _, b := range p.branches {
 		status := b.status
@@ -220,6 +296,12 @@ func supportedFailurePolicy(policy apiv1.BranchFailurePolicy) error {
 // SUCCESSFUL settle: the branch ran and legitimately produced nothing, which is
 // exactly what a research lens finding no issues looks like.
 func (p *parallelExec) anyFailed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.anyFailedLocked()
+}
+
+func (p *parallelExec) anyFailedLocked() bool {
 	for _, b := range p.branches {
 		switch b.status {
 		case journal.BranchFailed, journal.BranchTimedOut, journal.BranchCancelled:
@@ -234,6 +316,8 @@ func (p *parallelExec) anyFailed() bool {
 // the remaining branches have not started, so cancelling them is abandoning
 // them rather than interrupting anything mid-flight.
 func (p *parallelExec) cancelRemaining() []*branchState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var cancelled []*branchState
 	for _, b := range p.branches {
 		if !b.settled {
@@ -254,7 +338,9 @@ func (p *parallelExec) cancelRemaining() []*branchState {
 // They differ only on failure, and fail_fast and all_or_nothing differ from
 // each other only in how much work happened first.
 func (p *parallelExec) route() (target string, runJoin bool) {
-	if !p.anyFailed() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.anyFailedLocked() {
 		return p.spec.Join, true
 	}
 	switch p.spec.FailurePolicy {

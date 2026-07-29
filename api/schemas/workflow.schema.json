@@ -94,7 +94,7 @@
         "join": { "type": "string", "minLength": 1, "description": "State run once after all branches settle when the failure policy permits joining." },
         "onFailure": { "type": "string", "minLength": 1, "description": "State or reserved terminal target used when fail_fast or all_or_nothing observes a branch failure." },
         "branchTimeoutSeconds": { "type": "integer", "minimum": 0, "description": "Declared branch budget used only for compile-time task-timeout coherence checks. The runner does not currently enforce a branch wall-clock timeout." },
-        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Branch execution limit. Omit or set to 1 for the local runner's supported sequential execution; values greater than 1 are rejected because concurrent branch execution is not yet implemented." }
+        "maxConcurrentBranches": { "type": "integer", "minimum": 1, "description": "Maximum number of branches dispatched concurrently. Omit or set to 1 for deterministic sequential execution. Values greater than 1 are supported only when every reachable branch stage uses a scratch or repo-readonly workspace; writable branch workspaces are rejected." }
       },
       "allOf": [
         {
