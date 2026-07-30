@@ -16,6 +16,7 @@ const (
 	SchedulerDirName  = "scheduler"
 	WorkcopiesDirName = "workcopies"
 	TelemetryDBName   = "telemetry.db"
+	ReadDBName        = "read.db"
 	ConfigFileName    = "instance.yaml"
 	// DocsUpdaterDirName is the SchedulerDir subdirectory holding the
 	// docs-updater workflow's per-workflow durable state — the docs-drift
@@ -83,6 +84,16 @@ func (l Layout) WorkcopiesDir() string {
 
 // TelemetryDB is the path to the local telemetry rollup store (§8).
 func (l Layout) TelemetryDB() string { return filepath.Join(l.Root, TelemetryDBName) }
+
+// ReadDB is the path to the portal's run read model (read.db).
+//
+// A separate file from telemetry.db on purpose. The read model is gated on
+// 191 MB of run events while telemetry.db is 547 MB gated on 2,263 MB of spans,
+// so keeping them apart means cold start pays for the data the product IS rather
+// than the data that decorates it, and the two get the independent retention
+// policies they already need (design docs/design/portal-read-architecture.md
+// §5.1).
+func (l Layout) ReadDB() string { return filepath.Join(l.Root, ReadDBName) }
 
 // DocsWatermarkPath returns the durable docs-drift watermark file for a
 // (gaggle, workflow) pair (#1015). The watermark records the commit the
