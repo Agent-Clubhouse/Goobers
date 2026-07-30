@@ -11,6 +11,12 @@ github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-as
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.Store.runStages # Reachable only from Store.GetRun, which is itself exempted until the query surface lands (#1918/#1920).
 github.com/goobers/goobers/internal/readmodel.requiredTime # Timestamp decoder used by Store.GetRun, exempted for the same reason (#1918/#1920).
+github.com/goobers/goobers/internal/readmodel.Store.ListRuns # The bounded, zero-journal-open list page the read model exists to serve; consumed when readservice.ListRuns cuts over behind the flag (#1918, design §6.6 step 3).
+github.com/goobers/goobers/internal/readmodel.listQuery # Statement builder behind Store.ListRuns, extracted so the query plan is asserted against the statement production runs (#1918/#1920).
+github.com/goobers/goobers/internal/readmodel.scanListRow # Row decoder behind Store.ListRuns (#1918).
+github.com/goobers/goobers/internal/readmodel.ListCursor.Zero # Keyset cursor predicate behind Store.ListRuns (#1918).
+github.com/goobers/goobers/internal/readmodel.ListOptions.Dims # Maps a list request to its filter dimensions for the closed-set check (#1920).
+github.com/goobers/goobers/internal/readmodel.RunRow.Duration # Query-time duration, deliberately not stored so an in-flight run keeps ageing (design §5.3); consumed by the cutover (#1918).
 github.com/goobers/goobers/internal/readmodel.Key # Canonical identity of a filter-dimension set, so {gaggle,phase} and {phase,gaggle} are the same combination (#1920).
 github.com/goobers/goobers/internal/readmodel.normalise # Canonical ordering behind Key (#1920).
 github.com/goobers/goobers/internal/readmodel.Require # Resolves a filter set to a supported combination or a typed refusal; the closed set lands before the ListRuns cutover consumes it (#1920/#1918).
