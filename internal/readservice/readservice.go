@@ -83,7 +83,14 @@ type LocalSources struct {
 	// ReadModel is the portal run read model (read.db). Optional: when absent,
 	// every list takes the existing journal-derived paths, which is the rollback
 	// posture §6.6 requires — no journal is touched at any step.
-	ReadModel          *readmodel.Store
+	// A Reader, deliberately not a *readmodel.Store. §3.1's separation is
+	// enforced by the type: the read service holds a handle with no write,
+	// backfill, or repair method on it, so a read path that tries to project
+	// or reconcile fails to compile rather than being caught in review. That
+	// is the whole point of the interface split — reconcileIndex writing to
+	// disk from the HTTP list path is how all 40,665 run directories on the
+	// live instance came to hold a .lock file.
+	ReadModel          readmodel.Reader
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 }
