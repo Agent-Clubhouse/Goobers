@@ -17,37 +17,35 @@ import (
 )
 
 // Measurement is one scale point's cost across the telemetry read/ingest paths
-// the dashboard depends on (epic #1410). Durations are wall time for a single
-// operation; sizes are on-disk bytes after ingest. These are the numbers the
-// harness reports at 1×/10×/100× and the regression guard bounds.
+// the portal depends on. Sizes are on-disk bytes after ingest; every latency is
+// a Stat with cold and warm figures reported separately (design §14.12).
+//
+// Before this it held one wall-clock duration per operation, taken once. A
+// single sample cannot support a p99.9 target, cannot distinguish a regression
+// from scheduler noise, and made every §14.12 comparison a coin flip — so the
+// operations are now sampled repeatedly and summarized.
 type Measurement struct {
-	Runs                 int
-	SchedulerEvents      int
-	SchedulerJournalSize int64
-	TelemetryDBSize      int64
+	Host                 Host  `json:"host"`
+	Runs                 int   `json:"runs"`
+	OrphanDirs           int   `json:"orphanDirs"`
+	SchedulerEvents      int   `json:"schedulerEvents"`
+	SchedulerJournalSize int64 `json:"schedulerJournalBytes"`
+	TelemetryDBSize      int64 `json:"telemetryDBBytes"`
+	RunEventsSize        int64 `json:"runEventsBytes"`
+	SpansSize            int64 `json:"spansBytes"`
 
 	// RollupRebuild is the cost of rollup.Rebuild — the full re-ingest of every
 	// run journal plus the scheduler log into telemetry.db (the `--rebuild` and
-	// cold-start path).
-	RollupRebuild time.Duration
-	// ListRunsFirstPage is the latency of one indexed ListRuns page (the DASH-18
-	// indexed read the dashboard run list issues), including the first
-	// reconcile scan.
-	ListRunsFirstPage time.Duration
-	// ListRunsWarmPage is a second indexed ListRuns page within the reconcile
-	// window — the steady-state latency once the index is reconciled.
-	ListRunsWarmPage time.Duration
-	// OverviewFanout is the cost of the Overview's per-phase ListRuns fan-out,
-	// the read pattern that regressed under load (#1367): one page request per
-	// terminal phase, as the dashboard Overview issues them.
-	OverviewFanout time.Duration
-	// StatusScan is the full journal-scan ListStatusRuns cost — the unindexed
-	// fallback and the worst case the index is meant to avoid.
-	StatusScan time.Duration
+	// cold-start path). Sampled once: it is destructive and minutes long, so
+	// repeating it would dominate the harness's own runtime.
+	RollupRebuild time.Duration `json:"rollupRebuildNanos"`
+
+	// Stats holds the repeatedly-sampled read paths, keyed by operation.
+	Stats []Stat `json:"stats"`
 }
 
 // dashboardPhases mirror the phases the Overview fans out over, one ListRuns
-// each — the read pattern OverviewFanout times.
+// each — the read pattern the overview_fanout stat times.
 var dashboardPhases = []journal.RunPhase{
 	journal.PhaseRunning,
 	journal.PhaseCompleted,
@@ -56,12 +54,36 @@ var dashboardPhases = []journal.RunPhase{
 	journal.PhaseAborted,
 }
 
-// measure builds a telemetry rollup over the generated instance and times the
-// read paths the dashboard exercises. It rebuilds the rollup from scratch, then
-// attaches it to a read service exactly as the daemon does and times an indexed
-// page, a warm page, the Overview fan-out, and the full status scan.
-func measure(layout instance.Layout, runs, schedulerEvents int, schedulerSize int64) (Measurement, error) {
-	m := Measurement{Runs: runs, SchedulerEvents: schedulerEvents, SchedulerJournalSize: schedulerSize}
+// Operation names, used as both the report labels and the JSON keys, so a
+// baseline artifact stays comparable across harness versions.
+const (
+	opListRunsPage     = "listruns_page"
+	opOverviewFanout   = "overview_fanout"
+	opStatusFullScan   = "status_full_scan"
+	opListRunsGaggle   = "listruns_gaggle_filtered"
+	opListRunsDeepPage = "listruns_deep_page"
+)
+
+// measure builds a telemetry rollup over the generated instance and samples the
+// read paths the portal exercises. It rebuilds the rollup from scratch, then
+// attaches it to a read service exactly as the daemon does.
+//
+// samples is the number of times each read path is timed; the first is reported
+// as cold and the rest as the warm distribution. See minSamplesForP999 for why
+// the count matters to what may be claimed.
+func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bool) (Measurement, error) {
+	if samples < 2 {
+		samples = 2 // one cold plus at least one warm, or there is no distribution
+	}
+	m := Measurement{
+		Host:                 describeHost(os.Getenv("CI") != "", noFsync),
+		Runs:                 gen.Runs,
+		OrphanDirs:           gen.OrphanDirs,
+		SchedulerEvents:      gen.SchedulerEvents,
+		SchedulerJournalSize: gen.SchedulerJournalSize,
+	}
+	m.RunEventsSize = treeSize(layout.RunsDir(), "events.jsonl")
+	m.SpansSize = treeSizeUnder(layout.RunsDir(), "spans")
 
 	rebuildStart := time.Now()
 	if err := rollup.Rebuild(layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
@@ -89,40 +111,98 @@ func measure(layout instance.Layout, runs, schedulerEvents int, schedulerSize in
 	}
 	ctx := context.Background()
 
-	// First page pays for the initial reconcile scan; the warm page within the
-	// reconcile window reflects steady-state indexed latency.
-	first := time.Now()
-	if _, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50}); err != nil {
-		return Measurement{}, fmt.Errorf("scale: list runs (first page): %w", err)
+	// A deep cursor is resolved once, outside the timed loop, so the deep-page
+	// stat measures the page fetch rather than the walk that found the cursor.
+	deepCursor, err := cursorAtDepth(ctx, service, 10)
+	if err != nil {
+		return Measurement{}, err
 	}
-	m.ListRunsFirstPage = time.Since(first)
 
-	warm := time.Now()
-	if _, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50}); err != nil {
-		return Measurement{}, fmt.Errorf("scale: list runs (warm page): %w", err)
+	ops := []struct {
+		name string
+		fn   func() error
+	}{
+		{opListRunsPage, func() error {
+			_, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50})
+			return err
+		}},
+		{opListRunsGaggle, func() error {
+			_, err := service.ListRuns(ctx, readservice.RunListOptions{Gaggle: gaggles[0], Limit: 50})
+			return err
+		}},
+		// A deep page is measured because keyset pagination is only bounded if
+		// page N costs what page 1 costs; an offset-shaped plan degrades with
+		// depth and a first-page-only measurement never sees it (§7.3).
+		{opListRunsDeepPage, func() error {
+			_, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50, Cursor: deepCursor})
+			return err
+		}},
+		{opOverviewFanout, func() error {
+			for _, phase := range dashboardPhases {
+				if _, err := service.ListRuns(ctx, readservice.RunListOptions{Phase: phase, Limit: 50}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+		{opStatusFullScan, func() error {
+			_, err := service.ListStatusRuns(ctx)
+			return err
+		}},
 	}
-	m.ListRunsWarmPage = time.Since(warm)
 
-	fanout := time.Now()
-	for _, phase := range dashboardPhases {
-		if _, err := service.ListRuns(ctx, readservice.RunListOptions{Phase: phase, Limit: 50}); err != nil {
-			return Measurement{}, fmt.Errorf("scale: overview fan-out phase %q: %w", phase, err)
+	for _, op := range ops {
+		// The full status scan is the deliberately-unindexed worst case; at 1×
+		// it is seconds, so sampling it as often as an indexed page would make
+		// the harness's own runtime the bottleneck.
+		n := samples
+		if op.name == opStatusFullScan && n > statusScanSamples {
+			n = statusScanSamples
 		}
+		taken := make([]time.Duration, 0, n)
+		for i := 0; i < n; i++ {
+			start := time.Now()
+			if err := op.fn(); err != nil {
+				return Measurement{}, fmt.Errorf("scale: %s: %w", op.name, err)
+			}
+			taken = append(taken, time.Since(start))
+		}
+		m.Stats = append(m.Stats, summarize(op.name, taken))
 	}
-	m.OverviewFanout = time.Since(fanout)
-
-	scan := time.Now()
-	if _, err := service.ListStatusRuns(ctx); err != nil {
-		return Measurement{}, fmt.Errorf("scale: status scan: %w", err)
-	}
-	m.StatusScan = time.Since(scan)
 
 	return m, nil
 }
 
-// minimalDefinitions builds the smallest ConfigSet readservice.NewLocal accepts:
-// a manifest with an instance ref and preview features on. The harness measures
-// run read paths, not inventory, so no gaggles/workflows are needed.
+// statusScanSamples caps repetitions of the unindexed full scan.
+const statusScanSamples = 3
+
+// cursorAtDepth walks `pages` pages and returns the cursor that follows them, so
+// a deep page can be timed without the walk counting against it. An empty
+// cursor means the corpus was too small to reach that depth, and the deep-page
+// stat then simply re-measures the first page.
+func cursorAtDepth(ctx context.Context, service *readservice.Local, pages int) (string, error) {
+	options := readservice.RunListOptions{Limit: 50}
+	for i := 0; i < pages; i++ {
+		page, err := service.ListRuns(ctx, options)
+		if err != nil {
+			return "", fmt.Errorf("scale: seek to page %d: %w", i, err)
+		}
+		if page.NextCursor == "" {
+			return options.Cursor, nil
+		}
+		options.Cursor = page.NextCursor
+	}
+	return options.Cursor, nil
+}
+
+// minimalDefinitions builds the smallest ConfigSet readservice.NewLocal accepts.
+//
+// NOTE: an empty inventory does NOT spare the harness the active-run scan —
+// Local.Instance calls activeRunCounts unconditionally and it is keyed on run
+// directories, not on configured workflows (design §2.5). The reason this
+// harness has never measured that scan is simply that it never calls
+// Instance/Gaggles/Workflows. A parameterizable inventory and coverage of those
+// surfaces is the next slice of #1913.
 func minimalDefinitions() *instance.ConfigSet {
 	return &instance.ConfigSet{Manifest: &apiv1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
