@@ -1071,6 +1071,163 @@ func TestRunnerArtifactCompletenessMatchesConcurrencySetting(t *testing.T) {
 	}
 }
 
+// slowThenFastDeterministic sleeps past the declared branchTimeoutSeconds
+// budget on the branch's FIRST task, then tracks whether its second task ever
+// ran. branchTimeoutSeconds is checked at the next stage boundary (never
+// mid-stage — see the field's doc comment), so a single already-slow task
+// still completes and reaches @join normally; the enforcement point is
+// whether a NEW stage gets dispatched once the budget is already spent. That
+// requires two tasks per branch: the first exceeds the budget on its own but
+// still returns success, and the second (slow-b) must never be dispatched.
+type slowThenFastDeterministic struct {
+	slowFirstTask string
+	delay         time.Duration
+	secondRan     atomic.Bool
+}
+
+func (s *slowThenFastDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	switch {
+	case strings.HasSuffix(env.TaskID, ":"+s.slowFirstTask):
+		time.Sleep(s.delay)
+	case strings.HasSuffix(env.TaskID, ":slow-b"):
+		s.secondRan.Store(true)
+	case strings.HasSuffix(env.TaskID, ":fast"):
+		// A real output, so "fast" settles succeeded rather than no-output
+		// (a task producing nothing is its own, distinct, legitimate status).
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: map[string]any{"summary": "ok"}}, nil
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+// branchTimeoutMachine declares a two-branch parallel with a short
+// branchTimeoutSeconds budget, at the given width. The "slow" branch has two
+// sequential tasks so the timeout has a real next-stage boundary to enforce
+// at; "fast" is a single task that always finishes well within budget.
+func branchTimeoutMachine(t *testing.T, maxConcurrent int32, policy apiv1.BranchFailurePolicy, onFailure string) *workflow.Machine {
+	t.Helper()
+	scratchTask := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "branch-timeout-fixture", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "demo",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				scratchTask("slow-a", "slow-b"),
+				scratchTask("slow-b", workflow.TargetJoin),
+				scratchTask("fast", workflow.TargetJoin),
+				scratchTask("collate", workflow.TerminalComplete),
+			},
+			Parallels: []apiv1.Parallel{{
+				Name:                  "fan",
+				FailurePolicy:         policy,
+				OnFailure:             onFailure,
+				BranchTimeoutSeconds:  1,
+				MaxConcurrentBranches: maxConcurrent,
+				Join:                  "collate",
+				Branches: []apiv1.Branch{
+					{Name: "slow", Start: "slow-a"},
+					{Name: "fast", Start: "fast"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile branch-timeout fixture: %v", err)
+	}
+	return machine
+}
+
+func testBranchTimeoutRecordsTimedOut(t *testing.T, maxConcurrent int32) {
+	det := &slowThenFastDeterministic{slowFirstTask: "slow-a", delay: 1200 * time.Millisecond}
+	r, runsDir := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+	)
+	runID := fmt.Sprintf("branch-timeout-%d", maxConcurrent)
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Gaggle: "demo",
+		Machine: branchTimeoutMachine(t, maxConcurrent, apiv1.BranchContinueOnError, ""),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (continue_on_error tolerates the timeout)", result.Phase)
+	}
+	if det.secondRan.Load() {
+		t.Fatal("slow-b ran after the branch already exceeded its timeout budget")
+	}
+	completeness := parallelCompleteness(t, runsDir, runID)
+	if len(completeness) != 2 {
+		t.Fatalf("completeness = %+v, want 2 entries", completeness)
+	}
+	if completeness[0].Name != "slow" || completeness[0].Status != journal.BranchTimedOut {
+		t.Fatalf("slow branch = %+v, want status %q", completeness[0], journal.BranchTimedOut)
+	}
+	if completeness[1].Name != "fast" || completeness[1].Status != journal.BranchSucceeded {
+		t.Fatalf("fast branch = %+v, want status %q", completeness[1], journal.BranchSucceeded)
+	}
+}
+
+func TestSequentialBranchExceedingTimeoutIsRecordedTimedOut(t *testing.T) {
+	testBranchTimeoutRecordsTimedOut(t, 1)
+}
+
+func TestConcurrentBranchExceedingTimeoutIsRecordedTimedOut(t *testing.T) {
+	testBranchTimeoutRecordsTimedOut(t, 2)
+}
+
+// Under fail_fast at maxConcurrentBranches=1, a timed-out branch must cancel
+// its still-queued sibling exactly like an ordinary ResultFailure would:
+// anyFailedLocked already classes BranchTimedOut as a failure for route(),
+// but the sequential path's eager cancelRemaining() call (run.go, right
+// after @join) gates on par.anyFailed() rather than a literal status
+// comparison, so this exercises that path end to end. (The concurrent
+// orchestrator's equivalent eager-cancel check was updated too — see the
+// literal `result.status == ... || result.status == journal.BranchTimedOut`
+// condition in parallel_run.go — but proving it needs the sibling still
+// in-flight when the timeout fires, which a 2-branch fixture with an
+// instant "fast" task can't reliably arrange without its own race.)
+func TestSequentialBranchTimeoutTriggersFailFastCancellation(t *testing.T) {
+	det := &slowThenFastDeterministic{slowFirstTask: "slow-a", delay: 1200 * time.Millisecond}
+	r, runsDir := newParallelTestRunner(t,
+		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+	)
+	const runID = "branch-timeout-failfast"
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Gaggle: "demo",
+		Machine: branchTimeoutMachine(t, 1, apiv1.BranchFailFast, workflow.TargetAbort),
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want aborted through fail_fast's onFailure", result.Phase)
+	}
+	completeness := parallelCompleteness(t, runsDir, runID)
+	if len(completeness) != 2 {
+		t.Fatalf("completeness = %+v, want 2 entries", completeness)
+	}
+	if completeness[0].Name != "slow" || completeness[0].Status != journal.BranchTimedOut {
+		t.Fatalf("slow branch = %+v, want status %q", completeness[0], journal.BranchTimedOut)
+	}
+	if completeness[1].Name != "fast" || completeness[1].Status != journal.BranchCancelled {
+		t.Fatalf("fast branch = %+v, want status %q (fail_fast must cancel the still-queued sibling)", completeness[1], journal.BranchCancelled)
+	}
+}
+
 func parallelCompleteness(t *testing.T, runsDir, runID string) []journal.BranchOutcome {
 	t.Helper()
 	rd, err := journal.OpenRead(runsDir + "/" + runID)

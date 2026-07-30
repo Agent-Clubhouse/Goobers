@@ -1020,6 +1020,9 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			branch.status = ""
 			branch.started = true
 			branch.settled = false
+			// Reconstruct the ORIGINAL start instant so a resumed branch gets
+			// its remaining branchTimeoutSeconds budget, not a fresh one.
+			branch.startedAt = event.Time
 		case journal.EventStageStarted:
 			if branch != nil {
 				branch.machine = event.Stage

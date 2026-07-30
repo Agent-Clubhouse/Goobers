@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -975,6 +976,30 @@ func TestPendingParallelDoesNotCrossTerminalResume(t *testing.T) {
 	}
 	if par, _ := pendingParallel(stageRerun, machine); par == nil {
 		t.Fatal("pending parallel is nil after a stage rerun reopened the branch")
+	}
+}
+
+// pendingParallel must reconstruct a branch's ORIGINAL start instant from its
+// EventBranchStarted, not reset it to resumption time — a resumed branch gets
+// its remaining branchTimeoutSeconds budget, not a fresh one (#1566).
+func TestPendingParallelReconstructsBranchStartedAtForTimeoutBudget(t *testing.T) {
+	machine := continueOnErrorFanInMachine(t)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	events := []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security",
+			Stage: "review-security", Time: startedAt},
+	}
+	par, _ := pendingParallel(events, machine)
+	if par == nil {
+		t.Fatal("pending parallel is nil")
+	}
+	branch := par.branch("security")
+	if branch == nil {
+		t.Fatal("reconstructed parallel has no security branch")
+	}
+	if !branch.startedAt.Equal(startedAt) {
+		t.Fatalf("branch.startedAt = %v, want the original EventBranchStarted time %v", branch.startedAt, startedAt)
 	}
 }
 
