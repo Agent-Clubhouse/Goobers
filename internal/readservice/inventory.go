@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -598,16 +599,42 @@ func (s *Local) Workflow(ctx context.Context, gaggle, name string) (WorkflowDeta
 	}, nil
 }
 
+// activeRunCounts returns the most recent background sample of the active-run
+// set, never a synchronous walk.
+//
+// This is the change #1741 asks for. Every one of the six production call sites
+// used to walk all 40,665 run directories and open all 29,759 journals, per
+// request: 17.2 s cold on the live instance to answer "2" (§2.1), measured at
+// 4.06 s p50 / 11.26 s p99 at 1x in the Wave 0 harness — against a client that
+// aborts at 10 s.
+//
+// A missing sample is an error, deliberately. §17 Wave 1.4 corrects an earlier
+// design that kept the walk as the no-sample fallback and "so preserved the exact
+// failure on a cold daemon": a fallback taken only when the cache is cold is
+// taken exactly when the instance is busiest.
 func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, error) {
-	runDirs, err := s.sources.Layout.RunDirs()
-	if err != nil {
-		return nil, fmt.Errorf("enumerate run roots: %w", err)
+	counts, _, err := s.activeRunCountsWithAge()
+	return counts, err
+}
+
+// activeRunCountsWithAge additionally reports how stale the sample is, so a
+// caller can render "as of N ago" rather than implying the number is current.
+func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+	if s.activeSampler == nil {
+		// No sampler configured (a one-shot construction). Walk once rather than
+		// refuse: this is not a request path, and refusing here would break the
+		// CLI surfaces that legitimately have no daemon to have warmed a cache.
+		runDirs, err := s.sources.Layout.RunDirs()
+		if err != nil {
+			return nil, 0, fmt.Errorf("enumerate run roots: %w", err)
+		}
+		counts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
+		if err != nil {
+			return nil, 0, fmt.Errorf("read active run projection: %w", err)
+		}
+		return counts, 0, nil
 	}
-	counts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
-	if err != nil {
-		return nil, fmt.Errorf("read active run projection: %w", err)
-	}
-	return counts, nil
+	return s.activeSampler.Counts()
 }
 
 func hasGaggle(inventory *inventoryProjection, name string) bool {

@@ -350,6 +350,13 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	// Move the active-run count off the request path (#1741). Six read routes
+	// used to walk every run directory in history and open every journal, per
+	// request — 17.2 s cold on the live instance to answer "2" (design §2.1).
+	// The daemon is the only construction that is long-lived enough for a
+	// background sample to be warm, so it is the only one that starts it.
+	stopActiveSampler := reads.StartActiveRunSampler(0)
+	defer stopActiveSampler()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	eventStream, err := httpapi.NewEventStream(l, apiLog)
 	if err != nil {
