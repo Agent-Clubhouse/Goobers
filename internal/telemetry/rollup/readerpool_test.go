@@ -19,12 +19,23 @@ import (
 // Overview's five concurrent requests have their queries serialized and an
 // analytics aggregate blocks every list".
 //
-// The assertion is deliberately loose. A speedup ratio is a wall-clock
-// measurement and this suite runs on contended, three-way-sharded CI runners, so
-// it asserts only that concurrency is no longer *pathologically* absent —
-// meaningfully better than 1.0x — rather than a specific multiple. A tighter
-// bound would flake on exactly the hardware the rest of this wave learned not to
-// time.
+// # Why this asserts structure and merely LOGS the speedup
+//
+// The first version asserted a speedup ratio above 1.3x, on the reasoning that
+// it was "deliberately loose". It flaked on CI at 1.25x with a pool size of 3 —
+// a three-core runner, contended, under -race. That is the same lesson this wave
+// has now learned three times: a wall-clock ratio cannot be defended on shared
+// hardware, and loosening the threshold only moves the flake rather than
+// removing it.
+//
+// So the assertion is the STRUCTURAL property — a read-only pool exists and can
+// open more than one connection — which is deterministic on any machine. The
+// speedup is measured and logged, because it is the reason the structure matters
+// and a reviewer should see it, but it does not gate the suite.
+//
+// The measurement that justified the change stands on its own: on the reference
+// host, eight concurrent aggregates went from 48.62ms (0.99x, perfect
+// serialization) to 13.48ms (3.54x).
 func TestReaderPoolAllowsConcurrentReads(t *testing.T) {
 	db := seedConcurrencyFixture(t)
 
@@ -67,17 +78,23 @@ func TestReaderPoolAllowsConcurrentReads(t *testing.T) {
 	if db.reader == nil {
 		t.Skip("no read-only pool on this platform; the single-handle fallback is in effect")
 	}
-	if speedup <= minConcurrencySpeedup {
-		t.Errorf("concurrent reads gained nothing (speedup %.2fx <= %.2fx): reads are still serialized.\n"+
-			"Before #1916 this measured 0.99x, which is the shape a single shared connection produces.",
-			speedup, minConcurrencySpeedup)
+
+	// The deterministic assertion: reads go to a pool that can actually run more
+	// than one at a time. Before #1916 every read shared the writer's single
+	// connection, so this was structurally 1.
+	stats := db.reader.Stats()
+	if stats.MaxOpenConnections < 2 {
+		t.Errorf("read pool allows %d concurrent connections; reads are still serialized",
+			stats.MaxOpenConnections)
+	}
+	if speedup <= 1.0 {
+		// Not a failure — a contended runner can legitimately produce this — but
+		// worth surfacing, since a persistent sub-1.0 across runs would mean the
+		// pool is not being used at all.
+		t.Logf("note: no speedup observed (%.2fx) on a %d-connection pool; expected on a contended or low-core host",
+			speedup, stats.MaxOpenConnections)
 	}
 }
-
-// minConcurrencySpeedup is the floor for "concurrency is doing something". Set
-// just above 1.0 rather than near the core count, because the ratio is wall
-// clock and CI runners are contended.
-const minConcurrencySpeedup = 1.3
 
 // TestReaderPoolIsReadOnly pins that the read handle structurally cannot write.
 //
