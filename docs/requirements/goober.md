@@ -39,7 +39,7 @@ cloud cluster without change.
 | Assets | Optional static files under `assets/`, available to every invocation at workspace path `.goober-assets/`. |
 | Skills | Skill set available to the goober. |
 | Tools | MCP servers / tools it can use (incl. management tools — see telemetry), declared as a capability allowlist. |
-| MCP servers | Invocation-scoped external stdio or HTTP MCP servers, with credentials bound only through declared capabilities. |
+| MCP servers | Invocation-scoped external stdio or HTTP MCP servers, with credentials bound through declared first-party capabilities or named BYO grants. |
 | Harness binding | The harness adapter it runs on (first adapter: GitHub Copilot CLI). |
 | Scale factor | Desired replica count for concurrent work. |
 | Workflow association | Which workflow(s) invoke this goober (and for which tasks). |
@@ -47,39 +47,59 @@ cloud cluster without change.
 ### External MCP servers
 
 `spec.mcpServers` is an additive list of local stdio or remote HTTP servers.
-Credentials are capability references, never inline values:
+Credentials are references, never inline values:
 
 ```yaml
-capabilities: [contents:read, github:issues:write]
+capabilities: [github:issues:write]
 tools: [lookup-issue, read-context]
 mcpServers:
-  - name: local-context
-    command: context-server
-    args: [--stdio]
-    credentialRefs:
-      - capability: contents:read
-        env: CONTEXT_TOKEN
   - name: remote-context
     url: https://mcp.example.test/api
     credentialRefs:
       - capability: github:issues:write
         header: Authorization
         scheme: bearer
+  - name: vendor-knowledge
+    url: https://knowledge.example.test/mcp
+    credentialRefs:
+      - kind: byo
+        ref: vendor-api
+        header: Authorization
+        scheme: bearer
 ```
 
-Each referenced capability must also be declared by the invoking stage. The
-runner resolves only those invocation-scoped credentials and materializes the
-MCP configuration in a fresh harness configuration directory. Remote servers
-with credential references must use HTTPS; plaintext HTTP is allowed only for
-exact `localhost` or loopback-IP endpoints used for local development and tests.
-Remote URLs cannot contain query strings or fragments; credentials must use
-`credentialRefs`. Each external server receives only the explicit names in
-`spec.tools`; an omitted tool is unavailable, and an empty list denies all
-external MCP tools.
+First-party references use the closed `capability` enum, and each capability
+must also be declared by the invoking stage. Third-party servers use the
+separate `kind: byo` branch with a DNS-label-compatible `ref`. The operator
+provides that named credential declaratively in `instance.yaml`:
+
+```yaml
+credentials:
+  - mcp: vendor-api
+    token:
+      env: VENDOR_MCP_TOKEN
+```
+
+A BYO ref is not a workflow capability and does not expand the canonical
+capability registry. It is reachable only by a goober whose specific MCP server
+declaration names it; an absent named grant fails closed before the harness
+starts. The runner resolves only those invocation-scoped credentials and
+materializes the MCP configuration in a fresh harness configuration directory.
+Remote servers with credential references must use HTTPS; plaintext HTTP is
+allowed only for exact `localhost` or loopback-IP endpoints used for local
+development and tests. Remote URLs cannot contain query strings or fragments;
+credentials must use `credentialRefs`. Each external server receives only the
+explicit names in `spec.tools`; an omitted tool is unavailable, and an empty
+list denies all external MCP tools.
 
 External MCP servers currently require `harness: copilot` (or the default
 Copilot harness). Other harnesses reject non-empty `mcpServers` declarations
-until their adapters implement equivalent invocation-scoped isolation.
+until their adapters implement equivalent invocation-scoped isolation. Because
+Copilot starts local stdio servers from one process environment, a local server
+must explicitly reference every credential used by any server in the same
+goober declaration; otherwise admission fails closed rather than exposing a
+sibling server's credential. A remote server avoids that subprocess-inheritance
+limitation.
 
 The scoped Copilot home intentionally excludes ambient OAuth and BYOK
 credentials. A Copilot invocation with external MCP servers therefore requires

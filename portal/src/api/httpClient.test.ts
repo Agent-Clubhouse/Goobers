@@ -135,6 +135,9 @@ describe("HttpDaemonClient", () => {
         cursor: "run-page",
       }),
     ).resolves.toEqual({ runs: [] });
+    await expect(
+      client.listRuns({ gaggle: "core", latestPerWorkflow: true }),
+    ).resolves.toEqual({ runs: [] });
     await client.getRun("run-1");
     await client.listRunEvents("run-1");
     await client.listStageAttempts("run-1", "implement");
@@ -184,6 +187,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/gaggles/core/connections",
       "/api/v1/gaggles/core/workflows/implementation",
       "/api/v1/runs?gaggle=core&workflow=implementation&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=25&cursor=run-page",
+      "/api/v1/runs?gaggle=core&latestPerWorkflow=true",
       "/api/v1/runs/run-1",
       "/api/v1/runs/run-1/events",
       "/api/v1/runs/run-1/stages/implement/attempts",

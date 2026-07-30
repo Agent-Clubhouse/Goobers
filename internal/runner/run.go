@@ -1329,7 +1329,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 				completed.clear(t.Name)
 			} else {
-				completed.record(t.Name, outputs)
+				completed.record(t.Name, outputs, result.Integrity)
 			}
 			// Sticky for the rest of the run, and only ever set by a stage
 			// that actually emitted the key — see WorkspaceBranchOutput. This
@@ -2374,7 +2374,19 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 
 func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
-	if err := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity); err != nil {
+	// Both admission checks run here, before any workspace or credential
+	// provisioning below. contextFrom-selected pointers are graded by
+	// ValidateInputIntegrity; inputsFrom values are bare scalars whose only
+	// provenance is the stage that produced them, so they are graded separately
+	// against the same minimum. Checking only the former let a stage exclude an
+	// unapproved producer's artifact with contextFrom and still import that
+	// producer's provider-authored text through inputsFrom (TBH-4).
+	integrityErr := apiv1.ValidateInputIntegrity(in.Item, upstream, t.MinimumIntegrity)
+	if integrityErr == nil {
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(
+			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn), t.MinimumIntegrity)
+	}
+	if err := integrityErr; err != nil {
 		admission := &apiv1.IntegrityAdmissionError{}
 		if !errors.As(err, &admission) {
 			return apiv1.ResultEnvelope{}, nil, err
@@ -2564,6 +2576,12 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
+		// Provenance flows with the data: what this stage produced is only as
+		// trustworthy as the weakest input it was admitted with. Downstream
+		// stages resolving inputsFrom grade against this, because Outputs are
+		// bare scalars that cannot carry a label of their own (TBH-4).
+		result.Integrity = producedIntegrity(t, in.Item, upstream,
+			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
 		outputs := result.Outputs
 		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 			outputs = nil
@@ -2572,6 +2590,10 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
 			Status: string(result.Status), Error: errorDetailFrom(result),
 			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
+			// Carried so reconstructStageOutputs can restore each stage's grade
+			// on resume; without it a resumed run would fail inputsFrom
+			// admission that a live run admits (TBH-4).
+			Integrity: result.Integrity,
 		}); err != nil {
 			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
 			span.Fail(err)

@@ -27,24 +27,24 @@ type SecretRegistrar interface {
 	Register(secret []byte)
 }
 
-// Grant maps one goober's capability name (e.g. "github:issues:write", as
-// declared on a Goober/Task — docs/requirements/goober.md GBO-052) to the token
-// ref that backs it. Goober is empty only for runner-owned deterministic work.
+// Grant maps one goober's credential key to the token ref that backs it. Keys
+// are canonical capabilities or invocation-internal named MCP keys. Goober is
+// empty only for runner-owned deterministic work.
 type Grant struct {
 	Goober     string
 	Capability string
 	Ref        string
 }
 
-// Injector resolves credentials scoped to one identity and a stage's declared
-// capabilities. It never materializes another goober's grant or a credential
-// for a capability that was not declared, and it registers every value it
-// resolves with its SecretRegistrar before handing it back — nothing bypasses
-// the scrubber.
+// Injector resolves credentials scoped to one identity and the keys declared
+// by a stage or its goober manifest. It never materializes another goober's
+// grant, and it registers every value it resolves with its SecretRegistrar
+// before handing it back — nothing bypasses the scrubber.
 type Injector struct {
-	resolver  Resolver
-	grants    map[string]string // capability -> ref name
-	registrar SecretRegistrar
+	resolver       Resolver
+	grants         map[string]string // credential key -> ref name
+	credentialKeys []string
+	registrar      SecretRegistrar
 }
 
 // NewInjector builds an Injector for runner-owned deterministic work. Only
@@ -61,6 +61,33 @@ func NewGooberInjector(resolver Resolver, goober string, grants []Grant, registr
 		return nil, errors.New("credentials: goober injector requires a non-empty goober identity")
 	}
 	return newInjector(resolver, goober, grants, registrar)
+}
+
+// NewGooberInjectorWithCredentialKeys builds a goober-scoped Injector that
+// always materializes the named non-capability credential keys. The caller must
+// derive these keys from that goober's explicit credential declarations.
+func NewGooberInjectorWithCredentialKeys(resolver Resolver, goober string, grants []Grant, credentialKeys []string, registrar SecretRegistrar) (*Injector, error) {
+	injector, err := NewGooberInjector(resolver, goober, grants, registrar)
+	if err != nil {
+		return nil, err
+	}
+	implicit := make([]string, 0, len(credentialKeys))
+	implicitSeen := make(map[string]bool, len(credentialKeys))
+	for _, key := range credentialKeys {
+		if key == "" {
+			return nil, errors.New("credentials: implicit credential key must not be empty")
+		}
+		if implicitSeen[key] {
+			continue
+		}
+		if _, ok := injector.grants[key]; !ok {
+			return nil, fmt.Errorf("credentials: implicit credential key %q has no grant for goober %q", key, goober)
+		}
+		implicitSeen[key] = true
+		implicit = append(implicit, key)
+	}
+	injector.credentialKeys = implicit
+	return injector, nil
 }
 
 func newInjector(resolver Resolver, goober string, grants []Grant, registrar SecretRegistrar) (*Injector, error) {
@@ -93,36 +120,48 @@ func newInjector(resolver Resolver, goober string, grants []Grant, registrar Sec
 	return &Injector{resolver: resolver, grants: byCap, registrar: registrar}, nil
 }
 
-// Materialize resolves credentials for exactly the given declared
-// capabilities — the stage's own declaration, already admitted by the DSL
-// compiler (SEC-042) — and nothing else. A capability with no configured
-// grant is simply skipped (not every capability is credentialed, e.g.
-// "telemetry:read"); resolution failure for a capability that IS granted
+// Materialize resolves credentials for the stage's declared capabilities plus
+// the goober manifest's explicit non-capability credential keys. A capability
+// with no configured grant is simply skipped (not every capability is
+// credentialed, e.g. "telemetry:read"); resolution failure for any granted key
 // fails the whole call closed, so a stage never starts half-credentialed.
 func (i *Injector) Materialize(ctx context.Context, declared []string) (*Set, error) {
-	s := &Set{
-		declared: make(map[string]bool, len(declared)),
-		tokens:   make(map[string]string, len(declared)),
+	keys := make([]string, 0, len(declared)+len(i.credentialKeys))
+	seen := make(map[string]bool, cap(keys))
+	addKeys := func(values []string) {
+		for _, key := range values {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			keys = append(keys, key)
+		}
 	}
-	for _, capability := range declared {
-		s.declared[capability] = true
-		ref, ok := i.grants[capability]
+	addKeys(declared)
+	addKeys(i.credentialKeys)
+	s := &Set{
+		declared: make(map[string]bool, len(keys)),
+		tokens:   make(map[string]string, len(keys)),
+	}
+	for _, key := range keys {
+		s.declared[key] = true
+		ref, ok := i.grants[key]
 		if !ok {
 			continue
 		}
 		token, err := i.resolver.Resolve(ctx, ref)
 		if err != nil {
-			return nil, fmt.Errorf("credentials: materialize capability %q: %w", capability, err)
+			return nil, fmt.Errorf("credentials: materialize credential key %q: %w", key, err)
 		}
 		i.registrar.Register([]byte(token))
-		s.tokens[capability] = token
+		s.tokens[key] = token
 	}
 	return s, nil
 }
 
-// Set is the credential set materialized for one stage's declared
-// capabilities. It is the only thing handed to a stage executor or provider
-// — never the Injector or Resolver, which can reach every configured ref.
+// Set is the credential set materialized for one stage's declared credential
+// keys. It is the only thing handed to a stage executor or provider — never the
+// Injector or Resolver, which can reach every configured ref.
 type Set struct {
 	declared map[string]bool
 	tokens   map[string]string

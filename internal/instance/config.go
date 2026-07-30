@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runnercap"
@@ -81,13 +82,10 @@ type Config struct {
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Speech configures an opt-in local speech sink for the same terminal alerts.
 	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
-	// Credentials sources individual stage capabilities from their own token refs,
-	// beyond the default of backing every credentialed capability with the
-	// first repo's token (#287, multi-token credentials). Each entry points one
-	// capability at a distinct token; an entry for a capability the runner would
-	// otherwise default-grant to the repo token OVERRIDES that grant. This is
-	// what lets an agentic stage carry a personal "Copilot Requests" PAT for the
-	// model (agent:model) alongside the org-repo token for the github tool.
+	// Credentials sources individual stage capabilities or named BYO MCP
+	// credentials from their own token refs. A capability entry overrides any
+	// repo-token default; an MCP entry is reachable only through an explicit
+	// goober server reference.
 	Credentials []CredentialGrant `json:"credentials,omitempty" yaml:"credentials,omitempty"`
 	// Timezone is an IANA location name (e.g. "America/New_York") every
 	// workflow's cron schedule evaluates in. Empty defaults to UTC — a fixed,
@@ -558,12 +556,16 @@ func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
 	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store}
 }
 
-// CredentialGrant sources one stage capability from its own token ref (#287).
-// Runner-owned capabilities use their dedicated config surfaces instead.
+// CredentialGrant sources either one stage capability or one named BYO MCP
+// credential from its own token ref. Runner-owned capabilities use their
+// dedicated config surfaces instead.
 type CredentialGrant struct {
 	// Capability is the canonical capability string (internal/capability) this
 	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
-	Capability string `json:"capability" yaml:"capability"`
+	Capability string `json:"capability,omitempty" yaml:"capability,omitempty"`
+	// MCP names a BYO MCP credential. It is not a stage capability and is
+	// reachable only by goobers whose MCP server declarations reference it.
+	MCP string `json:"mcp,omitempty" yaml:"mcp,omitempty"`
 	// Token is the source of the credential — exactly one supported TokenRef
 	// source, like a repo's token; inline secret values are never permitted.
 	Token TokenRef `json:"token" yaml:"token"`
@@ -1118,28 +1120,46 @@ func (c *Config) Validate() error {
 	seen := make(map[string]bool, len(c.Credentials))
 	for i, cg := range c.Credentials {
 		// Fail closed at load, not at the first stage that tries to resolve a
-		// bad grant (#287): an unknown capability is a typo the compiler would
-		// never see (credentials: isn't a workflow), and a token ref that names
-		// neither/both of env|file can never resolve.
-		if !capability.Known(cg.Capability) {
-			return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
+		// bad grant: credentials are instance config rather than workflow input,
+		// and a malformed token ref can never resolve.
+		var key, label string
+		switch {
+		case cg.Capability != "" && cg.MCP == "":
+			if !capability.Known(cg.Capability) {
+				return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
+			}
+			if !capability.StageDeclarable(cg.Capability) {
+				return fmt.Errorf(
+					"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
+					i,
+					cg.Capability,
+				)
+			}
+			key, label = cg.Capability, "capability "+strconv.Quote(cg.Capability)
+		case cg.Capability == "" && mcpconfig.ValidBYOCredentialName(cg.MCP):
+			key, label = mcpconfig.BYOCredentialKey(cg.MCP), "MCP credential "+strconv.Quote(cg.MCP)
+		case cg.Capability == "" && cg.MCP != "":
+			return fmt.Errorf("credentials[%d]: MCP credential name %q must be a lowercase DNS label", i, cg.MCP)
+		default:
+			return fmt.Errorf("credentials[%d]: set exactly one of capability or mcp", i)
 		}
-		if !capability.StageDeclarable(cg.Capability) {
-			return fmt.Errorf(
-				"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
-				i,
-				cg.Capability,
-			)
+		if seen[key] {
+			return fmt.Errorf("credentials[%d]: %s is sourced more than once", i, label)
 		}
-		if seen[cg.Capability] {
-			return fmt.Errorf("credentials[%d]: capability %q is sourced more than once", i, cg.Capability)
-		}
-		seen[cg.Capability] = true
+		seen[key] = true
 		if cg.Token.sourceCount() != 1 {
 			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
-				"inline secret values are never permitted (CFG-009, SEC-010)", i, cg.Capability)
+				"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
 		}
-		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, cg.Capability), cg.Token, stores); err != nil {
+		if cg.MCP != "" &&
+			cg.Token.Env != "" &&
+			stageEnvironmentAllows(cg.Token.Env, c.Runner.EnvPassthrough) {
+			return fmt.Errorf(
+				"credentials[%d] (%s): token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				i, label, cg.Token.Env,
+			)
+		}
+		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), cg.Token, stores); err != nil {
 			return err
 		}
 	}

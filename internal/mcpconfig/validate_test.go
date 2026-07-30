@@ -27,6 +27,15 @@ func TestValidate(t *testing.T) {
 				Scheme:     apiv1.MCPHeaderSchemeBearer,
 			}},
 		},
+		{
+			Name: "vendor-context",
+			URL:  "https://vendor.example.test/mcp",
+			CredentialRefs: []apiv1.MCPCredentialRef{{
+				Kind:   apiv1.MCPCredentialKindBYO,
+				Ref:    "vendor-api",
+				Header: "X-API-Key",
+			}},
+		},
 	}
 	capabilities := []string{"contents:read", "github:issues:write"}
 	if err := Validate(valid, capabilities, []string{"reachability"}); err != nil {
@@ -114,6 +123,43 @@ func TestValidate(t *testing.T) {
 			want: "is unknown",
 		},
 		{
+			name: "mixed first-party and BYO credential",
+			servers: []apiv1.MCPServer{{
+				Name: "local", Command: "server",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Capability: "contents:read",
+					Kind:       apiv1.MCPCredentialKindBYO,
+					Ref:        "vendor-api",
+					Env:        "TOKEN",
+				}},
+			}},
+			caps: []string{"contents:read"},
+			want: "must set either capability",
+		},
+		{
+			name: "BYO credential missing ref",
+			servers: []apiv1.MCPServer{{
+				Name: "local", Command: "server",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Kind: apiv1.MCPCredentialKindBYO,
+					Env:  "TOKEN",
+				}},
+			}},
+			want: "must be a lowercase DNS label",
+		},
+		{
+			name: "BYO credential invalid ref",
+			servers: []apiv1.MCPServer{{
+				Name: "local", Command: "server",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Kind: apiv1.MCPCredentialKindBYO,
+					Ref:  "Vendor API",
+					Env:  "TOKEN",
+				}},
+			}},
+			want: "must be a lowercase DNS label",
+		},
+		{
 			name: "wrong binding transport",
 			servers: []apiv1.MCPServer{{
 				Name: "remote", URL: "https://example.test",
@@ -182,6 +228,29 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestBYOCredentialKeys(t *testing.T) {
+	servers := []apiv1.MCPServer{
+		{CredentialRefs: []apiv1.MCPCredentialRef{
+			{Kind: apiv1.MCPCredentialKindBYO, Ref: "vendor-api"},
+			{Capability: "contents:read"},
+		}},
+		{CredentialRefs: []apiv1.MCPCredentialRef{
+			{Kind: apiv1.MCPCredentialKindBYO, Ref: "vendor-api"},
+			{Kind: apiv1.MCPCredentialKindBYO, Ref: "jira"},
+		}},
+	}
+	keys := BYOCredentialKeys(servers)
+	if len(keys) != 2 || keys[0] != "mcp:vendor-api" || keys[1] != "mcp:jira" {
+		t.Fatalf("BYOCredentialKeys = %v, want [mcp:vendor-api mcp:jira]", keys)
+	}
+	if !IsBYOCredentialKey(keys[0]) || IsBYOCredentialKey("mcp:Vendor") || IsBYOCredentialKey("contents:read") {
+		t.Fatalf("IsBYOCredentialKey accepted an invalid key")
+	}
+	if got := CredentialKey(apiv1.MCPCredentialRef{Capability: "contents:read"}); got != "contents:read" {
+		t.Fatalf("first-party CredentialKey = %q", got)
+	}
+}
+
 func TestValidateForHarness(t *testing.T) {
 	servers := []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
 	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot} {
@@ -193,5 +262,31 @@ func TestValidateForHarness(t *testing.T) {
 	err := ValidateForHarness(apiv1.HarnessClaudeCode, servers, nil, []string{"read-context"})
 	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
 		t.Fatalf("ValidateForHarness(claude-code) error = %v, want unsupported-harness error", err)
+	}
+}
+
+func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T) {
+	credential := apiv1.MCPCredentialRef{
+		Kind:   apiv1.MCPCredentialKindBYO,
+		Ref:    "vendor-api",
+		Header: "Authorization",
+	}
+	servers := []apiv1.MCPServer{
+		{Name: "local-context", Command: "context-server"},
+		{Name: "vendor-context", URL: "https://vendor.example.test/mcp", CredentialRefs: []apiv1.MCPCredentialRef{credential}},
+	}
+	err := ValidateForHarness(apiv1.HarnessCopilot, servers, nil, nil)
+	if err == nil ||
+		!strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) {
+		t.Fatalf("ValidateForHarness error = %v, want local credential-isolation rejection", err)
+	}
+
+	servers[0].CredentialRefs = []apiv1.MCPCredentialRef{{
+		Kind: apiv1.MCPCredentialKindBYO,
+		Ref:  "vendor-api",
+		Env:  "VENDOR_TOKEN",
+	}}
+	if err := ValidateForHarness(apiv1.HarnessCopilot, servers, nil, nil); err != nil {
+		t.Fatalf("ValidateForHarness explicitly shared credential: %v", err)
 	}
 }

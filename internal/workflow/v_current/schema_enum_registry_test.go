@@ -125,6 +125,7 @@ var constBackedEnums = []enumRule{
 	{schema: "invocation.schema.json", path: "properties/minimumIntegrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "invocation.schema.json", path: "$defs/backlogItem/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "journal-event.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "result.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "journal-event.schema.json", path: "$defs/ref/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "journal-event.schema.json", path: "properties/minimumIntegrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "journal-run.schema.json", path: "properties/inputs/items/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},

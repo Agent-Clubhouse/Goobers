@@ -426,7 +426,16 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
 	env.MinimumIntegrity = t.MinimumIntegrity
-	if err := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity); err != nil {
+	// Both admission checks run before dispatch, matching the local runner.
+	// The engine resolves inputsFrom only against the immediately preceding
+	// task, so every such value is graded by that task's produced provenance;
+	// Outputs are bare scalars and carry none of their own (TBH-4).
+	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
+	if integrityErr == nil {
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(
+			engineInputGrades(t, upstreamResult), env.MinimumIntegrity)
+	}
+	if err := integrityErr; err != nil {
 		admission := &apiv1.IntegrityAdmissionError{}
 		if !errors.As(err, &admission) {
 			return apiv1.ResultEnvelope{}, err
@@ -448,10 +457,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		env.Inputs[inputKey] = v
 	}
 	ctx = stageActivityContext(ctx, env.Limits)
+	produced := engineProducedIntegrity(t, env, upstreamResult)
 	if t.Type == apiv1.TaskAgentic {
+		// Graded inside the closure: dispatchWithRetry journals stage.finished
+		// from what the closure returns, so setting it afterwards would leave
+		// the journal ungraded and diverge from the local runner.
 		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 			var res apiv1.ResultEnvelope
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res)
+			res.Integrity = produced
 			return res, err
 		})
 	}
@@ -469,6 +483,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 		var res apiv1.ResultEnvelope
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)
+		res.Integrity = produced
 		return res, err
 	})
 }
@@ -637,4 +652,47 @@ func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
 		StartToCloseTimeout: timeout,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
+}
+
+// engineInputGrades maps each inputsFrom entry to the provenance of the task
+// that produced it. The engine resolves only against the immediately preceding
+// task's Outputs, so every entry carries that task's grade.
+func engineInputGrades(t apiv1.Task, upstreamResult apiv1.ResultEnvelope) map[string]apiv1.Integrity {
+	if len(t.InputsFrom) == 0 {
+		return nil
+	}
+	grades := make(map[string]apiv1.Integrity, len(t.InputsFrom))
+	for inputKey := range t.InputsFrom {
+		grades[inputKey] = upstreamResult.Integrity
+	}
+	return grades
+}
+
+// engineProducedIntegrity grades what a task emitted, on the same rule the local
+// runner applies: the weakest input it was admitted with, with agentic output
+// always contributing IntegrityDerived.
+func engineProducedIntegrity(t apiv1.Task, env apiv1.InvocationEnvelope, upstreamResult apiv1.ResultEnvelope) apiv1.Integrity {
+	grades := make([]apiv1.Integrity, 0, len(env.ContextPointers)+len(t.InputsFrom)+2)
+	if t.Type == apiv1.TaskAgentic {
+		grades = append(grades, apiv1.IntegrityDerived)
+	}
+	if env.Item != nil && env.Item.Integrity != "" {
+		grades = append(grades, env.Item.Integrity)
+	}
+	for i := range env.ContextPointers {
+		grade := env.ContextPointers[i].Integrity
+		if grade == "" && env.ContextPointers[i].Artifact != nil {
+			grade = env.ContextPointers[i].Artifact.Integrity
+		}
+		if grade != "" {
+			grades = append(grades, grade)
+		}
+	}
+	if len(t.InputsFrom) > 0 && upstreamResult.Integrity != "" {
+		grades = append(grades, upstreamResult.Integrity)
+	}
+	if len(grades) == 0 {
+		return apiv1.IntegrityTrusted
+	}
+	return apiv1.WeakestIntegrity(grades...)
 }

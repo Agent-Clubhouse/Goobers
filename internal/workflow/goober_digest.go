@@ -104,8 +104,8 @@ func canonicalMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
 		out[i].CredentialRefs = append([]apiv1.MCPCredentialRef(nil), servers[i].CredentialRefs...)
 		sort.Slice(out[i].CredentialRefs, func(a, b int) bool {
 			left, right := out[i].CredentialRefs[a], out[i].CredentialRefs[b]
-			return left.Capability+"\x00"+left.Env+"\x00"+left.Header+"\x00"+string(left.Scheme) <
-				right.Capability+"\x00"+right.Env+"\x00"+right.Header+"\x00"+string(right.Scheme)
+			return left.Capability+"\x00"+string(left.Kind)+"\x00"+left.Ref+"\x00"+left.Env+"\x00"+left.Header+"\x00"+string(left.Scheme) <
+				right.Capability+"\x00"+string(right.Kind)+"\x00"+right.Ref+"\x00"+right.Env+"\x00"+right.Header+"\x00"+string(right.Scheme)
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

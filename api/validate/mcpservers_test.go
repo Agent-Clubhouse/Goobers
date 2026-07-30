@@ -28,6 +28,11 @@ func TestGooberSchemaAcceptsMCPServersWithoutInlineSecrets(t *testing.T) {
 					"name": "remote-context",
 					"url": "https://mcp.example.test/api",
 					"credentialRefs": [{"capability": "github:issues:write", "header": "Authorization", "scheme": "bearer"}]
+				},
+				{
+					"name": "vendor-context",
+					"url": "https://vendor.example.test/mcp",
+					"credentialRefs": [{"kind": "byo", "ref": "vendor-api", "header": "X-API-Key"}]
 				}
 			]
 		}
@@ -55,6 +60,38 @@ func TestGooberSchemaAcceptsMCPServersWithoutInlineSecrets(t *testing.T) {
 			}`)
 			if err := newV(t).ValidateJSON("goober.schema.json", invalid); err == nil {
 				t.Fatal("malformed or inline-secret MCP configuration passed schema validation")
+			}
+		})
+	}
+}
+
+func TestGooberSchemaRejectsMalformedBYOMCPCredentials(t *testing.T) {
+	template := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Goober",
+		"metadata": {"name": "coder"},
+		"spec": {
+			"gaggle": "example",
+			"role": "coder",
+			"instructions": "instructions.md",
+			"mcpServers": [{
+				"name": "vendor",
+				"command": "vendor-server",
+				"credentialRefs": [__REF__]
+			}]
+		}
+	}`
+	for name, ref := range map[string]string{
+		"ref without kind":   `{"ref": "vendor-api", "env": "TOKEN"}`,
+		"kind without ref":   `{"kind": "byo", "env": "TOKEN"}`,
+		"capability and BYO": `{"capability": "contents:read", "kind": "byo", "ref": "vendor-api", "env": "TOKEN"}`,
+		"unknown kind":       `{"kind": "dynamic", "ref": "vendor-api", "env": "TOKEN"}`,
+		"invalid ref":        `{"kind": "byo", "ref": "Vendor API", "env": "TOKEN"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(strings.Replace(template, "__REF__", ref, 1))
+			if err := newV(t).ValidateJSON("goober.schema.json", raw); err == nil {
+				t.Fatal("malformed BYO MCP credential passed schema validation")
 			}
 		})
 	}

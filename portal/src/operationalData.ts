@@ -13,10 +13,12 @@ import type {
   Goober,
   Health,
   Instance,
+  ModelInvalidation,
   RepositoryConnection,
   RunPhase,
   RunSummary,
   UpdateModel,
+  WorkflowRunActivity,
   WorkflowSummary,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
@@ -39,10 +41,6 @@ const HEALTH_REFRESH_INTERVAL_MS = 5_000;
 const ACTIVE_RUN_LIMIT = 50;
 const ATTENTION_RUN_LIMIT = 20;
 const RECENT_OUTCOME_LIMIT = 20;
-const WORKFLOW_RUN_LIMIT = 5;
-// Keep browser connection capacity available for unrelated daemon requests.
-const WORKFLOW_OUTCOME_CONCURRENCY = 4;
-const OPERATIONAL_SNAPSHOT_CACHE_KEY = dataCacheKey("operational-snapshot");
 const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
 export const INVENTORY_CACHE_TTL_MS = 5 * 60_000;
 const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
@@ -88,6 +86,18 @@ export interface OperationalRunGroups {
 export interface OperationalSnapshotQuery {
   retry: () => void;
   state: QueryState<OperationalSnapshot>;
+}
+
+export interface OperationalScope {
+  gaggle?: string;
+  workflow?: string;
+}
+
+export interface SnapshotLoadOptions {
+  cache?: SessionDataCache;
+  previous?: OperationalSnapshot;
+  models?: ReadonlySet<UpdateModel>;
+  scope?: OperationalScope;
 }
 
 type OperationalRefresh = (models?: ReadonlySet<UpdateModel>) => Promise<boolean>;
@@ -176,20 +186,22 @@ function useCoalescedOperationalRefresh(
 
 export function useOperationalSnapshot(
   client: DaemonClient,
-  scope: { gaggle?: string; workflow?: string } = {},
+  scope: OperationalScope = {},
 ): OperationalSnapshotQuery {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const gaggle = scope.gaggle;
+  const workflow = scope.workflow;
+  const cacheKey = operationalSnapshotCacheKey(scope);
+  const dependencies = operationalSnapshotDependencies(scope);
+  const cached = cache.get<OperationalSnapshot>(cacheKey);
   const [state, setState] = useState<QueryState<OperationalSnapshot>>(() => {
-    const cached = cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY);
     return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
+  const data = useRef<OperationalSnapshot | undefined>(cached);
 
   const performRefresh = useCallback(
-    async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
-      const cacheRevision = cache.beginWrite(
-        OPERATIONAL_SNAPSHOT_CACHE_KEY,
-        OPERATIONAL_DEPENDENCIES,
-      );
+    async (models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(cacheKey, dependencies);
       setState((current) =>
         current.status === "ready" || current.status === "stale"
           ? { status: "stale", data: current.data }
@@ -197,17 +209,23 @@ export function useOperationalSnapshot(
       );
 
       try {
-        const data = await loadOperationalSnapshot(client, signal, cache);
+        const loaded = await loadOperationalSnapshot(client, signal, {
+          cache,
+          previous: data.current,
+          models,
+          scope: { gaggle, workflow },
+        });
         if (signal.aborted) {
           return false;
         }
+        data.current = loaded;
         cache.set(
-          OPERATIONAL_SNAPSHOT_CACHE_KEY,
-          data,
-          OPERATIONAL_DEPENDENCIES,
+          cacheKey,
+          loaded,
+          dependencies,
           cacheRevision,
         );
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+        setState(isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded });
         return true;
       } catch (error: unknown) {
         if (signal.aborted) {
@@ -223,7 +241,7 @@ export function useOperationalSnapshot(
         return false;
       }
     },
-    [cache, client, isFresh],
+    [cache, cacheKey, client, gaggle, isFresh, workflow],
   );
   const refresh = useCoalescedOperationalRefresh(performRefresh);
 
@@ -231,22 +249,23 @@ export function useOperationalSnapshot(
     () =>
       subscribe(
         ["instance", "workflow", "run"],
-        (models, reason) => {
+        (models, reason, invalidations) => {
           const cached =
             reason === "initial"
-              ? cache.get<OperationalSnapshot>(OPERATIONAL_SNAPSHOT_CACHE_KEY)
+              ? cache.get<OperationalSnapshot>(cacheKey)
               : undefined;
           if (cached) {
+            data.current = cached;
             setState(
               isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
             );
             return true;
           }
-          return refresh(models);
+          return refresh(operationalSnapshotModels(models, invalidations));
         },
-        scope,
+        { gaggle, workflow },
       ),
-    [cache, isFresh, refresh, scope.gaggle, scope.workflow, subscribe],
+    [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow],
   );
 
   useEffect(() => {
@@ -261,31 +280,68 @@ export function useOperationalSnapshot(
     });
   }, [freshness]);
 
-  usePeriodicHealth(client, freshness, setState);
+  const rememberSnapshot = useCallback((snapshot: OperationalSnapshot) => {
+    data.current = snapshot;
+  }, []);
+  usePeriodicHealth(client, freshness, setState, rememberSnapshot);
 
   return {
     retry: () => {
-      cache.remove(OPERATIONAL_SNAPSHOT_CACHE_KEY);
+      cache.remove(cacheKey);
       void refresh();
     },
     state,
   };
 }
 
+function operationalSnapshotModels(
+  models: ReadonlySet<UpdateModel>,
+  invalidations: readonly ModelInvalidation[] | undefined,
+): ReadonlySet<UpdateModel> {
+  if (
+    invalidations?.length &&
+    invalidations.every(
+      (invalidation) =>
+        invalidation.models.includes("run") &&
+        invalidation.runIds !== undefined &&
+        invalidation.runIds.length > 0,
+    )
+  ) {
+    return new Set(["run"]);
+  }
+  return models;
+}
+
 export async function loadOperationalSnapshot(
   client: DaemonClient,
   signal?: AbortSignal,
-  cache?: SessionDataCache,
+  options?: SnapshotLoadOptions,
 ): Promise<OperationalSnapshot> {
-  const options = { signal };
-  const [health, instance, inventories] = await Promise.all([
-    client.getHealth(options),
-    client.getInstance(options),
-    loadOperationalInventory(client, cache, signal),
+  const previous = options?.previous;
+  const models = options?.models;
+  const wantInventory =
+    previous === undefined || models === undefined || models.has("instance") || models.has("workflow");
+  const wantRuns = previous === undefined || models === undefined || models.has("run");
+  const requestOptions = { signal };
+  const [health, instance, inventories, workflowSnapshot] = await Promise.all([
+    client.getHealth(requestOptions),
+    client.getInstance(requestOptions),
+    wantInventory
+      ? loadOperationalInventory(client, options?.cache, signal, options?.scope)
+      : Promise.resolve(previous!.inventories),
+    wantRuns
+      ? loadWorkflowOutcomes(client, options?.scope, signal)
+      : Promise.resolve({ runs: previous!.runs, activity: undefined }),
   ]);
-  const runs = await collectWorkflowOutcomes(client, inventories, signal);
 
-  return { health, instance, inventories, runs: sortRuns(runs) };
+  return {
+    health,
+    instance,
+    inventories: workflowSnapshot.activity
+      ? applyWorkflowActivity(inventories, workflowSnapshot.activity)
+      : inventories,
+    runs: sortRuns(workflowSnapshot.runs),
+  };
 }
 
 export function latestWorkflowOutcome(
@@ -319,37 +375,59 @@ async function collectPages<T>(
   }
 }
 
-async function collectWorkflowOutcomes(
+async function loadWorkflowOutcomes(
   client: DaemonClient,
-  inventories: GaggleInventory[],
+  scope?: OperationalScope,
   signal?: AbortSignal,
-): Promise<RunSummary[]> {
-  const identities = inventories.flatMap((inventory) =>
-    inventory.workflows.map((workflow) => workflow.identity),
+): Promise<{ runs: RunSummary[]; activity: WorkflowRunActivity[] | undefined }> {
+  const response = await client.listRuns(
+    {
+      gaggle: scope?.gaggle,
+      workflow: scope?.workflow,
+      latestPerWorkflow: true,
+    },
+    { signal },
   );
-  const outcomes = new Array<RunSummary | undefined>(identities.length);
-  let nextIndex = 0;
+  return { runs: response.runs, activity: response.workflowActivity ?? [] };
+}
 
-  async function collectNext(): Promise<void> {
-    while (nextIndex < identities.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const { gaggle, name } = identities[index];
-      const response = await client.listRuns(
-        { gaggle, workflow: name, limit: WORKFLOW_RUN_LIMIT },
-        { signal },
-      );
-      outcomes[index] = latestWorkflowOutcome(response.runs, gaggle, name);
-    }
+function applyWorkflowActivity(
+  inventories: GaggleInventory[],
+  activity: WorkflowRunActivity[],
+): GaggleInventory[] {
+  const activeRuns = new Map(
+    activity.map((item) => [`${item.gaggle}\u0000${item.workflow}`, item.activeRuns]),
+  );
+  const gaggleActiveRuns = new Map<string, number>();
+  for (const item of activity) {
+    gaggleActiveRuns.set(
+      item.gaggle,
+      (gaggleActiveRuns.get(item.gaggle) ?? 0) + item.activeRuns,
+    );
   }
-
-  await Promise.all(
-    Array.from(
-      { length: Math.min(WORKFLOW_OUTCOME_CONCURRENCY, identities.length) },
-      collectNext,
-    ),
-  );
-  return outcomes.filter((run): run is RunSummary => run !== undefined);
+  return inventories.map((inventory) => {
+    const workflows = inventory.workflows.map((workflow) => {
+      const workflowActiveRuns =
+        activeRuns.get(
+          `${workflow.identity.gaggle}\u0000${workflow.identity.name}`,
+        ) ?? 0;
+      return {
+        ...workflow,
+        concurrency: {
+          ...workflow.concurrency,
+          activeRuns: workflowActiveRuns,
+        },
+      };
+    });
+    return {
+      ...inventory,
+      gaggle: {
+        ...inventory.gaggle,
+        activeRunCount: gaggleActiveRuns.get(inventory.gaggle.name) ?? 0,
+      },
+      workflows,
+    };
+  });
 }
 
 function nextCursor(value: string, seen: Set<string>): string {
@@ -702,18 +780,47 @@ async function loadOperationalInventory(
   client: DaemonClient,
   cache?: SessionDataCache,
   signal?: AbortSignal,
+  scope?: OperationalScope,
 ): Promise<GaggleInventory[]> {
   const gaggles = await loadGaggles(client, cache, signal);
+  const scopedGaggles = scope?.gaggle
+    ? gaggles.filter((gaggle) => gaggle.name === scope.gaggle)
+    : gaggles;
   return Promise.all(
-    gaggles.map(async (gaggle) => {
+    scopedGaggles.map(async (gaggle) => {
       const [goobers, workflows, connections] = await Promise.all([
         loadGoobers(client, gaggle.name, cache, signal),
         loadWorkflows(client, gaggle.name, cache, signal),
         loadConnections(client, gaggle.name, cache, signal),
       ]);
-      return { gaggle, goobers, workflows, connections };
+      return {
+        gaggle,
+        goobers,
+        workflows: scope?.workflow
+          ? workflows.filter((item) => item.identity.name === scope.workflow)
+          : workflows,
+        connections,
+      };
     }),
   );
+}
+
+function operationalSnapshotCacheKey(scope: OperationalScope): string {
+  return dataCacheKey(
+    "operational-snapshot",
+    scope.gaggle ?? "",
+    scope.workflow ?? "",
+  );
+}
+
+function operationalSnapshotDependencies(
+  scope: OperationalScope,
+): readonly DataCacheDependency[] {
+  return [
+    { model: "instance" },
+    { model: "workflow", gaggle: scope.gaggle, workflow: scope.workflow },
+    { model: "run", gaggle: scope.gaggle, workflow: scope.workflow },
+  ];
 }
 
 function loadGaggles(

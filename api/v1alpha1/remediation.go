@@ -134,3 +134,48 @@ type RemediationIssue struct {
 	URL       string    `json:"url,omitempty"`
 	Integrity Integrity `json:"integrity"`
 }
+
+// remediationBriefVersions lists every wire identifier this build can read,
+// newest first. Older briefs are accepted and migrated rather than rejected:
+// a run that produced a v1 or v2 gather artifact before this binary deployed
+// must still resume into a later gatherer, which is the compatibility contract
+// the retained v1/v2 schemas document.
+var remediationBriefVersions = []string{
+	RemediationBriefVersion,
+	"goobers.dev/remediation-brief/v2",
+	"goobers.dev/remediation-brief/v1",
+}
+
+// SupportedRemediationBriefVersions returns the readable wire identifiers.
+func SupportedRemediationBriefVersions() []string {
+	out := make([]string, len(remediationBriefVersions))
+	copy(out, remediationBriefVersions)
+	return out
+}
+
+// SupportedRemediationBriefVersion reports whether schema is a wire identifier
+// this build can read.
+func SupportedRemediationBriefVersion(schema string) bool {
+	for _, known := range remediationBriefVersions {
+		if schema == known {
+			return true
+		}
+	}
+	return false
+}
+
+// MigrateRemediationBrief conservatively upgrades a brief decoded from an older
+// wire version. Provenance introduced by v3 is absent in v1/v2, and an absent
+// grade must not read as trusted — it becomes unapproved, the weakest grade, so
+// a stage declaring a minimum refuses it rather than silently admitting
+// pre-provenance content.
+func MigrateRemediationBrief(brief RemediationBrief, schema string) RemediationBrief {
+	if schema == RemediationBriefVersion {
+		return brief
+	}
+	if brief.Integrity == "" {
+		brief.Integrity = IntegrityUnapproved
+	}
+	brief.Schema = RemediationBriefVersion
+	return brief
+}

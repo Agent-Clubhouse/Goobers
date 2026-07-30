@@ -379,7 +379,7 @@ func (r *Runner) runConcurrentParallel(
 			continue
 		}
 		for stage, outputs := range outcome.completed {
-			mergedCompleted.record(stage, outputs)
+			mergedCompleted.put(stage, outputs)
 		}
 		if outcome.lastStage != "" {
 			lastStage, lastResult = outcome.lastStage, outcome.lastResult
@@ -590,7 +590,7 @@ func (r *Runner) runParallelBranch(
 			if stageResult.Status == apiv1.ResultFailure && task.ContinueOnError {
 				result.completed.clear(task.Name)
 			} else {
-				result.completed.record(task.Name, stageResult.Outputs)
+				result.completed.record(task.Name, stageResult.Outputs, stageResult.Integrity)
 			}
 			if stageResult.Status != apiv1.ResultFailure || !task.ContinueOnError {
 				if rebound := rebindWorkspaceBranch(task, stageResult, r.branchNamespaceFor(in.Gaggle)); rebound != "" {
@@ -889,16 +889,16 @@ func lastParallelBoundary(events []journal.Event) (journal.Event, bool) {
 
 func branchStageOutputs(base stageOutputs, history []journal.Event, machine *workflow.Machine) stageOutputs {
 	out := cloneStageOutputs(base)
-	for stage, outputs := range reconstructStageOutputs(history, machine) {
-		out.record(stage, outputs)
+	for stage, produced := range reconstructStageOutputs(history, machine) {
+		out.put(stage, produced)
 	}
 	return out
 }
 
 func cloneStageOutputs(in stageOutputs) stageOutputs {
 	out := stageOutputs{}
-	for stage, outputs := range in {
-		out.record(stage, outputs)
+	for stage, produced := range in {
+		out.put(stage, produced)
 	}
 	return out
 }

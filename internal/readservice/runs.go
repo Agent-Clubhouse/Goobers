@@ -107,23 +107,32 @@ func NewOfflineRuns(layout instance.Layout) (OfflineRuns, error) {
 
 // RunListOptions controls deterministic run filtering and keyset pagination.
 type RunListOptions struct {
-	Gaggle          string
-	Workflow        string
-	Stage           string
-	Outcome         OutcomeFilter
-	StagePopulation StagePopulation
-	Phase           journal.RunPhase
-	Trigger         journal.TriggerKind
-	Since           time.Time
-	Until           time.Time
-	Limit           int
-	Cursor          string
+	Gaggle            string
+	Workflow          string
+	Stage             string
+	Outcome           OutcomeFilter
+	StagePopulation   StagePopulation
+	Phase             journal.RunPhase
+	Trigger           journal.TriggerKind
+	Since             time.Time
+	Until             time.Time
+	Limit             int
+	Cursor            string
+	LatestPerWorkflow bool
 }
 
 // RunList is one deterministic page of run summaries.
 type RunList struct {
-	Runs       []RunSummary `json:"runs"`
-	NextCursor string       `json:"nextCursor,omitempty"`
+	Runs             []RunSummary          `json:"runs"`
+	WorkflowActivity []WorkflowRunActivity `json:"workflowActivity,omitempty"`
+	NextCursor       string                `json:"nextCursor,omitempty"`
+}
+
+// WorkflowRunActivity is the current durable active-run count for one workflow.
+type WorkflowRunActivity struct {
+	Gaggle     string `json:"gaggle"`
+	Workflow   string `json:"workflow"`
+	ActiveRuns int    `json:"activeRuns"`
 }
 
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
@@ -330,6 +339,37 @@ type runRead struct {
 // ListRuns returns newest-first summaries, with RunID ascending as the stable
 // tie-breaker.
 func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, error) {
+	if options.LatestPerWorkflow {
+		if options.Stage != "" ||
+			options.Outcome != "" ||
+			options.StagePopulation != "" ||
+			options.Phase != "" ||
+			options.Trigger != "" ||
+			!options.Since.IsZero() ||
+			!options.Until.IsZero() ||
+			options.Limit != 0 ||
+			options.Cursor != "" {
+			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
+		}
+		var (
+			result RunList
+			err    error
+		)
+		if s.sources.Telemetry != nil {
+			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
+		} else {
+			result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
+		}
+		if err != nil {
+			return RunList{}, err
+		}
+		result.WorkflowActivity, err = s.workflowRunActivity(ctx, options)
+		if err != nil {
+			return RunList{}, err
+		}
+		return result, nil
+	}
+
 	limit := options.Limit
 	if limit == 0 {
 		limit = defaultRunLimit
@@ -374,6 +414,141 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
 	return s.listRunsScanning(ctx, options, cursor, limit)
+}
+
+func (s *Local) listLatestWorkflowOutcomesScanning(ctx context.Context, options RunListOptions) (RunList, error) {
+	summaries, err := s.runSummaries(ctx, false)
+	if err != nil {
+		return RunList{}, err
+	}
+	return latestWorkflowOutcomes(summaries, options), nil
+}
+
+func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options RunListOptions) (RunList, error) {
+	if err := s.reconcileIndex(ctx); err != nil {
+		return RunList{}, err
+	}
+	refs, err := s.sources.Telemetry.LatestWorkflowRunRefs(options.Gaggle, options.Workflow)
+	if err != nil {
+		return RunList{}, err
+	}
+
+	observedAt := s.now().UTC()
+	summaries := make([]RunSummary, 0, len(refs))
+	for _, ref := range refs {
+		summary, err := s.latestTerminalWorkflowOutcome(ctx, ref, observedAt)
+		if err != nil {
+			return RunList{}, err
+		}
+		if summary != nil {
+			summaries = append(summaries, *summary)
+		}
+	}
+	return latestWorkflowOutcomes(summaries, options), nil
+}
+
+func (s *Local) latestTerminalWorkflowOutcome(
+	ctx context.Context,
+	workflowRef rollup.WorkflowRunRef,
+	observedAt time.Time,
+) (*RunSummary, error) {
+	refs := []rollup.RunRef{workflowRef.RunRef}
+	for {
+		for _, ref := range refs {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			run, err := s.openRun(ref.RunID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+			summary, err := summarizeRunForStage(run, observedAt, "")
+			if err != nil {
+				return nil, fmt.Errorf("summarize run %q: %w", ref.RunID, err)
+			}
+			if summary.Terminal {
+				return &summary, nil
+			}
+		}
+
+		cursor := refs[len(refs)-1]
+		var err error
+		refs, err = s.sources.Telemetry.RunRefPage(
+			rollup.RunListFilter{
+				Gaggle:   workflowRef.Gaggle,
+				Workflow: workflowRef.Workflow,
+			},
+			cursor.StartedAt,
+			cursor.RunID,
+			defaultRunLimit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(refs) == 0 {
+			return nil, nil
+		}
+	}
+}
+
+func latestWorkflowOutcomes(summaries []RunSummary, options RunListOptions) RunList {
+	runs := make([]RunSummary, 0, len(summaries))
+	seen := make(map[string]struct{}, len(summaries))
+	for _, summary := range summaries {
+		if !summary.Terminal ||
+			(options.Gaggle != "" && summary.Gaggle != options.Gaggle) ||
+			(options.Workflow != "" && summary.Workflow != options.Workflow) {
+			continue
+		}
+		key := summary.Gaggle + "\x00" + summary.Workflow
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		runs = append(runs, summary)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].ID < runs[j].ID
+		}
+		return runs[i].StartedAt.After(runs[j].StartedAt)
+	})
+	return RunList{Runs: runs}
+}
+
+func (s *Local) workflowRunActivity(
+	ctx context.Context,
+	options RunListOptions,
+) ([]WorkflowRunActivity, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	counts, err := s.activeRunCounts()
+	if err != nil {
+		return nil, err
+	}
+	activity := make([]WorkflowRunActivity, 0, len(counts))
+	for identity, activeRuns := range counts {
+		if (options.Gaggle != "" && identity.Gaggle != options.Gaggle) ||
+			(options.Workflow != "" && identity.Workflow != options.Workflow) {
+			continue
+		}
+		activity = append(activity, WorkflowRunActivity{
+			Gaggle:     identity.Gaggle,
+			Workflow:   identity.Workflow,
+			ActiveRuns: activeRuns,
+		})
+	}
+	sort.Slice(activity, func(i, j int) bool {
+		if activity[i].Gaggle == activity[j].Gaggle {
+			return activity[i].Workflow < activity[j].Workflow
+		}
+		return activity[i].Gaggle < activity[j].Gaggle
+	})
+	return activity, ctx.Err()
 }
 
 // runMatches reports whether summary satisfies every option filter. The

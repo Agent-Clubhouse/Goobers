@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -22,6 +23,39 @@ const (
 // when no valid aggregate can be formed.
 func WeakestIntegrity(grades ...Integrity) Integrity {
 	return apiintegrity.Weakest(grades...)
+}
+
+// ValidateResolvedInputIntegrity enforces minimum over inputsFrom values that
+// have already been resolved to a producing stage.
+//
+// Outputs are bare scalars and carry no provenance of their own (see
+// ResultEnvelope.Outputs), so each entry here is keyed by the consuming input
+// name and graded by the ResultEnvelope.Integrity of the stage that produced it.
+// A stage with no recorded grade fails closed, the same as an unlabeled context
+// pointer: an unlabeled input is exactly the case an attacker would arrange.
+//
+// This is the second half of ValidateInputIntegrity. Both must run before a
+// stage is provisioned, because provisioning is what hands the stage a workspace
+// and credentials (TBH-4).
+func ValidateResolvedInputIntegrity(inputs map[string]Integrity, minimum Integrity) error {
+	if minimum == "" {
+		return nil
+	}
+	if !minimum.Valid() {
+		return &IntegrityAdmissionError{Input: "minimumIntegrity", Minimum: minimum, Reason: "unknown minimum integrity"}
+	}
+	// Sorted so a stage with several failing inputs always names the same one.
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := admitIntegrity(name, inputs[name], minimum); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IntegrityAdmissionErrorCode is journaled when a stage refuses input below its

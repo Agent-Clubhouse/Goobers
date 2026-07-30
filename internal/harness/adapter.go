@@ -92,8 +92,8 @@ type RunRequest struct {
 	// TelemetryDir is the writable, stage-scoped directory exposed to harness
 	// subprocesses as GOOBERS_TELEMETRY_DIR.
 	TelemetryDir string
-	// Credentials is pre-scoped to Envelope.Capabilities: Token(ctx, cap)
-	// fails closed for anything not declared for this stage.
+	// Credentials is pre-scoped to Envelope.Capabilities plus BYO refs declared
+	// by MCPServers. Token fails closed for anything outside that set.
 	Credentials *credentials.Set
 	// ContextPaths maps a resolved ContextPointer's Name to the
 	// workspace-relative path its in-journal artifact bytes were

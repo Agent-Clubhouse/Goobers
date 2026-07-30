@@ -148,6 +148,7 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 			Message:   "a retryable failure",
 			Retryable: true,
 		},
+		Integrity: apiv1.IntegrityDerived,
 	}
 }
 

@@ -273,6 +273,9 @@ func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt i
 		Type: journal.EventStageFinished, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Status: string(result.Status), Error: resultErrorDetail(result),
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
+		// Mirrors the local runner's stage.finished: the produced provenance is
+		// normative, so it must appear identically in both journals (TBH-4).
+		Integrity: result.Integrity,
 	})
 }
 

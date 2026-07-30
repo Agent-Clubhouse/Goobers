@@ -244,7 +244,7 @@ func listenDashboard(port dashboardPort) (net.Listener, error) {
 		if !port.auto {
 			return nil, fmt.Errorf("dashboard port %d is unavailable: %w; use --port=auto to try the next available port", number, err)
 		}
-		if !dashboardAddressInUse(err) {
+		if !dashboardPortUnavailable(err) {
 			return nil, fmt.Errorf("listen for dashboard on %s: %w", address, err)
 		}
 	}
