@@ -181,6 +181,12 @@ func TestCIPollExecutor_FailureEvidenceRoundTrip(t *testing.T) {
 	if len(result.Artifacts) != 1 || result.Artifacts[0].MediaType != "application/json" {
 		t.Fatalf("artifacts = %+v, want one JSON artifact", result.Artifacts)
 	}
+	if got := recorder.integrity[CIChecksArtifactName]; got != apiv1.IntegrityUnapproved {
+		t.Fatalf("recorded artifact integrity = %q, want %q", got, apiv1.IntegrityUnapproved)
+	}
+	if got := result.Artifacts[0].Integrity; got != apiv1.IntegrityUnapproved {
+		t.Fatalf("result artifact integrity = %q, want %q", got, apiv1.IntegrityUnapproved)
+	}
 	data := recorder.recorded[CIChecksArtifactName]
 	if result.Artifacts[0].Digest != journal.Digest(data) {
 		t.Fatalf("artifact digest = %q, want digest of recorded bytes", result.Artifacts[0].Digest)
@@ -197,6 +203,28 @@ func TestCIPollExecutor_FailureEvidenceRoundTrip(t *testing.T) {
 	}
 	if artifact.Metadata.Truncated {
 		t.Fatalf("metadata = %+v, want no truncation", artifact.Metadata)
+	}
+}
+
+type artifactOnlyRecorder struct{}
+
+func (artifactOnlyRecorder) RecordArtifact(string, []byte) (journal.Ref, error) {
+	return journal.Ref{}, nil
+}
+
+func TestCIPollExecutor_FailureEvidenceRequiresIntegrityRecorder(t *testing.T) {
+	poller := &fakePoller{
+		results: []providers.CheckState{providers.CheckStateFailing},
+		checks:  []providers.CheckDetail{{Name: "unit", State: providers.CheckStateFailing}},
+	}
+	exec, err := NewCIPollExecutor(poller, artifactOnlyRecorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err == nil || !strings.Contains(err.Error(), "integrity recorder is unavailable") {
+		t.Fatalf("Run error = %v, want missing integrity recorder failure", err)
 	}
 }
 

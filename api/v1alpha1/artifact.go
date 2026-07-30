@@ -59,6 +59,8 @@ type ArtifactPointer struct {
 	MediaType string `json:"mediaType,omitempty"`
 	// Size is the byte length of the artifact, when known. Advisory.
 	Size int64 `json:"size,omitempty"`
+	// Integrity records the artifact's provenance independently of its bytes.
+	Integrity Integrity `json:"integrity,omitempty"`
 }
 
 // ContextPointer is one read-only input handed to a stage in its invocation. It
@@ -75,6 +77,8 @@ type ContextPointer struct {
 	// BranchName is the producing branch's declared name. It is paired with
 	// Branch so join logic can use a stable id while agents see the authored name.
 	BranchName string `json:"branchName,omitempty"`
+	// Integrity is the provenance grade the consumer admission check evaluates.
+	Integrity Integrity `json:"integrity,omitempty"`
 	// Artifact points at an in-journal artifact. Mutually exclusive with External.
 	Artifact *ArtifactPointer `json:"artifact,omitempty"`
 	// External points at a resource outside the journal (e.g. an issue/PR URL).
@@ -116,6 +120,9 @@ func Digest(b []byte) string {
 func (p ArtifactPointer) Validate() error {
 	if _, err := containedPath("", p.Path); err != nil {
 		return err
+	}
+	if p.Integrity != "" && !p.Integrity.Valid() {
+		return fmt.Errorf("artifact integrity %q is unknown", p.Integrity)
 	}
 	return validateDigest(p.Digest)
 }
@@ -172,6 +179,7 @@ func WriteArtifact(journalRoot, relPath string, data []byte, mediaType string) (
 		Digest:    Digest(data),
 		MediaType: mediaType,
 		Size:      int64(len(data)),
+		Integrity: IntegrityDerived,
 	}, nil
 }
 
@@ -190,10 +198,16 @@ func (c ContextPointer) Validate() error {
 	if c.Branch > 0 && c.Artifact == nil {
 		return fmt.Errorf("context pointer %q: branch attribution is only valid for artifacts", c.Name)
 	}
+	if c.Integrity != "" && !c.Integrity.Valid() {
+		return fmt.Errorf("context pointer %q: integrity %q is unknown", c.Name, c.Integrity)
+	}
 	switch {
 	case c.Artifact != nil && c.External != nil:
 		return fmt.Errorf("context pointer %q: artifact and external are mutually exclusive", c.Name)
 	case c.Artifact != nil:
+		if c.Integrity != "" && c.Artifact.Integrity != "" && c.Integrity != c.Artifact.Integrity {
+			return fmt.Errorf("context pointer %q: integrity %q contradicts artifact integrity %q", c.Name, c.Integrity, c.Artifact.Integrity)
+		}
 		return c.Artifact.Validate()
 	case c.External != nil:
 		if strings.TrimSpace(c.External.URI) == "" {

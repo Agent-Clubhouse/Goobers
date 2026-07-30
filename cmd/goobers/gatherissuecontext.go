@@ -77,6 +77,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	issues := make([]apiv1.RemediationIssue, 0)
+	integrities := []apiv1.Integrity{brief.Integrity}
 	prs, err := prProvider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository:     repo,
 		Base:           brief.Base,
@@ -91,6 +92,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		if fmt.Sprint(pr.Number) == brief.SelectedNumber {
 			prBody = pr.Body
 			foundPR = true
+			integrities = append(integrities, pr.Integrity)
 			break
 		}
 	}
@@ -109,15 +111,18 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 				return failProviderStage(stderr, fmt.Sprintf("read originating issue #%s", number), issueErr, remediationBriefResultFile)
 			}
 			issues = append(issues, apiv1.RemediationIssue{
-				Number: number,
-				Title:  item.Title,
-				Body:   item.Body,
-				URL:    item.URL,
+				Number:    number,
+				Title:     item.Title,
+				Body:      item.Body,
+				URL:       item.URL,
+				Integrity: item.Integrity,
 			})
+			integrities = append(integrities, item.Integrity)
 		}
 	}
 
 	brief.GatherIssueContext = &apiv1.RemediationIssueContext{Issues: issues}
+	brief.Integrity = apiv1.WeakestIntegrity(integrities...)
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
 	data, err := json.MarshalIndent(brief, "", "  ")
 	if err != nil {
@@ -171,15 +176,21 @@ func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, err
 		if !strings.HasPrefix(header.Schema, "goobers.dev/remediation-brief/") {
 			continue
 		}
-		if header.Schema != apiv1.RemediationBriefVersion {
+		if !apiv1.SupportedRemediationBriefVersion(header.Schema) {
 			return apiv1.RemediationBrief{}, fmt.Errorf(
-				"%s schema is %q, want %q",
-				event.Name, header.Schema, apiv1.RemediationBriefVersion,
+				"%s schema is %q, want one of %s",
+				event.Name, header.Schema, strings.Join(apiv1.SupportedRemediationBriefVersions(), ", "),
 			)
 		}
 		if err := json.Unmarshal(data, &latest); err != nil {
 			return apiv1.RemediationBrief{}, fmt.Errorf("unmarshal %s: %w", event.Name, err)
 		}
+		// A brief written by an older gatherer predates the TBH-4 provenance
+		// fields, so they decode as empty. Default them to unapproved rather
+		// than rejecting the artifact: a run that produced a v1/v2 brief before
+		// this binary deployed must still be able to resume, and an unlabeled
+		// grade must fail closed at admission rather than pass as trusted.
+		latest = apiv1.MigrateRemediationBrief(latest, header.Schema)
 		found = true
 	}
 	if !found {

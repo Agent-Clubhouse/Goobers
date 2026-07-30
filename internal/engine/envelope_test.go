@@ -404,7 +404,10 @@ func TestGateVerdictSurfacesAsRepassContextPointer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ArtifactRef: %v", err)
 	}
-	want := apiv1.ArtifactPointer{Path: wantRef.Path, Digest: wantRef.Digest, Size: wantRef.Size, MediaType: "application/json"}
+	want := apiv1.ArtifactPointer{
+		Path: wantRef.Path, Digest: wantRef.Digest, Size: wantRef.Size,
+		MediaType: "application/json", Integrity: apiv1.IntegrityDerived,
+	}
 	if *got.Artifact != want {
 		t.Errorf("verdict pointer = %+v, want %+v (the projection's committed address)", *got.Artifact, want)
 	}

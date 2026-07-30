@@ -928,8 +928,12 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 				continue
 			}
 			record(e.Branch, []apiv1.ContextPointer{{
-				Name:     e.Gate + ".verdict",
-				Artifact: &apiv1.ArtifactPointer{Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size, MediaType: "application/json"},
+				Name:      e.Gate + ".verdict",
+				Integrity: e.Ref.Integrity,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+					MediaType: "application/json", Integrity: e.Ref.Integrity,
+				},
 			}})
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
@@ -1056,9 +1060,10 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			default:
 				if event.Ref != nil {
 					record(branch, nil, []apiv1.ContextPointer{{
-						Name: event.Gate + ".verdict",
+						Name: event.Gate + ".verdict", Integrity: event.Ref.Integrity,
 						Artifact: &apiv1.ArtifactPointer{
-							Path: event.Ref.Path, Digest: event.Ref.Digest, Size: event.Ref.Size, MediaType: "application/json",
+							Path: event.Ref.Path, Digest: event.Ref.Digest, Size: event.Ref.Size,
+							MediaType: "application/json", Integrity: event.Ref.Integrity,
 						},
 					}})
 				}

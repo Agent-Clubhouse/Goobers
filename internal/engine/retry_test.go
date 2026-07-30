@@ -268,6 +268,27 @@ func TestAttemptFailureClass(t *testing.T) {
 	}
 }
 
+func TestNormalizeArtifactIntegrityUsesRunnerOwnedAgenticGrade(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType apiv1.TaskType
+		input    apiv1.Integrity
+		want     apiv1.Integrity
+	}{
+		{name: "agent cannot claim trusted", taskType: apiv1.TaskAgentic, input: apiv1.IntegrityTrusted, want: apiv1.IntegrityDerived},
+		{name: "provider grade survives deterministic stage", taskType: apiv1.TaskDeterministic, input: apiv1.IntegrityUnapproved, want: apiv1.IntegrityUnapproved},
+		{name: "missing deterministic grade defaults closed", taskType: apiv1.TaskDeterministic, want: apiv1.IntegrityDerived},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifacts := normalizeArtifactIntegrity(test.taskType, []apiv1.ArtifactPointer{{Integrity: test.input}})
+			if got := artifacts[0].Integrity; got != test.want {
+				t.Fatalf("integrity = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func persistentFailures(err error, n int) []error {
 	out := make([]error, n)
 	for i := range out {

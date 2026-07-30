@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
 // prDetailHandler serves a single-PR GET with the reviewers and project identity
@@ -184,6 +186,9 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			}
 			if result.ReviewDecision != tc.wantReview {
 				t.Fatalf("ReviewDecision = %q, want %q", result.ReviewDecision, tc.wantReview)
+			}
+			if result.Integrity != apiintegrity.Unapproved {
+				t.Fatalf("Integrity = %q, want unapproved", result.Integrity)
 			}
 			gotNames := make([]string, 0, len(result.Checks))
 			for _, c := range result.Checks {

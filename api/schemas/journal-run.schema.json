@@ -53,6 +53,11 @@
         "required": ["name", "ref"],
         "properties": {
           "name": { "type": "string", "minLength": 1 },
+          "integrity": {
+            "type": "string",
+            "enum": ["trusted", "maintainer", "unapproved", "derived"],
+            "description": "Provenance grade of this immutable input snapshot."
+          },
           "ref": {
             "type": "object",
             "additionalProperties": false,
@@ -61,7 +66,12 @@
               "path": { "type": "string", "minLength": 1 },
               "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
               "size": { "type": "integer", "minimum": 0 },
-              "mediaType": { "type": "string" }
+              "mediaType": { "type": "string" },
+              "integrity": {
+                "type": "string",
+                "enum": ["trusted", "maintainer", "unapproved", "derived"],
+                "description": "Provenance grade of this snapshot's content blob."
+              }
             }
           }
         }

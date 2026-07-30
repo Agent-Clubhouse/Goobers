@@ -2,53 +2,108 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/result.schema.json",
   "title": "ResultEnvelope",
-  "description": "The V0 stage result envelope the runner acts on; consumed by gates and telemetry (ARCHITECTURE.md §5). Bulk outputs are artifact pointers; outputs carries scalars only.",
+  "description": "The V0 stage result envelope the runner acts on; consumed by gates and telemetry (ARCHITECTURE.md \u00a75). Bulk outputs are artifact pointers; outputs carries scalars only.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status"],
+  "required": [
+    "status"
+  ],
   "properties": {
-    "status": { "type": "string", "enum": ["success", "failure", "blocked", "no-work"] },
+    "status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "blocked",
+        "no-work"
+      ]
+    },
     "outputs": {
       "type": "object",
-      "description": "Small declared scalar values only. Anything larger is an artifact, referenced by pointer — state does not travel through outputs.",
+      "description": "Small declared scalar values only. Anything larger is an artifact, referenced by pointer \u2014 state does not travel through outputs.",
       "additionalProperties": {
-        "type": ["string", "number", "integer", "boolean", "null"]
+        "type": [
+          "string",
+          "number",
+          "integer",
+          "boolean",
+          "null"
+        ]
       }
     },
     "artifacts": {
       "type": "array",
-      "items": { "$ref": "artifact-pointer.schema.json" }
+      "items": {
+        "$ref": "artifact-pointer.schema.json"
+      }
     },
     "transcript": {
       "description": "Runner-captured transcript for this agentic attempt. Diagnostic only; unlike artifacts, it is not passed to downstream stages.",
       "$ref": "artifact-pointer.schema.json"
     },
-    "summary": { "type": "string" },
+    "summary": {
+      "type": "string"
+    },
     "metrics": {
       "type": "object",
-      "additionalProperties": { "type": "number" }
+      "additionalProperties": {
+        "type": "number"
+      }
     },
-    "error": { "$ref": "#/$defs/errorInfo" }
+    "error": {
+      "$ref": "#/$defs/errorInfo"
+    },
+    "integrity": {
+      "type": "string",
+      "enum": [
+        "trusted",
+        "maintainer",
+        "unapproved",
+        "derived"
+      ],
+      "description": "Provenance of the content this stage produced: the weakest grade among the inputs it was admitted with. Downstream stages resolving inputsFrom grade against this, because outputs are bare scalars that carry no label of their own."
+    }
   },
   "allOf": [
     {
       "comment": "A failure result must carry error detail.",
       "if": {
-        "properties": { "status": { "const": "failure" } },
-        "required": ["status"]
+        "properties": {
+          "status": {
+            "const": "failure"
+          }
+        },
+        "required": [
+          "status"
+        ]
       },
-      "then": { "required": ["error"] }
+      "then": {
+        "required": [
+          "error"
+        ]
+      }
     }
   ],
   "$defs": {
     "errorInfo": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": { "type": "string", "minLength": 1 },
-        "message": { "type": "string", "minLength": 1 },
-        "retryable": { "type": "boolean" }
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        }
       }
     }
   }

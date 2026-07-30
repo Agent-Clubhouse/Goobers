@@ -34,12 +34,24 @@ func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, e
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }
 
+func (j *branchJournal) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return j.run.RecordBranchArtifactWithIntegrity(j.branch, name, data, integrity)
+}
+
 func (j *branchJournal) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
 	return j.run.RecordBranchArtifactBounded(j.branch, name, data, maxBytes)
 }
 
+func (j *branchJournal) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error) {
+	return j.run.RecordBranchArtifactBoundedWithIntegrity(j.branch, name, data, integrity, maxBytes)
+}
+
 func (j *branchJournal) RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchStageArtifact(j.branch, stage, attempt, class, name, data)
+}
+
+func (j *branchJournal) RecordStageArtifactWithIntegrity(stage string, attempt int, class journal.AttemptClass, name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return j.run.RecordBranchStageArtifactWithIntegrity(j.branch, stage, attempt, class, name, data, integrity)
 }
 
 func (j *branchJournal) ObserveActivity()            { j.run.ObserveActivity() }
@@ -367,7 +379,7 @@ func (r *Runner) runConcurrentParallel(
 			continue
 		}
 		for stage, outputs := range outcome.completed {
-			mergedCompleted.record(stage, outputs)
+			mergedCompleted.put(stage, outputs)
 		}
 		if outcome.lastStage != "" {
 			lastStage, lastResult = outcome.lastStage, outcome.lastResult
@@ -578,7 +590,7 @@ func (r *Runner) runParallelBranch(
 			if stageResult.Status == apiv1.ResultFailure && task.ContinueOnError {
 				result.completed.clear(task.Name)
 			} else {
-				result.completed.record(task.Name, stageResult.Outputs)
+				result.completed.record(task.Name, stageResult.Outputs, stageResult.Integrity)
 			}
 			if stageResult.Status != apiv1.ResultFailure || !task.ContinueOnError {
 				if rebound := rebindWorkspaceBranch(task, stageResult, r.branchNamespaceFor(in.Gaggle)); rebound != "" {
@@ -702,7 +714,9 @@ func (r *Runner) runParallelBranch(
 			}
 			if retry {
 				if !replayed && gr.VerdictArtifact != nil {
-					result.pointers = append(result.pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+					result.pointers = append(result.pointers, apiv1.ContextPointer{
+						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+					})
 					result.artifacts++
 					result.produced = true
 				}
@@ -710,7 +724,9 @@ func (r *Runner) runParallelBranch(
 				continue
 			}
 			if !replayed && gr.VerdictArtifact != nil {
-				result.pointers = append(result.pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: gr.VerdictArtifact})
+				result.pointers = append(result.pointers, apiv1.ContextPointer{
+					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+				})
 				result.artifacts++
 				result.produced = true
 			}
@@ -873,16 +889,16 @@ func lastParallelBoundary(events []journal.Event) (journal.Event, bool) {
 
 func branchStageOutputs(base stageOutputs, history []journal.Event, machine *workflow.Machine) stageOutputs {
 	out := cloneStageOutputs(base)
-	for stage, outputs := range reconstructStageOutputs(history, machine) {
-		out.record(stage, outputs)
+	for stage, produced := range reconstructStageOutputs(history, machine) {
+		out.put(stage, produced)
 	}
 	return out
 }
 
 func cloneStageOutputs(in stageOutputs) stageOutputs {
 	out := stageOutputs{}
-	for stage, outputs := range in {
-		out.record(stage, outputs)
+	for stage, produced := range in {
+		out.put(stage, produced)
 	}
 	return out
 }

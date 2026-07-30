@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -27,6 +28,13 @@ type backlogStalenessSignal struct {
 	ThresholdDays            int       `json:"thresholdDays"`
 	LastMeaningfulActivityAt time.Time `json:"lastMeaningfulActivityAt"`
 	AutoCloseEnabled         bool      `json:"autoCloseEnabled"`
+	// Integrity is the weakest provenance among the inputs this signal was
+	// derived from — the work item plus every comment that moved
+	// LastMeaningfulActivityAt. Without it the serialized item kept only the
+	// item's own (often maintainer) grade, so an unapproved commenter could
+	// move stale/ageDays and have the result admitted as maintainer input
+	// (TBH-4).
+	Integrity apiv1.Integrity `json:"integrity,omitempty"`
 }
 
 type curationClaimedItem struct {
@@ -102,12 +110,21 @@ func calculateBacklogStaleness(
 	} else if item.UpdatedAt != nil {
 		lastActivity = *item.UpdatedAt
 	}
+	// The item's own grade plus each contributing comment's; aggregated below.
+	grades := []apiv1.Integrity{}
+	if item.Integrity != "" {
+		grades = append(grades, item.Integrity)
+	}
 	for _, comment := range comments {
 		if comment.CreatedAt == nil ||
 			strings.EqualFold(comment.AuthorType, "bot") ||
 			strings.EqualFold(comment.Author, botLogin) {
 			continue
 		}
+		// This comment is admitted as staleness evidence, so its provenance
+		// travels with the signal it helps produce — whether or not it ends up
+		// being the latest activity.
+		grades = append(grades, comment.Integrity)
 		if lastActivity.IsZero() || comment.CreatedAt.After(lastActivity) {
 			lastActivity = *comment.CreatedAt
 		}
@@ -126,5 +143,22 @@ func calculateBacklogStaleness(
 		ThresholdDays:            policy.thresholdDays,
 		LastMeaningfulActivityAt: lastActivity.UTC(),
 		AutoCloseEnabled:         policy.autoCloseStale,
+		Integrity:                stalenessIntegrity(grades),
 	}, nil
+}
+
+// stalenessIntegrity aggregates the provenance of everything a staleness signal
+// was derived from. An unlabeled contributor collapses the whole signal to
+// unapproved rather than being skipped: a comment with no grade is exactly the
+// case that must not be admitted as maintainer evidence.
+func stalenessIntegrity(grades []apiv1.Integrity) apiv1.Integrity {
+	if len(grades) == 0 {
+		return ""
+	}
+	for _, grade := range grades {
+		if !grade.Valid() {
+			return apiv1.IntegrityUnapproved
+		}
+	}
+	return apiv1.WeakestIntegrity(grades...)
 }

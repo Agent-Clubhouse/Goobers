@@ -17,8 +17,8 @@ func TestResolveInputsFrom(t *testing.T) {
 		"legacy.dotted.key": "kept",
 	}}
 	completed := stageOutputs{
-		"pr-select": {"selectedNumber": 42, "head": "feature"},
-		"review":    {"reviewDigest": "sha256:abc"},
+		"pr-select": {outputs: map[string]any{"selectedNumber": 42, "head": "feature"}},
+		"review":    {outputs: map[string]any{"reviewDigest": "sha256:abc"}},
 	}
 
 	for _, tc := range []struct {
@@ -81,7 +81,7 @@ func TestResolveInputsFrom(t *testing.T) {
 // silent-wrong-value class the feature exists to remove.
 func TestResolveInputsFromDoesNotFallBackWithinAKnownStage(t *testing.T) {
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]any{"selectedNumber": "wrong"}}
-	completed := stageOutputs{"pr-select": {"other": "x"}}
+	completed := stageOutputs{"pr-select": {outputs: map[string]any{"other": "x"}}}
 
 	if _, ok := resolveInputsFrom("pr-select.selectedNumber", upstream, completed, true); ok {
 		t.Fatal("a qualified reference to a known stage must not fall back to the preceding stage's outputs")
@@ -89,7 +89,7 @@ func TestResolveInputsFromDoesNotFallBackWithinAKnownStage(t *testing.T) {
 }
 
 func TestInputsFromErrorNamesWhatTheStageActuallyEmitted(t *testing.T) {
-	completed := stageOutputs{"pr-select": {"head": "f", "base": "main"}}
+	completed := stageOutputs{"pr-select": {outputs: map[string]any{"head": "f", "base": "main"}}}
 	err := inputsFromError("gather", "pullNumber", "pr-select.selectedNumber", completed, true)
 	if err == nil {
 		t.Fatal("want an error")
@@ -111,10 +111,10 @@ func TestReconstructStageOutputsFromJournal(t *testing.T) {
 		{Type: journal.EventStageFinished, Stage: "gather", Outputs: map[string]any{"files": 3}},
 	}
 	got := reconstructStageOutputs(events, nil)
-	if got["pr-select"]["selectedNumber"] != 7 {
+	if got["pr-select"].outputs["selectedNumber"] != 7 {
 		t.Errorf("pr-select outputs = %#v, want selectedNumber 7", got["pr-select"])
 	}
-	if got["gather"]["files"] != 3 {
+	if got["gather"].outputs["files"] != 3 {
 		t.Errorf("gather outputs = %#v, want files 3", got["gather"])
 	}
 }
@@ -126,7 +126,7 @@ func TestReconstructStageOutputsLastAttemptWins(t *testing.T) {
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Outputs: map[string]any{"digest": "old"}},
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, Outputs: map[string]any{"digest": "new"}},
 	}
-	if got := reconstructStageOutputs(events, nil)["implement"]["digest"]; got != "new" {
+	if got := reconstructStageOutputs(events, nil)["implement"].outputs["digest"]; got != "new" {
 		t.Errorf("digest = %v, want the later attempt's value", got)
 	}
 }
@@ -136,12 +136,12 @@ func TestReconstructStageOutputsEmptyLastAttemptWins(t *testing.T) {
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Outputs: map[string]any{"digest": "old"}},
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 2},
 	}
-	outputs, seen := reconstructStageOutputs(events, nil)["implement"]
+	produced, seen := reconstructStageOutputs(events, nil)["implement"]
 	if !seen {
 		t.Fatal("implement outputs are absent, want the completed empty attempt recorded")
 	}
-	if len(outputs) != 0 {
-		t.Fatalf("implement outputs = %#v, want empty latest attempt", outputs)
+	if len(produced.outputs) != 0 {
+		t.Fatalf("implement outputs = %#v, want empty latest attempt", produced.outputs)
 	}
 }
 
@@ -185,7 +185,7 @@ func TestReconstructStageOutputsClearsContinueOnErrorFailure(t *testing.T) {
 	if _, ok := got["tolerated"]; ok {
 		t.Fatalf("tolerated failure outputs = %#v, want absent", got["tolerated"])
 	}
-	if got["strict"]["value"] != "kept" {
+	if got["strict"].outputs["value"] != "kept" {
 		t.Fatalf("strict failure outputs = %#v, want preserved", got["strict"])
 	}
 }
@@ -209,7 +209,7 @@ func indexOf(haystack, needle string) int {
 // workflows authored against it.
 func TestQualifiedResolutionIsGatedByDSLVersion(t *testing.T) {
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]any{"pr-select.selectedNumber": "literal"}}
-	completed := stageOutputs{"pr-select": {"selectedNumber": 42}}
+	completed := stageOutputs{"pr-select": {outputs: map[string]any{"selectedNumber": 42}}}
 
 	got, ok := resolveInputsFrom("pr-select.selectedNumber", upstream, completed, false)
 	if !ok {

@@ -340,8 +340,11 @@ func TestGatherSiblingContextFatalProviderPathsKeepGenericEnvelope(t *testing.T)
 			if !strings.Contains(message, test.operation) || !strings.Contains(message, "status 422") {
 				t.Fatalf("errorMessage = %q, want operation %q and provider status", message, test.operation)
 			}
-			if len(result) != 3 {
-				t.Fatalf("sibling-context.json = %v, want only the generic provider failure envelope", result)
+			if result["integrity"] != string(apiv1.IntegrityUnapproved) {
+				t.Fatalf("sibling-context.json integrity = %v, want unapproved", result["integrity"])
+			}
+			if len(result) != 4 {
+				t.Fatalf("sibling-context.json = %v, want only the generic provider failure envelope and integrity", result)
 			}
 			for _, field := range gatherSiblingFailConsumerFields {
 				if _, ok := result[field]; ok {
@@ -413,7 +416,11 @@ func TestGatherSiblingContextTerminalBusinessOutcomesAreNoWork(t *testing.T) {
 			}
 
 			result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
-			want := map[string]interface{}{"claimed": false, executor.OutputNoWork: true}
+			want := map[string]interface{}{
+				"claimed":             false,
+				executor.OutputNoWork: true,
+				"integrity":           string(apiv1.IntegrityUnapproved),
+			}
 			if !reflect.DeepEqual(result, want) {
 				t.Fatalf("sibling-context.json = %v, want terminal no-work result %v", result, want)
 			}

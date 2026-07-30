@@ -281,6 +281,26 @@ func structuralProblems(m *Machine) []string {
 		if isStateName(t.Next) && !m.Has(t.Next) {
 			problems = append(problems, fmt.Sprintf("task %q next state %q is not defined", t.Name, t.Next))
 		}
+		if t.MinimumIntegrity != "" && !t.MinimumIntegrity.Valid() {
+			problems = append(problems, fmt.Sprintf(
+				"task %q minimumIntegrity %q is not one of trusted, maintainer, unapproved, derived",
+				t.Name, t.MinimumIntegrity,
+			))
+		}
+		contextSources := make(map[string]bool, len(t.ContextFrom))
+		for _, source := range t.ContextFrom {
+			if contextSources[source] {
+				problems = append(problems, fmt.Sprintf("task %q contextFrom source %q is duplicated", t.Name, source))
+				continue
+			}
+			contextSources[source] = true
+			if _, isTask := m.Task(source); isTask {
+				continue
+			}
+			if _, isGate := m.Gate(source); !isGate {
+				problems = append(problems, fmt.Sprintf("task %q contextFrom source %q is not a defined task or gate", t.Name, source))
+			}
+		}
 		switch t.OnTimeout {
 		case "", apiv1.TaskOnTimeoutFail, apiv1.TaskOnTimeoutSalvage:
 		default:

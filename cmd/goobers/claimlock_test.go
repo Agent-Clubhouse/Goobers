@@ -313,7 +313,14 @@ func TestClaimLockStageHelperProcess(t *testing.T) {
 		if i+1 >= len(os.Args) || os.Args[i+1] != "backlog-query" {
 			os.Exit(2)
 		}
-		os.Exit(runBacklogQuery(os.Args[i+2:], os.Stdout, os.Stderr))
+		os.Exit(runProviderStageCommand(
+			"backlog-query",
+			"claimed-item.json",
+			runBacklogQuery,
+			os.Args[i+2:],
+			os.Stdout,
+			os.Stderr,
+		))
 	}
 	os.Exit(2)
 }
@@ -321,7 +328,13 @@ func TestClaimLockStageHelperProcess(t *testing.T) {
 type claimLockTestRecorder struct{}
 
 func (claimLockTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
-	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+	return claimLockTestRecorder{}.RecordArtifactWithIntegrity(name, data, apiv1.IntegrityDerived)
+}
+
+func (claimLockTestRecorder) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return journal.Ref{
+		Path: name, Digest: journal.Digest(data), Size: int64(len(data)), Integrity: integrity,
+	}, nil
 }
 
 func readSingleSlowClaimLockEvent(t *testing.T, schedulerDir, operation string) journal.Event {

@@ -35,7 +35,7 @@ import (
 //
 // Carried through (1:1 with the BacklogItem wire contract):
 //
-//	ID, Provider, Title, Body, URL, Labels
+//	ID, Provider, Title, Body, URL, Labels, Integrity
 //
 // Intentionally dropped — these stay in the provider layer and are not part of
 // the wire contract: ExternalID, Type, State, Status, Assignee, Links, Parent,
@@ -46,12 +46,17 @@ import (
 // Provider is a direct string-kind conversion: providers.ProviderKind and
 // apiv1.Provider share the same underlying string values ("github", "ado").
 func FromWorkItem(w providers.WorkItem) apiv1.BacklogItem {
+	integrity := w.Integrity
+	if !integrity.Valid() {
+		integrity = apiv1.IntegrityUnapproved
+	}
 	return apiv1.BacklogItem{
-		ID:       w.ID,
-		Provider: apiv1.Provider(w.Provider),
-		Title:    w.Title,
-		Body:     w.Body,
-		URL:      w.URL,
-		Labels:   w.Labels,
+		ID:        w.ID,
+		Provider:  apiv1.Provider(w.Provider),
+		Title:     w.Title,
+		Body:      w.Body,
+		URL:       w.URL,
+		Labels:    w.Labels,
+		Integrity: integrity,
 	}
 }

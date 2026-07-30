@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
@@ -222,6 +223,64 @@ func TestProviderStageCommandWritesEmptySuccessResult(t *testing.T) {
 	assertEmptyProviderStageResult(t, resultFile)
 }
 
+func TestProviderStageCommandAddsConservativeIntegrity(t *testing.T) {
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	code := runProviderStageCommand(
+		"test-provider-stage", "",
+		func(_ []string, _, _ io.Writer) int {
+			if err := os.WriteFile(resultFile, []byte(`{"id":"42"}`), 0o644); err != nil {
+				t.Fatalf("write provider result: %v", err)
+			}
+			return 0
+		},
+		nil, io.Discard, io.Discard,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	result := readProviderStageResult(t, resultFile)
+	if result["integrity"] != string(apiintegrity.Unapproved) {
+		t.Fatalf("integrity = %v, want unapproved", result["integrity"])
+	}
+}
+
+func TestProviderStageCommandPreservesArrayResultShapeAndIntegrity(t *testing.T) {
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	code := runProviderStageCommand(
+		"test-provider-stage", "",
+		func(_ []string, _, _ io.Writer) int {
+			data := []byte(`[{"id":"approved","integrity":"maintainer"},{"id":"unlabeled"}]`)
+			if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+				t.Fatalf("write provider result: %v", err)
+			}
+			return 0
+		},
+		nil, io.Discard, io.Discard,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read provider-stage result: %v", err)
+	}
+	var result []map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode provider-stage array result: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("provider-stage result length = %d, want 2", len(result))
+	}
+	if result[0]["integrity"] != string(apiintegrity.Maintainer) {
+		t.Fatalf("first integrity = %v, want maintainer", result[0]["integrity"])
+	}
+	if result[1]["integrity"] != string(apiintegrity.Unapproved) {
+		t.Fatalf("second integrity = %v, want unapproved", result[1]["integrity"])
+	}
+}
+
 func TestProviderStageCommandPreservesTransientRetryability(t *testing.T) {
 	resultFile := filepath.Join(t.TempDir(), "result.json")
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
@@ -264,8 +323,8 @@ func readProviderStageResult(t *testing.T, path string) map[string]interface{} {
 func assertEmptyProviderStageResult(t *testing.T, path string) {
 	t.Helper()
 	result := readProviderStageResult(t, path)
-	if len(result) != 0 {
-		t.Fatalf("provider-stage result = %v, want empty outputs", result)
+	if len(result) != 1 || result["integrity"] != string(apiintegrity.Unapproved) {
+		t.Fatalf("provider-stage result = %v, want only conservative integrity", result)
 	}
 }
 

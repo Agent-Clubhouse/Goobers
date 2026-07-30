@@ -19,6 +19,7 @@ import (
 func remediationBriefFixture(failing bool) apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
 		SelectedNumber:         "77",
 		Head:                   "goobers/implementation/run-77",
 		Base:                   "main",
@@ -33,7 +34,9 @@ func remediationBriefFixture(failing bool) apiv1.RemediationBrief {
 			Comments: []apiv1.RemediationThreadComment{},
 		},
 		GatherIssueContext: &apiv1.RemediationIssueContext{
-			Issues: []apiv1.RemediationIssue{{Number: "938", Title: "CI evidence", Body: "Surface why CI failed."}},
+			Issues: []apiv1.RemediationIssue{{
+				Number: "938", Title: "CI evidence", Body: "Surface why CI failed.", Integrity: apiv1.IntegrityMaintainer,
+			}},
 		},
 	}
 }

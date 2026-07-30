@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
 const pullRequestReviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -135,7 +137,9 @@ func (p *GitHubProvider) ListPullRequestReviewThreads(ctx context.Context, repo 
 	if err != nil {
 		return PullRequestReviewThreads{}, err
 	}
-	return PullRequestReviewThreads{Reviews: reviews, InlineComments: comments}, nil
+	return PullRequestReviewThreads{
+		Reviews: reviews, InlineComments: comments, Integrity: apiintegrity.Unapproved,
+	}, nil
 }
 
 func (p *GitHubProvider) listNativePullRequestReviews(ctx context.Context, repo RepositoryRef, pullID string) ([]PullRequestNativeReview, error) {
@@ -158,6 +162,7 @@ func (p *GitHubProvider) listNativePullRequestReviews(ctx context.Context, repo 
 				CommitSHA:   review.CommitID,
 				SubmittedAt: review.SubmittedAt,
 				URL:         review.HTMLURL,
+				Integrity:   apiintegrity.Unapproved,
 			})
 		}
 		return nil
@@ -241,6 +246,7 @@ func pullRequestInlineComments(rawComments []githubInlineReviewComment, states m
 			IsOutdated:        state.IsOutdated,
 			CreatedAt:         comment.CreatedAt,
 			URL:               comment.HTMLURL,
+			Integrity:         apiintegrity.Unapproved,
 		})
 	}
 	return comments, nil

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
@@ -833,6 +834,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Checks:           checks,
 		CommentsSince:    comments,
 		URL:              pr.HTMLURL,
+		Integrity:        apiintegrity.Unapproved,
 	}, nil
 }
 
@@ -1545,10 +1547,7 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 }
 
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
-	labels := make([]string, 0, len(pr.Labels))
-	for _, l := range pr.Labels {
-		labels = append(labels, l.Name)
-	}
+	labels := githubLabelNames(pr.Labels)
 	return PullRequestSummary{
 		ID:         strconv.Itoa(pr.Number),
 		Number:     pr.Number,
@@ -1565,7 +1564,16 @@ func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) Pul
 		CheckState: checkState,
 		UpdatedAt:  pr.UpdatedAt,
 		Body:       pr.Body,
+		Integrity:  apiintegrity.Unapproved,
 	}
+}
+
+func githubLabelNames(labels []githubLabel) []string {
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		names = append(names, label.Name)
+	}
+	return names
 }
 
 // PullRequestFiles lists the files pullID touches — merge-review's
@@ -1599,6 +1607,7 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 		out = append(out, ChangedFile{
 			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
 			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -1669,11 +1678,16 @@ func (p *GitHubProvider) CompareCommits(ctx context.Context, repo RepositoryRef,
 	}); err != nil {
 		return CompareResult{}, err
 	}
-	out := CompareResult{MergeBaseSHA: mergeBaseSHA, Files: make([]ChangedFile, 0, len(files))}
+	out := CompareResult{
+		MergeBaseSHA: mergeBaseSHA,
+		Files:        make([]ChangedFile, 0, len(files)),
+		Integrity:    apiintegrity.Unapproved,
+	}
 	for _, f := range files {
 		out.Files = append(out.Files, ChangedFile{
 			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
 			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
+			Integrity: apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -1807,6 +1821,7 @@ func (p *GitHubProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref
 		failures = append(failures, CIFailureDetail{
 			CheckDetail: check.CheckDetail,
 			Annotations: annotations,
+			Integrity:   apiintegrity.Unapproved,
 		})
 	}
 	return failures, nil
@@ -1937,7 +1952,10 @@ func (p *GitHubProvider) pullRequestComments(ctx context.Context, repo Repositor
 			return fmt.Errorf("decode pull request comments page: %w", err)
 		}
 		for _, c := range raw {
-			comments = append(comments, PullRequestComment{ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL, CreatedAt: c.CreatedAt})
+			comments = append(comments, PullRequestComment{
+				ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL,
+				CreatedAt: c.CreatedAt, Integrity: apiintegrity.Unapproved,
+			})
 		}
 		return nil
 	}); err != nil {
@@ -3069,6 +3087,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Fields:         githubIssueFields(issue),
 		BlockedByCount: blockedByCount,
 		Raw:            issue,
+		Integrity:      apiintegrity.Unapproved,
 	}
 }
 

@@ -101,6 +101,7 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 	brief.GatherCIFailures = &apiv1.RemediationCIFailures{Checks: checks}
+	brief.Integrity = apiv1.WeakestIntegrity(brief.Integrity, apiv1.IntegrityUnapproved)
 	if err := writeRemediationBrief(resultFile, brief); err != nil {
 		pf(stderr, "error: write CI-enriched remediation brief: %v\n", err)
 		return 2

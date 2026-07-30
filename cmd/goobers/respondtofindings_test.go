@@ -37,7 +37,8 @@ func seedRemediationResponseRunState(t *testing.T, root, runID string, verdict a
 		t.Fatalf("create remediation run journal: %v", err)
 	}
 	contextData, err := json.Marshal(apiv1.RemediationBrief{
-		Schema: apiv1.RemediationBriefVersion,
+		Schema:    apiv1.RemediationBriefVersion,
+		Integrity: apiv1.IntegrityUnapproved,
 		GatherPRContext: apiv1.RemediationPRContext{
 			Verdict: &verdict,
 		},
@@ -253,8 +254,13 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 			if err := json.Unmarshal(data, &result); err != nil {
 				t.Fatalf("unmarshal validation result: %v", err)
 			}
-			if tt.wantCode == 0 && len(result) != 0 {
-				t.Errorf("success result = %v, want empty success object", result)
+			if tt.wantCode == 0 {
+				if len(result) != 1 {
+					t.Errorf("success result = %v, want only the integrity label", result)
+				}
+				if got := result["integrity"]; got != string(apiv1.IntegrityUnapproved) {
+					t.Errorf("success integrity = %v, want %q", got, apiv1.IntegrityUnapproved)
+				}
 			}
 		})
 	}
@@ -351,7 +357,13 @@ func TestRespondToFindingsStageHelperProcess(t *testing.T) {
 type respondToFindingsTestRecorder struct{}
 
 func (respondToFindingsTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
-	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+	return respondToFindingsTestRecorder{}.RecordArtifactWithIntegrity(name, data, apiv1.IntegrityDerived)
+}
+
+func (respondToFindingsTestRecorder) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return journal.Ref{
+		Path: name, Digest: journal.Digest(data), Size: int64(len(data)), Integrity: integrity,
+	}, nil
 }
 
 func TestRespondToFindingsDoesNotPostWhenPushWasSkipped(t *testing.T) {

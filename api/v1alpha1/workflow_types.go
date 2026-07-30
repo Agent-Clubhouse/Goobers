@@ -26,6 +26,7 @@ const (
 
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
+// +kubebuilder:validation:XValidation:rule="!has(self.trustLabel) || self.type == 'backlog-item'",message="trustLabel is supported only for type=backlog-item"
 type Trigger struct {
 	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
@@ -34,6 +35,12 @@ type Trigger struct {
 	// values are ignored.
 	// +optional
 	Selector map[string]string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// TrustLabel is the explicit SEC-047 approval label used to classify a
+	// directly triggered backlog item as maintainer integrity. It is never
+	// inferred from Selector, whose labels are routing criteria only.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	TrustLabel string `json:"trustLabel,omitempty" yaml:"trustLabel,omitempty"`
 	// LabelPredicate is a CEL expression over the item's label set. The only
 	// supported operations are string membership in `labels` and boolean
 	// composition with &&, ||, and !. It is ANDed with Selector.
@@ -163,6 +170,18 @@ type Task struct {
 	// closed on an undeclared capability (ARCHITECTURE.md §5, SEC-042).
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// MinimumIntegrity is the lowest provenance grade this task accepts from its
+	// backlog item and context pointers. Empty preserves compatibility by
+	// imposing no integrity admission policy.
+	// +kubebuilder:validation:Enum=trusted;maintainer;unapproved;derived
+	// +optional
+	MinimumIntegrity Integrity `json:"minimumIntegrity,omitempty" yaml:"minimumIntegrity,omitempty"`
+	// ContextFrom limits this task's context pointers to artifacts and verdicts
+	// produced by the named tasks or gates. Empty preserves the historical
+	// behavior of receiving every accumulated pointer.
+	// +kubebuilder:validation:UniqueItems=true
+	// +optional
+	ContextFrom []string `json:"contextFrom,omitempty" yaml:"contextFrom,omitempty"`
 	// PolicyActions declares the closed vocabulary of externally mutating
 	// actions this task may perform because a policy, persona, or verdict
 	// prescribes them. The compiler maps each action to its required credential

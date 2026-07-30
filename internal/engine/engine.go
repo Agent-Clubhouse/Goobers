@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -198,6 +199,7 @@ func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
 }
 
 func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
+	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
@@ -329,7 +331,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				// infer "something needs to change" from git. The local
 				// runner's walk appends the same "<gate>.verdict" pointer on
 				// both its retry route and its advance path.
-				pointers = append(pointers, apiv1.ContextPointer{Name: g.Name + ".verdict", Artifact: verdictArtifact})
+				pointers = append(pointers, apiv1.ContextPointer{
+					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
+				})
 			}
 			state = next
 			continue
@@ -411,6 +415,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
@@ -420,6 +425,24 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	env.MinimumIntegrity = t.MinimumIntegrity
+	// Both admission checks run before dispatch, matching the local runner.
+	// The engine resolves inputsFrom only against the immediately preceding
+	// task, so every such value is graded by that task's produced provenance;
+	// Outputs are bare scalars and carry none of their own (TBH-4).
+	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
+	if integrityErr == nil {
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(
+			engineInputGrades(t, upstreamResult), env.MinimumIntegrity)
+	}
+	if err := integrityErr; err != nil {
+		admission := &apiv1.IntegrityAdmissionError{}
+		if !errors.As(err, &admission) {
+			return apiv1.ResultEnvelope{}, err
+		}
+		rec.integrityRefused(ctx, t.Name, admission)
+		return apiv1.ResultEnvelope{}, fmt.Errorf("engine: refuse stage %q: %w", t.Name, admission)
+	}
 	// InputsFrom overlays the immediately preceding task's declared outputs on
 	// top of the static Inputs (#132). A declared outputKey missing upstream
 	// fails the stage closed — the declaration is a contract, not a hint —
@@ -434,10 +457,15 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		env.Inputs[inputKey] = v
 	}
 	ctx = stageActivityContext(ctx, env.Limits)
+	produced := engineProducedIntegrity(t, env, upstreamResult)
 	if t.Type == apiv1.TaskAgentic {
+		// Graded inside the closure: dispatchWithRetry journals stage.finished
+		// from what the closure returns, so setting it afterwards would leave
+		// the journal ungraded and diverge from the local runner.
 		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 			var res apiv1.ResultEnvelope
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res)
+			res.Integrity = produced
 			return res, err
 		})
 	}
@@ -455,6 +483,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
 		var res apiv1.ResultEnvelope
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)
+		res.Integrity = produced
 		return res, err
 	})
 }
@@ -558,6 +587,15 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	}
 }
 
+func normalizeItemIntegrity(item *apiv1.BacklogItem) *apiv1.BacklogItem {
+	if item == nil || item.Integrity.Valid() {
+		return item
+	}
+	normalized := *item
+	normalized.Integrity = apiv1.IntegrityUnapproved
+	return &normalized
+}
+
 // contextPointersFor converts a finished stage's artifacts into the read-only
 // context pointers handed to downstream stages, mirroring the local runner's
 // contextPointersFor (internal/runner/run.go) so both runners name upstream
@@ -566,9 +604,23 @@ func contextPointersFor(stageName string, artifacts []apiv1.ArtifactPointer) []a
 	out := make([]apiv1.ContextPointer, 0, len(artifacts))
 	for i := range artifacts {
 		a := artifacts[i]
-		out = append(out, apiv1.ContextPointer{Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Artifact: &a})
+		if !a.Integrity.Valid() {
+			a.Integrity = apiv1.IntegrityDerived
+		}
+		out = append(out, apiv1.ContextPointer{
+			Name: fmt.Sprintf("%s.artifact[%d]", stageName, i), Integrity: a.Integrity, Artifact: &a,
+		})
 	}
 	return out
+}
+
+func normalizeArtifactIntegrity(taskType apiv1.TaskType, artifacts []apiv1.ArtifactPointer) []apiv1.ArtifactPointer {
+	for i := range artifacts {
+		if taskType == apiv1.TaskAgentic || !artifacts[i].Integrity.Valid() {
+			artifacts[i].Integrity = apiv1.IntegrityDerived
+		}
+	}
+	return artifacts
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -600,4 +652,47 @@ func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
 		StartToCloseTimeout: timeout,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
+}
+
+// engineInputGrades maps each inputsFrom entry to the provenance of the task
+// that produced it. The engine resolves only against the immediately preceding
+// task's Outputs, so every entry carries that task's grade.
+func engineInputGrades(t apiv1.Task, upstreamResult apiv1.ResultEnvelope) map[string]apiv1.Integrity {
+	if len(t.InputsFrom) == 0 {
+		return nil
+	}
+	grades := make(map[string]apiv1.Integrity, len(t.InputsFrom))
+	for inputKey := range t.InputsFrom {
+		grades[inputKey] = upstreamResult.Integrity
+	}
+	return grades
+}
+
+// engineProducedIntegrity grades what a task emitted, on the same rule the local
+// runner applies: the weakest input it was admitted with, with agentic output
+// always contributing IntegrityDerived.
+func engineProducedIntegrity(t apiv1.Task, env apiv1.InvocationEnvelope, upstreamResult apiv1.ResultEnvelope) apiv1.Integrity {
+	grades := make([]apiv1.Integrity, 0, len(env.ContextPointers)+len(t.InputsFrom)+2)
+	if t.Type == apiv1.TaskAgentic {
+		grades = append(grades, apiv1.IntegrityDerived)
+	}
+	if env.Item != nil && env.Item.Integrity != "" {
+		grades = append(grades, env.Item.Integrity)
+	}
+	for i := range env.ContextPointers {
+		grade := env.ContextPointers[i].Integrity
+		if grade == "" && env.ContextPointers[i].Artifact != nil {
+			grade = env.ContextPointers[i].Artifact.Integrity
+		}
+		if grade != "" {
+			grades = append(grades, grade)
+		}
+	}
+	if len(t.InputsFrom) > 0 && upstreamResult.Integrity != "" {
+		grades = append(grades, upstreamResult.Integrity)
+	}
+	if len(grades) == 0 {
+		return apiv1.IntegrityTrusted
+	}
+	return apiv1.WeakestIntegrity(grades...)
 }

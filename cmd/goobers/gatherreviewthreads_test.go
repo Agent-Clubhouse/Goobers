@@ -41,6 +41,7 @@ func seedReviewThreadsBrief(t *testing.T, root, runID string, brief apiv1.Remedi
 func reviewThreadsBrief() apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
 		SelectedNumber:         "77",
 		Head:                   "goobers/implementation/run-77",
 		Base:                   "main",
@@ -52,7 +53,7 @@ func reviewThreadsBrief() apiv1.RemediationBrief {
 			HeadSHA: "head-sha",
 			BaseSHA: "base-sha",
 			Comments: []apiv1.RemediationThreadComment{
-				{Author: "reviewer", Body: "Keep this issue-level context."},
+				{Author: "reviewer", Body: "Keep this issue-level context.", Integrity: apiv1.IntegrityUnapproved},
 			},
 		},
 		GatherCIFailures: &apiv1.RemediationCIFailures{
@@ -113,12 +114,14 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 		Reviews: []apiv1.RemediationNativeReview{{
 			Author: "goobers-bot", State: "CHANGES_REQUESTED", Body: "Fix this.",
 			CommitSHA: "head-sha", SubmittedAt: "2026-07-23T10:00:00Z", URL: "https://example/reviews/1",
+			Integrity: apiv1.IntegrityUnapproved,
 		}},
 		InlineComments: []apiv1.RemediationInlineComment{{
 			Author: "reviewer", Body: "Guard this write.", Path: "worker.go",
 			Line: 42, OriginalLine: 40, Side: "RIGHT", DiffHunk: "@@ -38,3 +40,5 @@",
 			StartLine: 40, OriginalStartLine: 38, StartSide: "RIGHT",
 			CreatedAt: "2026-07-23T10:05:00Z", URL: "https://example/comments/101",
+			Integrity: apiv1.IntegrityUnapproved,
 		}},
 	}
 	if !reflect.DeepEqual(got, want) {

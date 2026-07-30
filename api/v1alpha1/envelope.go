@@ -19,9 +19,9 @@ package v1alpha1
 // StageContractVersion identifies the version of the stage contract these types
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
-// v1alpha6 admits the optional repoRef.project invocation field for Azure
-// DevOps repository identity.
-const StageContractVersion = "v1alpha6"
+// v1alpha7 adds input-integrity grades to invocations, backlog items, context
+// pointers, and artifacts.
+const StageContractVersion = "v1alpha7"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -87,6 +87,9 @@ type InvocationEnvelope struct {
 	// artifact pointers (upstream outputs, input snapshots) and external refs
 	// (e.g. issue/PR URLs). Pointers only — never upstream result bodies.
 	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
+	// MinimumIntegrity is the lowest provenance grade this stage accepts.
+	// The runner enforces it before dispatch and journals a typed refusal.
+	MinimumIntegrity Integrity `json:"minimumIntegrity,omitempty"`
 	// Capabilities are the capability grants declared by this stage's definition
 	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
 	// credentials for capabilities not listed here are never materialized (§5).
@@ -125,6 +128,9 @@ type BacklogItem struct {
 	URL string `json:"url,omitempty"`
 	// Labels are the item's labels (used by workflow selectors for routing).
 	Labels []string `json:"labels,omitempty"`
+	// Integrity records whether the provider content was maintainer-approved or
+	// remains arbitrary, unapproved input.
+	Integrity Integrity `json:"integrity,omitempty"`
 }
 
 // Limits bound a stage's execution. Zero values mean "no explicit limit".
@@ -201,6 +207,14 @@ type ResultEnvelope struct {
 	Metrics map[string]float64 `json:"metrics,omitempty"`
 	// Error carries failure or blockage detail; omitted for success and no-work.
 	Error *ErrorInfo `json:"error,omitempty"`
+	// Integrity is the provenance of the content this stage produced — the
+	// weakest grade among the inputs it was admitted with. Artifacts carry their
+	// own labels, but Outputs are bare scalars with nowhere to hang provenance,
+	// so a downstream stage resolving inputsFrom grades the producing stage
+	// rather than the value. Without it, a stage could refuse an unapproved
+	// producer's artifact via contextFrom and still import that producer's
+	// provider-authored text through inputsFrom (TBH-4).
+	Integrity Integrity `json:"integrity,omitempty"`
 }
 
 // ErrorInfo describes a stage failure.

@@ -3,10 +3,12 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -122,6 +124,11 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	target := journal.Ref{Path: *blobPath, Digest: journal.Digest(cur), Size: int64(len(cur))}
+	target.Integrity, err = recordedBlobIntegrity(reader, identity, target)
+	if err != nil {
+		pf(stderr, "error: read target blob provenance in run %q: %v\n", resolvedRunID, err)
+		return 2
+	}
 
 	pf(stdout, "run:      %s\n", resolvedRunID)
 	pf(stdout, "workflow: %s\n", identity.Workflow)
@@ -153,6 +160,50 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "  new digest: %s\n", newRef.Digest)
 	pf(stdout, "  stored at:  %s\n", newRef.Path)
 	return 0
+}
+
+func recordedBlobIntegrity(reader *journal.Reader, identity journal.RunIdentity, target journal.Ref) (apiv1.Integrity, error) {
+	var grades []apiv1.Integrity
+	record := func(source string, integrity, refIntegrity apiv1.Integrity) error {
+		if !integrity.Valid() || !refIntegrity.Valid() {
+			return fmt.Errorf("%s has missing or invalid integrity metadata (record %q, ref %q)",
+				source, integrity, refIntegrity)
+		}
+		if integrity != refIntegrity {
+			return fmt.Errorf("%s has contradictory integrity metadata (record %q, ref %q)",
+				source, integrity, refIntegrity)
+		}
+		grades = append(grades, integrity)
+		return nil
+	}
+
+	for _, input := range identity.Inputs {
+		if input.Ref.Path == target.Path && input.Ref.Digest == target.Digest {
+			if err := record(fmt.Sprintf("input %q", input.Name), input.Integrity, input.Ref.Integrity); err != nil {
+				return "", err
+			}
+		}
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", err
+	}
+	for _, event := range events {
+		if event.Ref == nil || event.Ref.Path != target.Path || event.Ref.Digest != target.Digest {
+			continue
+		}
+		if err := record(fmt.Sprintf("event seq %d", event.Seq), event.Integrity, event.Ref.Integrity); err != nil {
+			return "", err
+		}
+	}
+	if len(grades) == 0 {
+		return "", fmt.Errorf("no journal reference matches %q at digest %q", target.Path, target.Digest)
+	}
+	weakest := apiv1.WeakestIntegrity(grades...)
+	if !weakest.Valid() {
+		return "", fmt.Errorf("matching references for %q have no valid aggregate integrity", target.Path)
+	}
+	return weakest, nil
 }
 
 // readSecret returns the exact secret bytes from file (if non-empty) or stdin.

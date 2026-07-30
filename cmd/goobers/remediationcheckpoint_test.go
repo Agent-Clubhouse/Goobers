@@ -1444,6 +1444,7 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 		"selectedNumber":      "77",
 		"head":                "goobers/impl/remediation-364",
 		"headSha":             headSHA,
+		"integrity":           string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want classified result %v", result, want)
@@ -1469,6 +1470,7 @@ func assertTerminalCheckpointResult(t *testing.T, path string, selectedNumber in
 		"selectedNumber":      strconv.Itoa(selectedNumber),
 		"head":                "",
 		"headSha":             "",
+		"integrity":           string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want complete terminal result %v", result, want)

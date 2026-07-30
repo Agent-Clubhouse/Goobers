@@ -9,11 +9,20 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+// stageOutput is one completed stage's journaled Outputs together with the
+// provenance of the content that produced them. Outputs are bare scalars with
+// nowhere to carry a label of their own, so a consumer resolving inputsFrom
+// grades the producing stage (TBH-4).
+type stageOutput struct {
+	outputs   map[string]any
+	integrity apiv1.Integrity
+}
+
 // stageOutputs is every completed stage's journaled Outputs, keyed by stage
 // name. The runner already records these; #562 just makes them addressable.
-type stageOutputs map[string]map[string]any
+type stageOutputs map[string]stageOutput
 
-func (s stageOutputs) record(stage string, outputs map[string]any) {
+func (s stageOutputs) record(stage string, outputs map[string]any, grade apiv1.Integrity) {
 	if stage == "" {
 		return
 	}
@@ -24,7 +33,22 @@ func (s stageOutputs) record(stage string, outputs map[string]any) {
 	for k, v := range outputs {
 		copied[k] = v
 	}
-	s[stage] = copied
+	s[stage] = stageOutput{outputs: copied, integrity: grade}
+}
+
+// put copies an already-recorded stage entry, preserving its provenance. Used
+// when merging one stageOutputs into another (branch fan-in, clones).
+func (s stageOutputs) put(stage string, produced stageOutput) {
+	if stage == "" || s == nil {
+		return
+	}
+	s.record(stage, produced.outputs, produced.integrity)
+}
+
+// integrityOf returns the provenance recorded for a completed stage. An unknown
+// stage returns the zero grade, which fails admission closed.
+func (s stageOutputs) integrityOf(stage string) apiv1.Integrity {
+	return s[stage].integrity
 }
 
 func (s stageOutputs) clear(stage string) {
@@ -53,8 +77,8 @@ func (s stageOutputs) clear(stage string) {
 // backward-compatible.
 func resolveInputsFrom(value string, upstream apiv1.ResultEnvelope, completed stageOutputs, qualified bool) (any, bool) {
 	if stage, key, ok := splitQualified(value); ok && qualified {
-		if outputs, seen := completed[stage]; seen {
-			v, found := outputs[key]
+		if produced, seen := completed[stage]; seen {
+			v, found := produced.outputs[key]
 			return v, found
 		}
 		// The prefix is not a stage that ran — fall through and treat the whole
@@ -62,6 +86,19 @@ func resolveInputsFrom(value string, upstream apiv1.ResultEnvelope, completed st
 	}
 	v, ok := upstream.Outputs[value]
 	return v, ok
+}
+
+// inputsFromIntegrity returns the provenance of whatever resolveInputsFrom would
+// bind for value. It deliberately mirrors that function's branch order rather
+// than re-deriving it: the grade must describe the value actually bound, so if
+// the two ever disagree the admission check would be guarding the wrong stage.
+func inputsFromIntegrity(value string, upstream apiv1.ResultEnvelope, completed stageOutputs, qualified bool) apiv1.Integrity {
+	if stage, _, ok := splitQualified(value); ok && qualified {
+		if _, seen := completed[stage]; seen {
+			return completed.integrityOf(stage)
+		}
+	}
+	return upstream.Integrity
 }
 
 // splitQualified splits "<stage>.<key>" on the FIRST dot. An output key may
@@ -117,12 +154,30 @@ func resolveBranchInput(value string, machine *workflow.Machine, completed stage
 	if ref.stage == "" {
 		ref.stage = singleJoinTerminalTask(machine, branch.start)
 	}
-	outputs, seen := completed[ref.stage]
+	produced, seen := completed[ref.stage]
 	if !seen {
 		return nil, false, true, false
 	}
-	valueOut, found := outputs[ref.key]
+	valueOut, found := produced.outputs[ref.key]
 	return valueOut, found, true, false
+}
+
+// branchInputIntegrity returns the provenance of the branch output
+// resolveBranchInput would bind, or the zero grade when the reference does not
+// resolve to a recorded stage (which fails admission closed).
+func branchInputIntegrity(value string, machine *workflow.Machine, completed stageOutputs, fanIn *parallelExec) apiv1.Integrity {
+	ref, ok := splitBranchInput(value)
+	if !ok || fanIn == nil || ref.parallel != fanIn.spec.Name {
+		return ""
+	}
+	branch := fanIn.branch(ref.branch)
+	if branch == nil {
+		return ""
+	}
+	if ref.stage == "" {
+		ref.stage = singleJoinTerminalTask(machine, branch.start)
+	}
+	return completed.integrityOf(ref.stage)
 }
 
 func singleJoinTerminalTask(machine *workflow.Machine, start string) string {
@@ -156,9 +211,9 @@ func branchInputsFromError(taskName, inputKey, value string) error {
 // rather than silently omitting the input.
 func inputsFromError(taskName, inputKey, value string, completed stageOutputs, qualified bool) error {
 	if stage, key, ok := splitQualified(value); ok && qualified {
-		if outputs, seen := completed[stage]; seen {
+		if produced, seen := completed[stage]; seen {
 			return fmt.Errorf("task %q: inputsFrom %q: stage %q produced no output %q (it emitted: %s)",
-				taskName, inputKey, stage, key, joinKeys(outputs))
+				taskName, inputKey, stage, key, joinKeys(produced.outputs))
 		}
 	}
 	return fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", taskName, inputKey, value)
@@ -216,10 +271,86 @@ func reconstructStageOutputs(events []journal.Event, machine *workflow.Machine) 
 				continue
 			}
 		}
-		out.record(e.Stage, e.Outputs)
+		out.record(e.Stage, e.Outputs, e.Integrity)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// resolvedInputGrades maps each of a task's inputsFrom entries to the provenance
+// of the stage that will produce it, keyed by the consuming input name so an
+// admission failure names the input the workflow author declared.
+//
+// It mirrors dispatchTask's resolution order exactly — branch reference first,
+// then stage-qualified/bare — because a grade that described a different stage
+// than the one actually bound would be worse than no check at all.
+func resolvedInputGrades(
+	t apiv1.Task,
+	machine *workflow.Machine,
+	upstreamResult apiv1.ResultEnvelope,
+	completed stageOutputs,
+	fanIn *parallelExec,
+) map[string]apiv1.Integrity {
+	if len(t.InputsFrom) == 0 {
+		return nil
+	}
+	grades := make(map[string]apiv1.Integrity, len(t.InputsFrom))
+	for inputKey, outputKey := range t.InputsFrom {
+		if _, _, branchRef, absent := resolveBranchInput(outputKey, machine, completed, fanIn); branchRef {
+			if absent {
+				// dispatchTask drops an absent branch input rather than binding
+				// it, so there is no content to grade.
+				continue
+			}
+			grades[inputKey] = branchInputIntegrity(outputKey, machine, completed, fanIn)
+			continue
+		}
+		qualified := workflow.SupportsStageQualifiedInputs(machine)
+		grades[inputKey] = inputsFromIntegrity(outputKey, upstreamResult, completed, qualified)
+	}
+	return grades
+}
+
+// producedIntegrity grades what a stage emitted. Provenance flows with the data:
+// output is only as trustworthy as the weakest input the stage was admitted
+// with, so an agent that reads unapproved text cannot launder it into a
+// maintainer-graded output.
+//
+// An agentic stage always contributes IntegrityDerived, which keeps agent output
+// distinguishable from maintainer-authored input while still satisfying a
+// maintainer minimum (see Grade.Meets). A deterministic stage with no graded
+// input ran purely from operator config, so it produces trusted content.
+func producedIntegrity(
+	t apiv1.Task,
+	item *apiv1.BacklogItem,
+	pointers []apiv1.ContextPointer,
+	inputGrades map[string]apiv1.Integrity,
+) apiv1.Integrity {
+	grades := make([]apiv1.Integrity, 0, len(pointers)+len(inputGrades)+2)
+	if t.Type == apiv1.TaskAgentic {
+		grades = append(grades, apiv1.IntegrityDerived)
+	}
+	if item != nil && item.Integrity != "" {
+		grades = append(grades, item.Integrity)
+	}
+	for i := range pointers {
+		grade := pointers[i].Integrity
+		if grade == "" && pointers[i].Artifact != nil {
+			grade = pointers[i].Artifact.Integrity
+		}
+		if grade != "" {
+			grades = append(grades, grade)
+		}
+	}
+	for _, grade := range inputGrades {
+		if grade != "" {
+			grades = append(grades, grade)
+		}
+	}
+	if len(grades) == 0 {
+		return apiv1.IntegrityTrusted
+	}
+	return apiv1.WeakestIntegrity(grades...)
 }

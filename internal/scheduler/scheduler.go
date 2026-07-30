@@ -211,10 +211,21 @@ func (s *Scheduler) buildRunInput(ev Event) (engine.RunInput, error) {
 		RunControls:            controls.Overrides(),
 	}
 	if ev.Item != nil {
-		bi := backlog.FromWorkItem(*ev.Item)
+		item := *ev.Item
+		item.Integrity = providers.IntegrityForLabels(item.Labels, directBacklogTrustLabel(def.Spec))
+		bi := backlog.FromWorkItem(item)
 		in.Item = &bi
 	}
 	return in, nil
+}
+
+func directBacklogTrustLabel(spec apiv1.WorkflowSpec) string {
+	for _, trigger := range spec.Triggers {
+		if trigger.Type == apiv1.TriggerBacklogItem && trigger.TrustLabel != "" {
+			return trigger.TrustLabel
+		}
+	}
+	return ""
 }
 
 // startSpan opens a scheduler span for the dispatch, if telemetry is configured.

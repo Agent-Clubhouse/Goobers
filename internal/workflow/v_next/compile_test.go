@@ -56,6 +56,92 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsUnknownMinimumIntegrity(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].MinimumIntegrity = "owner-ish"
+	_, err := compileAcknowledged(Definition{Name: "integrity", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `minimumIntegrity "owner-ish"`) {
+		t.Fatalf("Compile error = %v, want unknown minimum integrity", err)
+	}
+}
+
+func TestCompileValidatesBacklogTrustLabel(t *testing.T) {
+	t.Run("explicit trust label with routing selectors", func(t *testing.T) {
+		spec := linearSpec()
+		spec.Triggers = []apiv1.Trigger{{
+			Type:       apiv1.TriggerBacklogItem,
+			TrustLabel: "team-approved",
+			Selector: map[string]string{
+				"team-approved": "true",
+				"goobers:ready": "true",
+			},
+		}}
+		if _, err := compileAcknowledged(Definition{Name: "trusted", Version: 1, Spec: spec}); err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		triggers []apiv1.Trigger
+		want     string
+	}{
+		{
+			name:     "blank",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, TrustLabel: " "}},
+			want:     "trustLabel must not be blank",
+		},
+		{
+			name:     "non backlog trigger",
+			triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@daily", TrustLabel: "team-approved"}},
+			want:     "type=schedule does not support trustLabel",
+		},
+		{
+			name: "conflicting backlog triggers",
+			triggers: []apiv1.Trigger{
+				{Type: apiv1.TriggerBacklogItem, TrustLabel: "team-approved"},
+				{Type: apiv1.TriggerBacklogItem, TrustLabel: "security-approved"},
+			},
+			want: `trustLabel "security-approved" conflicts with backlog-item trustLabel "team-approved"`,
+		},
+		{
+			name: "mixed declared and omitted trust labels",
+			triggers: []apiv1.Trigger{
+				{Type: apiv1.TriggerBacklogItem},
+				{Type: apiv1.TriggerBacklogItem, TrustLabel: "team-approved"},
+			},
+			want: `trustLabel "team-approved" conflicts with backlog-item trustLabel ""`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := linearSpec()
+			spec.Triggers = tc.triggers
+			_, err := compileAcknowledged(Definition{Name: "trusted", Version: 1, Spec: spec})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Compile error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsUnknownContextSource(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].ContextFrom = []string{"missing"}
+	_, err := compileAcknowledged(Definition{Name: "context-routing", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `contextFrom source "missing"`) {
+		t.Fatalf("Compile error = %v, want unknown context source", err)
+	}
+}
+
+func TestCompileRejectsDuplicateContextSource(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].ContextFrom = []string{"build", "build"}
+	_, err := compileAcknowledged(Definition{Name: "context-routing", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `contextFrom source "build" is duplicated`) {
+		t.Fatalf("Compile error = %v, want duplicate context source", err)
+	}
+}
+
 func TestCompilePreservesRunScriptForShellExecutor(t *testing.T) {
 	script := "set -eu\nprintf 'ok\\n'"
 	spec := apiv1.WorkflowSpec{

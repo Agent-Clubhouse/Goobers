@@ -124,6 +124,11 @@ type ArtifactRecorder interface {
 type BoundedArtifactRecorder interface {
 	ArtifactRecorder
 	RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error)
+	RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error)
+}
+
+type integrityArtifactRecorder interface {
+	RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error)
 }
 
 // ShellExecutor runs deterministic shell stages (invoke.Deterministic) in the
@@ -564,7 +569,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		if resultFile != "" {
 			if full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile); perr == nil {
 				if data, rerr := os.ReadFile(full); rerr == nil {
-					ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+					ref, aerr := e.recordResultArtifact(
+						env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+					)
 					if aerr != nil {
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
@@ -625,7 +632,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			data, rerr := os.ReadFile(full)
 			switch {
 			case rerr == nil:
-				ref, aerr := e.Journal.RecordArtifact(env.TaskID+"/result", scrubber.Scrub(data))
+				ref, aerr := e.recordResultArtifact(
+					env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+				)
 				if aerr != nil {
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
@@ -872,7 +881,67 @@ func stderrExcerpt(errBytes []byte) string {
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
-	return apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size}
+	return apiv1.ArtifactPointer{
+		Path: ref.Path, Digest: ref.Digest, MediaType: mediaType, Size: ref.Size, Integrity: ref.Integrity,
+	}
+}
+
+func (e *ShellExecutor) recordResultArtifact(name string, data []byte, preserveProviderIntegrity bool) (journal.Ref, error) {
+	if !preserveProviderIntegrity {
+		return e.Journal.RecordArtifact(name, data)
+	}
+	integrity, err := providerResultIntegrity(data)
+	if err != nil {
+		return journal.Ref{}, fmt.Errorf("provider result integrity: %w", err)
+	}
+	recorder, ok := e.Journal.(integrityArtifactRecorder)
+	if !ok {
+		return journal.Ref{}, errors.New("provider result integrity recorder is unavailable")
+	}
+	return recorder.RecordArtifactWithIntegrity(name, data, integrity)
+}
+
+func providerResultIntegrity(data []byte) (apiv1.Integrity, error) {
+	var result interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", fmt.Errorf("decode JSON: %w", err)
+	}
+	var grades []apiv1.Integrity
+	var walk func(interface{}) error
+	walk = func(value interface{}) error {
+		switch value := value.(type) {
+		case map[string]interface{}:
+			for key, child := range value {
+				if key == "integrity" {
+					raw, ok := child.(string)
+					grade := apiv1.Integrity(raw)
+					if !ok || !grade.Valid() {
+						return fmt.Errorf("invalid integrity label %v", child)
+					}
+					grades = append(grades, grade)
+					continue
+				}
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []interface{}:
+			for _, child := range value {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(result); err != nil {
+		return "", err
+	}
+	integrity := apiv1.WeakestIntegrity(grades...)
+	if !integrity.Valid() {
+		return "", errors.New("no valid integrity label")
+	}
+	return integrity, nil
 }
 
 func mediaTypeFor(path string) string {

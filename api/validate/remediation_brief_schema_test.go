@@ -11,6 +11,7 @@ import (
 func minimalRemediationBrief() apiv1.RemediationBrief {
 	return apiv1.RemediationBrief{
 		Schema:                 apiv1.RemediationBriefVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
 		SelectedNumber:         "55",
 		Head:                   "goobers/implementation/run-55",
 		Base:                   "main",
@@ -68,6 +69,7 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 	}
 	brief.GatherPRContext.Comments = []apiv1.RemediationThreadComment{{
 		Author: "reviewer", Body: "Please fix the race.", CreatedAt: "2026-07-21T12:00:00Z",
+		Integrity: apiv1.IntegrityUnapproved,
 	}}
 	brief.GatherCIFailures = &apiv1.RemediationCIFailures{
 		Checks: []apiv1.RemediationCIFailure{{
@@ -76,11 +78,13 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 		}},
 	}
 	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{
-		Reviews: []apiv1.RemediationNativeReview{{State: "changes_requested", Body: "Fix the race."}},
+		Reviews: []apiv1.RemediationNativeReview{{
+			State: "changes_requested", Body: "Fix the race.", Integrity: apiv1.IntegrityUnapproved,
+		}},
 		InlineComments: []apiv1.RemediationInlineComment{{
 			Body: "This write is unsynchronized.", Path: "worker.go", Line: 42,
 			OriginalLine: 40, DiffHunk: "@@ -40,1 +42,1 @@", IsResolved: false, IsOutdated: false,
-			StartLine: 40, OriginalStartLine: 38, StartSide: "RIGHT",
+			StartLine: 40, OriginalStartLine: 38, StartSide: "RIGHT", Integrity: apiv1.IntegrityUnapproved,
 		}},
 	}
 	brief.GatherSiblingContext = &apiv1.RemediationSiblingContext{
@@ -89,7 +93,9 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 		}},
 	}
 	brief.GatherIssueContext = &apiv1.RemediationIssueContext{
-		Issues: []apiv1.RemediationIssue{{Number: "937", Title: "Remediation brief", Body: "Acceptance criteria"}},
+		Issues: []apiv1.RemediationIssue{{
+			Number: "937", Title: "Remediation brief", Body: "Acceptance criteria", Integrity: apiv1.IntegrityMaintainer,
+		}},
 	}
 
 	data, err := json.Marshal(brief)
@@ -105,7 +111,7 @@ func TestRemediationBriefSchemaIsClosedAndVersioned(t *testing.T) {
 	v := newV(t)
 	for name, doc := range map[string]string{
 		"wrong version": `{"schema":"goobers.dev/remediation-brief/v1","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]}}`,
-		"unknown field": `{"schema":"goobers.dev/remediation-brief/v2","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"futureSection":{}}`,
+		"unknown field": `{"schema":"goobers.dev/remediation-brief/v3","integrity":"unapproved","selectedNumber":"55","head":"h","base":"main","workspaceBranch":"h","isBehindBase":false,"hasSubstantiveFindings":"false","hasFailingCI":"false","gatherPrContext":{"headSha":"a","baseSha":"b","verdict":null,"comments":[]},"futureSection":{}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := v.ValidateJSON(schemas.RemediationBrief, []byte(doc)); err == nil {

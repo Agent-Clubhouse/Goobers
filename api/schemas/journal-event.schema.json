@@ -156,7 +156,19 @@
       "description": "A stage.finished's ResultEnvelope.Artifacts — the pointers this attempt produced — for the same reconstruction reason as outputs.",
       "type": "array",
       "items": { "$ref": "#/$defs/ref" },
-      "x-conformance": "conditional: each entry's digest is normative, path/size/mediaType are not"
+      "x-conformance": "conditional: each entry's digest and integrity are normative, path/size/mediaType are not"
+    },
+    "integrity": {
+      "description": "Provenance grade on an input snapshot, artifact, or integrity-admission refusal.",
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "x-conformance": "normative"
+    },
+    "minimumIntegrity": {
+      "description": "Declared stage threshold on an integrity-admission refusal.",
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "x-conformance": "normative"
     },
     "name": {
       "description": "Label for a Ref (artifact/input name) or the redaction target.",
@@ -267,6 +279,12 @@
           "description": "Optional media type (parity with the wire ArtifactPointer). Not normative.",
           "type": "string",
           "x-conformance": "excluded"
+        },
+        "integrity": {
+          "description": "Blob provenance grade.",
+          "type": "string",
+          "enum": ["trusted", "maintainer", "unapproved", "derived"],
+          "x-conformance": "normative"
         }
       }
     },

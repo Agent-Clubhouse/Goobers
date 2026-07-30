@@ -43,6 +43,11 @@
       "description": "Read-only inputs: journal artifact pointers and external refs. Pointers only.",
       "items": { "$ref": "#/$defs/contextPointer" }
     },
+    "minimumIntegrity": {
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "description": "Lowest input-integrity grade the stage accepts. The runner refuses lower-graded input before dispatch."
+    },
     "capabilities": {
       "type": "array",
       "description": "Declared capability grants (e.g. 'github:issues:write'). Undeclared use fails closed (§5).",
@@ -88,7 +93,12 @@
         "title": { "type": "string", "description": "Short item title." },
         "body": { "type": "string", "description": "Item description or details." },
         "url": { "type": "string", "description": "Provider URL for the item." },
-        "labels": { "type": "array", "description": "Provider labels attached to the item.", "items": { "type": "string" } }
+        "labels": { "type": "array", "description": "Provider labels attached to the item.", "items": { "type": "string" } },
+        "integrity": {
+          "type": "string",
+          "enum": ["trusted", "maintainer", "unapproved", "derived"],
+          "description": "Provenance grade of the provider-authored title/body."
+        }
       }
     },
     "additionalWorkspace": {
@@ -141,6 +151,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Declared name of the parallel branch that produced this artifact. Paired with branch."
+        },
+        "integrity": {
+          "type": "string",
+          "enum": ["trusted", "maintainer", "unapproved", "derived"],
+          "description": "Provenance grade evaluated by stage input admission."
         },
         "artifact": { "$ref": "artifact-pointer.schema.json", "description": "Pointer to a digest-verified artifact in this run or the run named by runId." },
         "external": { "$ref": "#/$defs/externalRef", "description": "Locator for a resource outside the run journal, such as an issue or pull request." },

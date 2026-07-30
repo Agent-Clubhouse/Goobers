@@ -207,9 +207,12 @@ review.
   are deterministically produced after the applicable verdict. Explicit
   proposal-review gates are optional defense in depth, never authorization. See TBH-1
   decision 3.
-- **TBH-Q3:** Integrity-label persistence — envelope field vs journal event attribute vs
-  both? Interacts with the conformance surface (§3.3 ARCHITECTURE) — labels must not
-  become a runner-specific divergence.
+- **TBH-Q3 — resolved:** Persist integrity in both the stage-contract envelope and
+  conformance-normative journal records. Backlog items, context pointers, and
+  artifact pointers carry the grade used for pre-dispatch admission; immutable
+  input refs plus `artifact.recorded` and typed refusal events
+  preserve the same decision for replay and cross-runner comparison. Integrity is
+  never a `runner.*` annotation.
 - **TBH-Q4:** How does staged mode interact with the merge queue (a "promote" that lands
   a week-old proposal must revalidate freshness — reuse the elect-lander staleness
   checks?).

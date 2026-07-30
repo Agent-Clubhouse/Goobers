@@ -54,11 +54,12 @@ type JournalOp struct {
 // journal.Run.RecordStageArtifact; a bare artifact (gate verdicts) leaves them
 // zero.
 type JournalArtifactOp struct {
-	Stage   string               `json:"stage,omitempty"`
-	Attempt int                  `json:"attempt,omitempty"`
-	Class   journal.AttemptClass `json:"class,omitempty"`
-	Name    string               `json:"name"`
-	Data    []byte               `json:"data"`
+	Stage     string               `json:"stage,omitempty"`
+	Attempt   int                  `json:"attempt,omitempty"`
+	Class     journal.AttemptClass `json:"class,omitempty"`
+	Name      string               `json:"name"`
+	Data      []byte               `json:"data"`
+	Integrity apiv1.Integrity      `json:"integrity"`
 }
 
 // JournalProjection is the complete, self-contained journal projection of one
@@ -229,7 +230,7 @@ func (r *runJournal) contextManifest(at time.Time, stage string, attempt int, cl
 	r.artifactAt(at, JournalArtifactOp{
 		Stage: stage, Attempt: attempt, Class: class,
 		Name: journal.ContextManifestArtifactName(stage, attempt),
-		Data: data,
+		Data: data, Integrity: apiv1.IntegrityDerived,
 	})
 	return nil
 }
@@ -249,6 +250,18 @@ func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt i
 	})
 }
 
+func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admission *apiv1.IntegrityAdmissionError) {
+	r.append(ctx, journal.Event{
+		Type:             journal.EventError,
+		Stage:            stage,
+		Integrity:        admission.Actual,
+		MinimumIntegrity: admission.Minimum,
+		Error: &journal.ErrorDetail{
+			Code: apiv1.IntegrityAdmissionErrorCode, Message: admission.Error(),
+		},
+	})
+}
+
 // stageFinished mirrors runTask's stage.finished append, including the
 // tolerated-failure output discard.
 func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) {
@@ -260,6 +273,9 @@ func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt i
 		Type: journal.EventStageFinished, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Status: string(result.Status), Error: resultErrorDetail(result),
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
+		// Mirrors the local runner's stage.finished: the produced provenance is
+		// normative, so it must appear identically in both journals (TBH-4).
+		Integrity: result.Integrity,
 	})
 }
 
@@ -358,9 +374,13 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 			return nil, fmt.Errorf("engine: address verdict for gate %q: %w", gr.Gate, err)
 		}
 		name := fmt.Sprintf("verdict/%s-%d.json", gr.Gate, gr.Attempt)
-		r.artifactAt(at, JournalArtifactOp{Name: name, Data: data})
+		r.artifactAt(at, JournalArtifactOp{Name: name, Data: data, Integrity: apiv1.IntegrityDerived})
 		ev.Name = name
-		artifact = &apiv1.ArtifactPointer{Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: "application/json"}
+		ev.Integrity = apiv1.IntegrityDerived
+		artifact = &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: apiv1.IntegrityDerived,
+		}
 	}
 	r.appendAt(at, ev)
 	return artifact, nil
@@ -437,7 +457,9 @@ func journalRefsFrom(artifacts []apiv1.ArtifactPointer) []journal.Ref {
 	}
 	out := make([]journal.Ref, len(artifacts))
 	for i, a := range artifacts {
-		out[i] = journal.Ref{Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType}
+		out[i] = journal.Ref{
+			Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
+		}
 	}
 	return out
 }

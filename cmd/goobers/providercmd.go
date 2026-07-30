@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
@@ -431,7 +432,14 @@ func runProviderStageCommand(name, resultFileDefault string, handler cliCommandH
 		return code
 	}
 
-	if resultFile == "" || validProviderStageResult(resultFile) {
+	if resultFile == "" {
+		return code
+	}
+	if validProviderStageResult(resultFile) {
+		if err := ensureProviderStageResultIntegrity(resultFile); err != nil {
+			pf(stderr, "error: finalize provider-stage result %s: %v\n", resultFile, err)
+			return 1
+		}
 		return code
 	}
 
@@ -460,6 +468,60 @@ func validProviderStageResult(path string) bool {
 	return err == nil && json.Valid(data)
 }
 
+func ensureProviderStageResultIntegrity(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var payload interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("decode result: %w", err)
+	}
+	changed, err := ensureProviderResultIntegrity(payload)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return writeProviderStagePayload(path, payload)
+}
+
+func ensureProviderResultIntegrity(payload interface{}) (bool, error) {
+	switch payload := payload.(type) {
+	case map[string]interface{}:
+		return ensureProviderResultObjectIntegrity(payload)
+	case []interface{}:
+		changed := false
+		for i, item := range payload {
+			object, ok := item.(map[string]interface{})
+			if !ok {
+				return false, fmt.Errorf("result item %d must be an object", i)
+			}
+			itemChanged, err := ensureProviderResultObjectIntegrity(object)
+			if err != nil {
+				return false, fmt.Errorf("result item %d: %w", i, err)
+			}
+			changed = changed || itemChanged
+		}
+		return changed, nil
+	default:
+		return false, fmt.Errorf("result must be an object or array of objects")
+	}
+}
+
+func ensureProviderResultObjectIntegrity(payload map[string]interface{}) (bool, error) {
+	if raw, ok := payload["integrity"]; ok {
+		grade, ok := raw.(string)
+		if !ok || !apiintegrity.Grade(grade).Valid() {
+			return false, fmt.Errorf("invalid integrity label %v", raw)
+		}
+		return false, nil
+	}
+	payload["integrity"] = string(apiintegrity.Unapproved)
+	return true, nil
+}
+
 func providerStageErrorMessage(name, stderr string) string {
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	fallback := ""
@@ -482,6 +544,13 @@ func providerStageErrorMessage(name, stderr string) string {
 }
 
 func writeProviderStageResult(path string, payload map[string]interface{}) error {
+	if _, ok := payload["integrity"]; !ok {
+		payload["integrity"] = string(apiintegrity.Unapproved)
+	}
+	return writeProviderStagePayload(path, payload)
+}
+
+func writeProviderStagePayload(path string, payload interface{}) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal typed result: %w", err)

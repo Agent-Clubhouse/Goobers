@@ -19,6 +19,11 @@
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
     "mediaType": { "type": "string", "description": "Optional media type describing the artifact content." },
-    "size": { "type": "integer", "minimum": 0, "description": "Optional artifact size in bytes." }
+    "size": { "type": "integer", "minimum": 0, "description": "Optional artifact size in bytes." },
+    "integrity": {
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "description": "Provenance grade carried with the artifact independently of its content digest."
+    }
   }
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
@@ -606,10 +607,10 @@ func TestADOProviderPullRequestFiles(t *testing.T) {
 		t.Fatalf("len(files) = %d, want 4: %#v", len(files), files)
 	}
 	want := []ChangedFile{
-		{Path: "cmd/goobers/new.go", Status: "added"},
-		{Path: "internal/runner/run.go", Status: "modified"},
-		{Path: "old.txt", Status: "removed"},
-		{Path: "new-name.txt", Status: "renamed"},
+		{Path: "cmd/goobers/new.go", Status: "added", Integrity: apiintegrity.Unapproved},
+		{Path: "internal/runner/run.go", Status: "modified", Integrity: apiintegrity.Unapproved},
+		{Path: "old.txt", Status: "removed", Integrity: apiintegrity.Unapproved},
+		{Path: "new-name.txt", Status: "renamed", Integrity: apiintegrity.Unapproved},
 	}
 	for i := range want {
 		if files[i] != want[i] {

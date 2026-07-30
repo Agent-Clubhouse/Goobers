@@ -119,6 +119,20 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/severity/enum", source: "api/v1alpha1.Severity", want: goConsts("api/v1alpha1/envelope.go", "Severity")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/class/enum", source: "api/v1alpha1.FindingClass", want: goConsts("api/v1alpha1/envelope.go", "FindingClass")},
 
+	// --- input-integrity grades ---
+	{schema: "artifact-pointer.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "invocation.schema.json", path: "$defs/contextPointer/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "invocation.schema.json", path: "properties/minimumIntegrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "invocation.schema.json", path: "$defs/backlogItem/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "journal-event.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "result.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "journal-event.schema.json", path: "$defs/ref/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "journal-event.schema.json", path: "properties/minimumIntegrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "journal-run.schema.json", path: "properties/inputs/items/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "journal-run.schema.json", path: "properties/inputs/items/properties/ref/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "remediation-brief-v3.schema.json", path: "$defs/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/minimumIntegrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
+
 	// --- api/v1alpha1 workflow types ---
 	{schema: "workflow.schema.json", path: "$defs/task/properties/type/enum", source: "api/v1alpha1.TaskType", want: goConsts("api/v1alpha1/workflow_types.go", "TaskType")},
 	{schema: "workflow.schema.json", path: "$defs/gate/properties/evaluator/enum", source: "api/v1alpha1.EvaluatorKind", want: goConsts("api/v1alpha1/workflow_types.go", "EvaluatorKind")},
@@ -164,6 +178,8 @@ var notConstBackedEnums = map[string]string{
 	"remediation-brief-v1.schema.json\x00properties/hasFailingCI/enum":                        "boolean literal domain [true,false]",
 	"remediation-brief-v2.schema.json\x00properties/hasSubstantiveFindings/enum":              "boolean literal domain [true,false]",
 	"remediation-brief-v2.schema.json\x00properties/hasFailingCI/enum":                        "boolean literal domain [true,false]",
+	"remediation-brief-v3.schema.json\x00properties/hasSubstantiveFindings/enum":              "boolean literal domain [true,false]",
+	"remediation-brief-v3.schema.json\x00properties/hasFailingCI/enum":                        "boolean literal domain [true,false]",
 }
 
 func TestSchemaEnumsMatchGoConsts(t *testing.T) {

@@ -231,6 +231,16 @@ Contract rules:
   built-in to provider-neutral behavior updates its contract and bundled
   definitions atomically; workflow-version pinning preserves already-started
   runs. See [ADR 0002](adr/0002-provider-neutral-capability-namespaces.md).
+- **Input-integrity admission:** provider reads, immutable snapshots, artifacts,
+  and invocation context pointers carry `trusted`, `maintainer`, `unapproved`, or
+  `derived` provenance. A task may declare `minimumIntegrity`; the compiler rejects
+  unknown grades and every runner refuses lower-graded input before dispatch with
+  the normative journal error code `input_integrity_below_minimum`. Grades persist
+  in both invocation envelopes and journal records, so this decision is part of
+  the cross-runner conformance surface rather than a `runner.*` annotation.
+  Tasks that need a strict minimum may declare `contextFrom` to route only named
+  producer tasks or gates into their invocation; omitted sources remain honestly
+  graded in the journal and available to other consumers.
 - Retries are a runner concern, driven by the stage's declared policy; a retried
   stage appears in the journal as a new attempt, never as overwritten history.
 - **Run-control inheritance is explicit:** `runConditions` supplies instance
@@ -295,7 +305,9 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   performs the actual query and **claims** items (label/assignee marker + claim
   ledger) so concurrent runs never double-process (`WF-031`). A trigger
   `selector`'s KEYS remain required labels (values are ignored because GitHub
-  labels are flat strings). Gaggle backlogs, backlog-item triggers, and
+  labels are flat strings). A direct backlog-item trigger declares its SEC-047
+  approval source separately as `trustLabel`; selectors remain routing criteria
+  and never confer maintainer integrity. Gaggle backlogs, backlog-item triggers, and
   `backlog-query` tasks may additionally declare a `labelPredicate`: restricted
   CEL string-membership checks against `labels`, composed with `&&`, `||`, and
   `!`. The CEL predicate is ANDed with legacy label inputs and evaluated exactly

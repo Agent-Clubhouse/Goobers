@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
@@ -409,6 +410,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		Body:           pr.Description,
 		ReviewDecision: adoReviewDecision(pr.Reviewers),
 		URL:            prURL,
+		Integrity:      apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {
@@ -667,6 +669,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			Labels:     labels,
 			CheckState: CheckStatePending,
 			UpdatedAt:  pr.CreationDate,
+			Integrity:  apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -722,8 +725,9 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 				return nil, fmt.Errorf("ado pull request %s iteration %d returned a change without a path", pullID, latestIteration)
 			}
 			files = append(files, ChangedFile{
-				Path:   strings.TrimPrefix(change.Item.Path, "/"),
-				Status: adoChangedFileStatus(change.ChangeType),
+				Path:      strings.TrimPrefix(change.Item.Path, "/"),
+				Status:    adoChangedFileStatus(change.ChangeType),
+				Integrity: apiintegrity.Unapproved,
 			})
 		}
 		if page.NextSkip == 0 {
@@ -1843,6 +1847,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		UpdatedAt:  updated,
 		Fields:     adoWorkItemFields(item),
 		Raw:        item,
+		Integrity:  apiintegrity.Unapproved,
 	}
 }
 
@@ -1866,6 +1871,7 @@ func mapADOComment(comment adoComment) Comment {
 		Body:       comment.Text,
 		CreatedAt:  createdAt,
 		URL:        comment.URL,
+		Integrity:  apiintegrity.Unapproved,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 )
@@ -24,6 +25,7 @@ const (
 // existing vocabulary — #539's convention; also applied when a stage reports
 // blocked, #544).
 const (
+	LabelApproved   = "goobers:approved"
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
 	LabelNeedsHuman = "goobers:needs-human"
@@ -87,6 +89,7 @@ type WorkItem struct {
 	Fields         fieldpredicate.Fields  `json:"fields,omitempty"`
 	BlockedByCount int                    `json:"-"`
 	Raw            interface{}            `json:"raw,omitempty"`
+	Integrity      apiintegrity.Grade     `json:"integrity,omitempty"`
 }
 
 // WorkItemLabel describes a provider-native issue label.
@@ -112,6 +115,20 @@ func (w WorkItem) HasLabel(label string) bool {
 	return false
 }
 
+// IntegrityForLabels classifies task text at the SEC-047 admission boundary
+// using the trust label configured by the consuming workflow.
+func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
+	if trustLabel == "" {
+		return apiintegrity.Unapproved
+	}
+	for _, label := range labels {
+		if label == trustLabel {
+			return apiintegrity.Maintainer
+		}
+	}
+	return apiintegrity.Unapproved
+}
+
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {
 	EventID    int64     `json:"eventId"`
@@ -123,12 +140,13 @@ type WorkItemLabelTransition struct {
 
 // Comment is a comment on a backlog work item (a GitHub issue comment).
 type Comment struct {
-	ID         string     `json:"id"`
-	Author     string     `json:"author,omitempty"`
-	AuthorType string     `json:"authorType,omitempty"`
-	Body       string     `json:"body"`
-	CreatedAt  *time.Time `json:"createdAt,omitempty"`
-	URL        string     `json:"url,omitempty"`
+	ID         string             `json:"id"`
+	Author     string             `json:"author,omitempty"`
+	AuthorType string             `json:"authorType,omitempty"`
+	Body       string             `json:"body"`
+	CreatedAt  *time.Time         `json:"createdAt,omitempty"`
+	URL        string             `json:"url,omitempty"`
+	Integrity  apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // RepositoryRef identifies a repository in a provider backend.
@@ -311,40 +329,43 @@ type PullRequestReviewResult struct {
 
 // PullRequestNativeReview is one provider-native review submitted on a pull request.
 type PullRequestNativeReview struct {
-	ID          int64      `json:"id"`
-	Author      string     `json:"author,omitempty"`
-	State       string     `json:"state"`
-	Body        string     `json:"body,omitempty"`
-	CommitSHA   string     `json:"commitSha,omitempty"`
-	SubmittedAt *time.Time `json:"submittedAt,omitempty"`
-	URL         string     `json:"url,omitempty"`
+	ID          int64              `json:"id"`
+	Author      string             `json:"author,omitempty"`
+	State       string             `json:"state"`
+	Body        string             `json:"body,omitempty"`
+	CommitSHA   string             `json:"commitSha,omitempty"`
+	SubmittedAt *time.Time         `json:"submittedAt,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	Integrity   apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // PullRequestInlineComment is one inline review comment with its thread state
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
-	ID                int64      `json:"id"`
-	Author            string     `json:"author,omitempty"`
-	Body              string     `json:"body"`
-	Path              string     `json:"path"`
-	Line              int        `json:"line,omitempty"`
-	OriginalLine      int        `json:"originalLine,omitempty"`
-	Side              string     `json:"side,omitempty"`
-	StartLine         int        `json:"startLine,omitempty"`
-	OriginalStartLine int        `json:"originalStartLine,omitempty"`
-	StartSide         string     `json:"startSide,omitempty"`
-	DiffHunk          string     `json:"diffHunk,omitempty"`
-	InReplyTo         int64      `json:"inReplyTo,omitempty"`
-	IsResolved        bool       `json:"isResolved"`
-	IsOutdated        bool       `json:"isOutdated"`
-	CreatedAt         *time.Time `json:"createdAt,omitempty"`
-	URL               string     `json:"url,omitempty"`
+	ID                int64              `json:"id"`
+	Author            string             `json:"author,omitempty"`
+	Body              string             `json:"body"`
+	Path              string             `json:"path"`
+	Line              int                `json:"line,omitempty"`
+	OriginalLine      int                `json:"originalLine,omitempty"`
+	Side              string             `json:"side,omitempty"`
+	StartLine         int                `json:"startLine,omitempty"`
+	OriginalStartLine int                `json:"originalStartLine,omitempty"`
+	StartSide         string             `json:"startSide,omitempty"`
+	DiffHunk          string             `json:"diffHunk,omitempty"`
+	InReplyTo         int64              `json:"inReplyTo,omitempty"`
+	IsResolved        bool               `json:"isResolved"`
+	IsOutdated        bool               `json:"isOutdated"`
+	CreatedAt         *time.Time         `json:"createdAt,omitempty"`
+	URL               string             `json:"url,omitempty"`
+	Integrity         apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // PullRequestReviewThreads is the review evidence attached to a pull request.
 type PullRequestReviewThreads struct {
 	Reviews        []PullRequestNativeReview  `json:"reviews"`
 	InlineComments []PullRequestInlineComment `json:"inlineComments"`
+	Integrity      apiintegrity.Grade         `json:"integrity"`
 }
 
 // CheckState normalizes combined CI/check status across providers (BL-031).
@@ -387,16 +408,18 @@ type CheckAnnotation struct {
 // status or check run. Legacy commit statuses do not support annotations.
 type CIFailureDetail struct {
 	CheckDetail
-	Annotations []CheckAnnotation `json:"annotations"`
+	Annotations []CheckAnnotation  `json:"annotations"`
+	Integrity   apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
 type PullRequestComment struct {
-	ID        int64     `json:"id"`
-	Author    string    `json:"author,omitempty"`
-	Body      string    `json:"body,omitempty"`
-	URL       string    `json:"url,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        int64              `json:"id"`
+	Author    string             `json:"author,omitempty"`
+	Body      string             `json:"body,omitempty"`
+	URL       string             `json:"url,omitempty"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // PullRequestPollRequest describes a PR poll operation.
@@ -465,6 +488,7 @@ type PullRequestPollResult struct {
 	MergeableState string               `json:"mergeableState,omitempty"`
 	CommentsSince  []PullRequestComment `json:"commentsSince,omitempty"`
 	URL            string               `json:"url,omitempty"`
+	Integrity      apiintegrity.Grade   `json:"integrity,omitempty"`
 }
 
 // ClosePullRequestRequest describes closing a pull request, optionally leaving a comment.
@@ -812,7 +836,8 @@ type PullRequestSummary struct {
 	// tell whether a candidate backlog issue already has an open PR, without
 	// a second round-trip per candidate (GitHub's list-pulls response
 	// already carries the body).
-	Body string `json:"body,omitempty"`
+	Body      string             `json:"body,omitempty"`
+	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // ChangedFile is one file a pull request touches (issue #359's sibling-set
@@ -833,7 +858,8 @@ type ChangedFile struct {
 	// text (with hunk line-numbers normalized out), not from the PR's raw
 	// head SHA, so a clean rebase — which changes the head SHA but not the
 	// actual patch content — still produces a cache hit.
-	Patch string `json:"patch,omitempty"`
+	Patch     string             `json:"patch,omitempty"`
+	Integrity apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // CompareResult is the result of comparing two commits/refs: their common
@@ -842,8 +868,9 @@ type ChangedFile struct {
 // this PR's own merge-base," the delta-aware replacement for a raw base-SHA
 // comparison).
 type CompareResult struct {
-	MergeBaseSHA string        `json:"mergeBaseSha"`
-	Files        []ChangedFile `json:"files"`
+	MergeBaseSHA string             `json:"mergeBaseSha"`
+	Files        []ChangedFile      `json:"files"`
+	Integrity    apiintegrity.Grade `json:"integrity,omitempty"`
 }
 
 // ListWorkItemsRequest filters backlog items for scheduler admission.

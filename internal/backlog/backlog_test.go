@@ -9,27 +9,29 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// TestFromWorkItem_CarriesWireFields verifies the six wire-contract fields are
+// TestFromWorkItem_CarriesWireFields verifies the seven wire-contract fields are
 // copied through exactly.
 func TestFromWorkItem_CarriesWireFields(t *testing.T) {
 	w := providers.WorkItem{
-		Provider: providers.ProviderGitHub,
-		ID:       "42",
-		Title:    "Add retry to webhook delivery",
-		Body:     "Deliveries should retry with backoff.",
-		URL:      "https://github.com/acme/web/issues/42",
-		Labels:   []string{"goobers", "bug"},
+		Provider:  providers.ProviderGitHub,
+		ID:        "42",
+		Title:     "Add retry to webhook delivery",
+		Body:      "Deliveries should retry with backoff.",
+		URL:       "https://github.com/acme/web/issues/42",
+		Labels:    []string{"goobers", "bug"},
+		Integrity: apiv1.IntegrityUnapproved,
 	}
 
 	got := FromWorkItem(w)
 
 	want := apiv1.BacklogItem{
-		ID:       "42",
-		Provider: apiv1.ProviderGitHub,
-		Title:    "Add retry to webhook delivery",
-		Body:     "Deliveries should retry with backoff.",
-		URL:      "https://github.com/acme/web/issues/42",
-		Labels:   []string{"goobers", "bug"},
+		ID:        "42",
+		Provider:  apiv1.ProviderGitHub,
+		Title:     "Add retry to webhook delivery",
+		Body:      "Deliveries should retry with backoff.",
+		URL:       "https://github.com/acme/web/issues/42",
+		Labels:    []string{"goobers", "bug"},
+		Integrity: apiv1.IntegrityUnapproved,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("FromWorkItem mismatch\n got: %+v\nwant: %+v", got, want)
@@ -45,6 +47,13 @@ func TestFromWorkItem_ADOProvider(t *testing.T) {
 	}
 	if string(got.Provider) != string(providers.ProviderADO) {
 		t.Errorf("provider string value not preserved: %q vs %q", got.Provider, providers.ProviderADO)
+	}
+}
+
+func TestFromWorkItemDefaultsMissingIntegrityToUnapproved(t *testing.T) {
+	got := FromWorkItem(providers.WorkItem{Labels: []string{providers.LabelApproved}})
+	if got.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("integrity = %q, want unapproved", got.Integrity)
 	}
 }
 
@@ -74,10 +83,10 @@ func TestFromWorkItem_DropsProviderOnlyFields(t *testing.T) {
 
 	got := FromWorkItem(w)
 
-	// The BacklogItem struct has exactly six fields; assert no provider-only
+	// The BacklogItem struct has exactly seven fields; assert no provider-only
 	// data is representable on it. We check this structurally so the test breaks
 	// loudly if BacklogItem's shape changes.
-	if n := reflect.TypeOf(got).NumField(); n != 6 {
+	if n := reflect.TypeOf(got).NumField(); n != 7 {
 		t.Fatalf("BacklogItem now has %d fields; reassess the projection and this guard", n)
 	}
 	// Spot-check the carried fields survived alongside the drops.
