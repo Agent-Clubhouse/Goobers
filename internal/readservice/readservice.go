@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -74,11 +75,15 @@ type Freshness struct {
 
 // LocalSources are the three local projections behind the shared service.
 type LocalSources struct {
-	Layout             instance.Layout
-	Config             *instance.Config
-	Definitions        *instance.ConfigSet
-	Validation         *validate.Report
-	Telemetry          *rollup.DB
+	Layout      instance.Layout
+	Config      *instance.Config
+	Definitions *instance.ConfigSet
+	Validation  *validate.Report
+	Telemetry   *rollup.DB
+	// ReadModel is the portal run read model (read.db). Optional: when absent,
+	// every list takes the existing journal-derived paths, which is the rollback
+	// posture §6.6 requires — no journal is touched at any step.
+	ReadModel          *readmodel.Store
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 }
@@ -102,6 +107,11 @@ type Local struct {
 	// not spawn a goroutine, and so the walk stays available to callers that have
 	// no daemon to have warmed it — see activeRunCountsWithAge.
 	activeSampler *activeRunSampler
+
+	// readModelReads gates the read-model list path (§6.6 step 3). Off by
+	// default; see internal/readservice/readmodellist.go for why that deviates
+	// from the design's "defaulting on" and what must land before it flips.
+	readModelReads bool
 
 	reconcileMu   sync.Mutex
 	lastReconcile time.Time
