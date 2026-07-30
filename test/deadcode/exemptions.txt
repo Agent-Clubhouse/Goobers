@@ -11,6 +11,14 @@ github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-as
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.Store.runStages # Reachable only from Store.GetRun, which is itself exempted until the query surface lands (#1918/#1920).
 github.com/goobers/goobers/internal/readmodel.requiredTime # Timestamp decoder used by Store.GetRun, exempted for the same reason (#1918/#1920).
+github.com/goobers/goobers/internal/readmodel.Key # Canonical identity of a filter-dimension set, so {gaggle,phase} and {phase,gaggle} are the same combination (#1920).
+github.com/goobers/goobers/internal/readmodel.normalise # Canonical ordering behind Key (#1920).
+github.com/goobers/goobers/internal/readmodel.Require # Resolves a filter set to a supported combination or a typed refusal; the closed set lands before the ListRuns cutover consumes it (#1920/#1918).
+github.com/goobers/goobers/internal/readmodel.Lookup # Combination lookup behind Require, exempted for the same reason (#1920).
+github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
+github.com/goobers/goobers/internal/readmodel.UnsupportedCombinationError.Code # Stable wire code for the typed filter refusal; surfaced by the read contract in #1926/#1927.
+github.com/goobers/goobers/internal/readmodel.UnsupportedCombinationError.Error # error interface for the typed filter refusal (#1920).
+github.com/goobers/goobers/internal/readmodel.neighbours # Ranks the nearest supported combinations named in a refusal, so a stale bookmark has somewhere to go (#1920).
 github.com/goobers/goobers/internal/readmodel.Cursor.String # SSE cursor wire form (<schemaVersion>:<epoch>:<seq>), tested and landing ahead of its consumer per the design's own sequencing; consumed by the change-cursor stream (#1929).
 github.com/goobers/goobers/internal/readmodel.ParseCursor # Counterpart to Cursor.String, exempted for the same reason (#1919/#1929).
 github.com/goobers/goobers/internal/readmodel.EvaluateCursor # Resolves a client cursor to one of the three named conditions (epoch_changed/feed_truncated/schema_changed); consumed by the stream in #1929.
