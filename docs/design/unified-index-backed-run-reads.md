@@ -1,7 +1,21 @@
 # Unified index-backed run reads
 
-> **Status:** Design for #1883. This extends the read-path direction established
-> by #1200 / PR #1270 and the portal architecture in
+> **Status: superseded by
+> [`portal-read-architecture.md`](portal-read-architecture.md).** Its
+> read-projection conclusion is carried forward; the parts it left open
+> (ordering, the writer set, request budgeting, in-process isolation, topology,
+> authorization, the hosted shape) are answered there, and several of its
+> positions are revised on measured evidence — notably one store versus two,
+> request-path reconciliation, and the absence of an authorization dimension in
+> the schema.
+>
+> **The child issues filed from this doc (#1888–#1892) should be re-scoped
+> against the superseding design before implementation**, not started as
+> written: they assume the current single-connection, in-process-ingest,
+> filesystem-polling shape.
+>
+> *Original status:* Design for #1883. Extends the read-path direction
+> established by #1200 / PR #1270 and the portal architecture in
 > [`dashboard.md`](dashboard.md#14-read-path-performance---lists-must-not-rescan-the-journal).
 > It does not change the run journal, stage-result envelopes, or existing public
 > query contracts.
