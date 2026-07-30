@@ -341,6 +341,20 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		Definitions: setup.Definitions,
 		Validation:  setup.Validation,
 		Telemetry:   setup.RollupDB,
+		// The read model, which this path did NOT attach until now.
+		//
+		// `goobers up` is the serving path — it is what answers the portal — and
+		// it constructed the read service without a ReadModel, so read.db was
+		// opened, migrated, built from journals, and kept current by the
+		// projector while nothing ever read a row from it. Every list still took
+		// the journal-derived path.
+		//
+		// That made all of Wave 2 inert in production: the cutover flag gates on
+		// `sources.ReadModel != nil`, so turning it on would have changed
+		// nothing here. Found by auditing which topologies attach which sources
+		// (§13.1's "one read topology" is #1933; this is the concrete instance
+		// of the divergence it exists to remove).
+		ReadModel: setup.ReadModel,
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},

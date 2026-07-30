@@ -47,8 +47,6 @@ var enabled atomic.Bool
 
 var (
 	journalOpens       atomic.Uint64
-	reconcileScans     atomic.Uint64
-	reconcileInspects  atomic.Uint64
 	streamJournalReads atomic.Uint64
 	activeScanDirs     atomic.Uint64
 	activeScanOpens    atomic.Uint64
@@ -61,12 +59,6 @@ type Snapshot struct {
 	// JournalOpens counts run journals opened and parsed by a read path. The
 	// §14.2 target for any bounded list page is zero.
 	JournalOpens uint64 `json:"journalOpens"`
-	// ReconcileScans counts request-path reconciliation passes — a read
-	// performing maintenance (§2.4). The target is zero once Wave 3 lands.
-	ReconcileScans uint64 `json:"reconcileScans"`
-	// ReconcileInspects counts directory entries examined by those passes. This
-	// is the one that grows with total history rather than with the working set.
-	ReconcileInspects uint64 `json:"reconcileInspects"`
 	// StreamJournalReads counts journals read by the change detector. Bounded by
 	// active work, never by history (#1738).
 	StreamJournalReads uint64 `json:"streamJournalReads"`
@@ -111,8 +103,6 @@ func Disable() { enabled.Store(false) }
 // Reset zeroes every counter without changing the enabled state.
 func Reset() {
 	journalOpens.Store(0)
-	reconcileScans.Store(0)
-	reconcileInspects.Store(0)
 	streamJournalReads.Store(0)
 	activeScanDirs.Store(0)
 	activeScanOpens.Store(0)
@@ -124,8 +114,6 @@ func Reset() {
 func Take() Snapshot {
 	return Snapshot{
 		JournalOpens:       journalOpens.Load(),
-		ReconcileScans:     reconcileScans.Load(),
-		ReconcileInspects:  reconcileInspects.Load(),
 		StreamJournalReads: streamJournalReads.Load(),
 		ActiveScanDirs:     activeScanDirs.Load(),
 		ActiveScanOpens:    activeScanOpens.Load(),
@@ -140,8 +128,6 @@ func Take() Snapshot {
 func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 	return Snapshot{
 		JournalOpens:       s.JournalOpens - earlier.JournalOpens,
-		ReconcileScans:     s.ReconcileScans - earlier.ReconcileScans,
-		ReconcileInspects:  s.ReconcileInspects - earlier.ReconcileInspects,
 		StreamJournalReads: s.StreamJournalReads - earlier.StreamJournalReads,
 		ActiveScanDirs:     s.ActiveScanDirs - earlier.ActiveScanDirs,
 		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
@@ -158,21 +144,6 @@ func (s Snapshot) Zero() bool { return s == Snapshot{} }
 func RecordJournalOpen() {
 	if enabled.Load() {
 		journalOpens.Add(1)
-	}
-}
-
-// RecordReconcileScan records one request-path reconciliation pass.
-func RecordReconcileScan() {
-	if enabled.Load() {
-		reconcileScans.Add(1)
-	}
-}
-
-// RecordReconcileInspect records one directory entry examined during
-// reconciliation.
-func RecordReconcileInspect() {
-	if enabled.Load() {
-		reconcileInspects.Add(1)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -104,10 +103,6 @@ type Local struct {
 	now         func() time.Time
 	definitions atomic.Pointer[definitionSnapshot]
 
-	// reconcileMu serializes index reconciliation and, together with
-	// lastReconcile, throttles it: a burst of concurrent/rapid ListRuns
-	// (the Overview fans out one per phase) collapses to a single directory
-	// scan instead of one per request. See reconcileIndex.
 	// activeSampler, when non-nil, serves the active-run counts from a background
 	// sample instead of walking every run directory per request (#1741). It is
 	// opt-in via StartActiveRunSampler so that a one-shot CLI construction does
@@ -115,28 +110,19 @@ type Local struct {
 	// no daemon to have warmed it — see activeRunCountsWithAge.
 	activeSampler *activeRunSampler
 
-	// readModelReads gates the read-model list path (§6.6 step 3). Off by
-	// default; see internal/readservice/readmodellist.go for why that deviates
-	// from the design's "defaulting on" and what must land before it flips.
-	readModelReads bool
-
-	reconcileMu   sync.Mutex
-	lastReconcile time.Time
-	// reconcileWatermarks records, per run-parent directory, the mtime observed
-	// when that parent was last scanned to completion. It bounds the per-scan
-	// cost: a parent whose mtime has not advanced past its watermark cannot have
-	// gained or lost a run directory, so the next reconcile skips reading it
-	// entirely. A parent with no entry has never been scanned and is walked in
-	// full.
+	// readModelReads gates the read-model list path (§6.6 step 3).
 	//
-	// Keyed per parent rather than held as one global high-water mark so that
-	// progress is durable against cancellation: reconcile runs on the caller's
-	// request context, and a client that gives up mid-scan must not discard the
-	// parents already finished. A single global watermark advanced only after
-	// every parent completed meant a scan that was always cancelled never
-	// recorded anything, so every subsequent reconcile restarted from scratch as
-	// a full scan (#1708).
-	reconcileWatermarks map[string]time.Time
+	// Now ON by default. It was off through Waves 2 and early 3 because the
+	// store was not continuously current: a run written while the daemon was
+	// down was invisible to it, and a fast answer that can silently omit is
+	// worse than a slow complete one (§14.7). Three things closed that gap —
+	// the projector (#1923) applying intake watermarks, the restart pass
+	// covering pending and non-terminal runs, and the bidirectional repair
+	// sweep (#1924) reconciling both directions continuously.
+	//
+	// The old reconcile that used to provide completeness ran on the request
+	// path and wrote .lock files into 40,665 run directories; it is deleted.
+	readModelReads bool
 }
 
 type definitionSnapshot struct {
@@ -166,6 +152,12 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		telemetry: telemetry,
 		ready:     ready,
 		now:       now,
+		// §6.6 step 3: the cutover defaults ON now that the projector and the
+		// repair sweep keep the store continuously current. A request the read
+		// model cannot serve still falls through to the journal path rather than
+		// being refused, so turning this on can only make answers faster, never
+		// remove one.
+		readModelReads: sources.ReadModel != nil,
 	}
 	local.definitions.Store(snapshot)
 	return local, nil

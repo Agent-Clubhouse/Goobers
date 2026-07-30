@@ -2,12 +2,8 @@ package readservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -119,194 +115,32 @@ func listAllPages(t *testing.T, s *Local, options RunListOptions) []string {
 	}
 }
 
-// TestListRunsReconcileCollapsesConcurrentBurst proves the fan-out fix: the
-// Overview fires one ListRuns per phase concurrently, and each formerly ran a
-// full run-directory reconcile scan. Under a fixed clock the whole burst must
-// collapse to a single scan.
-func TestListRunsReconcileCollapsesConcurrentBurst(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 20)
-	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
-	fixed := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
-	indexed.now = func() time.Time { return fixed }
-
-	var scans atomic.Int64
-	reconcileScanObserver = func() { scans.Add(1) }
-	t.Cleanup(func() { reconcileScanObserver = nil })
-
-	const concurrency = 8
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
-		go func() {
-			defer wg.Done()
-			if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
-				t.Errorf("ListRuns: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if got := scans.Load(); got != 1 {
-		t.Fatalf("concurrent ListRuns burst ran %d reconcile scans, want 1", got)
-	}
-}
-
-// TestListRunsReconcileRefreshesAfterInterval proves the throttle is a window,
-// not a one-shot: within reconcileInterval a repeat list reuses the prior scan,
-// but once the window elapses the next list scans again so imported/migrated
-// runs are still eventually reconciled.
-func TestListRunsReconcileRefreshesAfterInterval(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 12)
-	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
-	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
-	var mu sync.Mutex
-	nowVal := base
-	indexed.now = func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		return nowVal
-	}
-	advance := func(d time.Duration) {
-		mu.Lock()
-		defer mu.Unlock()
-		nowVal = nowVal.Add(d)
-	}
-
-	var scans atomic.Int64
-	reconcileScanObserver = func() { scans.Add(1) }
-	t.Cleanup(func() { reconcileScanObserver = nil })
-
-	list := func() {
-		if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
-			t.Fatalf("ListRuns: %v", err)
-		}
-	}
-
-	list() // first ever list: scans (lastReconcile was zero)
-	if got := scans.Load(); got != 1 {
-		t.Fatalf("first list ran %d scans, want 1", got)
-	}
-	advance(reconcileInterval - time.Millisecond)
-	list() // within the window: throttled
-	if got := scans.Load(); got != 1 {
-		t.Fatalf("in-window list ran %d scans total, want 1", got)
-	}
-	advance(2 * time.Millisecond) // now past the window
-	list()
-	if got := scans.Load(); got != 2 {
-		t.Fatalf("post-window list ran %d scans total, want 2", got)
-	}
-}
-
-// TestListRunsReconcileDiscoversRunAddedAfterFirstScan proves the incremental
-// scan still backfills: a run written to disk after the first reconcile (e.g. an
-// imported/migrated journal) bumps its parent directory's mtime past the
-// watermark, so the next reconcile past the TTL window rediscovers and ingests
-// it rather than skipping it forever.
-func TestListRunsReconcileDiscoversRunAddedAfterFirstScan(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 6)
-	// Full index of the seeded runs: the first reconcile has nothing to backfill
-	// and simply records the watermark.
-	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
-	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
-	var mu sync.Mutex
-	nowVal := base
-	indexed.now = func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		return nowVal
-	}
-	advance := func(d time.Duration) {
-		mu.Lock()
-		defer mu.Unlock()
-		nowVal = nowVal.Add(d)
-	}
-
-	before := listAllPages(t, indexed, RunListOptions{Limit: 50})
-	if len(before) != 6 {
-		t.Fatalf("first list returned %d runs, want 6", len(before))
-	}
-
-	// Write a new, complete run to disk after the first reconcile. Creating the
-	// directory bumps the parent runs-dir mtime beyond the recorded watermark.
-	started := time.Date(2026, 7, 1, 13, 0, 0, 0, time.UTC)
-	newRun, clock := createFixtureRun(
-		t, layout, machine, "run-added", machine.Def.Name, "goobers",
-		started, journal.Trigger{Kind: journal.TriggerManual}, false,
-	)
-	appendFixtureStageAttempt(t, newRun, clock, "success")
-	finishFixtureRun(t, newRun, clock, journal.PhaseCompleted)
-
-	// Within the throttle window the new run is not yet visible.
-	if got := listAllPages(t, indexed, RunListOptions{Limit: 50}); len(got) != 6 {
-		t.Fatalf("in-window list returned %d runs, want 6 (reconcile throttled)", len(got))
-	}
-
-	// Past the window the incremental scan must rediscover it.
-	advance(reconcileInterval + time.Millisecond)
-	after := listAllPages(t, indexed, RunListOptions{Limit: 50})
-	if len(after) != 7 {
-		t.Fatalf("post-window list returned %d runs, want 7 (incremental reconcile must backfill the added run)", len(after))
-	}
-	found := false
-	for _, id := range after {
-		if id == "run-added" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("added run not discovered by incremental reconcile: %v", after)
-	}
-}
-
-// TestListRunsReconcileSkipsUnchangedDirs proves the per-scan cost is bounded:
-// once the watermark is recorded, a later reconcile over an unchanged run tree
-// inspects no directory entries at all — the parent mtime gate skips the ReadDir
-// entirely rather than re-walking every (already-indexed) run and orphan dir.
-func TestListRunsReconcileSkipsUnchangedDirs(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 10)
-	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
-	base := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
-	var mu sync.Mutex
-	nowVal := base
-	indexed.now = func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		return nowVal
-	}
-	advance := func(d time.Duration) {
-		mu.Lock()
-		defer mu.Unlock()
-		nowVal = nowVal.Add(d)
-	}
-
-	var inspected atomic.Int64
-	reconcileInspectObserver = func(string) { inspected.Add(1) }
-	t.Cleanup(func() { reconcileInspectObserver = nil })
-
-	// First reconcile is a full scan (zero watermark) and inspects every entry.
-	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
-		t.Fatalf("first ListRuns: %v", err)
-	}
-	if inspected.Load() == 0 {
-		t.Fatal("full first reconcile inspected no entries; expected the whole tree")
-	}
-
-	// A second reconcile past the TTL over an unchanged tree must skip every
-	// parent via the watermark and inspect nothing.
-	inspected.Store(0)
-	advance(reconcileInterval + time.Millisecond)
-	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
-		t.Fatalf("second ListRuns: %v", err)
-	}
-	if got := inspected.Load(); got != 0 {
-		t.Fatalf("incremental reconcile inspected %d entries over an unchanged tree, want 0", got)
-	}
-}
+// The reconcile tests that lived here are deleted, not merely removed (#1924).
+//
+// They covered index completeness — that a run appearing on disk after the last
+// scan is still listed — provided by reconcileIndex running on the HTTP list
+// path. That mechanism is gone: it reached IngestRun -> WithPruneProtection ->
+// acquireJournalLock, which is why all 40,665 run directories on the live
+// instance hold a .lock file created by a READ.
+//
+// Every property they protected now lives in internal/readmodel/repair, off the
+// request path:
+//
+//	discovery of an unprojected run  ->  TestSweepDiscoversAnUnprojectedRun
+//	unpublished dirs are not opened  ->  TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion
+//	bounded cost per pass            ->  TestSweepCostPerStepIsBoundedByBatchSize
+//	progress survives restart        ->  TestSweepCursorResumesAcrossRestart
+//	a read creates no lock file      ->  TestSweepNeverCreatesALockFile
+//
+// Plus one the old tests could not express at all, because reconcile only ever
+// looked in one direction: a projected row whose journal has vanished is removed
+// (TestSweepRemovesAProjectedRunWhoseJournalIsGone, which is #1943's fix).
+//
+// Two properties are deliberately NOT carried over. The burst-collapse and
+// refresh-after-interval tests described throttling of a scan that no longer
+// happens; and the mtime-skip test encoded the reasoning §6.3 shows does not
+// bind, since every new run bumps its parent's mtime and the root is therefore
+// always dirty on a live instance.
 
 func TestListRunsIndexedMatchesScanningAcrossFilters(t *testing.T) {
 	_, layout, machine := fixtureService(t)
@@ -498,32 +332,6 @@ func TestListRunsIndexedPhaseFilterIsBoundedNotScanned(t *testing.T) {
 	}
 }
 
-// TestListRunsIndexedBackfillsUnindexedRuns is the reviewer's exact concern:
-// a run present on disk but missing from the index (migrated / imported / not
-// yet ingested) must never be silently hidden. The index here holds only three
-// of the seeded runs; the list must still return all of them, byte-identical
-// to the scanning path.
-func TestListRunsIndexedBackfillsUnindexedRuns(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 12)
-	// Deliberately ingest only a sparse subset — simulate a partial/migrated index.
-	partial := buildIndex(t, layout, "run-0001", "run-0007", "run-0010")
-	indexed, scanning := indexedAndScanning(t, layout, partial)
-
-	gotIndexed := listAllPages(t, indexed, RunListOptions{Limit: 5})
-	gotScanning := listAllPages(t, scanning, RunListOptions{Limit: 5})
-	if len(gotIndexed) != 12 {
-		t.Fatalf("indexed returned %d runs, want all 12 (reconcile must backfill the index)", len(gotIndexed))
-	}
-	if fmt.Sprint(gotIndexed) != fmt.Sprint(gotScanning) {
-		t.Fatalf("after reconcile, indexed != scanning:\n indexed=%v\nscanning=%v", gotIndexed, gotScanning)
-	}
-}
-
-// TestListRunsIndexedReadsAreBoundedByPage proves the perf claim
-// deterministically (no wall-clock): listing one page opens a number of
-// journals bounded by page size, not by the total run count. The scanning path
-// opens every run; the indexed path opens ~limit.
 func TestListRunsIndexedReadsAreBoundedByPage(t *testing.T) {
 	_, layout, machine := fixtureService(t)
 	const total = 150
@@ -550,47 +358,27 @@ func TestListRunsIndexedReadsAreBoundedByPage(t *testing.T) {
 	_ = runIDs(page)
 }
 
-// TestListRunsReconcileSkipsUnpublishedRunDirs proves reconcile never pays for a
-// directory that holds no run.yaml. Such a directory is not a journal — the span
-// exporter creates spans/ before a run publishes, and a run that never publishes
-// leaves the directory behind permanently — so IngestRun can only ever fail on
-// it. It used to fail expensively: WithPruneProtection took the run's journal
-// lock, creating a .lock file, before discovering there was no identity to read.
-// Because the failure left the directory un-indexed, every later pass retried it,
-// so on an instance where these outnumber the real ingest backlog by orders of
-// magnitude a pass could not finish and ListRuns never returned (#1708). The
-// absence of .lock is the precise regression signal.
-func TestListRunsReconcileSkipsUnpublishedRunDirs(t *testing.T) {
-	_, layout, machine := fixtureService(t)
-	seedVariedRuns(t, layout, machine, 6)
-	indexed, _ := indexedAndScanning(t, layout, buildIndex(t, layout))
-
-	unpublished := []string{"unpublished-a", "unpublished-b", "unpublished-c"}
-	for _, name := range unpublished {
-		if err := os.MkdirAll(filepath.Join(layout.RunsDir(), name, "spans"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, err := indexed.ListRuns(context.Background(), RunListOptions{Limit: 5}); err != nil {
-		t.Fatalf("ListRuns: %v", err)
-	}
-
-	for _, name := range unpublished {
-		lock := filepath.Join(layout.RunsDir(), name, ".lock")
-		switch _, err := os.Stat(lock); {
-		case err == nil:
-			t.Errorf("reconcile took the journal lock on unpublished run dir %q; it must skip on the run.yaml stat", name)
-		case !errors.Is(err, os.ErrNotExist):
-			t.Fatalf("stat %s: %v", lock, err)
-		}
-	}
-}
-
-// TestListRunsReconcileStillIngestsPublishedRunMissingFromIndex guards the
-// skip above against over-reach: a real journal absent from the index is still
-// backfilled, which is reconcile's entire purpose.
-func TestListRunsReconcileStillIngestsPublishedRunMissingFromIndex(t *testing.T) {
+// TestIndexedListNoLongerBackfillsOnTheRequestPath records a real behaviour
+// change, rather than hiding one (#1924).
+//
+// This test used to assert that listing through a partially-populated index
+// returned every published run on disk, because reconcileIndex backfilled the
+// missing ones DURING the request. That is no longer true, and the change is
+// deliberate: the backfill reached IngestRun -> WithPruneProtection ->
+// acquireJournalLock, so serving a list wrote a .lock file into every run
+// directory it touched — 40,665 of them on the live instance, including 10,906
+// that can never be ingested.
+//
+// The new contract: the indexed path reflects the INDEX. Completeness is
+// delivered by the repair sweep, continuously and off the request path, into
+// read.db — which is the path the daemon actually serves from now that the
+// cutover defaults on. The trade is a bounded staleness window (one sweep cycle,
+// reported as lastCycleCompletedAt) in exchange for reads that do not write.
+//
+// The staleness is only reachable for runs the daemon did not execute —
+// imported, migrated, or externally added — because a run the daemon runs is
+// recorded to intake at completion and projected within one drain interval.
+func TestIndexedListNoLongerBackfillsOnTheRequestPath(t *testing.T) {
 	_, layout, machine := fixtureService(t)
 	seedVariedRuns(t, layout, machine, 4)
 	// Index only one run, leaving the rest on disk but unknown to the index.
@@ -601,7 +389,9 @@ func TestListRunsReconcileStillIngestsPublishedRunMissingFromIndex(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
-	if len(page.Runs) < 4 {
-		t.Fatalf("reconcile backfilled %d runs, want every published run on disk", len(page.Runs))
+	if len(page.Runs) != 1 {
+		t.Errorf("the indexed list returned %d runs from an index holding 1; it is still "+
+			"backfilling on the request path, which is what wrote .lock files into every "+
+			"run directory", len(page.Runs))
 	}
 }

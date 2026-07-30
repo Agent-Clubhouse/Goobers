@@ -29,14 +29,6 @@ const (
 	maxRunLimit     = 200
 )
 
-// reconcileInterval throttles the index-completeness backfill scan. Reconcile
-// is a backstop for runs present on disk but absent from the index
-// (imported/migrated); the daemon already ingests every run it executes, so a
-// short staleness window can never hide an actively-running or freshly-finished
-// run. Throttling collapses the Overview's per-phase ListRuns fan-out (and any
-// rapid refresh burst) into a single directory scan.
-const reconcileInterval = 2 * time.Second
-
 var (
 	// ErrNotFound means the requested read-model object does not exist.
 	ErrNotFound = errors.New("read service: not found")
@@ -441,9 +433,11 @@ func (s *Local) listLatestWorkflowOutcomesScanning(ctx context.Context, options 
 }
 
 func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options RunListOptions) (RunList, error) {
-	if err := s.reconcileIndex(ctx); err != nil {
-		return RunList{}, err
-	}
+	// No reconcile here. It used to run on this path and reach IngestRun ->
+	// WithPruneProtection -> acquireJournalLock, which is how a READ came to
+	// create .lock files in all 40,665 run directories on the live instance —
+	// including the 10,906 with no run.yaml that can never be ingested (#1924,
+	// §6.3). Completeness is now the repair sweep's job, off the request path.
 	refs, err := s.sources.Telemetry.LatestWorkflowRunRefs(ctx, options.Gaggle, options.Workflow)
 	if err != nil {
 		return RunList{}, err
@@ -752,9 +746,8 @@ func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cu
 // on disk but absent from the index (migrated/imported/still in flight) is
 // never silently hidden.
 func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
-	if err := s.reconcileIndex(ctx); err != nil {
-		return RunList{}, err
-	}
+	// No reconcile here — see listLatestWorkflowOutcomesIndexed. A read does not
+	// write.
 
 	statuses, narrowed, possible := candidateRunStatuses(options)
 	if narrowed && !possible {
@@ -833,130 +826,25 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 	return paginateRuns(kept, limit)
 }
 
-// reconcileIndex backfills any on-disk run absent from the telemetry index so a
-// list served from the index can never hide a run — the reviewer's
-// "migrated telemetry" concern. Steady state is a no-op: the daemon ingests
-// every run it executes, so the set difference is empty and this only lists
-// directory names (never parses a journal). An individual run that fails to
-// ingest simply stays out of this pass rather than failing the whole list.
+// reconcileIndex and its two test-seam observers are DELETED (#1924, §6.3).
 //
-// The scan is incremental. A new or removed run directory bumps its parent's
-// mtime, so a parent whose mtime has not advanced past its own recorded
-// watermark cannot hold anything new and is skipped without a ReadDir.
-// Steady-state reconcile therefore costs one stat per run-parent directory
-// rather than one ReadDir over every run — bounded by newly-appeared runs, not
-// by history or by the unpublished directories that accumulate alongside it.
-// A parent not yet watermarked still full-scans, so nothing on disk is missed on
-// startup. Watermarks are recorded per parent as each one finishes, so a scan
-// the caller cancels keeps the parents already walked instead of restarting from
-// nothing on the next pass. This bound is safe because a run that is actively
-// executing is ingested into the index at write time by the runner; reconcile
-// is only a backstop for imported/migrated/externally-added runs, whose
-// appearance necessarily bumps a parent mtime, so a bounded incremental scan
-// can never hide a live run.
-func (s *Local) reconcileIndex(ctx context.Context) error {
-	// Serialize reconciliation and throttle it: concurrent callers block here,
-	// and once the first completes the rest observe a fresh lastReconcile and
-	// return without re-scanning. lastReconcile advances only on success, so a
-	// canceled or failed scan is retried by the next caller.
-	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
-	if !s.lastReconcile.IsZero() && s.now().Sub(s.lastReconcile) < reconcileInterval {
-		return nil
-	}
-	readprobe.RecordReconcileScan()
-	if reconcileScanObserver != nil {
-		reconcileScanObserver()
-	}
-	indexed, err := s.sources.Telemetry.IndexedRunIDs(ctx)
-	if err != nil {
-		return err
-	}
-	runDirs, err := s.sources.Layout.RunDirs()
-	if err != nil {
-		return err
-	}
-
-	// Watermarks are compared against filesystem mtimes, so they are real wall
-	// clock and independent of the injectable s.now() used only for TTL
-	// throttling. Each parent's watermark is recorded as soon as that parent is
-	// walked to completion, so a scan cut short part-way keeps the parents it
-	// already finished.
-	if s.reconcileWatermarks == nil {
-		s.reconcileWatermarks = make(map[string]time.Time, len(runDirs))
-	}
-	for _, runsDir := range runDirs {
-		// Stat the parent before reading it: a run directory added concurrently
-		// with or after this stat lands on a strictly later mtime (on any
-		// fine-grained filesystem), so the next reconcile still rediscovers it.
-		info, err := os.Stat(runsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf("inspect runs directory: %w", err)
-		}
-		// Record the mtime seen before the walk, never a later one, so a run
-		// directory created during the walk still reads as newer next time.
-		mtime := info.ModTime()
-		previous, scanned := s.reconcileWatermarks[runsDir]
-		if scanned && !mtime.After(previous) {
-			continue
-		}
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf("read runs directory: %w", err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			readprobe.RecordReconcileInspect()
-			if reconcileInspectObserver != nil {
-				reconcileInspectObserver(entry.Name())
-			}
-			if !entry.IsDir() || !apiv1.ValidRunID(entry.Name()) {
-				continue
-			}
-			if _, ok := indexed[entry.Name()]; ok {
-				continue
-			}
-			runDir := filepath.Join(runsDir, entry.Name())
-			// A directory with no run.yaml is not a journal and can never be
-			// ingested, so skip it on a stat rather than paying for the attempt.
-			// IngestRun would take the run's journal lock — creating a .lock file
-			// in the directory — before failing to read the identity, and because
-			// the failure leaves the directory un-indexed it recurred on every
-			// subsequent pass. On a long-lived instance these unpublished
-			// directories outnumber real runs' backlog by orders of magnitude
-			// (measured: 10,906 of 30,140), which made a pass unable to finish
-			// and so left ListRuns permanently blocked (#1708).
-			if !journal.Recorded(runDir) {
-				continue
-			}
-			_ = s.sources.Telemetry.IngestRun(ctx, runDir)
-		}
-		s.reconcileWatermarks[runsDir] = mtime
-	}
-	s.lastReconcile = s.now()
-	return nil
-}
-
-// reconcileScanObserver, when non-nil, is invoked once per reconcileIndex scan
-// that actually runs (i.e. is not throttled). It is a test seam used to assert
-// that a burst of concurrent/rapid ListRuns collapses to a single scan. Always
-// nil in production.
-var reconcileScanObserver func()
-
-// reconcileInspectObserver, when non-nil, is invoked with each directory entry
-// name a reconcile scan actually inspects — i.e. one it reaches inside a parent
-// it did not skip via the mtime watermark. It is a test seam proving the
-// incremental scan does near-zero work when no run directory has changed. Always
-// nil in production.
-var reconcileInspectObserver func(name string)
+// It backfilled any on-disk run absent from the telemetry index so a list could
+// not hide a run — a real requirement, solved in the wrong place. It ran on the
+// HTTP list path and reached IngestRun → WithPruneProtection →
+// acquireJournalLock, which is why all 40,665 run directories on the live
+// instance contain a `.lock` file, including the 10,906 with no run.yaml that
+// can never be ingested. Every one was created by a read.
+//
+// Its incremental bound did not hold either. Skipping a run root whose mtime had
+// not advanced is correct reasoning and useless in practice: every new run bumps
+// its parent's mtime, so on a live instance the root is always dirty and the
+// scan read all 40,665 entries every pass. A bound that only holds when nothing
+// is happening is not a bound.
+//
+// Completeness is now the repair sweep's (internal/readmodel/repair): a fixed
+// I/O budget walked continuously with a durable cursor, off the request path,
+// never taking a journal lock, and bidirectional — it also removes projected
+// rows whose journal has vanished, which reconcile could not do at all.
 
 func (s *Local) runSummaries(ctx context.Context, skipUnreadable bool) ([]RunSummary, error) {
 	return s.runSummariesForStage(ctx, skipUnreadable, "")

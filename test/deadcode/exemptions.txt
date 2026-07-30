@@ -190,3 +190,8 @@ github.com/goobers/goobers/internal/readmodel/intake.PathFor # Resolves intake.d
 # client. Expected to go stale when that lands.
 github.com/goobers/goobers/internal/readmodel/projector.Projector.Stats # Projector counters for the freshness envelope (#1927).
 
+# Repair sweep observability (#1924). Stats feeds the freshness envelope (#1927,
+# Wave 4), which reports sweep cycle time and degraded conditions. Expected to go
+# stale when that lands.
+github.com/goobers/goobers/internal/readmodel/repair.Sweeper.Stats # Sweep counters for the freshness envelope (#1927).
+

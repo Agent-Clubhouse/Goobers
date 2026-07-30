@@ -343,29 +343,6 @@ func (db *DB) LatestWorkflowRunRefs(ctx context.Context, gaggle, workflow string
 	return out, rows.Err()
 }
 
-// IndexedRunIDs returns the set of run_ids present in the index. The read
-// service diffs this against the run directories on disk to detect runs that
-// were never ingested (e.g. imported or migrated telemetry) so they can be
-// backfilled before a list is served — the index is thereby kept complete and
-// can never silently hide a run.
-func (db *DB) IndexedRunIDs(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := db.readDB().QueryContext(ctx, "SELECT run_id FROM runs")
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query run ids: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := map[string]struct{}{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("rollup: scan run id: %w", err)
-		}
-		out[id] = struct{}{}
-	}
-	return out, rows.Err()
-}
-
 // StageAttempts returns every stage attempt for runID, ordered by stage then
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, error) {
