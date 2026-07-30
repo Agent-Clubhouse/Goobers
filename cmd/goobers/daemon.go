@@ -259,6 +259,13 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		} else {
 			readModelEpoch = state.Epoch
 			readModel = readStore
+			// §6.6 step 2: build it by rebuild-from-journals on first start.
+			// Only when EMPTY — a populated store is kept and updated
+			// incrementally by the writer seam, because rebuilding on every start
+			// would make daemon startup pay ~51 s at 1x for data it already has.
+			if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
+			}
 		}
 	}
 
@@ -304,7 +311,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, readModel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +441,7 @@ func buildSchedulerDefinitions(
 	runnerRegistry *daemonRunnerRegistry,
 	tel *telemetry.Client,
 	rollupDB *rollup.DB,
+	readModel *readmodel.Store,
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	wtManagers map[string]*worktree.Manager,
@@ -601,7 +609,7 @@ func buildSchedulerDefinitions(
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
-			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, log: instanceLog, runners: runnerRegistry},
+			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, readModel: readModel, log: instanceLog, runners: runnerRegistry},
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
@@ -821,6 +829,7 @@ type trackedStarter struct {
 	l            instance.Layout
 	tel          *telemetry.Client
 	rollupDB     *rollup.DB
+	readModel    *readmodel.Store
 	log          *journal.InstanceLog
 	runners      *daemonRunnerRegistry
 }
@@ -841,7 +850,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})
-	ingestRunTelemetry(s.tel, s.rollupDB, s.l, req.RunID, s.log)
+	ingestRunTelemetry(s.tel, s.rollupDB, s.readModel, s.l, req.RunID, s.log)
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
@@ -887,11 +896,11 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, release, wg)
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, readModel *readmodel.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, readModel, release, wg)
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, readModel *readmodel.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		return nil, nil, err
@@ -984,7 +993,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				defer release(runID, wfName)
 				defer untrack()
 				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
-				ingestRunTelemetry(tel, rollupDB, runLayout, runID, log)
+				ingestRunTelemetry(tel, rollupDB, readModel, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:
 				// e.g. a WF-016 refuseResume, or Resume replaying a stage's own
@@ -1046,4 +1055,32 @@ func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Dura
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+// buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).
+//
+// Emptiness is the trigger rather than a marker file: the store either has run
+// rows or it does not, and deriving the decision from the data itself means a
+// half-finished build resumes rather than being skipped because a marker claimed
+// it was done. Only when empty, because rebuilding on every start would make
+// daemon startup pay ~51 s at 1x for data it already has.
+//
+// A failure is not fatal — nothing reads read.db yet, and refusing to start over
+// a store no request touches would be an outage caused by an optimization.
+func buildReadModelIfEmpty(ctx context.Context, store *readmodel.Store, l instance.Layout) error {
+	counts, err := store.CountByPhase(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range counts {
+		if n > 0 {
+			return nil
+		}
+	}
+	roots, err := l.RunDirs()
+	if err != nil {
+		return err
+	}
+	_, err = store.BuildFromJournals(ctx, roots)
+	return err
 }

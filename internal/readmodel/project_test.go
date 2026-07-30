@@ -382,3 +382,70 @@ func writeRunJournal(t *testing.T, runsDir, runID string, leaveRunning bool) {
 		t.Fatal(err)
 	}
 }
+
+// TestProjectRunDirKeepsTheStoreCurrent pins the writer seam.
+//
+// Without it the read model would only be as fresh as its last rebuild, which is
+// not a basis for serving reads: a run that finished thirty seconds ago would be
+// missing or still marked running, and the portal's first question is "what
+// needs me?".
+//
+// This is the interim mechanism. §6.1 requires the projector to be driven by a
+// durable intake watermark rather than an in-process call from the writer,
+// precisely so runs written while the daemon was down are not invisible — the
+// same limitation today's IngestRun-on-finish coupling has, and why repair
+// exists. Wave 3 replaces it.
+func TestProjectRunDirKeepsTheStoreCurrent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("%032x", 7)
+	writeRunJournal(t, runsDir, runID, true) // still running
+
+	store, err := Open(filepath.Join(root, FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dir := filepath.Join(runsDir, runID)
+	if err := store.ProjectRunDir(ctx, dir); err != nil {
+		t.Fatalf("project running run: %v", err)
+	}
+	counts, err := store.CountByPhase(ctx)
+	if err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if counts[journal.PhaseRunning] != 1 {
+		t.Fatalf("running count = %d after projecting an in-flight run, want 1", counts[journal.PhaseRunning])
+	}
+
+	// The run finishes; the same seam must move it out of the running set.
+	run, _, err := journal.Recover(dir)
+	if err != nil {
+		t.Fatalf("reopen run: %v", err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.ProjectRunDir(ctx, dir); err != nil {
+		t.Fatalf("project finished run: %v", err)
+	}
+	counts, err = store.CountByPhase(ctx)
+	if err != nil {
+		t.Fatalf("counts after finish: %v", err)
+	}
+	if counts[journal.PhaseRunning] != 0 || counts[journal.PhaseCompleted] != 1 {
+		t.Errorf("after finishing: running=%d completed=%d, want 0 and 1.\n"+
+			"A run that stays 'running' after finishing inflates the active-run count the "+
+			"concurrency ceiling is compared against.",
+			counts[journal.PhaseRunning], counts[journal.PhaseCompleted])
+	}
+}

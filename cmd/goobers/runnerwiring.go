@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -142,7 +143,7 @@ func (t teeRegistrar) Register(secret []byte) {
 // FlushLocal MUST run before IngestRun reads spans.jsonl: the local journal
 // exporter batches completed spans, but flushing the whole provider would also
 // wait for a configured remote collector and delay scheduler-slot release.
-func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout, runID string, log *journal.InstanceLog) {
+func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, readModel *readmodel.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
 		if err := tel.FlushLocal(context.Background()); err != nil {
 			logIngestFailure(log, runID, "telemetry_flush_failed", err)
@@ -163,6 +164,37 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout,
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
 	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
+	projectRunIntoReadModel(readModel, l, runID, log)
+}
+
+// projectRunIntoReadModel keeps read.db current at the same moment telemetry.db
+// becomes current — the same seam, for the same reason.
+//
+// Without this the read model would only be as fresh as its last rebuild, which
+// is not a basis for serving reads: a run that finished thirty seconds ago would
+// be missing or still marked running, and the portal's first question is "what
+// needs me?". The proper mechanism is Wave 3's projector, driven by a durable
+// intake watermark rather than an in-process call from the writer (§6.1). This
+// is the interim, and it inherits the same limitation the current design names:
+// the daemon has no in-memory knowledge of runs written while it was down, which
+// is why repair exists.
+//
+// Best-effort but never silent, matching the rollup's convention above (#246): a
+// failure is logged to the instance journal rather than swallowed, because a
+// read model that silently stops updating looks exactly like one with nothing to
+// report.
+func projectRunIntoReadModel(store *readmodel.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
+	if store == nil {
+		return
+	}
+	dir, err := l.FindRunDir(runID)
+	if err != nil {
+		logIngestFailure(log, runID, "read_model_run_dir_failed", err)
+		return
+	}
+	if err := store.ProjectRunDir(context.Background(), dir); err != nil {
+		logIngestFailure(log, runID, "read_model_project_failed", err)
+	}
 }
 
 func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
