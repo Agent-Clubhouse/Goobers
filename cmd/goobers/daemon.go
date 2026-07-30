@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -42,11 +43,18 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
-	Runner            *runner.Runner
-	Runners           map[string]*runner.Runner
-	LegacyRunner      *runner.Runner
-	Telemetry         *telemetry.Client
-	RollupDB          *rollup.DB
+	Runner       *runner.Runner
+	Runners      map[string]*runner.Runner
+	LegacyRunner *runner.Runner
+	Telemetry    *telemetry.Client
+	RollupDB     *rollup.DB
+	// ReadModel is the portal run read model (read.db). Present but unread at
+	// this stage — see the construction site and design §6.6 step 1.
+	ReadModel *readmodel.Store
+	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
+	// at open so a broken store surfaces at daemon start rather than on the first
+	// read. It becomes the SSE cursor's epoch component in Wave 5.
+	ReadModelEpoch    string
 	Config            *instance.Config
 	Definitions       *instance.ConfigSet
 	Worktrees         *worktree.Manager
@@ -192,6 +200,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 
 	var tel *telemetry.Client
 	var rollupDB *rollup.DB
+	var readModel *readmodel.Store
+	var readModelEpoch string
 	var instanceLog *journal.InstanceLog
 	defer func() {
 		if err == nil {
@@ -219,6 +229,36 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		rollupDB, err = rollup.Open(l.TelemetryDB())
 		if err != nil {
 			return nil, err
+		}
+		// Construct read.db alongside the existing store (design §6.6 step 1).
+		// Nothing reads it yet: the transition is deliberately additive so that
+		// rollback at this stage is deleting a file. The projector, the change
+		// feed, and the cutover flag land in later slices.
+		//
+		// A failure here does NOT fail daemon start. The read model is derived and
+		// not yet load-bearing, so refusing to start over a store nothing reads
+		// would be an outage caused by an optimization.
+		// A failure here must NOT fail daemon start. Nothing reads read.db yet
+		// (§6.6 step 1), so refusing to start over a store no request touches
+		// would be an outage caused by an optimization — and the daemon's own
+		// tests caught exactly that when an earlier version returned an error.
+		//
+		// The state read uses Background rather than the setup context for the
+		// same reason Open's migration does: it is a startup smoke check, not
+		// request-scoped work, and a caller whose context is already done must
+		// not turn "the store is fine" into "the daemon cannot start".
+		if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
+		} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
+			// Reading the state back turns "the file opened" into "the schema is
+			// at the version this build expects and the store has an epoch",
+			// which is the difference between finding a broken store now and
+			// finding it on the first read after the projector lands.
+			fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
+			_ = readStore.Close()
+		} else {
+			readModelEpoch = state.Epoch
+			readModel = readStore
 		}
 	}
 
@@ -289,6 +329,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		LegacyRunner:      legacyRunner,
 		Telemetry:         tel,
 		RollupDB:          rollupDB,
+		ReadModel:         readModel,
+		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,
 		Worktrees:         definitions.Worktrees,
@@ -747,6 +789,9 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 	if s.RollupDB != nil {
 		s.ingestSchedulerLog()
 		_ = s.RollupDB.Close()
+	}
+	if s.ReadModel != nil {
+		_ = s.ReadModel.Close()
 	}
 	if s.InstanceLog != nil {
 		_ = s.InstanceLog.Close()
