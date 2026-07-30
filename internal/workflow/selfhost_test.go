@@ -25,7 +25,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 
 	goobers := map[string]apiv1.GooberSpec{}
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
 		var g apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -37,7 +37,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -47,7 +47,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &w); err != nil {
 				t.Fatalf("unmarshal %s: %v", file, err)
 			}
-			def := Definition{Name: w.Name, Version: 1, Spec: w.Spec}
+			def := Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {
 				t.Fatalf("compile %s against selfhost's real goobers: %v", file, err)
 			}
@@ -109,7 +109,7 @@ func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
 	actions := map[string]bool{}
 
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
 		var goober apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -123,7 +123,7 @@ func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 		}
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
 		var workflow apiv1.Workflow
 		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 		if err != nil {

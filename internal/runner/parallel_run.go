@@ -55,6 +55,10 @@ func (j *branchJournal) RecordStageArtifactWithIntegrity(stage string, attempt i
 	return j.run.RecordBranchStageArtifactWithIntegrity(j.branch, stage, attempt, class, name, data, integrity)
 }
 
+func (j *branchJournal) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
+	return j.run.RecordBranchSpanWithSchema(j.branch, stage, name, dataSchema, data)
+}
+
 func (j *branchJournal) ObserveActivity()            { j.run.ObserveActivity() }
 func (j *branchJournal) RepairAppendBoundary() error { return j.run.RepairAppendBoundary() }
 func (j *branchJournal) Dir() string                 { return j.run.Dir() }

@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: quality-researcher
+spec:
+  gaggle: goobers
+  role: quality-researcher
+  displayName: Quality researcher
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # Read-only research lens: reviews the repo through one scoped angle (its
+  # `goal` names the lens) and writes a freeform findings report. Runs inside
+  # quality-sprint's `focus-areas` parallel on a repo-readonly workspace
+  # (detached HEAD) — no write capability of any kind, matching the reviewer
+  # goober's "pure evaluation" shape.
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - quality-sprint
