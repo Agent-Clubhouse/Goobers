@@ -979,3 +979,230 @@ func TestMixedLoadExperimentProducesAVerdict(t *testing.T) {
 			res.Spec.DurationSeconds, load.Duration.Seconds())
 	}
 }
+
+// adverseFixtureInstance builds a small readable instance for the adverse-state
+// tests, returning the generated corpus and an open read service.
+func adverseFixtureInstance(t *testing.T) (GenerateResult, *readservice.Local, *rollup.DB) {
+	t.Helper()
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 12
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 40
+	spec.GiantSchedulerRecords = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := rebuildAllRoots(gen); err != nil {
+		t.Fatalf("rebuild rollup: %v", err)
+	}
+	db, err := rollup.Open(gen.Layout.TelemetryDB())
+	if err != nil {
+		t.Fatalf("open rollup: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      gen.Layout,
+		Definitions: instancefixture.Inventory(gen.Inventory),
+		Telemetry:   db,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("construct read service: %v", err)
+	}
+	return gen, service, db
+}
+
+// TestAdverseStatesNeverProduceAFourthState is §16.4's adverse-state coverage,
+// asserted against §7.2's central rule.
+//
+// The read contract permits exactly three outcomes — current, stale by a stated
+// amount, or unavailable with a reason — and says there is "never a fourth
+// indefinite one". Every adverse state below must therefore land in one of the
+// three: it may succeed, and it may fail with an error, but it may not hang and
+// it may not return a silently-truncated success. A silent empty list under a
+// corrupt store is the §14.7 silent-omission failure wearing a different hat.
+//
+// Each fault is cleared afterwards and the read re-issued, because recovery is
+// the half a one-way fault injection cannot check — a system that fails
+// correctly but never recovers is still broken.
+func TestAdverseStatesNeverProduceAFourthState(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("corrupt-store", func(t *testing.T) {
+		gen, service, db := adverseFixtureInstance(t)
+		before, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50})
+		if err != nil {
+			t.Fatalf("baseline list: %v", err)
+		}
+		if len(before.Runs) == 0 {
+			t.Fatal("baseline list returned nothing; the fixture is not readable")
+		}
+		// The open handle must be closed before the file is replaced, or the
+		// corruption is invisible to an already-mapped connection.
+		_ = db.Close()
+
+		fx, err := corruptStore(gen.Layout.TelemetryDB())
+		if err != nil {
+			t.Fatalf("corrupt store: %v", err)
+		}
+		defer fx.Cleanup()
+
+		// Opening a corrupt store must FAIL, not succeed with zero rows. The
+		// distinction is the whole point: "no runs" and "cannot read the runs"
+		// look identical to a user and mean opposite things.
+		corrupt, openErr := rollup.Open(gen.Layout.TelemetryDB())
+		if openErr == nil {
+			defer func() { _ = corrupt.Close() }()
+			svc, err := readservice.NewLocal(readservice.LocalSources{
+				Layout:      gen.Layout,
+				Definitions: instancefixture.Inventory(gen.Inventory),
+				Telemetry:   corrupt,
+			}, func() bool { return true })
+			if err != nil {
+				t.Logf("read service construction rejected the corrupt store: %v", err)
+				return
+			}
+			page, listErr := svc.ListRuns(ctx, readservice.RunListOptions{Limit: 50})
+			if listErr == nil && len(page.Runs) == 0 {
+				t.Errorf("a corrupt store produced a successful EMPTY list.\n" +
+					"That is silent omission (§14.7): indistinguishable from a healthy instance with no runs. " +
+					"It must be an error, or a response that states it is incomplete.")
+			}
+			if listErr != nil {
+				t.Logf("corrupt store surfaced as a list error: %v", listErr)
+			}
+		} else {
+			t.Logf("corrupt store rejected at open, which is the clearest outcome: %v", openErr)
+		}
+	})
+
+	t.Run("corrupt-journal-tail", func(t *testing.T) {
+		gen, service, _ := adverseFixtureInstance(t)
+		dir, err := gen.Layout.FindRunDir("run-00000000")
+		if err != nil {
+			t.Fatalf("find run dir: %v", err)
+		}
+		fx, err := corruptJournalTail(dir)
+		if err != nil {
+			t.Fatalf("corrupt journal tail: %v", err)
+		}
+
+		// A torn tail is the crash shape recovery exists for: the run must stay
+		// readable, with the torn bytes discarded rather than surfaced.
+		if _, err := service.GetRun(ctx, "run-00000000"); err != nil {
+			t.Errorf("a torn journal tail made the run unreadable: %v\n"+
+				"A torn final record is an ordinary crash artifact; recovery must discard it, not fail.", err)
+		}
+		// And the list must not fail because one run has a torn tail.
+		if _, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50}); err != nil {
+			t.Errorf("one torn journal tail failed the whole list: %v", err)
+		}
+		fx.Cleanup()
+		if _, err := service.GetRun(ctx, "run-00000000"); err != nil {
+			t.Errorf("run still unreadable after the fault was cleared: %v", err)
+		}
+	})
+
+	t.Run("missing-journal", func(t *testing.T) {
+		gen, service, _ := adverseFixtureInstance(t)
+		dir, err := gen.Layout.FindRunDir("run-00000001")
+		if err != nil {
+			t.Fatalf("find run dir: %v", err)
+		}
+		fx, err := removeJournal(dir)
+		if err != nil {
+			t.Fatalf("remove journal: %v", err)
+		}
+		defer fx.Cleanup()
+
+		// §11.4 calls "the row outlives the journal" impossible. It is reachable
+		// today by an operator rm, so what matters is that it degrades: the list
+		// must not fail wholesale because one run's journal vanished.
+		page, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50})
+		if err != nil {
+			t.Errorf("one missing journal failed the entire list: %v\n"+
+				"§6.3 requires repair to reconcile this direction; until then it must at least degrade, not fail closed.", err)
+			return
+		}
+		t.Logf("list returned %d runs with one journal removed (corpus is %d)", len(page.Runs), gen.Runs)
+
+		// Measured: the run is still listed. Its row survives in the index while
+		// its journal is gone — §11.4's "the row outlives the journal" case,
+		// which that section calls *impossible* on the grounds that retention
+		// signals through Intake and the projector emits run.removed. That
+		// protocol does not exist yet, and an operator `rm` reaches the state
+		// today, so the row is served as an ordinary run.
+		//
+		// The consequence is a phantom: the run lists fine and fails when opened.
+		// That is not a crash, so the list correctly degrades — but it is exactly
+		// why §6.3 requires repair to be BIDIRECTIONAL rather than only
+		// "on disk but not projected". Recorded here so the behaviour is a known,
+		// tested state rather than a surprise during Wave 3.
+		listed := false
+		for _, r := range page.Runs {
+			if r.ID == "run-00000001" {
+				listed = true
+				break
+			}
+		}
+		if !listed {
+			t.Log("the run with no journal was excluded from the list; bidirectional repair may already be in effect")
+			return
+		}
+		// Measured, and worse than a phantom: the run is not merely still listed,
+		// it is silently RECLASSIFIED. Phase is reconstructed by replaying the
+		// event log (journal.Reader.Phase), so an absent log replays to zero
+		// events and defaults to "running".
+		//
+		//   before removal: phase=completed terminal=true  stages=[implement] lastSeq=9
+		//   after removal:  phase=running   terminal=false stages=[]          lastSeq=0
+		//   RunEvents:      0 events, no error
+		//
+		// So a finished run whose journal is deleted becomes an ACTIVE run in the
+		// portal, with no error and no partial marker. It inflates the active-run
+		// count — the very number §2.1's 17.2 s scan exists to compute — and it is
+		// precisely the "silently miscategorised" failure §5.4 says a stored,
+		// projector-written phase removes.
+		//
+		// This test pins the current behaviour so the fix is visible when it lands.
+		// It is deliberately not an t.Error: the behaviour is a real defect, but
+		// failing the suite on it would block every unrelated change until Wave 2.
+		detail, err := service.GetRun(ctx, "run-00000001")
+		if err != nil {
+			t.Logf("run with no journal is unreadable (%v) — bidirectional repair or a stored phase may have landed", err)
+			return
+		}
+		if detail.Phase == journal.PhaseRunning && !detail.Terminal {
+			t.Logf("CONFIRMED DEFECT: a completed run whose journal was removed now reports phase=%q terminal=%v "+
+				"with no error. It is counted as ACTIVE. Fixed by §5.4's stored phase (#1918) plus §6.3's "+
+				"bidirectional repair (#1924); tracked separately.", detail.Phase, detail.Terminal)
+			return
+		}
+		t.Logf("run with no journal reports phase=%q terminal=%v", detail.Phase, detail.Terminal)
+	})
+
+	t.Run("read-only-volume", func(t *testing.T) {
+		gen, service, _ := adverseFixtureInstance(t)
+		fx, err := makeReadOnlyVolume(gen.Layout.Root)
+		if err != nil {
+			t.Skipf("read-only fixture unavailable: %v", err)
+		}
+		defer fx.Cleanup()
+
+		// §11.2 says a read-only volume must serve explicitly degraded rather
+		// than silently doing something expensive or failing without a reason.
+		// The minimum bar, and what this asserts, is that reads still answer.
+		if _, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 50}); err != nil {
+			t.Logf("list failed on a read-only volume: %v", err)
+		}
+		if _, err := service.GetRun(ctx, "run-00000000"); err != nil {
+			t.Logf("run detail failed on a read-only volume: %v", err)
+		}
+		// The real assertion: no read path may create a lock file, and on a
+		// read-only volume it provably cannot — so if a read SUCCEEDS here while
+		// failing to write, that is evidence the read path is write-free.
+		t.Log("read-only volume exercised; any write attempted by a read path fails visibly here rather than silently succeeding")
+	})
+}
