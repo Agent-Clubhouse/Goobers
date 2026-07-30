@@ -138,4 +138,41 @@ CREATE TABLE IF NOT EXISTS projection_state (
 	built_at           TEXT NOT NULL
 );
 `,
+
+	// v2: the change feed (#1919, §4.2).
+	//
+	// One row per projected transition, written in the SAME transaction as the
+	// fact it describes. That ordering is the whole point: today the projection
+	// updates on run *finish* while the stream discovers change by polling the
+	// filesystem — two mechanisms with different latency, completeness, and
+	// failure modes, so "refetch" and "the data is there" can arrive out of
+	// order. Committing them together makes that impossible rather than unlikely.
+	//
+	// The cursor is <schemaVersion>:<epoch>:<seq>, not seq alone. A rebuilt
+	// read.db is a NEW SQLite file, so AUTOINCREMENT restarts at 1 — and a client
+	// holding seq 918342 would reconnect to a store whose maximum is 100. That
+	// cursor is neither below the retention floor nor from a different schema
+	// version, so no named condition fires, the client waits forever, and §8.2's
+	// rule discarding lower positions makes it permanent. The epoch is what turns
+	// that silent hang into a named `epoch_changed`.
+	//
+	// AUTOINCREMENT (rather than a bare INTEGER PRIMARY KEY) is deliberate:
+	// SQLite reuses rowids after a delete without it, and change pruning deletes
+	// from the head of the table. A reused seq would hand two different
+	// transitions the same cursor position.
+	`
+CREATE TABLE IF NOT EXISTS change (
+	seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+	at       TEXT NOT NULL,
+	kind     TEXT NOT NULL,
+	run_id   TEXT,
+	gaggle   TEXT,
+	workflow TEXT
+);
+
+-- Resuming a per-run stream, and finding a run's latest transition.
+CREATE INDEX IF NOT EXISTS idx_change_run ON change(run_id, seq);
+-- Scoped tails: a client watching one gaggle should not walk another's changes.
+CREATE INDEX IF NOT EXISTS idx_change_gaggle ON change(gaggle, seq);
+`,
 }

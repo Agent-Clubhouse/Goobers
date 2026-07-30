@@ -31,6 +31,21 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Read the prior row inside the transaction, before writing. It decides the
+	// change kind, and reading it outside would race another writer between the
+	// read and the write — classifying a progression as a creation, which a
+	// client would act on by prepending a duplicate to its list.
+	previous, existed, err := readRunRowTx(ctx, tx, p.Run.RunID)
+	if err != nil {
+		return err
+	}
+	// An older projection is a no-op (see the last_seq guard below), and a no-op
+	// must not emit a change. Publishing one would wake every connected client
+	// to refetch a row that did not move.
+	if existed && p.Run.LastSeq < previous.LastSeq {
+		return nil
+	}
+
 	if err := upsertRunRow(ctx, tx, p.Run); err != nil {
 		return err
 	}
@@ -46,10 +61,44 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 			return err
 		}
 	}
+	// The change row commits WITH the fact it describes (§6.2). That ordering is
+	// the point: today the projection updates on run finish while the stream
+	// discovers change by polling the filesystem, so "refetch" and "the data is
+	// there" can arrive out of order. Here they cannot.
+	//
+	// last_activity_at rather than time.Now(): the projection is a pure function
+	// of the journal, and stamping a change with wall-clock time would make two
+	// rebuilds of the same journals produce different feeds, breaking §14.9.
+	at := p.Run.LastActivity
+	if at.IsZero() {
+		at = p.Run.StartedAt
+	}
+	if err := appendChange(ctx, tx, at, changeKindFor(previous, existed, p.Run), p.Run); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("readmodel: commit upsert: %w", err)
 	}
 	return nil
+}
+
+// readRunRowTx reads the columns needed to classify a transition, inside a
+// transaction. Deliberately narrow: only what changeKindFor and the no-op guard
+// consult, so it stays cheap on the write path.
+func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, error) {
+	var out RunRow
+	var terminal int
+	err := tx.QueryRowContext(ctx,
+		`SELECT run_id, terminal, last_seq FROM run WHERE run_id = ?`, runID).
+		Scan(&out.RunID, &terminal, &out.LastSeq)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return RunRow{}, false, nil
+	case err != nil:
+		return RunRow{}, false, fmt.Errorf("readmodel: read prior run %s: %w", runID, err)
+	}
+	out.Terminal = terminal != 0
+	return out, true, nil
 }
 
 func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
