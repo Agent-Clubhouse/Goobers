@@ -259,6 +259,14 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 			writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
 			return
 		}
+		// Bound the request (#1917). Applied here rather than per handler so a
+		// route cannot be added without one, and applied AFTER auth so an
+		// unauthenticated request is rejected without consuming budget.
+		if budget, bounded := routeBudget(route.ID); bounded {
+			bounded, cancel := withBudget(w, request, budget)
+			defer cancel()
+			request = bounded
+		}
 		handler(w, request)
 	})
 }
@@ -493,6 +501,12 @@ func clientCancelled(w http.ResponseWriter, err error) bool {
 
 func writeReadError(w http.ResponseWriter, errorLog *log.Logger, operation string, err error) {
 	if clientCancelled(w, err) {
+		return
+	}
+	// The server's own budget expiring is a 503, not a 500. It must be checked
+	// before the default: previously context.DeadlineExceeded fell through to
+	// "read_error", making a deliberate shed indistinguishable from a fault.
+	if budgetExceeded(w, err) {
 		return
 	}
 	switch {
