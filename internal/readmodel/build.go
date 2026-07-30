@@ -88,6 +88,22 @@ func (s *Store) BuildFromJournals(ctx context.Context, runsDirs []string) (Build
 	return result, nil
 }
 
+// ProjectRunDir projects one run directory.
+//
+// Exported for the writer seam: the daemon projects a run at the moment it
+// finishes, alongside the rollup ingest, so read.db is as fresh as telemetry.db
+// rather than only as fresh as its last rebuild.
+//
+// This is the INTERIM mechanism. §6.1 requires the projector to be driven by a
+// durable intake watermark rather than an in-process call from the writer,
+// precisely so that runs written while the daemon was down are not invisible —
+// which is the same limitation the current IngestRun-on-finish coupling has, and
+// the reason repair exists. Wave 3 replaces it.
+func (s *Store) ProjectRunDir(ctx context.Context, dir string) error {
+	_, err := s.projectRunDir(ctx, dir)
+	return err
+}
+
 // projectRunDir projects one run directory, reporting whether it was written.
 func (s *Store) projectRunDir(ctx context.Context, dir string) (bool, error) {
 	// An unpublished directory has no run.yaml and can never be ingested. This

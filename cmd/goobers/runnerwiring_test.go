@@ -301,7 +301,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		ingestRunTelemetry(client, nil, instance.Layout{}, "", nil)
+		ingestRunTelemetry(client, nil, nil, instance.Layout{}, "", nil)
 		close(done)
 	}()
 	select {
@@ -1344,6 +1344,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		newDaemonRunnerRegistry(),
 		nil,
 		nil,
+		nil,
 		log,
 		journal.NewRegistryScrubber(),
 		nil,
@@ -1715,7 +1716,7 @@ func TestIngestRunTelemetryLogsForcedFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	ingestRunTelemetry(nil, db, l, "run-forced-failure", log)
+	ingestRunTelemetry(nil, db, nil, l, "run-forced-failure", log)
 
 	events, err := journal.ReadInstanceLog(l.SchedulerDir())
 	if err != nil {
@@ -1746,7 +1747,7 @@ func TestIngestRunTelemetryNilLogDoesNotPanic(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	ingestRunTelemetry(nil, db, l, "run-nil-log", nil)
+	ingestRunTelemetry(nil, db, nil, l, "run-nil-log", nil)
 }
 
 // --- #312: escalation-notifier wiring ---
