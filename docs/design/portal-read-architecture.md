@@ -1,6 +1,7 @@
 # Portal read architecture — a rethink
 
-> **Status:** Design proposal, fourth pass. Responds to
+> **Status:** Accepted design, sixth pass — implementation in progress under
+> epic #1912. Responds to
 > `Goobers-Reviews/2026-07-29_portal-architecture-findings.md` (the diagnosis) and
 > supersedes [`unified-index-backed-run-reads.md`](unified-index-backed-run-reads.md)
 > (#1883), keeping its read-projection conclusion and replacing the parts it left
@@ -9,14 +10,23 @@
 >
 > **Revision history is in §18** — nine errors in the first pass, seven
 > correctness holes in the second, ten state-boundary findings in the third. The
-> fourth pass concentrates on three boundaries the third pass left unsafe: the
+> fourth pass concentrated on three boundaries the third pass left unsafe: the
 > **intake store** (durable discovery cannot live inside the store that gets
 > replaced), the **rebuild barrier** (a new epoch could publish silently stale),
 > and **query bounds** (SQLite's plan output cannot prove the absence of a
 > residual predicate, so the bound must come from an enumerated set of supported
-> filter combinations instead). It also corrects a factual error: this document
-> previously claimed `modernc.org/sqlite` exposes no interrupt. **It does** — and
-> that is the production mechanism behind "a deadline must stop the work."
+> filter combinations instead). The fifth pass added §11A and §18.1a.
+>
+> **The sixth pass (§18.0) is an implementation premise audit**, not a review: 156
+> factual claims this document makes about the code were checked against the code
+> before Wave 0 began. 105 held. **Twelve of the rest change the plan**, and two of
+> those are mechanisms §14 relies on that cannot work as written — a *per-route*
+> budget cannot be enforced by `http.Server.WriteTimeout`, and `SQLITE_INTERRUPT`
+> is never observable to a caller because the driver rewrites it to `ctx.Err()`.
+> A third resizes Wave 4: the repository contains **zero** `QueryContext` call
+> sites and `internal/telemetry/rollup` has no `context.Context` in any
+> non-test signature, so "cancellation reaches the statement" is a plumbing
+> project, not a router change. §18.0 records all of them.
 
 ---
 
@@ -119,10 +129,24 @@ live execution.
 ### 2.1 The active-run count is a confirmed hot path
 
 17.2 s cold to count two live runs, on an idle host, against a client that aborts
-at 10 s. `/v1/instance`, `/v1/gaggles`, and `/v1/gaggles/{g}/workflows` each
-invoke it (`internal/readservice/inventory.go:332,380,512`), and
-`ListRuns(LatestPerWorkflow)` invokes it again (`runs.go:366`). There is no cache
-(`inventory.go:601`).
+at 10 s. There is no cache (`inventory.go:601`).
+
+**There are six production call sites, not four** (corrected in the sixth pass;
+the original text named four and #1741's acceptance criteria name three):
+
+| Call site | Route or command |
+|---|---|
+| `readservice/inventory.go:332` | `/v1/instance` |
+| `readservice/inventory.go:380` | `/v1/gaggles` |
+| `readservice/inventory.go:512` | `/v1/gaggles/{g}/workflows` |
+| `readservice/inventory.go:590` | `/v1/gaggles/{g}/workflows/{w}` — **workflow detail**, added by #1894 after #1741 was filed |
+| `readservice/runs.go:529` | `workflowRunActivity`, reached from `runs.go:371` on every `ListRuns(LatestPerWorkflow)` — the path the Overview hits on **every load** |
+| `cmd/goobers/status.go:902` | `goobers status`, calling `ActiveRunCountsByWorkflowDirs` directly |
+
+Fixing only the three routes #1741 names leaves workflow detail and the Overview's
+own list path on the 17.2 s walk. **#1741's acceptance must be widened to all six**,
+and the `goobers status` site needs an explicit disposition (§11.3) rather than
+being inherited by accident.
 
 The configuration-warnings widget's only data source is `getInstance()`
 (`portal/src/configurationWarnings.ts`), which is this call — so on a busy
@@ -182,13 +206,60 @@ created by `IngestRun` → `journal.WithPruneProtection` → `acquireJournalLock
 path** (`readservice/runs.go:921`), before failing to read an identity that does
 not exist.
 
+**Sixth-pass correction — this evidence is residue, not current behavior, and the
+distinction changes what Wave 3 has left to do.** #1708 landed
+`if !journal.Recorded(runDir) { continue }` at `readservice/runs.go:918` before
+these numbers were taken, so today's list path cannot lock an *unpublished*
+directory: the 10,906 stray locks are historical. Read this section as
+archaeology proving the *mechanism* existed, not as a live defect.
+
+What **is** still live is the narrower half, and it is the half that matters:
+`reconcileIndex` still calls `IngestRun` — and so still takes a journal lock on
+the HTTP list path — for every directory that *is* recorded but not yet indexed
+(`runs.go:921`). The invariant "no read path creates a `.lock` file" is therefore
+still false today and still a real Wave 3 exit criterion; it is simply no longer
+true that it fires on directories that can never be ingested.
+
 ### 2.5 The scale harness does not measure the failing surfaces
 
 `test/scale/measure.go` builds the read service with `minimalDefinitions()` — **no
-gaggles and no workflows** — so it never calls `Instance()`, `Gaggles()`,
+gaggles and no workflows** — and never calls `Instance()`, `Gaggles()`,
 `Workflows()`, or `LatestPerWorkflow`. It never measures run detail and never
 applies concurrent load. §16 fixes it first, because without it we cannot tell a
 fix from a coincidence — and because §2.3's hypothesis can only be settled there.
+
+**Sixth-pass correction to the mechanism.** The empty inventory is *not* why the
+scan goes unmeasured, and an implementer who "fixes" it by populating definitions
+will still measure nothing. `Local.Instance` calls `s.activeRunCounts()`
+unconditionally (`inventory.go:332`), and `activeRunCounts` (`:601`) walks
+`Layout.RunDirs()` — it is keyed on run **directories**, not on the configured
+inventory, so an empty inventory does not spare it. The harness misses the scan
+for the simple reason that **it never calls those methods at all**. Populating the
+inventory is still required (§16.1 needs 2,000 workflows for §14.4's fan-out
+assertion), but it is a separate fix from calling the surfaces.
+
+**Three further Wave 0 corrections, each of which would otherwise produce a
+misleading baseline:**
+
+- **The coded 1× is not the live instance.** `-runs=1 -scheduler-events=400000`
+  (`generate.go:32`) measures to a **76 MiB** scheduler journal against the live
+  **324 MB**, and 13,600 runs against 40,665 directories. Publishing "1×" from
+  today's constants understates the live instance roughly 4× on journal bytes.
+  §16 must re-anchor the baseline to §2's measured shape and date-stamp it,
+  because it will drift again.
+- **Two §16.5 pathologies are currently inverted, not merely absent.**
+  `OrphanDirs` is fixed at 5 regardless of scale (`generate.go:97`) and orphan
+  dirs are written *without* a `.lock`, while every dir created through
+  `journal.Create` has one — the exact inverse of the live instance's 10,906
+  lock-bearing unpublished directories. And generated spans carry ~45-byte
+  payloads, so the span:event byte ratio is inverted relative to the live 12×.
+- **Generation is fsync-bound and the corpus sizes here are not reachable without
+  addressing it:** measured 6.9 runs/s with fsync on versus 124 runs/s with
+  `GOOBERS_DISABLE_FSYNC=1`. A 100k-run corpus is ~4 hours versus ~13 minutes.
+  Fixture generation must therefore write journals directly rather than through
+  `InstanceLog.Append` (whose §2.2 defect is itself O(n²) during generation), and
+  the harness must state which corpora were generated with fsync disabled, because
+  that is exactly the durability behavior some fixtures exist to test.
 
 ### 2.6 What these numbers imply for store design
 
@@ -263,6 +334,23 @@ write, backfill, or repair.
   journals. This is a tier-1/2 statement: at tier 3, if Temporal history projects
   *into* the journal format, the journal is itself a projection, and recovery
   plans must not assume otherwise (§13.4).
+
+  **Sixth-pass correction: there is exactly one existing exception, and it must be
+  handled rather than assumed away.** `first_success_milestones`
+  (`rollup/schema.go:417`) is **not journal-derivable**. Migration v14 seeds it
+  from already-projected rows (`schema.go:423`), and `RebuildAll` preserves it by
+  reading the **old database** before deleting it — `existingTimeToFirstPR(dbPath)`
+  at `rollup/rebuild.go:31`, replayed forward at `:44`. So "delete the store and
+  rebuild from journals" silently loses onboarding's time-to-first-PR metric today.
+
+  This bears directly on §6.5 and §14.9. The rebuild-inherits-policy-state rule
+  the fifth pass added for the projection floor and tombstones (§6.5 step 2) is
+  the **same rule** this needs, and the resolution is to name it generally:
+  **a rebuild must carry forward every derived fact that is not reconstructible
+  from journals, and that set must be enumerated in code rather than discovered
+  during an incident.** Wave 2 owns the enumeration; §14.9's byte-identical
+  assertion is scoped to journal-derived rows and must state the carried-forward
+  set explicitly rather than ignoring it.
 - **The projector is the only writer of projected facts**, and change rows commit
   in a single serialized order (§6.1).
 - **SERVE performs no I/O outside the read model**, except `single-run`-class
@@ -642,8 +730,31 @@ Consequences, stated plainly:
   `run_stage`, where the stage is an equality term and the join is a seek.
 - **The refusal is a real product surface.** An unlisted combination returns a
   typed `unsupported_filter_combination` naming the supported neighbours, not a
-  slow success. The set is generated into the OpenAPI/contract surface so the UI
-  can only construct supported combinations.
+  slow success. The set is generated into the OpenAPI/contract surface.
+
+- **Sixth-pass correction: "so the UI can only construct supported combinations"
+  is false, and this materially raises the bar.** The portal parses its filters
+  from **arbitrary hash query parameters** (`portal/src/routing.ts:56`–`67`),
+  validating only enum membership — not which *combinations* are legal. Every
+  Insight drill-through target is a bookmarkable `#/runs?…` href
+  (`InsightPage.tsx:434`, `:467`–`499`, `:700`), so users share and re-enter these
+  URLs, and any filter tuple × any phase is reachable **today** without the UI
+  offering it. One combination is already reachable *only* by URL and produced by
+  no UI element at all: `population="premium-measured"` (`types.ts:24`,
+  `routing.ts:163`).
+
+  Two consequences:
+
+  1. **The closed set must be defined over URL-reachable combinations, not
+     link-reachable ones.** §14.2's enumeration test must walk the *router's*
+     parseable space, which is the cross-product of the validated enums — not the
+     set of hrefs the UI happens to emit. This is a strictly larger set and it is
+     what makes §11A's capability-reduction a condition rather than a hazard.
+  2. **The refusal must degrade gracefully in the client**, because a stale
+     bookmark is a normal event rather than a misuse. A refused combination
+     renders as an explained empty state offering the nearest supported
+     neighbour — never a raw error. §11A's parity condition is not met by the
+     server-side refusal alone.
 
 **Measuring actual work.** `modernc.org/sqlite` exposes no `sqlite3_stmt_status`
 and no progress-handler wrapper (verified in v1.54.0), so VM-step counting is
@@ -726,7 +837,16 @@ progress**.
 - **A projection floor stops a retention livelock.** `projection_state` records
   the floor below which runs are intentionally aged out of the projection
   (§11.4), and repair **skips** journals older than it.
-- **An explicit resume overrides the floor.** `runner.ResumeFromTerminal`
+- **An explicit resume overrides the floor.** **Sixth-pass note: this rule is
+  correct and currently unreachable.** `runner.ResumeFromTerminal` has **zero
+  production callers** — only `internal/runner/resume.go` itself and three test
+  files; the CLI surfaces that would reach it are explicit stubs pending
+  #465–#469. So the floor-override is implemented as a **property of the intake
+  protocol** (an intake watermark is authority to re-admit, full stop) rather than
+  as a special case wired to a specific caller, which is both cheaper and what
+  makes it correct when the CLI does land. It is not separately testable end-to-end
+  until then, and §16's fixture exercises it through `Intake` directly.
+  `runner.ResumeFromTerminal`
   (`internal/runner/resume.go:152`) durably reopens an escalated or failed run,
   and that journal may be older than the 90-day window. A resumed run is
   therefore **re-admitted regardless of the floor**: the floor governs aging out
@@ -856,10 +976,48 @@ Additive and revertible:
 2. Build it by rebuild-from-journals on first start (191 MB; §16 measures the
    wall time).
 3. Cut reads over behind a config flag, defaulting on, with the old path intact.
-4. Only in a later release, drop the unused `runs` table from `telemetry.db`.
+4. Only in a later release, retire the superseded `runs` columns from
+   `telemetry.db` — see the correction below.
 
 Rollback before step 4: flip the flag, or delete `read.db` and revert the binary.
 No journal is touched at any step.
+
+**Sixth-pass correction: `runs` is not unused, and §5.1's characterization of
+`telemetry.db` as analytics is wrong.** The store holds **22 tables, 18 of them
+per-run** (`ingest.go:76`) — `runs`, `run_goober_digests`, `stage_attempts`,
+`stage_usage`, `stage_model_usage`, `gate_verdicts`, `provider_mutations`,
+`run_errors`, `harness_transcripts` and more — and there are **32 non-test
+references to the `runs` table** across the tree. "Drop the unused `runs` table"
+was written as bookkeeping and is in fact a migration touching most of the query
+surface.
+
+This does not change the decision to split the stores, and it does not change the
+§5.1 sizing argument, which rests on **rebuild input** (191 MB of events versus
+2,263 MB of spans) and is unaffected. What it changes is step 4's scope and the
+transition's shape: the per-run tables that back *analytics* joins (stage usage,
+model usage, verdicts) stay in `telemetry.db` and keep their `runs` join target,
+so `runs` in `telemetry.db` becomes a **narrow join key** — run id, gaggle,
+workflow, `started_at` — rather than the full row it is today. The complete row
+moves to `read.db`. Step 4 retires the *superseded columns*, not the table, and
+which columns those are is Wave 2's enumeration, not an assumption.
+
+**Two adjacent live defects Wave 2 must not inherit,** both found in the same
+audit and neither previously filed:
+
+- **`goobers telemetry compact` can permanently break scheduler ingest.**
+  `CompactInstanceEvents` (`journal/compact.go`) rewrites `scheduler/events.jsonl`
+  shorter while preserving the surviving records' `seq`, but `IngestSchedulerLog`
+  advances a byte-offset cursor. After a compaction the cursor points past
+  surviving records. A projector keyed on instance-journal position inherits this
+  unless the cursor is keyed on `seq` rather than offset.
+- **A run terminalized by the stalled-run sweep never has its rollup rows
+  refreshed.** `sweepStalledRuns` (`cmd/goobers/stalledruns.go:85`) holds no
+  rollup handle and writes no index update, so the store keeps the pre-terminal
+  row until something else re-ingests it. This is exactly the class of hole
+  §4.3's intake protocol closes — the terminalizer is one of the writers, and
+  under this design it must upsert a watermark — but it is a **present** silent
+  staleness bug, and the differential oracle will find it as a "drift" that is
+  really a missing write.
 
 ---
 
@@ -891,9 +1049,40 @@ A route without a class and a non-zero budget fails a contract test — which is
 how the diagnosis's §8.1 ("the classification is enforced rather than
 documented") becomes true.
 
-Budgets come from §16's measured **p99.9**, not from taste, and are enforced by
-`context.WithTimeout` in the router *and* `http.Server.WriteTimeout`, currently
-unset (`internal/httpapi/server.go` sets only `ReadHeaderTimeout`). Three rules:
+Budgets come from §16's measured **p99.9**, not from taste.
+
+**Sixth-pass correction — how they are enforced.** Earlier passes said
+`context.WithTimeout` in the router *and* `http.Server.WriteTimeout`. The second
+half is wrong twice over, and shipping it would break a working feature:
+
+- **`WriteTimeout` cannot express a per-route budget.** It is a single
+  server-global field on `http.Server` (`internal/httpapi/server.go:85` is the only
+  `http.Server` in the API path) and `net/http` applies it once per connection at
+  request start. A `Route.Budget` per route has no way to reach it.
+- **Setting it at all would cut the SSE stream.** `/api/v1/events` is a
+  deliberately unbounded response (`eventstream.go:936`). A server-global write
+  deadline terminates it at the deadline. The stream survives today only because it
+  resets a short write deadline before every message via `ResponseController`.
+
+**The per-request primitive is `http.NewResponseController(w).SetWriteDeadline`,**
+which the event stream already uses (`eventstream.go:982`) — so the mechanism is
+in-tree and proven, just not yet generalized. Per-route enforcement is therefore:
+`context.WithTimeout` for the work, `SetWriteDeadline` for the socket, both from
+`Route.Budget`, and **no global `WriteTimeout`**.
+
+Two consequences the contract test must encode rather than inherit:
+
+- **`Route.Budget` cannot be required non-zero for every route.** An SSE stream has
+  no meaningful total budget. The contract needs an explicit `CostStream`-style
+  disposition (or a documented sentinel) so "unbounded on purpose" is declared and
+  reviewable, instead of forcing a fictitious number that the enforcement layer
+  then has to special-case anyway.
+- **Byte-serving routes need a stated policy.** Artifact and transcript downloads
+  (`router.go:405`, `:429`) are dominated by client link speed, and a body cannot
+  be turned into a 503 after `WriteHeader(200)`. They are budgeted on *server work
+  before first byte*, not on total wall time, and that must be written down.
+
+Three rules:
 
 - **Every server budget is strictly below the client's 10 s abort**, which becomes
   a backstop rather than the only bound.
@@ -901,15 +1090,50 @@ unset (`internal/httpapi/server.go` sets only `ReadHeaderTimeout`). Three rules:
   budget, so a saturated class would otherwise accept work it cannot finish. A
   fast 503 with `Retry-After` is cheaper for both sides.
 - **Deadline expiry must actually stop the work, and the mechanism exists.**
-  Every request query uses `QueryContext`/`ExecContext`. `modernc.org/sqlite`
-  wires context cancellation to `sqlite3_interrupt` (`interruptOnDone` in
-  `sqlite.go:78`, used by `stmt.go:105`/`295` and `tx.go:71`), so a cancelled
-  request aborts the in-flight statement rather than running to completion. An
-  earlier pass of this document claimed the driver exposed no interrupt; that was
-  wrong — it checked the exported API surface rather than driver behavior.
-  **`SQLITE_INTERRUPT` maps to the 503 path, never to a partial 200.** §14.1
-  asserts both the mapping and that no goroutine keeps working past its
-  deadline.
+  `modernc.org/sqlite` wires context cancellation to `sqlite3_interrupt`
+  (`interruptOnDone` in `sqlite.go:78`, used by `stmt.go:105`/`295` and
+  `tx.go:71`), so a cancelled request aborts the in-flight statement rather than
+  running to completion. An earlier pass claimed the driver exposed no interrupt;
+  that was wrong — it checked the exported API surface rather than driver behavior.
+
+  **Sixth-pass corrections. Three, and the first two invert stated mechanisms.**
+
+  1. **"Every request query uses `QueryContext`/`ExecContext`" is not a
+     description of a small change — it is a project.** The repository contains
+     **zero** `QueryContext`, `ExecContext`, `QueryRowContext`, or
+     `PrepareContext` call sites, and `internal/telemetry/rollup` contains **no
+     `context.Context` in any non-test function signature at all** (e.g.
+     `query.go` `func (db *DB) Runs() (…)`). Roughly 36 exported methods across
+     ~12 files need a context parameter before a deadline can reach a statement.
+     §17's "Wave 4 risk: low — touches router and contract, not the projection"
+     is false as written; the plumbing is mechanical but wide, and it is a
+     **prerequisite of Wave 1.5**, not a part of Wave 4. §17 is corrected
+     accordingly.
+  2. **`SQLITE_INTERRUPT` is never observable to the caller, so nothing can map
+     it.** The driver arms `interruptOnDone` only when `ctx.Done() != nil`, and
+     the deferred block immediately after **rewrites the result**:
+     `if ctx != nil && atomic.LoadInt32(&done) != 0 { r, err = nil, ctx.Err() }`
+     (`stmt.go:98`–`116`, `:285`–`300`). What reaches the caller is
+     `context.DeadlineExceeded` or `context.Canceled` — never a SQLite error
+     code. **The 503 mapping therefore keys on `errors.Is(err,
+     context.DeadlineExceeded)`**, with `context.Canceled` distinguished by
+     *whose* cancellation it was: client disconnect is the existing 499 path
+     (`router.go:486`), server budget expiry is 503. The property §14.6 asserts is
+     unchanged and still correct — an interrupted page returns 503, never a
+     truncated 200 — only the discriminant changes. Note this is a live trap:
+     `clientCancelled` (`router.go:486`) keys on `context.Canceled`, so a
+     router-installed `WithTimeout` yields `DeadlineExceeded` and falls through to
+     **500 `read_error`** today unless the mapping is added deliberately.
+  3. **An interrupted connection is destroyed, not reused.** `conn.IsValid`
+     returns false once `sqlite3_is_interrupted` is set for a file-backed database
+     (`conn.go:950`–`967`), so `database/sql` discards it. Every budget expiry
+     therefore costs a connection open on the reader pool (§5.2), which means
+     **admission control is what protects the pool** — a route that sheds at
+     admission (below) costs nothing, while one that accepts and times out costs a
+     reconnect. This strengthens the shed-at-admission rule from a preference to a
+     resource argument.
+
+  §14.1 asserts the mapping and that no goroutine keeps working past its deadline.
 
 ### 7.2 The `readState` envelope
 
@@ -951,7 +1175,7 @@ reasons.** This is a correction: the second pass listed `budget_exhausted` as a
 
 | Situation | Response |
 |---|---|
-| An interrupted, truncated, or over-budget page — including `SQLITE_INTERRUPT` from a cancelled `QueryContext` (§7.1) | **503** + `Retry-After`. Never a 200 |
+| An interrupted, truncated, or over-budget page — including a statement aborted by budget expiry, which surfaces as `context.DeadlineExceeded`, **not** as `SQLITE_INTERRUPT` (§7.1) | **503** + `Retry-After`. Never a 200 |
 | A **named, described** missing partition — analytics not yet projected, a run root not yet swept | 200, `partial`, with the partition named **and an expiry expectation** |
 | Projection lag, no freshness constraint requested | 200, `complete`, with `lagSeconds` — served, labelled (§6.4) |
 | Projection lag exceeding a caller-requested `maxLag` / `If-Source-Applied` | **503**, `projection_lag_exceeded` (§6.4) |
@@ -1179,10 +1403,10 @@ unrestricted fast path; reachable once #644's RBAC lands.
 | The candidate/hydrate loop | `readservice/runs.go:771–815` | No residual predicates (§5.7) |
 | Backwards latest-terminal walk | `readservice/runs.go:450–495` | One indexed aggregate |
 | Unindexed window function over all history | `rollup/query.go:278` | Declared index (§5.2) |
-| Journal-walking active-run count on read paths | `localscheduler/reconcile.go` + 4 call sites | Stored, indexed phase (§5.4). Retained only as the no-projection cold-start primitive |
+| Journal-walking active-run count on read paths | `localscheduler/reconcile.go` + **6** call sites (§2.1, corrected) | Stored, indexed phase (§5.4). **The cold-start primitive that is genuinely retained is the unexported `activeRuns` (`reconcile.go:38`), reached from `Scheduler.ReconcileAll` (`scheduler.go:315`)** — daemon-startup reconciliation legitimately needs a journal-authoritative count when no projection exists. The exported single-directory `ActiveRunCounts` (`reconcile.go:22`) has **no production caller** and is test-only; it goes with the read-path usage |
 | Filesystem polling, 5 s sweep, per-run stream state, in-memory history, random session cursor | `httpapi/eventstream.go` (~1,000 lines) | `change` tail (§8.1) |
 | Whole-run delete-and-reinsert across 18 tables | `rollup/ingest.go:28,76` | Incremental tail projection (§6.2) |
-| Journal-scan fallback as a silent default | `readservice/runs.go:413,710` | Explicit `--authoritative` (§11.3) |
+| Journal-scan fallback as a silent default | `readservice/runs.go:413,710`, **and `runs.go:358`–`362`** — a third silent fallback (`listLatestWorkflowOutcomesScanning`) added by #1894 after this list was written | Explicit `--authoritative` (§11.3) |
 | Index-free standalone construction | `cmd/goobers/dashboard.go:394` | One topology (§11.2) |
 | `SetMaxOpenConns(1)` | `rollup/db.go:61` | Reader pool (§5.2) |
 | Full-journal re-read per instance-log append | `journal/instance.go:81` | Bounded tail read under the same lock (§17 Wave 1.1) |
@@ -1191,6 +1415,23 @@ unrestricted fast path; reachable once #644's RBAC lands.
 Kept deliberately: the three observer seams from the diagnosis's Appendix B
 (`openRunObserver`, `reconcileScanObserver`/`reconcileInspectObserver`,
 `journalReadObserver`), re-pointed at the new components.
+
+**Sixth-pass correction: `journalReadObserver` cannot simply be "kept."** It is
+declared at `eventstream.go:293` and fired at `:385` — *inside* the change-detection
+region this same table deletes — and its three consumers
+(`eventstream_test.go:789` `TestScanPollsOnlyActiveRunsNotEveryRunInHistory`,
+`:827`, `:872`) assert properties of a mechanism that ceases to exist. "Re-pointed
+at the new components" is the right intent but it is not a no-op: the seam must be
+**re-homed onto the projector's journal reads**, and the three tests must be
+**replaced** by equivalents asserting the same property against the `change` tail —
+that change detection is bounded by active work rather than by history. Deleting
+them without replacement silently drops the only coverage of that property.
+
+Also corrected: **`eventstream.go` is 1,009 lines but the deletion is ~640 of
+them** (roughly `:107`–`742`: `sourceState`, baseline, scan, sweep, poll, discover,
+per-run offset/digest state, and the in-memory history ring). The remainder — SSE
+framing, heartbeat writing, the `ResponseController` write-deadline pattern §7.1
+now depends on, and the handler itself — is kept and rewired.
 
 ---
 
@@ -1321,17 +1562,22 @@ below it. §16 confirms the curve.
 
 ## 15. Answers to the open questions
 
-**15.1 The writer set, and is it a choice?** Four writers: daemon runners, the
-out-of-process `goobers run`, the stalled-run terminalizer
-(`cmd/goobers/stalledruns.go:194`), and retention. `goobers run` **stays
-first-class** but stops being a silent writer: it records source watermarks
-through `Intake` (§4.3) on every query-visible transition. The current situation
-is subtler than "two uncoordinated writers": `goobers run` takes the same
-`up.lock` and *delegates* to a live daemon when one holds it
-(`cmd/goobers/run.go:99–102`) — except that `up.lock` can go stale, as it is on
-the measured instance. Either way the daemon has no in-memory knowledge of runs
-written while it was down, which is the real reason reconciliation is currently a
-correctness requirement.
+**15.1 The writer set, and is it a choice?** Daemon runners, the out-of-process
+`goobers run`, the stalled-run terminalizer (`cmd/goobers/stalledruns.go:194`),
+and retention. `goobers run` **stays first-class**, recording source watermarks
+through `Intake` (§4.3) on every query-visible transition. The daemon has no
+in-memory knowledge of runs written while it was down, which is the real reason
+reconciliation is currently a correctness requirement.
+
+**Sixth-pass corrections. The set is six, not four, and two of the four
+descriptions were wrong.**
+
+| Claim | Correction |
+|---|---|
+| Four writers | **Six.** Add (5) **`goobers run abort`**, which appends a terminal `run.finished` / `PhaseAborted` directly (`cmd/goobers/run.go:349`) plus a branch touch, taking **no `up.lock`, no delegation, and writing no index update** — the one writer that can mutate a run journal concurrently with a live daemon; and (6) **`goobers journal redact`**, which reopens a run for append (`cmd/goobers/journal.go`). Any intake-based discovery that omits them is incomplete by construction, and `run abort` is the case that matters, because the transition it writes is terminal and therefore query-visible |
+| `goobers run` "stops being a silent writer" | **It already ingests.** `runStandaloneTrigger` (`run.go:113`) builds the same `trackedStarter` whose `Start` calls `ingestRunTelemetry` (`daemon.go:799`), and `run.go:200`'s `wg.Wait` exists so the ingest completes before exit. The change under this design is that it records an **intake watermark** rather than performing the projection itself — a different and smaller claim than "becomes non-silent" |
+| "`up.lock` can go stale, as it is on the measured instance" — offered as a qualifier on delegation | **It cannot affect delegation.** The delegation branch keys on `ErrHeld` from `syscall.Flock(LOCK_EX\|LOCK_NB)` (`platform/lock/lock_unix.go:11`–`21`), and a kernel `flock` is released when the holding process dies — so a dead daemon cannot make `goobers run` delegate. What *does* go stale is the **JSON payload** (`pid`, `version`) that liveness *display* reads; the measured instance shows exactly that, a stale payload with no live holder. The distinction matters because §11.2's standalone mode selection inspects that payload (`dashboard.go:255`) |
+| Retention's removal signal is new | **A durable removal intent already exists.** `journal.ReserveTerminalForPrune` (`prune.go:17`) takes the per-run flock, refuses a `PhaseRunning` run, and atomically writes a `.pruning` marker; `WithPruneProtection` (`:50`) is how `IngestRun` already refuses to ingest a run being pruned. §4.3's intent → unlink → project → confirm protocol should be **built on this marker**, not beside it — otherwise there are two removal intents with different crash semantics |
 
 **15.2 One service or several?** One process for V1 with explicit contracts (§9);
 §4.4 and §13.3 make the split a deployment change.
@@ -1440,10 +1686,45 @@ intact; no wave's rollback requires touching a journal.
 §16's harness. Publish the baseline at 1× / 3× / 10×, including the mixed-load
 experiment that tests §2.3's hypothesis.
 
-**Risk:** none — test-only.
+**Risk:** ~~none — test-only.~~ **Sixth-pass correction: low, but not zero, and not
+"test-only" in the sense that matters.** "Test-only" is true of the product and
+false of the gate. Four in-tree constraints shape the work:
+
+- **`test/scale` is a package under `./...`**, so it runs in the `unit` group of
+  every `make ci` (`test/ci/main.go`) and lands in the coverage denominator
+  (`test/coveragegate/main.go` excludes only `/cmd/`, generated files, and
+  `/api/schemas/`). A large harness added naively spends the unit group's wall-clock
+  budget on every PR in the repository. The heavy corpora must therefore be
+  **opt-in and excluded from the default gate**, and the mechanism has to be
+  visible to a reviewer rather than an env var nobody sees.
+- **`make ci`'s shape is golden-pinned.** `test/ci/portability_test.go` asserts the
+  `ci` target has *exactly* prerequisites `[deadcode]` and recipe
+  `[$(GO) run ./test/ci]`, so the harness cannot be hung off `make ci` as a new
+  prerequisite. New checks go **inside** `test/ci`, added to the exact ordered
+  golden list in `test/ci/main_test.go` and assigned exactly one group —
+  `TestEveryMergeCheckHasAGroup` and `TestGroupPartitionCoversMergeGate` enforce
+  both.
+- **The required check's name is pinned by the branch ruleset**
+  (`.github/workflows/ci.yml:606`, `make ci (fmt-check · vet · build · test ·
+  lint)`). Any new job must join `required-ci`'s `needs` list rather than rename or
+  replace it.
+- **There is no benchmark tier to extend.** The repository contains exactly **one**
+  `func Benchmark` (`test/scale/scale_test.go`), no `make` target running
+  `go test -bench`, and no CI job that does. §5.7's "each combination ships with a
+  rows-visited benchmark" therefore requires **inventing the tier**, and whatever
+  is invented becomes new required-gate surface and new wall clock. Design it as a
+  `test/ci` check with an explicit group, not as loose benchmarks.
+
+**Also: no reference host exists.** §14.12's absolute targets are stated "on the
+reference benchmark host," and the CI runners (`ubuntu-latest` / `macos-latest`,
+contended, shared) are not a defensible one. Wave 0 must **declare** the reference
+hardware with its numbers, and report CI-runner figures separately as a
+regression signal rather than as the acceptance measurement.
+
 **Exit:** every §2 number reproducible in-tree; every §14 property has a failing
-test; the blob-mount rebuild figure exists; §2.3's mechanism is confirmed or
-replaced.
+test; the blob-mount rebuild figure exists (simulated is acceptable, labelled as
+such); §2.3's mechanism is confirmed or replaced; the reference host is declared;
+and the harness's default-gate cost is stated and bounded.
 
 ### Wave 1 — Reduce the measured hot paths *(five small independent diffs)*
 
@@ -1453,11 +1734,45 @@ replaced.
 | 1.2 | Indexes on `runs`: gaggle-leading scoped indexes plus a global recency index (§5.5) | Removes full-scan + sort per page and the unindexed window function | Very low. Additive `CREATE INDEX` migration. Rollback: drop them |
 | 1.3 | Split reader/writer handles; reader pool `MaxOpenConns=NumCPU`, `mode=ro`; `synchronous(NORMAL)` | Readers stop serializing behind each other and the writer | Low–medium. Uses WAL as already configured. Gate on §16.3's mixed-load run |
 | 1.4 | Background active-run sampler off the request path, served from memory with its age reported. **No sample yet returns `read_model_rebuilding` with progress — never the synchronous scan.** Deliberately throwaway; Wave 2 replaces it | `/instance`, `/gaggles`, `/workflows` stop paying 4–17 s | Low. Corrected from the second pass, which kept the 17-second scan as the no-sample fallback and so preserved the exact failure on a cold daemon |
-| 1.5 | `http.Server.WriteTimeout` + per-route `context.WithTimeout`; cancellation must stop the work | No request can hang | Low. Budgets generous here, tightened in Wave 4 from measured p99.9 |
+| 1.5 | **Per-request `context.WithTimeout` + `ResponseController.SetWriteDeadline` per route — not `http.Server.WriteTimeout`, which is server-global and would cut SSE (§7.1).** Requires threading `context.Context` through `internal/telemetry/rollup` first: ~36 exported methods across ~12 files, **zero of which take a context today** | No request can hang, and a deadline actually aborts the statement | **Medium, reclassified from low — and the largest diff in Wave 1.** The plumbing is mechanical and compiler-checked, but it is wide and it is a prerequisite rather than a follow-on: without it a router deadline cannot reach a statement, so 1.5 has no effect. Land the context threading as its own mechanical commit, then the budgets. Also add the 503 mapping for `context.DeadlineExceeded`, which today falls through to 500 `read_error` (`router.go:486` keys only on `context.Canceled`) |
 
 **Exit:** Overview, Workflows, and the warnings widget load on the live instance.
 Whether run-detail timeouts are resolved is the §2.3 experiment's answer, reported
 either way.
+
+**Sixth-pass additions to Wave 1, all measurement honesty:**
+
+- **1.1's before/after must be measured on a compacted instance journal, or the
+  improvement is misattributed.** **88.8% of the live journal's 324 MB — 287 MB
+  across just 108 records, largest 2.66 MB — is residue of an already-fixed defect**
+  (#1414's unbounded aggregate, since bounded at 16 KiB), all written 2026-07-21/22.
+  A "1.30 s → X" number taken against that corpus measures the residue, not the
+  algorithm. Publish both: against the live corpus as found, and against a
+  compacted one.
+- **1.1's byte budget must assume the fallback is live, not theoretical.** With a
+  2.66 MB worst-case record in the real corpus and `maxEventBytes` permitting 8 MiB
+  (`reader.go:480`), any budget below ~2.7 MB makes the full-recovery path fire on
+  real data. Size it above the observed maximum and count fallbacks as a metric.
+- **The uniqueness oracle cannot assert global uniqueness over the real corpus.**
+  The live journal already contains **1,394 duplicate `seq` values and 119
+  in-file-order regressions**, all inside 2026-07-15T21:27→2026-07-16T17:21 —
+  #530's bug, from before its fix. Any acceptance test that replays the real corpus
+  must scope its uniqueness assertion to records written after that window, or it
+  fails on history it did not cause. §14.11's synthetic 25-handle test is
+  unaffected and remains the real gate.
+- **1.1's scope decision, stated:** the same whole-file read is *also* on the read
+  path — `readservice/status.go:53` and `:113` call `journal.ReadInstanceLog`
+  directly, and `localscheduler/scheduler.go:328` does so per `ReconcileAll`.
+  Wave 1.1 as scoped fixes `Append` only, which leaves three O(history) reads
+  live. Those are **in scope for Wave 1.1**, because leaving them makes §2.2's
+  headline only half-true and the fix is the same bounded reader.
+- **A corruption-detection narrowing to state, not discover later.** Today one
+  unparseable complete line makes `readEvents` return a hard error
+  (`reader.go:456`), so every `Append` re-validates the entire file. A bounded tail
+  read validates only the tail — corruption in older regions stops being detected
+  on append. That is the right trade (it is still detected at open, and by every
+  reader), but it is a behavior change and needs a test pinning **where** detection
+  now happens.
 
 ### Wave 2 — Read model
 
@@ -1511,8 +1826,27 @@ on `QueryContext`/`ExecContext` so cancellation reaches `sqlite3_interrupt`, wit
 `SQLITE_INTERRUPT` mapped to 503** (§7.1); caller-selected freshness policy
 (§6.4). Client renders `readState`.
 
-**Risk:** low. Additive to the wire contract; touches router and contract, not the
-projection.
+**Risk:** ~~low. Additive to the wire contract; touches router and contract, not the
+projection.~~ **Sixth-pass correction: low *given Wave 1.5*, and the reason is
+that Wave 1.5 now carries the cost.** "Touches router and contract, not the
+projection" was only ever true if request queries already took a context; none do
+(§7.1). With the plumbing landed in 1.5, Wave 4 really is additive — cost classes,
+budgets, the `readState` envelope, and admission control are router-and-contract
+changes.
+
+Two remaining decisions this wave must make explicitly rather than by default:
+
+- **Where `readState` is attached.** Adding it to each `readservice` response
+  struct changes `apicontract/wire.go`, `wire.generated.ts`, and the portal's
+  types; wrapping it at the `httpapi` layer in `writeJSON` keeps `readservice`
+  unaware of the envelope but changes every response's JSON shape from one place.
+  The latter is preferred — the envelope is a transport concern — but it must be a
+  decision, because the generated-types drift guard will surface it either way.
+- **Whether `/api/v1/runs` adopts strict unknown-parameter rejection** (as
+  `telemetry` already does) before §14.2's enumeration test is written. It is the
+  honest pairing with a closed combination set, and it is potentially breaking for
+  any client sending extra parameters — so it ships with the refusal, or not at all.
+
 **Exit:** §14.1, §14.6 hold. No fourth indefinite state under fault injection, and
 no truncated 200.
 
@@ -1575,12 +1909,38 @@ abort provably does not duplicate.
   refetches — and the **enumerated combination set** (2), because a filter that
   ships without an index is a filter the UI already depends on.
 - **Wave 4 runs parallel to 2/3.**
-- **Existing issues:** #1741 → 1.4 then 2. #1782 → 2. #1665 → Wave 0's experiment
-  then Wave 1. #1712 → 2 + 5. #1711/#1713/#1714 → 5. #1882 → 1.4 removes its
-  cause; its abort/restart bug remains separately real. #1888–#1892 (filed under
-  #1883) are approximately Waves 2–3 and should be **re-scoped against this
-  document rather than started as written**. #1439/#1429 unblocked by
-  `disposition`. #644 unblocked by §5.5. #652 → 7. #1410 closed by Waves 1–3.
+- **Existing issues:** #1741 → 1.4 then 2, **widened to all six call sites**
+  (§2.1). #1782 → 2. #1665 → Wave 0's experiment then Wave 1.
+  #1711/#1713/#1714 → 5. #1888–#1892 (filed under #1883) are approximately Waves
+  2–3 and should be **re-scoped against this document rather than started as
+  written**. #1439/#1429 unblocked by `disposition`. #644 unblocked by §5.5.
+  #652 → 7. #1410 closed by Waves 1–3.
+
+  **Sixth-pass corrections to this list.** **#1712 and #1882 are already closed** —
+  #1712 by PR #1894 and #1882 by PR #1886, both merged before this document's own
+  baseline, so "#1712 → 2 + 5" and "#1882's abort/restart bug remains separately
+  real" are stale. **#1891 needs re-scoping, not implementing as written:** its body
+  predates #1894 and asks to "add an additive read-service query that returns the
+  latest terminal run outcome" — which #1894 already added. Its real content under
+  this design is *make the existing aggregate indexed and bounded, and decide the
+  fate of the `latestPerWorkflow` query parameter and the `workflowActivity`
+  response field*, which are public contract surface (`apicontract/wire.go`,
+  `wire.generated.ts`) that no one has ruled on. One of them must appear in §5.7's
+  enumerated set before #1920 can close.
+
+- **Two merged design documents contradict this one and need supersede pointers,**
+  not silent override: `dashboard.md` §8 specifies the process-scoped session id,
+  `Last-Event-ID` replay, and `409 stale_cursor` as the complete change-notification
+  contract — all of which §8.1 replaces, and all of which are shipped behavior with
+  tests. `dashboard.md` §14 already carries a supersede pointer; §7/§8 must too,
+  before #1929.
+
+- **The diagnosis is not in the repository.** §14 and §12 cite
+  `Goobers-Reviews/2026-07-29_portal-architecture-findings.md` — including Appendix
+  B, which is where §12's observer-seam list comes from — but that file lives
+  outside this repo, so an implementer with only the repository cannot read the
+  document the acceptance bar is written against. Either vendor it under `docs/` or
+  inline the two lists §12 and §16 actually depend on.
 
 ---
 
@@ -1588,6 +1948,77 @@ abort provably does not duplicate.
 
 Recorded because this class of error is the subject of the diagnosis, and a design
 document that cannot show its own corrections has not earned §14.
+
+### 18.0 Fifth pass → sixth pass (implementation premise audit)
+
+Not a review. Before Wave 0 began, **every factual claim this document makes about
+the code was checked against the code** — 156 claims, subsystem by subsystem.
+**105 held.** The rest are recorded here because a design whose citations have
+drifted misdirects the implementation that trusts it, and because two of them are
+mechanisms §14 depends on that cannot work as written.
+
+The pattern in the misses is worth naming, since it is the same pattern §18.1–§18.3
+record: **this document is most wrong where it reasoned from an API's surface
+instead of its behavior** — `WriteTimeout` looks per-request and is not,
+`sqlite3_interrupt` looks observable and is not, `QueryContext` looks like a
+call-site change and is a signature change across a package. That is the same error
+as the fourth pass's interrupt claim, which was itself found by checking exported
+symbols rather than driver behavior.
+
+**Twelve findings that change the plan:**
+
+| # | Premise | What the code says | Consequence |
+|---|---|---|---|
+| 1 | A per-route budget is enforced by `http.Server.WriteTimeout` (§7.1, §14.12) | `WriteTimeout` is a single server-global field applied once per connection (`httpapi/server.go:85`, the only `http.Server` in the API path). It cannot carry a per-route value, **and setting it would terminate the SSE stream** (`eventstream.go:936`) and large artifact downloads | §7.1 rewritten: `context.WithTimeout` for the work plus **`http.NewResponseController(w).SetWriteDeadline`** for the socket — a per-request primitive already used in-tree at `eventstream.go:982`. No global `WriteTimeout`. `Route.Budget` gains a declared unbounded disposition for `/events`, and byte-serving routes are budgeted on work-before-first-byte |
+| 2 | `SQLITE_INTERRUPT` maps to 503 (§7.1, §7.2, §14.6) | **The interrupt is never observable.** `interruptOnDone` does fire (`sqlite.go:78`), but `stmt.go:108`–`112` immediately rewrites the result to `ctx.Err()`. The caller sees `context.DeadlineExceeded` — never a SQLite code. Worse, today `DeadlineExceeded` falls through to **500 `read_error`** because `clientCancelled` (`router.go:486`) keys only on `context.Canceled` | The asserted *property* is unchanged and still right. The **discriminant** changes: `DeadlineExceeded` → 503 + `Retry-After`, `Canceled` → the existing 499. Also: an interrupted file-backed connection is **discarded** by `database/sql` (`conn.go:950`–`967`), so every budget expiry costs a reconnect — which turns shed-at-admission from a preference into a resource argument |
+| 3 | "Every request query uses `QueryContext`/`ExecContext`"; Wave 4 risk "low — touches router and contract" (§7.1, §17) | **Zero** `QueryContext`/`ExecContext`/`QueryRowContext`/`PrepareContext` call sites exist in the repository, and `internal/telemetry/rollup` has **no `context.Context` in any non-test signature** — ~36 exported methods across ~12 files | Reclassified. The plumbing is a **prerequisite of Wave 1.5**, not part of Wave 4, and it is the widest mechanical diff in the plan. Wave 4 is genuinely low-risk *once it exists*; until then every Wave 4 property is inert |
+| 4 | The journal-walking active-run count has 4 call sites (§2.1, §12) | **Six**, including `inventory.go:590` (workflow detail, added by #1894 *after* #1741 was filed) and `cmd/goobers/status.go:902`. Separately, the exported `localscheduler.ActiveRunCounts` (`reconcile.go:22`) has **no production caller at all** — `ReconcileAll` uses the unexported `activeRuns` (`scheduler.go:315`) | §2.1 now tables all six. **#1741's acceptance widens from three routes to six**, or the Overview's own list path stays on the 17.2 s walk. And §12 should **delete** `ActiveRunCounts` rather than "retain it as the cold-start primitive" — `activeRuns` is the primitive |
+| 5 | §6.6 step 4: drop the "unused" `runs` table; §5.1: `telemetry.db` is analytics | `runs` has **32 non-test SQL references across 8 files**, and **18 of the store's 22 tables are per-run** (`ingest.go:76`) | Step 4 is a migration across most of the analytics query surface, not a cleanup. The store split is unaffected (§5.1's argument is about *rebuild input*), but `runs` in `telemetry.db` becomes a narrow **join key** while the full row moves to `read.db`, and step 4 retires superseded *columns* with a named owner |
+| 6 | Both stores are deletable and rebuildable from journals (§3.2); rebuild is byte-identical (§14.9) | **`first_success_milestones` is not journal-derivable.** v14 seeds it from projected rows (`schema.go:423`) and `RebuildAll` preserves it by reading the **old database** before deleting it (`rebuild.go:31`, replayed at `:44`) | §3.2 gains its one exception, generalized into a rule: **a rebuild must carry forward every derived fact not reconstructible from journals, enumerated in code.** This is the same rule §6.5 step 2 already states for the projection floor and tombstones. §14.9's byte-identity claim is scoped to journal-derived rows |
+| 7 | Four writers (§15.1) | **Six.** `goobers run abort` appends a terminal `run.finished` with **no `up.lock`, no delegation, and no index write** (`run.go:349`); `goobers journal redact` reopens a run for append | Intake coverage that omits them is incomplete by construction, and `run abort` is the one writer that can mutate a journal *concurrently with a live daemon* while writing a query-visible terminal transition |
+| 8 | §2.4: the read path locks directories that can never be ingested | **#1708 closed that path before the measurement was taken** (`runs.go:918`, `if !journal.Recorded(runDir) { continue }`). The 10,906 stray locks are residue | §2.4 rewritten as archaeology. The surviving defect is narrower and still real — a read path taking a journal lock and running an 18-table delete-and-insert inside an HTTP GET, for recorded-but-unindexed runs — and Wave 3's exit is written against **that** |
+| 9 | The closed filter set is enforced because "the UI can only construct supported combinations" (§5.7) | The portal parses filters from **arbitrary hash query parameters** (`routing.ts:56`–`67`), validating enum membership but not combinations. Every drill-through target is a bookmarkable `#/runs?…` href, and `population="premium-measured"` is reachable *only* by URL | The set must be closed over **URL-reachable** combinations — a strictly larger space — and §14.2's enumeration test must walk the router's parseable cross-product. The refusal must also **degrade gracefully in the client**, because a stale bookmark is normal, not misuse |
+| 10 | Wave 0 is "test-only. Risk: none" (§17) | `test/scale` is under `./...`, so it runs in the `unit` group of every `make ci` and lands in the coverage denominator. `make ci`'s shape is **golden-pinned** (`portability_test.go`: exactly `[deadcode]` + `[$(GO) run ./test/ci]`), the required check's **name** is ruleset-pinned, and the repository has **one** benchmark and no bench tier to extend | Wave 0 is four PRs of real gate surface. Heavy corpora are opt-in and out of the default gate; new checks go *inside* `test/ci` with a group; §5.7's rows-visited benchmarks require **inventing** the tier |
+| 11 | The 1× baseline reproduces the live instance (§2.5, §16) | Measured: the coded 1× yields a **76 MiB** scheduler journal against the live **324 MB**. Two §16.5 pathologies are **inverted** — orphan dirs are fixed at 5 and carry *no* `.lock`, and span payloads are ~45 bytes. Generation is fsync-bound: **6.9 runs/s** with fsync versus **124/s** without | §16 re-anchors and date-stamps the baseline, fixes both pathologies, and generates fixtures by writing journals directly. Also: **88.8% of the live journal's 324 MB is residue of already-fixed #1414**, so Wave 1.1's before/after must be published against a compacted corpus too, or it measures the residue |
+| 12 | `ResumeFromTerminal` is a live writer needing a floor override (§6.3) | **Zero production callers** — the CLI surfaces are stubs pending #465–#469 | The rule is right and stays, implemented as a property of the intake protocol (a watermark is authority to re-admit) rather than wired to a caller that does not exist |
+
+**Three live defects found in the audit that this document did not name.** None are
+caused by the design; all are in code it touches, and each would otherwise surface
+as unexplained "drift" once the differential oracle runs:
+
+- **`goobers telemetry compact` can permanently break scheduler ingest.**
+  `CompactInstanceEvents` rewrites `scheduler/events.jsonl` shorter while preserving
+  the surviving records' `seq`, but `IngestSchedulerLog` advances a **byte-offset**
+  cursor. A projector must key its cursor on `seq`, not offset.
+- **A run terminalized by the stalled-run sweep never has its rollup rows
+  refreshed.** `sweepStalledRuns` (`stalledruns.go:85`) holds no store handle.
+- **`advanceStreams` mutates each stream's cursor before the caller checks for
+  failure** (`runsHistory.ts:243`–`244`), so a failed page can advance a cursor past
+  data that was never delivered.
+
+**Citations corrected** (no semantic change): §2.1 `runs.go:366` → the call is
+`runs.go:529` via `:371`; §5.4's "finish-time update with a swallowed error at
+`runs.go:921`" → `:921` is the *backfill*'s `IngestRun`, and the finish-time write
+is on the writer path at `runnerwiring.go:145`–`167`; §12's `eventstream.go` "~1,000
+lines" → the file is 1,009 but the deletion is ~640 (`:107`–`742`); §11A's
+`LiveFreshness → DaemonQueryState` → the indicator is `PortalShell.tsx:97`–`131`
+(`DaemonQueryState.tsx` is 33 lines and never reads freshness); §11A's "a spinner
+that dies at 10 s with no reason" → the client *does* show a reason
+(`errors.ts:44`), what is missing is a **server-supplied cause**; §11A's
+`InsightPage.tsx:1051`–`1073` → `:1045`–`1062` and `:1064`–`1076`; §7.3's "50/200
+limits" → inventory is 50/**100**, and the client never requests 200; §2.2's "13
+scheduler call sites" → one physical `Append` (`scheduler.go:1521`) behind two
+wrappers fed by 12 sites; §2.2's "there is no open issue for it" → #1914; and the
+Status block's "fourth pass" → sixth.
+
+**Also settled here, with the product owner, rather than left open:** the two
+§17 Wave 6 product decisions. **Full-fidelity retention is configurable with a
+90-day default** — a no-op on the measured instance, whose oldest run directory is
+two weeks old — under a key named distinctly from journal retention. **Freshness
+defaults to serve-labelled-stale**, with `strictFreshness` per instance and
+`If-Source-Applied` per request. §14.12's one permitted revision is spent in Wave 0
+against a **declared reference host**, since none existed and the CI runners are
+contended shards that cannot defend a p99.9.
 
 ### 18.1 Third pass → fourth pass (second review)
 
