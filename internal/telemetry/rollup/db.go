@@ -4,6 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	sqlite "modernc.org/sqlite" // pure-Go driver: no cgo, matches the local-runner's
@@ -15,7 +20,61 @@ import (
 // milestones are retained independently once observed because their source run
 // journals may be removed by policy.
 type DB struct {
+	// sql is the WRITER handle: one connection, _txlock=immediate. Every Exec,
+	// transaction, and migration goes through it.
 	sql *sql.DB
+	// reader is a read-only pool sized to the machine, or nil when a read-only
+	// handle could not be opened (see openReaderPool). Queries route here.
+	//
+	// Before this, one connection served every reader AND the writer, so
+	// concurrent reads gained nothing from each other. Measured on a 40,000-row
+	// table with eight concurrent aggregate queries: serial 48.37ms, concurrent
+	// 48.62ms — a 0.99x "speedup". That is design §5.2's "today every reader
+	// serializes behind every reader *and* the writer, so the Overview's five
+	// concurrent requests have their queries serialized and an analytics
+	// aggregate blocks every list".
+	reader       *sql.DB
+	readerMu     sync.RWMutex
+	readerClosed bool
+	// path is retained so the reader pool can be reopened after Compact.
+	path string
+}
+
+// readDB returns the handle queries should use: the read-only pool when
+// available, otherwise the writer.
+//
+// The fallback is not a degraded mode to be alarmed about — an in-memory
+// database, or a platform where the read-only URI cannot be formed, simply keeps
+// today's behaviour, which is correct if slower.
+func (db *DB) readDB() *sql.DB {
+	db.readerMu.RLock()
+	reader := db.reader
+	db.readerMu.RUnlock()
+	if reader != nil {
+		return reader
+	}
+	// Reopen lazily after Compact released the pool, so compaction costs one
+	// reopen rather than permanently demoting the process to a single handle.
+	db.readerMu.Lock()
+	defer db.readerMu.Unlock()
+	if db.reader == nil && !db.readerClosed {
+		db.reader = openReaderPool(db.path)
+	}
+	if db.reader != nil {
+		return db.reader
+	}
+	return db.sql
+}
+
+// closeReaderPool releases the read-only pool. Used by Compact, which needs
+// exclusive access, and by Close.
+func (db *DB) closeReaderPool() {
+	db.readerMu.Lock()
+	defer db.readerMu.Unlock()
+	if db.reader != nil {
+		_ = db.reader.Close()
+		db.reader = nil
+	}
 }
 
 // dsnParams configures the rollup connection at the DSN level so the modernc
@@ -45,7 +104,15 @@ type DB struct {
 // The literal path is kept left of the "?" (not a file: URI) so it is used
 // verbatim as an OS path, avoiding URI-encoding pitfalls with Windows
 // backslashes and drive letters.
-const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+//   - synchronous(NORMAL): in WAL mode this fsyncs at checkpoints rather than on
+//     every commit. The rollup is DERIVED, rebuildable data (rollup.Rebuild
+//     wipes and re-ingests from journals, which remain the authoritative record
+//     and keep their own per-append fsync), so paying a full fsync per commit
+//     buys durability for something that can be reconstructed — while the
+//     scheduler's write path competes with every read in the same process
+//     (design §5.2). A crash can lose recent projected rows; the next ingest or
+//     rebuild restores them.
+const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 
 // Open opens (creating if needed) the SQLite rollup at path and applies any
 // pending forward migrations (seeds the V1 upgrade story, #33). Connection
@@ -56,19 +123,109 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rollup: open %s: %w", path, err)
 	}
-	// A single connection avoids SQLite "database is locked" errors from our
-	// own concurrent writers; the rollup is a local, single-process store.
+	// One connection on the WRITER, which is what avoids "database is locked"
+	// between our own writers and what keeps the #1128 first-open race
+	// single-threaded through the WAL switch and migrations.
 	sqlDB.SetMaxOpenConns(1)
-	db := &DB{sql: sqlDB}
+	db := &DB{sql: sqlDB, path: path}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
+	// The reader pool opens only AFTER migrations complete. A read-only handle
+	// cannot create the database, switch it to WAL, or run a migration, so
+	// opening it earlier would either fail or race the schema it depends on.
+	db.reader = openReaderPool(path)
 	return db, nil
 }
 
-// Close closes the underlying database handle.
-func (db *DB) Close() error { return db.sql.Close() }
+// readerDSNParams configures the read-only pool.
+//
+// Deliberately different from dsnParams in two ways. There is no
+// _txlock=immediate: that exists so our explicit WRITE transactions take the
+// write lock at BEGIN, and forcing it on a reader would make every read
+// transaction contend for a lock it never needs. And mode=ro is what makes the
+// handle structurally unable to write — the same "reads never write" boundary
+// §3.1 enforces with types at the service layer, enforced here by the driver.
+const readerDSNParams = "?_pragma=busy_timeout(5000)&mode=ro"
+
+// openReaderPool opens a read-only connection pool over an existing database.
+//
+// Returns nil rather than an error when a read-only handle cannot be formed. The
+// pool is a performance property, not a correctness one: falling back to the
+// single writer handle preserves exactly today's behaviour, and failing Open
+// because a pool could not be created would turn an optimization into an outage.
+func openReaderPool(path string) *sql.DB {
+	// mode=ro requires a file: URI, whereas the writer deliberately keeps the
+	// literal path left of the "?" to avoid URI-encoding pitfalls with Windows
+	// backslashes and drive letters. So the URI is built explicitly here rather
+	// than by string concatenation.
+	uri := fileURI(path)
+	if uri == "" {
+		return nil
+	}
+	readDB, err := sql.Open("sqlite", uri+readerDSNParams)
+	if err != nil {
+		return nil
+	}
+	// Sized to the machine: readers no longer queue behind one another. The
+	// writer keeps its own single connection, so a long analytics aggregate can
+	// no longer block a list page.
+	readDB.SetMaxOpenConns(readerPoolSize())
+	readDB.SetMaxIdleConns(readerPoolSize())
+	// Prove the handle works before adopting it; a pool that fails on first use
+	// would surface as a query error rather than a clean fallback.
+	if err := readDB.Ping(); err != nil {
+		_ = readDB.Close()
+		return nil
+	}
+	return readDB
+}
+
+// readerPoolSize bounds the read pool. NumCPU per §5.2, with a floor so a
+// single-core machine still gets a usable pool and a ceiling so a very large
+// host does not open dozens of file handles for a local store.
+func readerPoolSize() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		return 2
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}
+
+// fileURI converts an OS path to a SQLite file: URI.
+//
+// SQLite's URI parser treats backslashes as ordinary characters, so a Windows
+// path must use forward slashes, and a drive-letter path needs the leading
+// slash that makes it absolute.
+func fileURI(path string) string {
+	if path == "" || strings.Contains(path, "?") {
+		// A path already carrying query syntax cannot be safely appended to.
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	slashed := filepath.ToSlash(abs)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return "file://" + (&url.URL{Path: slashed}).EscapedPath()
+}
+
+// Close closes both handles. The reader is closed first so no query is in
+// flight against a database whose writer is going away.
+func (db *DB) Close() error {
+	db.readerMu.Lock()
+	db.readerClosed = true // no lazy reopen after Close
+	db.readerMu.Unlock()
+	db.closeReaderPool()
+	return db.sql.Close()
+}
 
 // Compact reclaims disk after large deletions — a retention prune, or scheduler
 // journal compaction (#1412) — that free pages but never shrink the file on
@@ -79,6 +236,15 @@ func (db *DB) Close() error { return db.sql.Close() }
 // maintenance, a failure here is surfaced so the operator knows compaction did
 // not complete.
 func (db *DB) Compact() error {
+	// VACUUM rewrites the whole database and needs exclusive access, so the
+	// read-only pool's idle connections must be released first — otherwise a
+	// pool that is merely IDLE (not querying) still holds file handles and the
+	// vacuum fails with "database is locked". readDB reopens it on the next read.
+	//
+	// This is the one operation where the reader pool's existence is not
+	// transparent, which is why it is handled here rather than left to surface
+	// as an intermittent compaction failure.
+	db.closeReaderPool()
 	if _, err := db.sql.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		return fmt.Errorf("rollup: checkpoint before vacuum: %w", err)
 	}

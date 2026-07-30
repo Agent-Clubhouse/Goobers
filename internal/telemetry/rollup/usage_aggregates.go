@@ -67,7 +67,7 @@ func (db *DB) modelStats(req StatsRequest) ([]ModelStats, error) {
 		%s
 		GROUP BY smu.model
 		ORDER BY smu.model`, join, whereClause(clauses))
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query model usage: %w", err)
 	}
@@ -138,7 +138,7 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage AND latest.branch IS sa.branch
 		%s
 		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, where, groupedColumns(dimensions))
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage distributions: %w", err)
 	}

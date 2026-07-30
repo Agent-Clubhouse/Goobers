@@ -307,7 +307,7 @@ func (db *DB) detectGateNoise(req StatsRequest, th Thresholds) ([]Finding, error
 		SELECT g.gate, g.verdict, g.runner_json FROM gate_verdicts g
 		JOIN runs r ON r.run_id = g.run_id
 		%s`, where)
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: detect gate noise: %w", err)
 	}
@@ -408,7 +408,7 @@ func (db *DB) gateRuns(req StatsRequest, gate, mode string, limit int) ([]Journa
 		JOIN runs r ON r.run_id = g.run_id
 		WHERE %s
 		ORDER BY g.occurred_at DESC, g.run_id DESC`, clause)
-	rows, err := db.sql.Query(query, append(append([]any{}, args...), gate)...)
+	rows, err := db.readDB().Query(query, append(append([]any{}, args...), gate)...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gate runs: %w", err)
 	}
@@ -483,7 +483,7 @@ func (db *DB) workflowRunCount(req StatsRequest, workflow string) (int, error) {
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	var count int
-	err := db.sql.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM runs WHERE %s`, clause),
+	err := db.readDB().QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM runs WHERE %s`, clause),
 		append(append([]any{}, args...), workflow)...).Scan(&count)
 	if err != nil {
 		return 0, err
@@ -498,7 +498,7 @@ func (db *DB) workflowStageAttemptCount(req StatsRequest, workflow, stage string
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	var count int
-	err := db.sql.QueryRow(fmt.Sprintf(`
+	err := db.readDB().QueryRow(fmt.Sprintf(`
 		SELECT COUNT(*) FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		WHERE %s`, clause),
@@ -513,7 +513,7 @@ func (db *DB) workflowStageAttemptCount(req StatsRequest, workflow, stage string
 // into JournalPointers — the shared tail every per-finding "which runs"
 // lookup above uses.
 func queryRunIDs(db *DB, query string, args []any) ([]JournalPointer, error) {
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run ids: %w", err)
 	}
