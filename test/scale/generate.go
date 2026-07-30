@@ -21,18 +21,127 @@ import (
 // of scheduler events so the read/ingest path is exercised against big records.
 var oversizedReason = ": " + strings.Repeat("x", 64*1024)
 
-// Baseline constants describe the current dogfood ("clubhouse") instance so a
-// scale multiplier has a concrete referent (epic #1410): ~13.6k runs behind a
-// ~290 MB scheduler journal. A Spec built from these via scaledSpec(mult)
-// synthesizes an instance at mult× that size — 1× reproduces today's dogfood,
-// 10×/100× are the resilience targets. They are deliberately approximate; the
-// harness proves headroom, not an exact byte count.
+// Baseline constants describe the live self-hosting instance so a scale
+// multiplier has a concrete referent. A Spec built from these via
+// scaledSpec(mult) synthesizes an instance at mult× that size — 1× reproduces
+// the measured instance, 3×/10× are the resilience targets.
+//
+// # Provenance, and why these changed
+//
+// Measured on ~/source/goobers-instances on 2026-07-29 with the daemon down
+// (design docs/design/portal-read-architecture.md §2). The previous constants
+// (13,600 runs / 400,000 scheduler events) were written for epic #1410 against
+// an earlier, smaller instance and had drifted badly: measured, -scale=1
+// produced a 76 MiB scheduler journal against the live 324 MB, so every "1×"
+// number understated the live instance by roughly 4× on journal bytes. Design
+// §2.5 records the correction.
+//
+// These are dated on purpose. The live instance grows, so this baseline will
+// drift again; re-anchor it deliberately with a new measurement rather than
+// letting "1×" quietly stop meaning anything.
+//
+//	Run directories                    40,665
+//	  …published (have run.yaml)       29,759
+//	  …unpublished (no run.yaml)       10,906  (26.8%)
+//	Run events.jsonl total             191 MB
+//	  mean / p50 / p90 / p99 / max     6.7 KB / 6.0 / 13.5 / 39.8 / 131 KB
+//	Span files                         70,425 totalling 2,263 MB (~32 KB each)
+//	Scheduler journal                  324 MB across 156,765 records
 const (
-	baselineRuns            = 13_600
-	baselineSchedulerEvents = 400_000
-	baselineEventsPerRun    = 12
-	baselineSpansPerRun     = 2
+	// baselineRuns is *published* run directories — the ones with a run.yaml,
+	// which are the only ones the read path can index. Unpublished directories
+	// are generated separately via OrphanDirs, so the total directory count at
+	// 1× is baselineRuns + orphans ≈ 40,665.
+	baselineRuns = 29_759
+	// baselineSchedulerEvents is the record count, not a byte target. See
+	// GiantSchedulerRecords for why the 324 MB is not modelled as an average.
+	baselineSchedulerEvents = 156_765
+	// baselineOrphanFraction is 10,906 / 40,665. Expressed as a fraction of the
+	// published run count because a *fixed* count (previously 5, at any scale)
+	// is not a pathology at 100k runs — it rounds to nothing. 26.8% of
+	// directories being unindexable is a load-bearing property of the live
+	// instance, and it is what makes a directory sweep expensive.
+	baselineOrphanFraction = 10_906.0 / 29_759.0
+	// baselineSpanBytes targets the measured mean span payload:
+	// 2,263 MB / 70,425 files ≈ 32 KB. The generator previously wrote ~45-byte
+	// payloads, which inverted the live span:event byte ratio (2,263 MB of spans
+	// against 191 MB of events, ~11×) by several orders of magnitude — and that
+	// ratio is the entire argument for §5.1's two-store split, so a harness that
+	// inverts it cannot test the decision it is meant to justify.
+	baselineSpanBytes = 32 * 1024
+	// baselineSpansPerRun is the integer floor of the measured mean; the
+	// fractional remainder is applied by spansForRun so the corpus reaches the
+	// real 2.37 spans/run rather than truncating 15% of the span footprint away.
+	baselineSpansPerRun = 2
+	// baselineExtraSpanFraction is that remainder: 70,425 / 29,759 = 2.366, so
+	// 36.6% of runs carry one more span than the floor.
+	baselineExtraSpanFraction = (70_425.0 / 29_759.0) - baselineSpansPerRun
 )
+
+// spansForRun returns how many spans this run records, applying
+// ExtraSpanFraction deterministically so the corpus mean matches the measured
+// 2.37 spans/run instead of the truncated integer.
+func spansForRun(rng *rand.Rand, spec Spec) int {
+	n := spec.SpansPerRun
+	if spec.ExtraSpanFraction > 0 && rng.Float64() < spec.ExtraSpanFraction {
+		n++
+	}
+	return n
+}
+
+// runEventCountQuantiles maps a uniform draw in [0,1) to a per-run journal event
+// count, calibrated so generated events.jsonl sizes reproduce the live
+// instance's measured distribution rather than its mean.
+//
+// This replaces a constant EventsPerRun, and the difference is not cosmetic.
+// Measured on a generated corpus, the old generator produced p50 == p90 == p99
+// == max == 3,050 bytes: **every run cost exactly the same to parse.** The live
+// instance's p99 is 6.6× its p50 and its max is 22× its p50. A harness with no
+// tail cannot exercise the single-run cost class (§7.1), cannot reproduce the
+// §2.3 measurement that ruled out "one huge event ledger" as the run-detail
+// timeout cause, and will report a flattering p99.9 for any per-run read path.
+//
+// Counts are derived from the measured byte quantiles at the generator's
+// ~217 bytes per event; the resulting size distribution is asserted against the
+// live quantiles in TestGeneratedEventSizesMatchLiveDistribution.
+var runEventCountQuantiles = []struct {
+	q      float64
+	events int
+}{
+	{0.00, 8},   // floor: bookends plus one attempt
+	{0.50, 28},  // 6.0 KB
+	{0.90, 62},  // 13.5 KB
+	{0.99, 183}, // 39.8 KB
+	{1.00, 604}, // 131 KB — the largest event log in 40,665 runs
+}
+
+// eventsForRun draws a per-run event count from runEventCountQuantiles by
+// linear interpolation. The draw is deterministic in the run index (not in
+// worker scheduling order), so a Spec still reproduces byte-for-byte.
+func eventsForRun(rng *rand.Rand, spec Spec) int {
+	// An explicit EventsPerRun pins every run to one size — kept because the
+	// correctness tests and the oversized-record fixtures want a fixed, cheap
+	// corpus, and because pinning it is the only way to isolate a change's
+	// effect from the distribution's variance.
+	if spec.EventsPerRun > 0 {
+		return spec.EventsPerRun
+	}
+	u := rng.Float64()
+	for i := 1; i < len(runEventCountQuantiles); i++ {
+		hi := runEventCountQuantiles[i]
+		if u > hi.q {
+			continue
+		}
+		lo := runEventCountQuantiles[i-1]
+		span := hi.q - lo.q
+		if span <= 0 {
+			return hi.events
+		}
+		frac := (u - lo.q) / span
+		return lo.events + int(frac*float64(hi.events-lo.events))
+	}
+	return runEventCountQuantiles[len(runEventCountQuantiles)-1].events
+}
 
 // gaggles is the fixed set of gaggle names the generator spreads runs across so
 // gaggle-filtered read paths (ListRuns Gaggle filter, per-gaggle rollup) are
@@ -51,13 +160,37 @@ type Spec struct {
 	// Runs is the number of run directories to synthesize, each a valid
 	// run.yaml + events.jsonl written through the production journal API.
 	Runs int
-	// EventsPerRun is roughly how many journal events each run accumulates
-	// (stage attempts, heartbeats, refs) beyond its run.started/run.finished
-	// bookends — the driver of per-run events.jsonl size.
+	// EventsPerRun pins every run to this many journal events (stage attempts,
+	// heartbeats, refs) beyond its run.started/run.finished bookends. **Zero
+	// means draw from runEventCountQuantiles instead**, reproducing the live
+	// instance's heavy-tailed size distribution — which is what scaledSpec does.
+	// Pin it only when a fixed, cheap, zero-variance corpus is what you want.
 	EventsPerRun int
 	// SpansPerRun is how many content-addressed spans each run records under
-	// spans/, exercising the span read/rollup path.
+	// spans/, exercising the span read/rollup path. It is the floor; see
+	// ExtraSpanFraction.
 	SpansPerRun int
+	// ExtraSpanFraction is the fraction of runs that record one span beyond
+	// SpansPerRun, so a non-integer measured mean (2.37 on the live instance) can
+	// be reproduced rather than truncated. Zero keeps every run at the floor.
+	ExtraSpanFraction float64
+	// SpanBytes is the approximate payload size of each generated span. It
+	// exists because the span:event byte ratio (~12× on the live instance) is
+	// the premise of the §5.1 two-store split, and a harness that gets it wrong
+	// cannot measure the split's benefit. Zero falls back to a short
+	// human-readable payload, which is what the cheap correctness fixtures want.
+	SpanBytes int
+	// GiantSchedulerRecords injects this many pathologically large records into
+	// the scheduler journal.
+	//
+	// This models a measured property that an average cannot: **88.8% of the
+	// live 324 MB journal is 287 MB across just 108 records** (max 2.66 MB),
+	// residue of the already-fixed #1414 unbounded-aggregate defect. Modelling
+	// the journal as 324 MB / 156,765 records would give every record ~2 KB and
+	// reproduce neither the byte total's cause nor the tail that Wave 1.1's
+	// backward scan and byte budget have to survive — the budget must sit above
+	// the largest real record or the full-recovery path fires on ordinary data.
+	GiantSchedulerRecords int
 	// SchedulerEvents is the number of instance-level events written to
 	// scheduler/events.jsonl. Written directly (not via InstanceLog.Append,
 	// which re-reads the whole file per append — O(n²)) so a multi-hundred-MB
@@ -76,10 +209,12 @@ type Spec struct {
 	Seed int64
 }
 
-// scaledSpec builds a Spec at mult× the dogfood baseline. mult=1 reproduces the
-// current instance; mult=10/100 are the epic #1410 resilience targets. Small
-// per-run counts stay fixed — scale is dominated by run and scheduler-event
-// counts, which is where the dogfood instance's cost actually lives.
+// scaledSpec builds a Spec at mult× the measured live instance. mult=1
+// reproduces it; mult=3/10 are the resilience targets (design §16). Per-run
+// event counts are drawn from the measured distribution rather than fixed
+// (EventsPerRun stays 0), because scale is dominated by run and scheduler-event
+// counts while *tail* behavior is dominated by the per-run distribution — and
+// both matter.
 func scaledSpec(root string, mult float64) Spec {
 	scale := func(base int) int {
 		n := int(float64(base) * mult)
@@ -88,16 +223,45 @@ func scaledSpec(root string, mult float64) Spec {
 		}
 		return n
 	}
+	runs := scale(baselineRuns)
 	return Spec{
-		Root:            root,
-		Runs:            scale(baselineRuns),
-		EventsPerRun:    baselineEventsPerRun,
-		SpansPerRun:     baselineSpansPerRun,
-		SchedulerEvents: scale(baselineSchedulerEvents),
-		OrphanDirs:      5,
-		OversizedRuns:   scale(baselineRuns) / 1000,
-		Seed:            1,
+		Root:              root,
+		Runs:              runs,
+		EventsPerRun:      0, // draw from runEventCountQuantiles
+		SpansPerRun:       baselineSpansPerRun,
+		ExtraSpanFraction: baselineExtraSpanFraction,
+		SpanBytes:         baselineSpanBytes,
+		SchedulerEvents:   scale(baselineSchedulerEvents),
+		// Proportional, not fixed: 26.8% of live directories are unpublished,
+		// and a fixed count stops being a pathology the moment scale grows.
+		OrphanDirs:    int(float64(runs) * baselineOrphanFraction),
+		OversizedRuns: runs / 1000,
+		// 108 giant records at 1×, scaled — the #1414 residue that dominates the
+		// live journal's byte count.
+		GiantSchedulerRecords: scaleGiantRecords(scale(baselineSchedulerEvents)),
+		Seed:                  1,
 	}
+}
+
+// baselineGiantSchedulerRecords is the measured count of #1414-residue records on
+// the live instance: 108 records holding 287 MB of a 324 MB journal.
+const baselineGiantSchedulerRecords = 108
+
+// scaleGiantRecords derives the giant-record count from a scheduler event count,
+// holding the live instance's ratio (108 per 156,765 records). Derived rather
+// than passed so pinning -scheduler-events cannot leave the pathology behind at
+// a stale absolute count.
+func scaleGiantRecords(schedulerEvents int) int {
+	if schedulerEvents <= 0 {
+		return 0
+	}
+	n := schedulerEvents * baselineGiantSchedulerRecords / baselineSchedulerEvents
+	if n < 1 {
+		// Below ~1,450 events the ratio rounds to zero. Keep one so even a small
+		// corpus exercises the large-record path the byte budget has to survive.
+		return 1
+	}
+	return n
 }
 
 // GenerateResult reports what a generation run produced — the on-disk footprint
@@ -239,9 +403,11 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 		return fmt.Errorf("scale: create run %s: %w", runID, err)
 	}
 
-	// Spread EventsPerRun across stage attempts; each attempt is a
-	// started/heartbeat/finished triple, so ~3 events per attempt.
-	attempts := spec.EventsPerRun / 3
+	// Spread this run's event budget across stage attempts; each attempt is a
+	// started/heartbeat/finished triple, so ~3 events per attempt. The budget is
+	// drawn from the measured live distribution unless EventsPerRun pins it, so
+	// the corpus has the long tail the live instance has (see eventsForRun).
+	attempts := eventsForRun(rng, spec) / 3
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -273,9 +439,8 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 		return fmt.Errorf("scale: append ref.touched %s: %w", runID, err)
 	}
 
-	for s := 0; s < spec.SpansPerRun; s++ {
-		payload := fmt.Sprintf("synthetic transcript for %s span %d", runID, s)
-		if _, err := run.RecordSpan("implement", fmt.Sprintf("transcript-%d", s), []byte(payload)); err != nil {
+	for s, n := 0, spansForRun(rng, spec); s < n; s++ {
+		if _, err := run.RecordSpan("implement", fmt.Sprintf("transcript-%d", s), spanPayload(runID, s, spec.SpanBytes)); err != nil {
 			return fmt.Errorf("scale: record span %s: %w", runID, err)
 		}
 	}
@@ -304,6 +469,29 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 	return run.Close()
 }
 
+// spanPayload builds a span body of approximately size bytes. Spans are
+// content-addressed, so the body must differ per (run, span) or every span
+// collapses to one blob on disk and the span store's real footprint — 2,263 MB
+// across 70,425 files on the live instance — is never reproduced.
+//
+// A size of 0 yields the short human-readable payload the cheap correctness
+// fixtures want.
+func spanPayload(runID string, index, size int) []byte {
+	head := fmt.Sprintf("synthetic transcript for %s span %d\n", runID, index)
+	if size <= len(head) {
+		return []byte(head)
+	}
+	body := make([]byte, 0, size)
+	body = append(body, head...)
+	// Repeating a per-span-unique line keeps the content distinct (so digests
+	// differ) while staying cheap to generate.
+	line := fmt.Sprintf("%s:%d transcript line padding to reach the measured mean span size\n", runID, index)
+	for len(body) < size {
+		body = append(body, line...)
+	}
+	return body[:size]
+}
+
 // terminalPhases is the spread of terminal outcomes assigned round-robin to
 // finished runs so phase/outcome filters have every value to match.
 var terminalPhases = []journal.RunPhase{
@@ -313,6 +501,15 @@ var terminalPhases = []journal.RunPhase{
 // writeOrphanDir creates a runs/ subdirectory with no run.yaml — the pathology
 // a crashed create or a half-pruned run leaves behind. rollup.runDirs and the
 // read service's reconcile must skip these silently.
+//
+// Each orphan also gets a `.lock` file, which is the single most important
+// detail in this function and was previously **inverted**: the generator wrote
+// orphans without one while every journal.Create'd run had one, and the live
+// instance is the exact opposite — all 10,906 unpublished directories contain a
+// `.lock` (design §2.4). Those locks are what proved a read path was performing
+// maintenance on directories it could never ingest, and reproducing them is what
+// lets the harness assert the §14.1 property that no read path creates one. A
+// corpus with the polarity reversed asserts nothing.
 func writeOrphanDir(layout instance.Layout, index int) error {
 	dir := filepath.Join(layout.RunsDir(), fmt.Sprintf("orphan-%04d", index))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -323,8 +520,19 @@ func writeOrphanDir(layout instance.Layout, index int) error {
 	if err := os.WriteFile(filepath.Join(dir, "state.json.tmp"), []byte("{}"), 0o644); err != nil {
 		return fmt.Errorf("scale: write orphan stray file: %w", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, orphanLockFileName), nil, 0o644); err != nil {
+		return fmt.Errorf("scale: write orphan lock file: %w", err)
+	}
 	return nil
 }
+
+// orphanLockFileName mirrors journal's unexported fileLock. Duplicated rather
+// than exported: the name is part of the on-disk pathology this harness
+// reproduces, not part of journal's API, and exporting it to satisfy a test
+// would widen a package boundary for no other caller. If journal ever renames
+// it, TestOrphanDirsCarryLockFiles fails loudly rather than silently generating
+// a corpus that no longer matches the instance.
+const orphanLockFileName = ".lock"
 
 // writeSchedulerJournal writes spec.SchedulerEvents instance-level events
 // directly to scheduler/events.jsonl in the canonical journal envelope. It
@@ -402,11 +610,36 @@ func schedulerEvent(spec Spec, index int, epoch time.Time) journal.Event {
 		ev.Type = journal.EventClaimAcquired
 		ev.RunID = fmt.Sprintf("run-%08d", index%maxInt(spec.Runs, 1))
 	}
+	// The 64 KiB oversized-record pathology: frequent, moderate, and pre-existing.
 	if spec.SchedulerEvents >= 5000 && index%5000 == 0 {
 		ev.Reason = ev.Reason + oversizedReason
 	}
+	// The #1414 residue: rare, enormous, and where the live journal's byte count
+	// actually lives — 108 records holding 88.8% of 324 MB, max 2.66 MB. Spread
+	// evenly so a backward tail scan is realistically likely to meet one.
+	//
+	// Shape taken from the live records rather than invented: type "error", with
+	// the bytes in error.message and a consecutiveFailures runner annotation.
+	// Verified against the instance — all 108 are type "error".
+	if n := spec.GiantSchedulerRecords; n > 0 {
+		if stride := maxInt(spec.SchedulerEvents/n, 1); index%stride == 0 && index/stride < n {
+			ev.Type = journal.EventError
+			ev.Error = &journal.ErrorDetail{
+				Code:    "stalled_run_sweep_failed",
+				Message: strings.Repeat("y", giantSchedulerRecordBytes),
+			}
+			ev.Runner = map[string]any{"consecutiveFailures": 1}
+		}
+	}
 	return ev
 }
+
+// giantSchedulerRecordBytes is the measured maximum instance-journal record on
+// the live instance (2,661,279 bytes, #1414 residue), rounded down. Wave 1.1's
+// bounded backward scan needs a byte budget **above** this or its
+// full-recovery fallback fires on ordinary history, so the harness has to be
+// able to produce one.
+const giantSchedulerRecordBytes = 2_600_000
 
 func maxInt(a, b int) int {
 	if a > b {

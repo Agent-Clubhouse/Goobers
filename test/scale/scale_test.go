@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -154,6 +159,301 @@ func TestOrphanDirsSurviveRollupAndScan(t *testing.T) {
 	}
 }
 
+// TestGeneratedEventSizesMatchLiveDistribution pins the property that made the
+// old generator useless for tail measurement: per-run event-log sizes must have
+// a *spread*, matching the live instance's shape rather than its mean.
+//
+// Measured on the pre-change generator, every run's events.jsonl was 3,050 bytes
+// — p50 == p90 == p99 == max. The live instance's p99 is 6.6× its p50 and its
+// max is 22× its p50 (design §2). With no tail, a harness cannot exercise the
+// single-run cost class, cannot reproduce the §2.3 measurement that ruled out
+// "one huge event ledger" as the run-detail timeout cause, and reports a
+// flattering p99.9 for every per-run read path.
+//
+// The assertion is on the *shape* (a real tail exists, in the right direction),
+// not on exact bytes, so it survives ordinary changes to the event envelope.
+func TestGeneratedEventSizesMatchLiveDistribution(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 400
+	spec.EventsPerRun = 0 // draw from the measured distribution
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.OrphanDirs = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	sizes := eventLogSizes(t, gen.Layout.RunsDir())
+	if len(sizes) != spec.Runs {
+		t.Fatalf("found %d event logs, want %d", len(sizes), spec.Runs)
+	}
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+	p50 := sizes[len(sizes)/2]
+	p99 := sizes[int(float64(len(sizes))*0.99)]
+	max := sizes[len(sizes)-1]
+	t.Logf("generated event-log sizes: n=%d p50=%d p99=%d max=%d", len(sizes), p50, p99, max)
+
+	if p50 <= 0 {
+		t.Fatal("p50 event log size is zero")
+	}
+	// The live ratios are p99/p50 ≈ 6.6 and max/p50 ≈ 22. Assert a substantial
+	// tail without pinning the exact multiple.
+	if ratio := float64(p99) / float64(p50); ratio < minP99ToP50Ratio {
+		t.Fatalf("p99/p50 = %.1f×, want >= %.1f×: the corpus has no tail, so per-run read costs are uniform and the tail cannot be measured",
+			ratio, minP99ToP50Ratio)
+	}
+	if ratio := float64(max) / float64(p50); ratio < minMaxToP50Ratio {
+		t.Fatalf("max/p50 = %.1f×, want >= %.1f×: the corpus lacks the large-ledger runs the live instance has",
+			ratio, minMaxToP50Ratio)
+	}
+}
+
+// Tail-shape floors, set well below the live instance's measured ratios (6.6×
+// and 22×) so ordinary envelope changes do not flake the test while a
+// regression to a constant size still fails it loudly.
+const (
+	minP99ToP50Ratio = 3.0
+	minMaxToP50Ratio = 6.0
+)
+
+// TestEventsPerRunPinsDistributionWhenSet proves the escape hatch works: an
+// explicit EventsPerRun yields a corpus with **no tail**, which is what the cheap
+// correctness fixtures and any isolate-one-variable measurement need.
+//
+// It asserts a narrow spread rather than byte-identical sizes, because the
+// generator deliberately varies gaggle name, trigger kind, and terminal phase
+// across runs (so gaggle/phase filters have real values to match) and every
+// seventh run is left in flight with no run.finished at all. Those vary the
+// bytes by a few percent with the event count pinned — which is fine, and is
+// exactly the distinction this test draws: pinned means no *tail*, not
+// no *variance*.
+func TestEventsPerRunPinsDistributionWhenSet(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 60
+	spec.EventsPerRun = 6
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.OrphanDirs = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	sizes := eventLogSizes(t, gen.Layout.RunsDir())
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+	p50, max := sizes[len(sizes)/2], sizes[len(sizes)-1]
+	if p50 <= 0 {
+		t.Fatal("p50 event log size is zero")
+	}
+	// Pinned mode must stay far below the tail floor the distribution test
+	// requires, or the pin is not doing anything.
+	if ratio := float64(max) / float64(p50); ratio >= minMaxToP50Ratio {
+		t.Fatalf("EventsPerRun=6 produced max/p50 = %.2f× (>= the %.1f× tail floor); the pin does not hold",
+			ratio, minMaxToP50Ratio)
+	}
+}
+
+// TestSpanToEventByteRatioMatchesLiveInstance pins the ratio that design §5.1's
+// two-store decision rests on.
+//
+// The live instance holds 2,263 MB of spans against 191 MB of run events — ~11×
+// — and that gap *is* the argument for putting the run read model in its own
+// small store: cold start becomes gated on 191 MB rather than 2.5 GB. The old
+// generator wrote ~45-byte span payloads, producing a ratio of 0.03× — inverted
+// by roughly 400× — so the corpus could not measure the benefit of the split it
+// was meant to justify, and any rebuild figure taken from it was meaningless.
+func TestSpanToEventByteRatioMatchesLiveInstance(t *testing.T) {
+	spec := scaledSpec(t.TempDir(), 1)
+	// Keep the corpus small; the ratio is a per-run property, not a scale one.
+	spec.Runs = 120
+	spec.OrphanDirs = 0
+	spec.SchedulerEvents = 10
+	spec.GiantSchedulerRecords = 0
+	spec.OversizedRuns = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	events := treeSize(gen.Layout.RunsDir(), "events.jsonl")
+	spans := treeSizeUnder(gen.Layout.RunsDir(), "spans")
+	if events == 0 {
+		t.Fatal("no run events generated")
+	}
+	if spans == 0 {
+		t.Fatal("no spans found: treeSizeUnder must reach content-addressed spans/sha256/<aa>/<rest>")
+	}
+	ratio := float64(spans) / float64(events)
+	t.Logf("span:event byte ratio = %.1f× (spans=%d events=%d); live instance is ~11×", ratio, spans, events)
+	if ratio < minSpanToEventRatio {
+		t.Fatalf("span:event ratio %.2f× is below %.1f×; the corpus does not reproduce the live footprint split that §5.1 rests on",
+			ratio, minSpanToEventRatio)
+	}
+}
+
+// minSpanToEventRatio is the floor for the span:event byte ratio, set below the
+// live ~11× so per-run event-size variance cannot flake it while a regression to
+// tiny span payloads still fails.
+const minSpanToEventRatio = 6.0
+
+// TestOrphanDirsCarryLockFiles pins the pathology the generator previously had
+// backwards.
+//
+// All 10,906 unpublished directories on the live instance contain a `.lock`
+// (design §2.4) — that is the physical evidence a read path was performing
+// maintenance on directories it could never ingest. The generator used to write
+// orphans *without* a lock while every real run had one, i.e. the exact inverse,
+// so a corpus built from it could not support the assertion that no read path
+// creates one.
+func TestOrphanDirsCarryLockFiles(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 4
+	spec.OrphanDirs = 6
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	orphans, err := filepath.Glob(filepath.Join(gen.Layout.RunsDir(), "orphan-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != spec.OrphanDirs {
+		t.Fatalf("found %d orphan dirs, want %d", len(orphans), spec.OrphanDirs)
+	}
+	for _, dir := range orphans {
+		if _, err := os.Stat(filepath.Join(dir, orphanLockFileName)); err != nil {
+			t.Fatalf("orphan %s has no %s file: %v — the live instance's unpublished dirs all carry one",
+				filepath.Base(dir), orphanLockFileName, err)
+		}
+		// And it must still be unpublished, or it is not an orphan at all.
+		if _, err := os.Stat(filepath.Join(dir, "run.yaml")); err == nil {
+			t.Fatalf("orphan %s has a run.yaml; it is not unpublished", filepath.Base(dir))
+		}
+	}
+}
+
+// TestScaledSpecReproducesLiveShape pins the 1× baseline against the measured
+// instance, so the constants cannot drift silently again. The previous constants
+// had drifted to ~4× off on journal bytes (design §2.5) and nothing caught it.
+func TestScaledSpecReproducesLiveShape(t *testing.T) {
+	spec := scaledSpec("", 1)
+	if spec.Runs != 29_759 {
+		t.Errorf("1× published runs = %d, want 29,759 (measured 2026-07-29)", spec.Runs)
+	}
+	// Published + unpublished must reconstruct the measured directory count.
+	if total := spec.Runs + spec.OrphanDirs; total < 40_000 || total > 41_500 {
+		t.Errorf("1× total run directories = %d, want ≈40,665 (measured)", total)
+	}
+	if spec.SchedulerEvents != 156_765 {
+		t.Errorf("1× scheduler events = %d, want 156,765 (measured)", spec.SchedulerEvents)
+	}
+	if spec.EventsPerRun != 0 {
+		t.Errorf("1× EventsPerRun = %d, want 0 so sizes are drawn from the measured distribution", spec.EventsPerRun)
+	}
+	if spec.GiantSchedulerRecords != 108 {
+		t.Errorf("1× giant scheduler records = %d, want 108 (the #1414 residue)", spec.GiantSchedulerRecords)
+	}
+	// Orphans must scale, not sit at a fixed count that stops being a pathology.
+	if ten := scaledSpec("", 10); ten.OrphanDirs <= spec.OrphanDirs {
+		t.Errorf("orphan dirs did not scale: 1×=%d, 10×=%d", spec.OrphanDirs, ten.OrphanDirs)
+	}
+}
+
+// TestGiantSchedulerRecordsExceedWaveOneByteBudget proves the harness can
+// produce the record that constrains Wave 1.1.
+//
+// #1914 replaces the instance journal's whole-file re-read with a bounded
+// backward scan plus a byte budget and a full-recovery fallback. The budget must
+// sit *above* the largest real record or the fallback fires on ordinary history
+// and the optimization does nothing. The live maximum is 2,661,279 bytes, so the
+// harness has to be able to generate one that large for that bound to be
+// testable at all.
+func TestGiantSchedulerRecordsExceedWaveOneByteBudget(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 2
+	spec.OrphanDirs = 0
+	spec.SchedulerEvents = 50
+	spec.GiantSchedulerRecords = 2
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	events, err := journal.ReadInstanceLog(gen.Layout.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance log: %v", err)
+	}
+	var giant int
+	for _, ev := range events {
+		if ev.Error != nil && len(ev.Error.Message) >= giantSchedulerRecordBytes {
+			giant++
+		}
+	}
+	if giant != spec.GiantSchedulerRecords {
+		t.Fatalf("found %d giant records, want %d", giant, spec.GiantSchedulerRecords)
+	}
+	// Sequence allocation must still be intact across them — this is the
+	// invariant #1914 must not break, and a giant record is where a bounded
+	// backward scan is most likely to.
+	for i, ev := range events {
+		if ev.Seq != uint64(i+1) {
+			t.Fatalf("event %d has seq %d; sequence is not monotonic from 1 across giant records", i, ev.Seq)
+		}
+	}
+}
+
+// eventLogSizes returns the byte size of every run's events.jsonl under runsDir.
+func eventLogSizes(t *testing.T, runsDir string) []int64 {
+	t.Helper()
+	var sizes []int64
+	err := filepath.WalkDir(runsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "events.jsonl" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		sizes = append(sizes, info.Size())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk runs dir: %v", err)
+	}
+	return sizes
+}
+
+// TestSummarizeReportsHonestPercentiles pins the p99.9 honesty rule: a figure
+// that cannot be read from the sample count is reported as unavailable rather
+// than silently returned as the maximum. §14.12's targets are stated as p99.9
+// and are meant to be falsifiable, which they are not if "p99.9" sometimes means
+// "max of 20".
+func TestSummarizeReportsHonestPercentiles(t *testing.T) {
+	small := make([]time.Duration, 21) // 1 cold + 20 warm
+	for i := range small {
+		small[i] = time.Duration(i+1) * time.Millisecond
+	}
+	st := summarize("op", small)
+	if st.Cold != 1*time.Millisecond {
+		t.Errorf("cold = %s, want the first sample (1ms)", st.Cold)
+	}
+	if st.Samples != 20 {
+		t.Errorf("warm samples = %d, want 20 (cold excluded)", st.Samples)
+	}
+	if st.P999Valid {
+		t.Error("p99.9 reported as valid from 20 warm samples; it cannot be")
+	}
+	if st.Max != 21*time.Millisecond {
+		t.Errorf("max = %s, want 21ms", st.Max)
+	}
+
+	large := make([]time.Duration, minSamplesForP999+1)
+	for i := range large {
+		large[i] = time.Duration(i+1) * time.Microsecond
+	}
+	if st := summarize("op", large); !st.P999Valid {
+		t.Errorf("p99.9 not reported as valid from %d warm samples", minSamplesForP999)
+	}
+}
+
 // TestMeasureLargeScale is the opt-in target-scale measurement. It is skipped
 // unless GOOBERS_SCALE_LARGE is set to a positive multiplier (e.g. 1, 10, 100),
 // so default `go test` and CI stay fast and green. It reports the read-path
@@ -171,28 +471,70 @@ func TestMeasureLargeScale(t *testing.T) {
 	}
 
 	spec := scaledSpec(t.TempDir(), mult)
-	t.Logf("generating %d runs + %d scheduler events at %g× the dogfood baseline", spec.Runs, spec.SchedulerEvents, mult)
+	t.Logf("generating %d runs (+%d orphan dirs) + %d scheduler events at %g× the measured live instance",
+		spec.Runs, spec.OrphanDirs, spec.SchedulerEvents, mult)
 	gen, err := generate(spec)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	m, err := measure(gen.Layout, gen.Runs, gen.SchedulerEvents, gen.SchedulerJournalSize)
+	m, err := measure(gen.Layout, gen, largeScaleSamples, fsyncDisabled())
 	if err != nil {
 		t.Fatalf("measure: %v", err)
 	}
-	t.Logf("runs=%d scheduler_events=%d scheduler_journal=%s telemetry_db=%s",
-		m.Runs, m.SchedulerEvents, humanBytes(m.SchedulerJournalSize), humanBytes(m.TelemetryDBSize))
-	t.Logf("rollup_rebuild=%s listruns_first_page=%s listruns_warm_page=%s overview_fanout=%s status_full_scan=%s",
-		m.RollupRebuild, m.ListRunsFirstPage, m.ListRunsWarmPage, m.OverviewFanout, m.StatusScan)
+	writeReport(&testLogWriter{t: t}, m)
 
 	// A minimal sanity bound that holds regardless of scale: the indexed page
 	// must be bounded — decisively cheaper than the full unindexed status scan.
-	// This is the DASH-18 index invariant, not a wall-clock threshold, so it is
-	// safe to assert even at 100×.
-	if m.ListRunsWarmPage >= m.StatusScan {
-		t.Fatalf("indexed warm page (%s) was not faster than the full status scan (%s); the index is not paying off",
-			m.ListRunsWarmPage, m.StatusScan)
+	// This is the index invariant, not a wall-clock threshold, so it is safe to
+	// assert even at 10×. Compared at p50 rather than on a single sample, since
+	// one sample of either side can be arbitrarily unlucky.
+	page, scan := stat(m, opListRunsPage), stat(m, opStatusFullScan)
+	if page.P50 >= scan.P50 {
+		t.Fatalf("indexed page p50 (%s) was not faster than the full status scan p50 (%s); the index is not paying off",
+			page.P50, scan.P50)
 	}
+
+	// Keyset pagination must not degrade with depth: a deep page costs what a
+	// first page costs, or the plan is offset-shaped (design §7.3). Generous
+	// factor because this is a smoke bound on plan *shape*, not a latency target.
+	deep := stat(m, opListRunsDeepPage)
+	if page.P50 > 0 && deep.P50 > page.P50*deepPageToleranceFactor {
+		t.Fatalf("deep page p50 (%s) exceeded %d× the first page p50 (%s); pagination is not keyset-bounded",
+			deep.P50, deepPageToleranceFactor, page.P50)
+	}
+}
+
+// stat returns the named Stat from a Measurement, or the zero value. Lives here
+// rather than on Measurement because only assertions look a stat up by name —
+// writeReport iterates in order — and an accessor with no production caller is
+// dead code the gate rightly rejects.
+func stat(m Measurement, op string) Stat {
+	for _, s := range m.Stats {
+		if s.Op == op {
+			return s
+		}
+	}
+	return Stat{Op: op}
+}
+
+// largeScaleSamples is the sample count for the opt-in target-scale run. It is
+// below minSamplesForP999 on purpose: a 1000-sample loop over a 10× corpus is
+// its own multi-hour job, so this path reports p50/p99 and the report marks the
+// p99.9 as unavailable rather than fabricating one. Publishing a p99.9 is a
+// deliberate, separately-invoked measurement (-samples=1000).
+const largeScaleSamples = 20
+
+// deepPageToleranceFactor bounds how much more a deep page may cost than a first
+// page before pagination is judged not keyset-bounded.
+const deepPageToleranceFactor = 4
+
+// testLogWriter adapts writeReport to t.Logf so the opt-in scale run reports
+// through the test log in exactly the format the CLI prints.
+type testLogWriter struct{ t *testing.T }
+
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
 }
 
 // BenchmarkListRunsFirstPage times one indexed ListRuns page against a modest
