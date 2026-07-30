@@ -500,13 +500,50 @@ func branchStateProblems(m *Machine, p apiv1.Parallel, branch apiv1.Branch, stat
 	// is otherwise created on ONE run branch, and git refuses to check one
 	// branch out in two worktrees, so concurrent repo-backed branch stages
 	// collide outright.
-	if task, ok := m.Task(state); ok && task.Run != nil && task.Run.Workspace == apiv1.WorkspaceRepo {
+	//
+	// Checks the EFFECTIVE workspace — including the unset default, which
+	// resolves to a writable repo worktree for both a deterministic task
+	// (Run.Workspace) and an agentic task/gate (Task.Workspace /
+	// Gate.Agentic.Workspace) — not just an explicit `workspace: repo`.
+	// Mirrors internal/runner's taskWorkspaceMode/gateWorkspaceMode
+	// resolution exactly; duplicated here rather than imported because
+	// v_next compiles before runner and importing it would cycle back
+	// (runner -> workflow -> v_next).
+	if task, ok := m.Task(state); ok && branchEffectiveTaskWorkspace(task) == apiv1.WorkspaceRepo {
 		problems = append(problems, fmt.Sprintf(
-			"parallel %q branch %q: task %q requests a writable repo workspace; branch stages must use scratch (concurrent repo-backed branches collide on the run branch)",
+			"parallel %q branch %q: task %q resolves to a writable repo workspace; branch stages must use scratch or repo-readonly (concurrent repo-backed branches collide on the run branch)",
+			p.Name, branch.Name, state))
+	}
+	if gate, ok := m.Gate(state); ok && gate.Evaluator == apiv1.EvaluatorAgentic && branchEffectiveGateWorkspace(gate) == apiv1.WorkspaceRepo {
+		problems = append(problems, fmt.Sprintf(
+			"parallel %q branch %q: gate %q resolves to a writable repo workspace; branch stages must use scratch or repo-readonly (concurrent repo-backed branches collide on the run branch)",
 			p.Name, branch.Name, state))
 	}
 
 	return problems
+}
+
+// branchEffectiveTaskWorkspace resolves the workspace a task actually runs in.
+// Run.Workspace is authoritative for a deterministic task; Task.Workspace is
+// the seam an agentic task uses instead; unset means the writable repo
+// worktree either way (internal/runner.taskWorkspaceMode's default).
+func branchEffectiveTaskWorkspace(t apiv1.Task) apiv1.WorkspaceMode {
+	if t.Run != nil && t.Run.Workspace != "" {
+		return t.Run.Workspace
+	}
+	if t.Workspace != "" {
+		return t.Workspace
+	}
+	return apiv1.WorkspaceRepo
+}
+
+// branchEffectiveGateWorkspace resolves the workspace an agentic gate
+// evaluates in, mirroring internal/runner.gateWorkspaceMode.
+func branchEffectiveGateWorkspace(g apiv1.Gate) apiv1.WorkspaceMode {
+	if g.Agentic != nil && g.Agentic.Workspace != "" {
+		return g.Agentic.Workspace
+	}
+	return apiv1.WorkspaceRepo
 }
 
 // joinEntryProblems covers rule 3: the join is parallel-entered only. If any

@@ -594,27 +594,23 @@ func TestRunnerExecutesReadOnlyParallelWithinDeclaredBound(t *testing.T) {
 	}
 }
 
-func TestRunnerRejectsWritableConcurrentParallelBeforeDispatch(t *testing.T) {
-	var calls atomic.Int32
-	r, _ := newParallelTestRunner(t,
-		func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-			calls.Add(1)
-			return &countingDeterministic{}, nil
-		},
-	)
-	result, err := r.Start(context.Background(), StartInput{
-		RunID: "parallel-writable", Gaggle: "demo",
-		Machine: parallelRunnerMachine(t, 2, ""),
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	})
-	if err == nil || !strings.Contains(err.Error(), `task "lens-a" resolves to workspace "repo"`) {
+// A writable-repo branch workspace is now rejected by compile-time rule 9
+// (internal/workflow/v_next/parallel.go) for every declared width, including
+// the unset-default case — strictly earlier and stronger than this runtime
+// check, so a machine built through the normal workflow.Compile path can no
+// longer reach parallel_run.go's own maxConcurrentBranches>1 dispatch-time
+// check with an invalid workspace. That runtime check remains as defense in
+// depth against a machine compiled under an older, more lenient rule 9 (e.g.
+// a cached digest predating this validation), which this test cannot
+// construct without bypassing the compiler entirely. Assert the rejection at
+// its actual (now earlier) point instead of pretending dispatch is reached.
+func TestRunnerRejectsWritableConcurrentParallelAtCompile(t *testing.T) {
+	base := parallelRunnerMachine(t, 2, apiv1.WorkspaceScratch)
+	def := base.Def
+	def.Spec.Tasks[0].Run.Workspace = ""
+	_, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err == nil || !strings.Contains(err.Error(), `task "lens-a" resolves to a writable repo workspace`) {
 		t.Fatalf("error = %v, want writable-workspace rejection", err)
-	}
-	if result.Phase != journal.PhaseFailed {
-		t.Fatalf("phase = %q, want failed", result.Phase)
-	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("executor constructions = %d, want no branch dispatch", got)
 	}
 }
 

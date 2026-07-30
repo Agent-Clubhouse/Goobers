@@ -332,6 +332,55 @@ func TestParallelRejectsWritableRepoWorkspaceInBranch(t *testing.T) {
 	mustReject(t, def, "writable repo workspace")
 }
 
+// Rule 9 must catch the unset default too, not just an explicit
+// `workspace: repo` — Run.Workspace == "" resolves to the writable repo
+// worktree the same as an explicit "repo" (internal/runner.taskWorkspaceMode).
+func TestParallelRejectsDefaultWorkspaceInBranch(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Tasks[1].Run.Workspace = ""
+	mustReject(t, def, "writable repo workspace")
+}
+
+// Rule 9 must also validate an AGENTIC task's Workspace field (Run is nil for
+// an agentic task, so it has no Run.Workspace to check at all) — both an
+// explicit "repo" and the unset default.
+func TestParallelRejectsWritableWorkspaceOnAgenticTaskInBranch(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Tasks[1] = apiv1.Task{
+		Name: "review-security", Type: apiv1.TaskAgentic, Goal: "security lens",
+		Goober: "reviewer", Next: TargetJoin,
+	}
+	mustReject(t, def, "writable repo workspace")
+}
+
+// Rule 9 must also validate an agentic GATE's Agentic.Workspace field inside a
+// branch — unset resolves to the writable repo worktree just like an agentic
+// task's unset Workspace.
+func TestParallelRejectsWritableWorkspaceOnAgenticGateInBranch(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Tasks[1].Next = "verdict"
+	def.Spec.Gates = append(def.Spec.Gates, apiv1.Gate{
+		Name:      "verdict",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches:  map[string]string{"pass": TargetJoin, "fail": TargetJoin},
+	})
+	mustReject(t, def, "writable repo workspace")
+}
+
+// An agentic task/gate that explicitly opts into repo-readonly stays legal —
+// rule 9 must not overreach into rejecting the workspace FO-4 added for this.
+func TestParallelAcceptsRepoReadonlyAgenticTaskInBranch(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Tasks[1] = apiv1.Task{
+		Name: "review-security", Type: apiv1.TaskAgentic, Goal: "security lens",
+		Goober: "reviewer", Workspace: apiv1.WorkspaceRepoReadOnly, Next: TargetJoin,
+	}
+	if err := compileParallel(t, def); err != nil {
+		t.Fatalf("repo-readonly agentic task should compile: %v", err)
+	}
+}
+
 // Rule 10 — no human gate inside a branch.
 func TestParallelRejectsHumanGateInBranch(t *testing.T) {
 	def := parallelDef()
