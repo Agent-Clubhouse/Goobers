@@ -356,6 +356,13 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 			result RunList
 			err    error
 		)
+		// The read-model aggregate answers the whole page — outcomes AND activity
+		// — in one indexed query with zero journal opens (#1891). It replaces the
+		// window function, the backwards terminal walk, and the separate activity
+		// call below, so it returns directly rather than falling through to them.
+		if s.readModelAggregateEligible() {
+			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
+		}
 		if s.sources.Telemetry != nil {
 			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
 		} else {

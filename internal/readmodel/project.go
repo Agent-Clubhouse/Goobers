@@ -63,6 +63,10 @@ type RunRow struct {
 	// Stages is every stage or gate the run has touched, sorted. It backs the
 	// stage filter without a join (§5.7's run-level rollup principle).
 	Stages []string
+
+	// scratch holds nullable columns between Scan and decode. Unexported and
+	// cleared by finishScan, so it never escapes into a returned row.
+	scratch *nullables
 }
 
 // StageRow is one projected (run, stage) pair.

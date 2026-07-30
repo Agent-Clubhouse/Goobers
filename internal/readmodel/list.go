@@ -2,7 +2,6 @@ package readmodel
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -126,7 +125,7 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 
 	page := ListPage{Runs: make([]RunRow, 0, limit)}
 	for rows.Next() {
-		row, err := scanListRow(rows)
+		row, err := scanRunRow(rows)
 		if err != nil {
 			return ListPage{}, err
 		}
@@ -191,12 +190,8 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
 	}
 
-	query := `SELECT run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
-	       trigger_kind, trigger_ref, phase, terminal, current_stage,
-	       started_at, finished_at, last_activity_at, last_seq,
-	       repass_count, retry_count, policy_retry_count, infra_retry_count,
-	       outcome_verdict, outcome_target
-	FROM run`
+	query := `SELECT ` + runColumns + `
+	FROM run r`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -204,48 +199,6 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 	// limit+1 so the lookahead row answers "is there more" without a COUNT.
 	args = append(args, limit+1)
 	return query, args
-}
-
-// scanListRow decodes one run row.
-func scanListRow(rows *sql.Rows) (RunRow, error) {
-	var (
-		out                                           RunRow
-		digest, gooberDigest, triggerKind, triggerRef sql.NullString
-		currentStage, verdict, target                 sql.NullString
-		startedAt, finishedAt, lastActivity           sql.NullString
-		phase                                         string
-		terminal                                      int
-	)
-	if err := rows.Scan(&out.RunID, &out.Gaggle, &out.Workflow, &out.WorkflowVersion,
-		&digest, &gooberDigest, &triggerKind, &triggerRef, &phase, &terminal, &currentStage,
-		&startedAt, &finishedAt, &lastActivity, &out.LastSeq,
-		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
-		&verdict, &target); err != nil {
-		return RunRow{}, fmt.Errorf("readmodel: scan run row: %w", err)
-	}
-	out.WorkflowDigest = digest.String
-	out.GooberDigest = gooberDigest.String
-	out.TriggerKind = triggerKind.String
-	out.TriggerRef = triggerRef.String
-	out.Phase = journal.RunPhase(phase)
-	out.Terminal = terminal != 0
-	out.CurrentStage = currentStage.String
-	out.OutcomeVerdict = verdict.String
-	out.OutcomeTarget = target.String
-
-	var err error
-	if out.StartedAt, err = requiredTime(startedAt); err != nil {
-		return RunRow{}, err
-	}
-	if out.FinishedAt, err = optionalTime(finishedAt); err != nil {
-		return RunRow{}, err
-	}
-	if lastActivity.Valid {
-		if out.LastActivity, err = requiredTime(lastActivity); err != nil {
-			return RunRow{}, err
-		}
-	}
-	return out, nil
 }
 
 // Duration returns a run's elapsed time as of observedAt.

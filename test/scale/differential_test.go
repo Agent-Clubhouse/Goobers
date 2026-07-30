@@ -388,3 +388,170 @@ func sample(ids []string) string {
 	}
 	return fmt.Sprintf("%v", ids)
 }
+
+// TestAggregateMatchesTheJournalPathWithZeroJournalOpens is the differential for
+// the Workflows page (#1891).
+//
+// The journal-derived path for latestPerWorkflow is the most expensive read in
+// the portal: a window function over all history to pick each workflow's newest
+// run, then a BACKWARDS WALK per workflow that opens the newest run's journal
+// and keeps paging further back until it finds a terminal one. The aggregate
+// answers the same page from one indexed query.
+//
+// Both halves are asserted, because either alone would be misleading: the same
+// run IDs with the same journal cost is no improvement, and zero journal opens
+// with different answers is a bug.
+func TestAggregateMatchesTheJournalPathWithZeroJournalOpens(t *testing.T) {
+	ctx := context.Background()
+	gen, service, store := differentialFixture(t, 140)
+
+	cutover, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      gen.Layout,
+		Definitions: instancefixture.Inventory(gen.Inventory),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("construct cutover service: %v", err)
+	}
+	cutover.EnableReadModelReads()
+
+	for _, options := range []readservice.RunListOptions{
+		{LatestPerWorkflow: true},
+		{LatestPerWorkflow: true, Gaggle: instancefixture.GaggleName(0)},
+		{
+			LatestPerWorkflow: true,
+			Gaggle:            instancefixture.GaggleName(0),
+			Workflow:          instancefixture.WorkflowName(0),
+		},
+	} {
+		name := fmt.Sprintf("gaggle=%q workflow=%q", options.Gaggle, options.Workflow)
+		t.Run(name, func(t *testing.T) {
+			readprobe.Enable()
+			before := readprobe.Take()
+			want, err := service.ListRuns(ctx, options)
+			journalWork := readprobe.Take().Sub(before)
+			readprobe.Disable()
+			if err != nil {
+				t.Fatalf("journal path: %v", err)
+			}
+
+			readprobe.Enable()
+			before = readprobe.Take()
+			got, err := cutover.ListRuns(ctx, options)
+			aggregateWork := readprobe.Take().Sub(before)
+			readprobe.Disable()
+			if err != nil {
+				t.Fatalf("aggregate path: %v", err)
+			}
+
+			t.Logf("journal path: %d journal opens; aggregate: %d",
+				journalWork.JournalOpens, aggregateWork.JournalOpens)
+
+			compareIDs(t, runIDsOf(want), runIDsOf(got))
+			compareActivity(t, want.WorkflowActivity, got.WorkflowActivity)
+
+			if aggregateWork.JournalOpens != 0 || aggregateWork.ActiveScanOpens != 0 {
+				t.Errorf("the aggregate opened %d journals (%d via the active scan); §14.4 requires "+
+					"a workflow page to issue one aggregate request and zero per-workflow reads",
+					aggregateWork.JournalOpens, aggregateWork.ActiveScanOpens)
+			}
+			// The fixture is small enough that the journal path is cheap, so this
+			// asserts the DIRECTION rather than a ratio: if the reference did no
+			// journal work either, the comparison proves nothing and the test is
+			// silently vacuous.
+			if journalWork.JournalOpens == 0 {
+				t.Errorf("the reference path opened no journals, so this test cannot show the " +
+					"aggregate removed any; the fixture no longer exercises the backwards walk")
+			}
+		})
+	}
+}
+
+// TestAggregateReportsTheLastOutcomeWhileARunIsInFlight pins the distinction the
+// Workflows page is built on, end to end through the service.
+//
+// A workflow with a finished run and a newer running one must report the
+// FINISHED run as its latest outcome, and the running one in workflowActivity.
+// Reporting the running run as the outcome blanks the result column exactly when
+// someone is watching; omitting the activity hides that anything is happening.
+func TestAggregateReportsTheLastOutcomeWhileARunIsInFlight(t *testing.T) {
+	ctx := context.Background()
+	gen, service, store := differentialFixture(t, 140)
+
+	cutover, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      gen.Layout,
+		Definitions: instancefixture.Inventory(gen.Inventory),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("construct cutover service: %v", err)
+	}
+	cutover.EnableReadModelReads()
+
+	options := readservice.RunListOptions{LatestPerWorkflow: true}
+	want, err := service.ListRuns(ctx, options)
+	if err != nil {
+		t.Fatalf("journal path: %v", err)
+	}
+	got, err := cutover.ListRuns(ctx, options)
+	if err != nil {
+		t.Fatalf("aggregate path: %v", err)
+	}
+
+	// Every returned run is terminal on BOTH paths — that is what "latest
+	// outcome" means, and the aggregate must not relax it.
+	for _, list := range []struct {
+		label string
+		runs  []readservice.RunSummary
+	}{{"journal", want.Runs}, {"aggregate", got.Runs}} {
+		for _, run := range list.runs {
+			if !run.Terminal {
+				t.Errorf("%s path returned non-terminal run %s (phase %s) as a latest OUTCOME",
+					list.label, run.ID, run.Phase)
+			}
+		}
+	}
+	if len(got.Runs) == 0 {
+		t.Fatal("the aggregate returned no outcomes; the fixture has terminal runs")
+	}
+}
+
+// runIDsOf extracts run IDs in returned order.
+func runIDsOf(list readservice.RunList) []string {
+	out := make([]string, 0, len(list.Runs))
+	for _, run := range list.Runs {
+		out = append(out, run.ID)
+	}
+	return out
+}
+
+// compareActivity pins that both paths report the same per-workflow active
+// counts.
+//
+// The counts come from genuinely different mechanisms — a sampler over the
+// filesystem on one path, an indexed aggregate over read.db on the other — so
+// agreement here is evidence the projection tracks reality rather than a
+// tautology.
+func compareActivity(t *testing.T, want, got []readservice.WorkflowRunActivity) {
+	t.Helper()
+	index := func(items []readservice.WorkflowRunActivity) map[string]int {
+		out := make(map[string]int, len(items))
+		for _, item := range items {
+			out[item.Gaggle+"/"+item.Workflow] = item.ActiveRuns
+		}
+		return out
+	}
+	wantIndex, gotIndex := index(want), index(got)
+	for key, wantCount := range wantIndex {
+		if gotCount, ok := gotIndex[key]; !ok || gotCount != wantCount {
+			t.Errorf("workflow activity for %s: aggregate reports %d (present=%v), journal path "+
+				"reports %d", key, gotCount, ok, wantCount)
+		}
+	}
+	for key, gotCount := range gotIndex {
+		if _, ok := wantIndex[key]; !ok {
+			t.Errorf("aggregate reports activity for %s (%d runs) that the journal path does not",
+				key, gotCount)
+		}
+	}
+}
