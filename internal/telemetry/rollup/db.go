@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -235,7 +236,7 @@ func (db *DB) Close() error {
 // must run this with the daemon stopped; unlike checkpointWAL's best-effort
 // maintenance, a failure here is surfaced so the operator knows compaction did
 // not complete.
-func (db *DB) Compact() error {
+func (db *DB) Compact(ctx context.Context) error {
 	// VACUUM rewrites the whole database and needs exclusive access, so the
 	// read-only pool's idle connections must be released first — otherwise a
 	// pool that is merely IDLE (not querying) still holds file handles and the
@@ -245,13 +246,13 @@ func (db *DB) Compact() error {
 	// transparent, which is why it is handled here rather than left to surface
 	// as an intermittent compaction failure.
 	db.closeReaderPool()
-	if _, err := db.sql.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	if _, err := db.sql.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		return fmt.Errorf("rollup: checkpoint before vacuum: %w", err)
 	}
-	if _, err := db.sql.Exec(`VACUUM`); err != nil {
+	if _, err := db.sql.ExecContext(ctx, `VACUUM`); err != nil {
 		return fmt.Errorf("rollup: vacuum: %w", err)
 	}
-	if _, err := db.sql.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	if _, err := db.sql.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		return fmt.Errorf("rollup: checkpoint after vacuum: %w", err)
 	}
 	return nil
@@ -265,20 +266,20 @@ func (db *DB) Compact() error {
 // comparison is a correct time comparison; rows with a NULL occurred_at are
 // conservatively kept. Returns the number of scheduler_events rows removed.
 // Call Compact afterward to reclaim the freed pages.
-func (db *DB) PruneSchedulerBefore(cutoff time.Time) (int, error) {
+func (db *DB) PruneSchedulerBefore(ctx context.Context, cutoff time.Time) (int, error) {
 	ts := formatTime(cutoff)
 	if !ts.Valid {
 		return 0, nil // a zero cutoff prunes nothing
 	}
-	tx, err := db.sql.Begin()
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("rollup: begin scheduler prune tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM scheduler_errors WHERE occurred_at < ?`, ts.String); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scheduler_errors WHERE occurred_at < ?`, ts.String); err != nil {
 		return 0, fmt.Errorf("rollup: prune scheduler_errors: %w", err)
 	}
-	res, err := tx.Exec(`DELETE FROM scheduler_events WHERE occurred_at < ?`, ts.String)
+	res, err := tx.ExecContext(ctx, `DELETE FROM scheduler_events WHERE occurred_at < ?`, ts.String)
 	if err != nil {
 		return 0, fmt.Errorf("rollup: prune scheduler_events: %w", err)
 	}
@@ -324,7 +325,7 @@ func checkpointWAL(sqlDB *sql.DB) {
 func (db *DB) migrate() error {
 	var err error
 	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if err = db.migrateOnce(); err == nil || !isSQLiteBusy(err) {
+		if err = db.migrateOnce(context.Background()); err == nil || !isSQLiteBusy(err) {
 			return err
 		}
 		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
@@ -364,28 +365,28 @@ func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
 // all-or-nothing guarantee across every pending migration. SQLite supports
 // transactional DDL, so this is safe here specifically — this package only ever
 // targets SQLite (modernc.org/sqlite).
-func (db *DB) migrateOnce() error {
-	tx, err := db.sql.Begin() // BEGIN IMMEDIATE via _txlock=immediate (see dsnParams)
+func (db *DB) migrateOnce(ctx context.Context) error {
+	tx, err := db.sql.BeginTx(ctx, nil) // BEGIN IMMEDIATE via _txlock=immediate (see dsnParams)
 	if err != nil {
 		return fmt.Errorf("rollup: begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("rollup: create schema_meta: %w", err)
 	}
-	version, err := schemaVersionTx(tx)
+	version, err := schemaVersionTx(ctx, tx)
 	if err != nil {
 		return err
 	}
 	for i := version; i < len(migrations); i++ {
-		if _, err := tx.Exec(migrations[i]); err != nil {
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
 			return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
 		}
-		if _, err := tx.Exec(`DELETE FROM schema_meta`); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
 			return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
 			return fmt.Errorf("rollup: record schema version %d: %w", i+1, err)
 		}
 	}
@@ -410,9 +411,9 @@ func isSQLiteBusy(err error) bool {
 // schemaVersionTx reads the recorded schema version within the migration
 // transaction (so the read shares the write lock migrateOnce already holds — no
 // separate autocommit read that could race a concurrent first-opener).
-func schemaVersionTx(tx *sql.Tx) (int, error) {
+func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
 	var version int
-	err := tx.QueryRow(`SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
+	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}

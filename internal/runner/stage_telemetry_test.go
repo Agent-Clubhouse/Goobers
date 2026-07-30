@@ -129,10 +129,10 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.IngestRun(filepath.Join(runsDir, runID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, runID)); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	spans, err := db.Spans(runID)
+	spans, err := db.Spans(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 	if taskSpanID == "" {
 		t.Fatalf("task span missing from rollup: %#v", spans)
 	}
-	events, err := db.SpanEvents(runID, taskSpanID)
+	events, err := db.SpanEvents(context.Background(), runID, taskSpanID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,10 +397,10 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.IngestRun(filepath.Join(runsDir, runID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, runID)); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	spans, err := db.Spans(runID)
+	spans, err := db.Spans(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 	if gateSpanID == "" {
 		t.Fatalf("gate span missing from rollup: %#v", spans)
 	}
-	events, err := db.SpanEvents(runID, gateSpanID)
+	events, err := db.SpanEvents(context.Background(), runID, gateSpanID)
 	if err != nil {
 		t.Fatal(err)
 	}

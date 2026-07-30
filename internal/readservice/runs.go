@@ -429,7 +429,7 @@ func (s *Local) listLatestWorkflowOutcomesIndexed(ctx context.Context, options R
 	if err := s.reconcileIndex(ctx); err != nil {
 		return RunList{}, err
 	}
-	refs, err := s.sources.Telemetry.LatestWorkflowRunRefs(options.Gaggle, options.Workflow)
+	refs, err := s.sources.Telemetry.LatestWorkflowRunRefs(ctx, options.Gaggle, options.Workflow)
 	if err != nil {
 		return RunList{}, err
 	}
@@ -478,6 +478,7 @@ func (s *Local) latestTerminalWorkflowOutcome(
 		cursor := refs[len(refs)-1]
 		var err error
 		refs, err = s.sources.Telemetry.RunRefPage(
+			ctx,
 			rollup.RunListFilter{
 				Gaggle:   workflowRef.Gaggle,
 				Workflow: workflowRef.Workflow,
@@ -775,7 +776,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		if err := ctx.Err(); err != nil {
 			return RunList{}, err
 		}
-		refs, err := s.sources.Telemetry.RunRefPage(filter, keyStarted, keyRunID, pageSize)
+		refs, err := s.sources.Telemetry.RunRefPage(ctx, filter, keyStarted, keyRunID, pageSize)
 		if err != nil {
 			return RunList{}, err
 		}
@@ -852,7 +853,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 	if reconcileScanObserver != nil {
 		reconcileScanObserver()
 	}
-	indexed, err := s.sources.Telemetry.IndexedRunIDs()
+	indexed, err := s.sources.Telemetry.IndexedRunIDs(ctx)
 	if err != nil {
 		return err
 	}
@@ -921,7 +922,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if !journal.Recorded(runDir) {
 				continue
 			}
-			_ = s.sources.Telemetry.IngestRun(runDir)
+			_ = s.sources.Telemetry.IngestRun(ctx, runDir)
 		}
 		s.reconcileWatermarks[runsDir] = mtime
 	}
@@ -1153,7 +1154,7 @@ func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, err
 		}
 		defer func() { _ = db.Close() }()
 	}
-	return db.StageAttempts(runID)
+	return db.StageAttempts(context.Background(), runID)
 }
 
 // RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
@@ -1317,7 +1318,7 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 		}
 		defer func() { _ = db.Close() }()
 	}
-	spans, err := db.Spans(runID)
+	spans, err := db.Spans(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1670,7 +1671,7 @@ func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions)
 	if !telemetryStagePopulation(options.StagePopulation) {
 		return true, nil
 	}
-	attempts, err := s.sources.Telemetry.StageAttempts(runID)
+	attempts, err := s.sources.Telemetry.StageAttempts(context.Background(), runID)
 	if err != nil {
 		return false, err
 	}

@@ -37,11 +37,11 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 	runDir := writeFixtureRun(t, runsDir, fixtureRunID, fixtureStart)
 	db := openTestDB(t, tmp)
 
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil {
 		t.Fatalf("Runs: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 		t.Fatalf("DurationMs = %d, want 9000", r.DurationMs)
 	}
 
-	stages, err := db.StageAttempts(fixtureRunID)
+	stages, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 		t.Fatalf("deploy ErrorClass = %q, want %q", deploy.ErrorClass, telemetry.ErrorClassProviderRateLimit)
 	}
 
-	gates, err := db.GateVerdicts(fixtureRunID)
+	gates, err := db.GateVerdicts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("GateVerdicts: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 		t.Fatalf("unexpected gate verdicts: %#v", gates)
 	}
 
-	muts, err := db.ProviderMutations(fixtureRunID)
+	muts, err := db.ProviderMutations(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("ProviderMutations: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestIngestRunMatchesJournalEvents(t *testing.T) {
 		t.Fatalf("unexpected provider mutation: %#v", m)
 	}
 
-	errs, err := db.RunErrors(fixtureRunID)
+	errs, err := db.RunErrors(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("RunErrors: %v", err)
 	}
@@ -138,10 +138,10 @@ func TestIngestRunPreservesParallelBranches(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, "")
 	db := openTestDB(t, tmp)
 
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	attempts, err := db.StageAttempts(runID)
+	attempts, err := db.StageAttempts(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestIngestRunPreservesParallelBranches(t *testing.T) {
 		attempts[1].Branch != 2 || attempts[1].Status != "failure" {
 		t.Fatalf("parallel stage attempts = %#v", attempts)
 	}
-	verdicts, err := db.GateVerdicts(runID)
+	verdicts, err := db.GateVerdicts(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("GateVerdicts: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestIngestRunMatchesOverlappingBranchSpans(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, spans.String())
 	db := openTestDB(t, tmp)
 
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 	rows, err := db.sql.Query(`
@@ -255,10 +255,10 @@ func TestIngestRunTreatsRunResumedAsActive(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, filepath.Join(tmp, "runs"), runID, events, "")
 	db := openTestDB(t, tmp)
 
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("Runs: %v, %#v", err, runs)
 	}
@@ -299,10 +299,10 @@ func TestSeededFailingRunYieldsRightErrorClass(t *testing.T) {
 			mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 			db := openTestDB(t, tmp)
-			if err := db.IngestRun(dir); err != nil {
+			if err := db.IngestRun(context.Background(), dir); err != nil {
 				t.Fatalf("IngestRun: %v", err)
 			}
-			stages, err := db.StageAttempts(runID)
+			stages, err := db.StageAttempts(context.Background(), runID)
 			if err != nil || len(stages) != 1 {
 				t.Fatalf("StageAttempts: %v, %#v", err, stages)
 			}
@@ -338,11 +338,11 @@ func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	errs, err := db.RunErrors(runID)
+	errs, err := db.RunErrors(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("RunErrors: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
 		t.Fatalf("unexpected run_error: %#v", errs[0])
 	}
 
-	stages, err := db.StageAttempts(runID)
+	stages, err := db.StageAttempts(context.Background(), runID)
 	if err != nil || len(stages) != 1 {
 		t.Fatalf("StageAttempts: %v, %#v", err, stages)
 	}
@@ -364,7 +364,7 @@ func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
 	// The regression guard the architect ruling called for: stats'
 	// FailedAttempts and the errors table's row count must agree — that
 	// asymmetry (stats says 1 failed, errors says 0) was the bug.
-	stats, err := db.Stats(StatsRequest{})
+	stats, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -394,11 +394,11 @@ func TestStageFinishedErrorDedupesAgainstStandaloneEvent(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	errs, err := db.RunErrors(runID)
+	errs, err := db.RunErrors(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("RunErrors: %v", err)
 	}
@@ -430,10 +430,10 @@ func TestDeleteRunCoversEverySchemaTable(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("first IngestRun: %v", err)
 	}
-	before, err := db.HarnessTranscripts(runID)
+	before, err := db.HarnessTranscripts(context.Background(), runID)
 	if err != nil || len(before) != 1 {
 		t.Fatalf("HarnessTranscripts after first ingest: %v, %#v", err, before)
 	}
@@ -442,10 +442,10 @@ func TestDeleteRunCoversEverySchemaTable(t *testing.T) {
 	// IngestRun a second time on the identical run dir used to hit
 	// harness_transcripts' (run_id, seq) primary key and roll back the
 	// whole transaction, since deleteRun never cleared that table.
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("second IngestRun (re-ingest) must succeed, got: %v", err)
 	}
-	after, err := db.HarnessTranscripts(runID)
+	after, err := db.HarnessTranscripts(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("HarnessTranscripts after second ingest: %v", err)
 	}
@@ -467,10 +467,10 @@ func TestRebuildIsReproducible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open incremental: %v", err)
 	}
-	if err := incDB.IngestRun(dir1); err != nil {
+	if err := incDB.IngestRun(context.Background(), dir1); err != nil {
 		t.Fatalf("IngestRun dir1: %v", err)
 	}
-	if err := incDB.IngestRun(dir2); err != nil {
+	if err := incDB.IngestRun(context.Background(), dir2); err != nil {
 		t.Fatalf("IngestRun dir2: %v", err)
 	}
 	incResult := snapshotDB(t, incDB)
@@ -514,25 +514,25 @@ func TestRebuildIsReproducible(t *testing.T) {
 // comparison. Queries are already ordered by stable keys (see query.go).
 func snapshotDB(t *testing.T, db *DB) string {
 	t.Helper()
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil {
 		t.Fatalf("Runs: %v", err)
 	}
 	snap := map[string]any{"runs": runs}
 	for _, r := range runs {
-		stages, err := db.StageAttempts(r.RunID)
+		stages, err := db.StageAttempts(context.Background(), r.RunID)
 		if err != nil {
 			t.Fatalf("StageAttempts(%s): %v", r.RunID, err)
 		}
-		gates, err := db.GateVerdicts(r.RunID)
+		gates, err := db.GateVerdicts(context.Background(), r.RunID)
 		if err != nil {
 			t.Fatalf("GateVerdicts(%s): %v", r.RunID, err)
 		}
-		muts, err := db.ProviderMutations(r.RunID)
+		muts, err := db.ProviderMutations(context.Background(), r.RunID)
 		if err != nil {
 			t.Fatalf("ProviderMutations(%s): %v", r.RunID, err)
 		}
-		errs, err := db.RunErrors(r.RunID)
+		errs, err := db.RunErrors(context.Background(), r.RunID)
 		if err != nil {
 			t.Fatalf("RunErrors(%s): %v", r.RunID, err)
 		}
@@ -570,18 +570,18 @@ func TestCanarySecretRedactedInRollup(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	errs, err := db.RunErrors(runID)
+	errs, err := db.RunErrors(context.Background(), runID)
 	if err != nil || len(errs) != 1 {
 		t.Fatalf("RunErrors: %v, %#v", err, errs)
 	}
 	if strings.Contains(errs[0].Message, canary) {
 		t.Fatalf("canary leaked into run_errors.message: %q", errs[0].Message)
 	}
-	stages, err := db.StageAttempts(runID)
+	stages, err := db.StageAttempts(context.Background(), runID)
 	if err != nil || len(stages) != 1 {
 		t.Fatalf("StageAttempts: %v, %#v", err, stages)
 	}
@@ -589,7 +589,7 @@ func TestCanarySecretRedactedInRollup(t *testing.T) {
 		t.Fatalf("canary leaked into stage_attempts.error_code: %q", stages[0].ErrorCode)
 	}
 
-	muts, err := db.ProviderMutations(runID)
+	muts, err := db.ProviderMutations(context.Background(), runID)
 	if err != nil || len(muts) != 1 {
 		t.Fatalf("ProviderMutations: %v, %#v", err, muts)
 	}
@@ -638,11 +638,11 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 	task.Succeed("scan complete")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	spans, err := db.Spans(runID)
+	spans, err := db.Spans(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("Spans: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 		t.Fatalf("unexpected spans: %#v", spans)
 	}
 
-	events, err := db.SpanEvents(runID, spans[0].SpanID)
+	events, err := db.SpanEvents(context.Background(), runID, spans[0].SpanID)
 	if err != nil {
 		t.Fatalf("SpanEvents: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestWithinStageSpanEventsSurviveRollup(t *testing.T) {
 		t.Fatalf("unexpected span event 1: %#v", events[1])
 	}
 
-	invocations, err := db.AgentInvocations(runID)
+	invocations, err := db.AgentInvocations(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("AgentInvocations: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestTraversalMigrationOrdersLegacyAttemptsByStartTime(t *testing.T) {
 		t.Fatalf("upgrade Open: %v", err)
 	}
 	defer func() { _ = upgraded.Close() }()
-	attempts, err := upgraded.StageAttempts("legacy-run")
+	attempts, err := upgraded.StageAttempts(context.Background(), "legacy-run")
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -797,28 +797,28 @@ func TestBranchMigrationPreservesLegacyRowsAsUnknown(t *testing.T) {
 			t.Fatalf("%s legacy branch = %d, want unknown NULL", table, branch.Int64)
 		}
 	}
-	attempts, err := upgraded.StageAttempts("legacy-run")
+	attempts, err := upgraded.StageAttempts(context.Background(), "legacy-run")
 	if err != nil || len(attempts) != 1 {
 		t.Fatalf("StageAttempts after upgrade: %v, %#v", err, attempts)
 	}
 	if attempts[0].BranchKnown {
 		t.Fatalf("legacy attempt branch = %#v, want unknown", attempts[0])
 	}
-	verdicts, err := upgraded.GateVerdicts("legacy-run")
+	verdicts, err := upgraded.GateVerdicts(context.Background(), "legacy-run")
 	if err != nil || len(verdicts) != 1 {
 		t.Fatalf("GateVerdicts after upgrade: %v, %#v", err, verdicts)
 	}
 	if verdicts[0].BranchKnown {
 		t.Fatalf("legacy gate branch = %#v, want unknown", verdicts[0])
 	}
-	if _, err := upgraded.Stats(StatsRequest{}); err != nil {
+	if _, err := upgraded.Stats(context.Background(), StatsRequest{}); err != nil {
 		t.Fatalf("ordinary stats with unknown branch attribution: %v", err)
 	}
 	branch := 0
-	if _, err := upgraded.Stats(StatsRequest{Branch: &branch}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+	if _, err := upgraded.Stats(context.Background(), StatsRequest{Branch: &branch}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
 		t.Fatalf("branch-filtered stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
 	}
-	if _, err := upgraded.Stats(StatsRequest{GroupByBranch: true}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
+	if _, err := upgraded.Stats(context.Background(), StatsRequest{GroupByBranch: true}); !errors.Is(err, ErrBranchAttributionRequiresRebuild) {
 		t.Fatalf("branch-grouped stats error = %v, want %v", err, ErrBranchAttributionRequiresRebuild)
 	}
 }
@@ -850,7 +850,7 @@ func TestTranscriptSchemaMigrationPreservesLegacyRows(t *testing.T) {
 	}
 	defer func() { _ = upgraded.Close() }()
 
-	transcripts, err := upgraded.HarnessTranscripts("legacy-run")
+	transcripts, err := upgraded.HarnessTranscripts(context.Background(), "legacy-run")
 	if err != nil {
 		t.Fatalf("HarnessTranscripts: %v", err)
 	}

@@ -208,7 +208,7 @@ func applyImplementationFeedback(
 	}
 	defer func() { _ = db.Close() }()
 
-	outcomes, err := db.ImplementationOutcomes(providerGaggle(), earliestReadyAt)
+	outcomes, err := db.ImplementationOutcomes(ctx, providerGaggle(), earliestReadyAt)
 	if err != nil {
 		pf(stderr, "error: query implementation outcomes: %v\n", err)
 		return 1

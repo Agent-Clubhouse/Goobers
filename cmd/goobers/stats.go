@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"io"
@@ -112,12 +113,12 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	summary, err := db.InstanceSummaryStats(since)
+	summary, err := db.InstanceSummaryStats(context.Background(), since)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	timeToFirstPR, err := db.TimeToFirstPR()
+	timeToFirstPR, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -135,7 +136,7 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 			pln(stdout, "no runs yet — try goobers run <workflow>")
 			return 0
 		}
-		lifetime, err := db.InstanceSummaryStats(time.Time{})
+		lifetime, err := db.InstanceSummaryStats(context.Background(), time.Time{})
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2

@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -63,7 +64,7 @@ type agentProvenance struct {
 	harnessVersion string
 }
 
-func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string]agentProvenance, error) {
+func (db *DB) agentProvenanceByRunForGaggle(ctx context.Context, gaggle, workflow string) (map[string]agentProvenance, error) {
 	query := `
 		SELECT ai.run_id, ai.model, ai.harness_version
 		FROM agent_invocations ai
@@ -74,7 +75,7 @@ func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string
 		query += " AND r.gaggle = ?"
 		args = append(args, gaggle)
 	}
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query agent provenance for %q: %w", workflow, err)
 	}
@@ -111,8 +112,8 @@ func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string
 	return out, nil
 }
 
-func (db *DB) effectiveVersionRowsForGaggle(gaggle, workflow string, since time.Time) ([]effectiveVersionRun, error) {
-	provenance, err := db.agentProvenanceByRunForGaggle(gaggle, workflow)
+func (db *DB) effectiveVersionRowsForGaggle(ctx context.Context, gaggle, workflow string, since time.Time) ([]effectiveVersionRun, error) {
+	provenance, err := db.agentProvenanceByRunForGaggle(context.Background(), gaggle, workflow)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (db *DB) effectiveVersionRowsForGaggle(gaggle, workflow string, since time.
 		FROM runs r LEFT JOIN run_goober_digests g ON g.run_id = r.run_id
 		WHERE %s
 		ORDER BY r.started_at, r.run_id`, strings.Join(clauses, " AND "))
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query effective version rows for %q: %w", workflow, err)
 	}
@@ -198,15 +199,15 @@ type EffectiveVersionCohort struct {
 // for workflow, in chronological order, mirroring DigestHistory but keyed on
 // the full cohort (workflow + goober + model + harness) rather than
 // workflow_digest alone.
-func (db *DB) DigestHistoryByEffectiveVersion(workflow string) ([]EffectiveVersionChange, error) {
-	return db.DigestHistoryByEffectiveVersionForGaggle("", workflow)
+func (db *DB) DigestHistoryByEffectiveVersion(ctx context.Context, workflow string) ([]EffectiveVersionChange, error) {
+	return db.DigestHistoryByEffectiveVersionForGaggle(ctx, "", workflow)
 }
 
 // DigestHistoryByEffectiveVersionForGaggle is the gaggle-scoped form used by
 // Tutor holdouts. Workflow names are only unique within a gaggle, so a
 // cross-run verifier must never pool same-named workflows from other silos.
-func (db *DB) DigestHistoryByEffectiveVersionForGaggle(gaggle, workflow string) ([]EffectiveVersionChange, error) {
-	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, time.Time{})
+func (db *DB) DigestHistoryByEffectiveVersionForGaggle(ctx context.Context, gaggle, workflow string) ([]EffectiveVersionChange, error) {
+	rows, err := db.effectiveVersionRowsForGaggle(ctx, gaggle, workflow, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("rollup: effective version history for %q: %w", workflow, err)
 	}
@@ -236,11 +237,11 @@ func (db *DB) DigestHistoryByEffectiveVersionForGaggle(gaggle, workflow string) 
 // FirstEffectiveVersionCohortForGaggle returns the first contiguous cohort
 // observed after since with the requested configuration axes. An empty digest
 // is a wildcard. Model and harness remain part of the exact cohort boundary.
-func (db *DB) FirstEffectiveVersionCohortForGaggle(
+func (db *DB) FirstEffectiveVersionCohortForGaggle(ctx context.Context,
 	gaggle, workflow, workflowDigest, gooberDigest string,
 	since time.Time,
 ) (*EffectiveVersionCohort, error) {
-	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, since)
+	rows, err := db.effectiveVersionRowsForGaggle(ctx, gaggle, workflow, since)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: effective version cohort for %q: %w", workflow, err)
 	}
@@ -317,7 +318,7 @@ func (db *DB) runStatsByEffectiveVersionForGaggle(
 	gaggle, workflow, hash string,
 	since, before time.Time,
 ) (RunStats, error) {
-	rows, err := db.effectiveVersionRowsForGaggle(gaggle, workflow, since)
+	rows, err := db.effectiveVersionRowsForGaggle(context.Background(), gaggle, workflow, since)
 	if err != nil {
 		return RunStats{}, err
 	}
@@ -366,7 +367,7 @@ type EffectiveVersionEfficacyResult struct {
 // the full EffectiveVersion (workflow + goober + model + harness) rather
 // than workflow_digest alone — so a model or harness change starts its own
 // cohort instead of being silently pooled with runs before that change.
-func (db *DB) AssessEfficacyByEffectiveVersion(req EffectiveVersionEfficacyRequest) (EffectiveVersionEfficacyResult, error) {
+func (db *DB) AssessEfficacyByEffectiveVersion(ctx context.Context, req EffectiveVersionEfficacyRequest) (EffectiveVersionEfficacyResult, error) {
 	th := req.Thresholds
 	if th == (EfficacyThresholds{}) {
 		th = DefaultEfficacyThresholds()
@@ -429,8 +430,8 @@ func (db *DB) AssessEfficacyByEffectiveVersion(req EffectiveVersionEfficacyReque
 // assesses it, mirroring AssessLatestEfficacy. Returns
 // EfficacyInsufficientData (no error) if the workflow has never observed an
 // EffectiveVersion transition within the recorded history.
-func (db *DB) AssessLatestEfficacyByEffectiveVersion(workflow string, since time.Time, th EfficacyThresholds) (EffectiveVersionEfficacyResult, error) {
-	changes, err := db.DigestHistoryByEffectiveVersion(workflow)
+func (db *DB) AssessLatestEfficacyByEffectiveVersion(ctx context.Context, workflow string, since time.Time, th EfficacyThresholds) (EffectiveVersionEfficacyResult, error) {
+	changes, err := db.DigestHistoryByEffectiveVersion(ctx, workflow)
 	if err != nil {
 		return EffectiveVersionEfficacyResult{}, fmt.Errorf("rollup: assess latest effective-version efficacy for %q: %w", workflow, err)
 	}
@@ -438,7 +439,7 @@ func (db *DB) AssessLatestEfficacyByEffectiveVersion(workflow string, since time
 		return EffectiveVersionEfficacyResult{Workflow: workflow, Verdict: EfficacyInsufficientData}, nil
 	}
 	latest := changes[len(changes)-1]
-	return db.AssessEfficacyByEffectiveVersion(EffectiveVersionEfficacyRequest{
+	return db.AssessEfficacyByEffectiveVersion(ctx, EffectiveVersionEfficacyRequest{
 		Workflow:   workflow,
 		OldVersion: latest.FromVersion,
 		NewVersion: latest.ToVersion,

@@ -217,7 +217,7 @@ func TestTimeToFirstPRIgnoresPersistedPROpenBeforeLegacyInitCompletion(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestRun(legacyDir); err != nil {
+	if err := db.IngestRun(context.Background(), legacyDir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 	writeInitCompleted(t, layout, initCompletedAt)
@@ -348,11 +348,11 @@ func TestTimeToFirstPRUsesMilestoneAfterJournalRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestSchedulerLog(layout.SchedulerDir()); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), layout.SchedulerDir()); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 	for _, dir := range []string{firstDir, secondDir} {
-		if err := db.IngestRun(dir); err != nil {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
 			t.Fatalf("IngestRun(%s): %v", dir, err)
 		}
 		if err := os.RemoveAll(dir); err != nil {

@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,11 +31,11 @@ func TestIngestRunCapturesHarnessTranscripts(t *testing.T) {
 	writeRunWithRawEvents(t, runsDir, fixtureRunID, events, "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	transcripts, err := db.HarnessTranscripts(fixtureRunID)
+	transcripts, err := db.HarnessTranscripts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("HarnessTranscripts: %v", err)
 	}
@@ -71,11 +72,11 @@ func TestIngestRunCapturesGateRunnerDetail(t *testing.T) {
 	writeRunWithRawEvents(t, runsDir, fixtureRunID, events, "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	verdicts, err := db.GateVerdicts(fixtureRunID)
+	verdicts, err := db.GateVerdicts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("GateVerdicts: %v", err)
 	}
@@ -114,11 +115,11 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	if events[8].Type != "error" || events[8].ErrorCode != "claim_recovery_failed" || events[8].ErrorClass != "unknown" {
 		t.Fatalf("error row = %#v", events[8])
 	}
-	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	signatures, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestIngestSchedulerLogCapturesDecisionsAndErrors(t *testing.T) {
 	// Filtering to one workflow excludes claim.* events, which carry no
 	// workflow field (only runId) — this is the "why didn't a run start"
 	// per-workflow query shape callers actually need.
-	filtered, err := db.SchedulerEvents("nominate")
+	filtered, err := db.SchedulerEvents(context.Background(), "nominate")
 	if err != nil {
 		t.Fatalf("SchedulerEvents filtered: %v", err)
 	}
@@ -173,11 +174,11 @@ func TestIngestSchedulerLogCapturesProviderQuotaDecisions(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestIngestSchedulerLogCapturesProviderQuotaDecisions(t *testing.T) {
 		t.Fatalf("poll.shed row = %#v", events[1])
 	}
 
-	filtered, err := db.SchedulerEvents("nominate")
+	filtered, err := db.SchedulerEvents(context.Background(), "nominate")
 	if err != nil {
 		t.Fatalf("SchedulerEvents filtered: %v", err)
 	}
@@ -220,11 +221,11 @@ func TestIngestSchedulerLogCapturesRollingSpans(t *testing.T) {
 
 	db := openTestDB(t, tmp)
 	for i := 0; i < 2; i++ {
-		if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 			t.Fatalf("IngestSchedulerLog pass %d: %v", i+1, err)
 		}
 	}
-	spans, err := db.Spans(fixtureRunID)
+	spans, err := db.Spans(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("Spans: %v", err)
 	}
@@ -247,10 +248,10 @@ func TestIngestSchedulerLogToleratesDuplicateSequence(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
@@ -275,11 +276,11 @@ func TestIngestSchedulerLogCapturesWorkflowStarved(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
-	events, err := db.SchedulerEvents("nominate")
+	events, err := db.SchedulerEvents(context.Background(), "nominate")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestIngestSchedulerLogCheckpointsWAL(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
@@ -342,7 +343,7 @@ func TestRebuildIngestsSchedulerLog(t *testing.T) {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	db := openTestDB(t, tmp)
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}

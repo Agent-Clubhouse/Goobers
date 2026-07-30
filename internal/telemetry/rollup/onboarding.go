@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,9 +12,9 @@ import (
 
 // TimeToFirstPR returns the lifetime first-run success metric captured from the
 // instance journal and provider-mutation events during rollup ingestion.
-func (db *DB) TimeToFirstPR() (telemetry.TimeToFirstPRMetric, error) {
+func (db *DB) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
 	var initCompleted, firstPROpen sql.NullString
-	if err := db.readDB().QueryRow(`
+	if err := db.readDB().QueryRowContext(ctx, `
 		SELECT init_completed_at, first_pr_open_at
 		FROM first_success_milestones
 		WHERE id = 1`).Scan(&initCompleted, &firstPROpen); err != nil {
@@ -30,13 +31,13 @@ func (db *DB) TimeToFirstPR() (telemetry.TimeToFirstPRMetric, error) {
 	return telemetry.NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt), nil
 }
 
-func (db *DB) recordTimeToFirstPR(initCompletedAt, firstPROpenAt time.Time) error {
-	tx, err := db.sql.Begin()
+func (db *DB) recordTimeToFirstPR(ctx context.Context, initCompletedAt, firstPROpenAt time.Time) error {
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("rollup: begin first-success milestone tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := upsertTimeToFirstPR(tx, initCompletedAt, firstPROpenAt); err != nil {
+	if err := upsertTimeToFirstPR(ctx, tx, initCompletedAt, firstPROpenAt); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -45,9 +46,9 @@ func (db *DB) recordTimeToFirstPR(initCompletedAt, firstPROpenAt time.Time) erro
 	return nil
 }
 
-func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) error {
+func upsertTimeToFirstPR(ctx context.Context, tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) error {
 	var storedInit, storedFirstPR sql.NullString
-	err := tx.QueryRow(`
+	err := tx.QueryRowContext(ctx, `
 		SELECT init_completed_at, first_pr_open_at
 		FROM first_success_milestones
 		WHERE id = 1`).Scan(&storedInit, &storedFirstPR)
@@ -68,7 +69,7 @@ func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) e
 		(currentInit.IsZero() ||
 			!initCompletedAt.Equal(currentInit) ||
 			(!currentFirstPR.IsZero() && currentFirstPR.Before(initCompletedAt))) {
-		retainedFirstPR, err = firstRetainedPROpenAt(tx, initCompletedAt)
+		retainedFirstPR, err = firstRetainedPROpenAt(ctx, tx, initCompletedAt)
 		if err != nil {
 			return err
 		}
@@ -81,7 +82,7 @@ func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) e
 		validFirstPROpenAt = earlierTime(validFirstPROpenAt, candidate)
 	}
 
-	_, err = tx.Exec(`
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO first_success_milestones (id, init_completed_at, first_pr_open_at)
 		VALUES (1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -96,8 +97,8 @@ func upsertTimeToFirstPR(tx *sql.Tx, initCompletedAt, firstPROpenAt time.Time) e
 	return nil
 }
 
-func firstRetainedPROpenAt(tx *sql.Tx, initCompletedAt time.Time) (time.Time, error) {
-	rows, err := tx.Query(`
+func firstRetainedPROpenAt(ctx context.Context, tx *sql.Tx, initCompletedAt time.Time) (time.Time, error) {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT occurred_at
 		FROM provider_mutations
 		WHERE kind = 'pr' AND operation = 'open'`)

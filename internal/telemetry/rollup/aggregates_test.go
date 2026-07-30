@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +60,7 @@ func seedAndIngest(t *testing.T, db *DB, runsDir string) {
 		t.Fatalf("runDirs: %v", err)
 	}
 	for _, dir := range dirs {
-		if err := db.IngestRun(dir); err != nil {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
 			t.Fatalf("IngestRun(%s): %v", dir, err)
 		}
 	}
@@ -80,7 +81,7 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	all, err := db.Stats(StatsRequest{})
+	all, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	}
 
 	// Filtered by workflow: only implement's 3 runs / build+deploy stages.
-	filtered, err := db.Stats(StatsRequest{Workflow: "implement"})
+	filtered, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement"})
 	if err != nil {
 		t.Fatalf("Stats filtered: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 
 	// Time-window filtered: exclude everything after +30m -> only the first
 	// implement run (base) qualifies (the second starts at +1h).
-	windowed, err := db.Stats(StatsRequest{Workflow: "implement", Until: base.Add(30 * time.Minute)})
+	windowed, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement", Until: base.Add(30 * time.Minute)})
 	if err != nil {
 		t.Fatalf("Stats windowed: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestRebuildAllAndStatsFilterByGaggle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	all, err := db.Stats(StatsRequest{})
+	all, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,14 +198,14 @@ func TestRebuildAllAndStatsFilterByGaggle(t *testing.T) {
 		t.Fatalf("all gaggle stats = %+v", all.Gaggles)
 	}
 
-	alpha, err := db.Stats(StatsRequest{Gaggle: "alpha"})
+	alpha, err := db.Stats(context.Background(), StatsRequest{Gaggle: "alpha"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(alpha.Runs) != 1 || alpha.Runs[0].TotalRuns != 1 || alpha.Runs[0].CompletedRuns != 1 {
 		t.Fatalf("alpha stats = %+v", alpha.Runs)
 	}
-	beta, err := db.Stats(StatsRequest{Gaggle: "beta"})
+	beta, err := db.Stats(context.Background(), StatsRequest{Gaggle: "beta"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +224,7 @@ func TestErrorsQueryFiltersAndOrders(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	all, err := db.Errors(ErrorsRequest{})
+	all, err := db.Errors(context.Background(), ErrorsRequest{})
 	if err != nil {
 		t.Fatalf("Errors: %v", err)
 	}
@@ -238,7 +239,7 @@ func TestErrorsQueryFiltersAndOrders(t *testing.T) {
 		t.Fatalf("unexpected error run/stage ref: %#v", all[0])
 	}
 
-	rateLimitOnly, err := db.Errors(ErrorsRequest{ErrorClass: "provider-rate-limit"})
+	rateLimitOnly, err := db.Errors(context.Background(), ErrorsRequest{ErrorClass: "provider-rate-limit"})
 	if err != nil {
 		t.Fatalf("Errors filtered: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestErrorsQueryFiltersAndOrders(t *testing.T) {
 		t.Fatalf("rate-limit-filtered errors = %#v", rateLimitOnly)
 	}
 
-	windowed, err := db.Errors(ErrorsRequest{Until: base.Add(30 * time.Minute)})
+	windowed, err := db.Errors(context.Background(), ErrorsRequest{Until: base.Add(30 * time.Minute)})
 	if err != nil {
 		t.Fatalf("Errors windowed: %v", err)
 	}
@@ -254,11 +255,11 @@ func TestErrorsQueryFiltersAndOrders(t *testing.T) {
 		t.Fatalf("windowed errors = %#v", windowed)
 	}
 
-	firstPage, err := db.Errors(ErrorsRequest{Limit: 1})
+	firstPage, err := db.Errors(context.Background(), ErrorsRequest{Limit: 1})
 	if err != nil {
 		t.Fatalf("Errors first page: %v", err)
 	}
-	secondPage, err := db.Errors(ErrorsRequest{
+	secondPage, err := db.Errors(context.Background(), ErrorsRequest{
 		Limit: 1,
 		Cursor: &ErrorCursor{
 			OrderTimestamp: firstPage[0].OrderTimestamp,
@@ -288,10 +289,10 @@ func TestStatsPreserveUnknownMetrics(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := db.Stats(StatsRequest{})
+	stats, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestErrorsOrderingBreaksTimestampTiesDeterministically(t *testing.T) {
 
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
-	errs, err := db.Errors(ErrorsRequest{})
+	errs, err := db.Errors(context.Background(), ErrorsRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +344,7 @@ func TestErrorsOrderingBreaksTimestampTiesDeterministically(t *testing.T) {
 	var pageCodes []string
 	var cursor *ErrorCursor
 	for {
-		page, err := db.Errors(ErrorsRequest{Limit: 1, Cursor: cursor})
+		page, err := db.Errors(context.Background(), ErrorsRequest{Limit: 1, Cursor: cursor})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -380,7 +381,7 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	sigs, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 		t.Fatalf("top signature missing example ref: %#v", top)
 	}
 
-	deploy, err := db.TopErrorSignatures(StatsRequest{Stage: "deploy"}, 10)
+	deploy, err := db.TopErrorSignatures(context.Background(), StatsRequest{Stage: "deploy"}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures stage filtered: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestTopErrorSignaturesAggregatesAcrossRuns(t *testing.T) {
 		t.Fatalf("deploy signatures = %#v", deploy)
 	}
 
-	matching, err := db.Errors(ErrorsRequest{
+	matching, err := db.Errors(context.Background(), ErrorsRequest{
 		Stage:      "deploy",
 		Code:       "provider.rate_limit",
 		FilterCode: true,
@@ -426,11 +427,11 @@ func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatal(err)
 	}
 
-	signatures, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	signatures, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +443,7 @@ func TestTopErrorSignaturesAllowsUnclassifiedSchedulerErrors(t *testing.T) {
 		t.Fatalf("unclassified scheduler signatures = %#v", signatures)
 	}
 
-	errors, err := db.Errors(ErrorsRequest{
+	errors, err := db.Errors(context.Background(), ErrorsRequest{
 		Code:             "",
 		ErrorClass:       "",
 		FilterCode:       true,
@@ -473,7 +474,7 @@ func TestProviderMutationCountsGroupsByShape(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	counts, err := db.ProviderMutationCounts(StatsRequest{})
+	counts, err := db.ProviderMutationCounts(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("ProviderMutationCounts: %v", err)
 	}
@@ -506,11 +507,11 @@ func TestAggregateQueriesRedactCanary(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
-	errs, err := db.Errors(ErrorsRequest{})
+	errs, err := db.Errors(context.Background(), ErrorsRequest{})
 	if err != nil || len(errs) != 1 {
 		t.Fatalf("Errors: %v, %#v", err, errs)
 	}
@@ -518,7 +519,7 @@ func TestAggregateQueriesRedactCanary(t *testing.T) {
 		t.Fatalf("canary leaked into Errors() result: %q", errs[0].Message)
 	}
 
-	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	sigs, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil || len(sigs) != 1 {
 		t.Fatalf("TopErrorSignatures: %v, %#v", err, sigs)
 	}

@@ -731,7 +731,7 @@ func (s *schedulerSetup) ingestSchedulerLog() {
 	if s.RollupDB == nil || s.InstanceLog == nil {
 		return
 	}
-	if err := s.RollupDB.IngestSchedulerLog(s.InstanceLog.Dir()); err != nil {
+	if err := s.RollupDB.IngestSchedulerLog(context.Background(), s.InstanceLog.Dir()); err != nil {
 		logIngestFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
 	}
 }

@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -139,7 +140,7 @@ func TestDigestHistoryByEffectiveVersionDetectsModelOnlyTransition(t *testing.T)
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	digestChanges, err := db.DigestHistory("tutor")
+	digestChanges, err := db.DigestHistory(context.Background(), "tutor")
 	if err != nil {
 		t.Fatalf("DigestHistory: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestDigestHistoryByEffectiveVersionDetectsModelOnlyTransition(t *testing.T)
 		t.Fatalf("DigestHistory (workflow_digest only) = %+v, want none — workflow_digest never changed", digestChanges)
 	}
 
-	changes, err := db.DigestHistoryByEffectiveVersion("tutor")
+	changes, err := db.DigestHistoryByEffectiveVersion(context.Background(), "tutor")
 	if err != nil {
 		t.Fatalf("DigestHistoryByEffectiveVersion: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestEffectiveVersionExcludesMixedModelRuns(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle(context.Background(), "", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestEffectiveVersionExcludesUndefinedWorkflowDigest(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle(context.Background(), "", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}
@@ -220,7 +221,7 @@ func TestAssessEfficacyByEffectiveVersionPartialOverlapNotPooled(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessLatestEfficacyByEffectiveVersion("tutor", time.Time{}, DefaultEfficacyThresholds())
+	result, err := db.AssessLatestEfficacyByEffectiveVersion(context.Background(), "tutor", time.Time{}, DefaultEfficacyThresholds())
 	if err != nil {
 		t.Fatalf("AssessLatestEfficacyByEffectiveVersion: %v", err)
 	}
@@ -258,7 +259,7 @@ func TestAssessEfficacyByEffectiveVersionExcludesMixedRunsFromComparison(t *test
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	changes, err := db.DigestHistoryByEffectiveVersion("tutor")
+	changes, err := db.DigestHistoryByEffectiveVersion(context.Background(), "tutor")
 	if err != nil {
 		t.Fatalf("DigestHistoryByEffectiveVersion: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestAssessLatestEfficacyByEffectiveVersionInsufficientDataWithNoTransition(
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessLatestEfficacyByEffectiveVersion("tutor", time.Time{}, DefaultEfficacyThresholds())
+	result, err := db.AssessLatestEfficacyByEffectiveVersion(context.Background(), "tutor", time.Time{}, DefaultEfficacyThresholds())
 	if err != nil {
 		t.Fatalf("AssessLatestEfficacyByEffectiveVersion: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestEffectiveVersionNonAgenticRunIsWellDefined(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	rows, err := db.effectiveVersionRowsForGaggle("", "tutor", time.Time{})
+	rows, err := db.effectiveVersionRowsForGaggle(context.Background(), "", "tutor", time.Time{})
 	if err != nil {
 		t.Fatalf("effectiveVersionRows: %v", err)
 	}

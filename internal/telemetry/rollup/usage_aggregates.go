@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -44,7 +45,7 @@ type usageDistributionKey struct {
 	harnessVersion string
 }
 
-func (db *DB) modelStats(req StatsRequest) ([]ModelStats, error) {
+func (db *DB) modelStats(ctx context.Context, req StatsRequest) ([]ModelStats, error) {
 	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
 	join := ""
 	if req.Branch != nil {
@@ -67,7 +68,7 @@ func (db *DB) modelStats(req StatsRequest) ([]ModelStats, error) {
 		%s
 		GROUP BY smu.model
 		ORDER BY smu.model`, join, whereClause(clauses))
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query model usage: %w", err)
 	}
@@ -102,7 +103,7 @@ func (db *DB) modelStats(req StatsRequest) ([]ModelStats, error) {
 	return out, nil
 }
 
-func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKey]*stageDistributionAccum, error) {
+func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (map[stageDistributionKey]*stageDistributionAccum, error) {
 	clauses, args := statsClauses("r.workflow", "r.gaggle", "r.started_at", req)
 	branchClauses, branchArgs := branchFilterClauses("sa", req)
 	clauses = append(clauses, branchClauses...)
@@ -138,7 +139,7 @@ func (db *DB) stageDistributionAccums(req StatsRequest) (map[stageDistributionKe
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage AND latest.branch IS sa.branch
 		%s
 		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, where, groupedColumns(dimensions))
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage distributions: %w", err)
 	}

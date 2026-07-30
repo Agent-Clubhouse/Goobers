@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -102,11 +103,11 @@ func TestCurationRollupCountsWindowAndStarvedReadyPool(t *testing.T) {
 
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
-	if err := db.IngestRun(filepath.Join(runsDir, "2222222222222222cccccccccccccccc")); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, "2222222222222222cccccccccccccccc")); err != nil {
 		t.Fatalf("reingest curation run: %v", err)
 	}
 
-	all, err := db.Stats(StatsRequest{})
+	all, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestCurationRollupCountsWindowAndStarvedReadyPool(t *testing.T) {
 		t.Fatalf("actual bounce transitions = %d, want 2", all.Curation.Bounced)
 	}
 
-	windowed, err := db.Stats(StatsRequest{Since: now.Add(-24 * time.Hour)})
+	windowed, err := db.Stats(context.Background(), StatsRequest{Since: now.Add(-24 * time.Hour)})
 	if err != nil {
 		t.Fatalf("windowed Stats: %v", err)
 	}
@@ -165,10 +166,10 @@ func TestReadyClaimAgeAndDemandAreQueryable(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(events, "\n")+"\n")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	stats, err := db.Stats(StatsRequest{})
+	stats, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}

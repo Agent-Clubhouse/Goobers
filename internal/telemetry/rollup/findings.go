@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -130,7 +131,7 @@ type DetectRequest struct {
 // deterministic result given a fixed telemetry.db snapshot. The waste
 // family (duration/token/cost percentiles, retry waste) is deferred to
 // #144 (usage accounting), which this package does not yet have data for.
-func (db *DB) Detect(req DetectRequest) ([]Finding, error) {
+func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) {
 	th := req.Thresholds
 	if th == (Thresholds{}) {
 		th = DefaultThresholds()
@@ -153,7 +154,7 @@ func (db *DB) Detect(req DetectRequest) ([]Finding, error) {
 	}
 	findings = append(findings, errFindings...)
 
-	gateFindings, err := db.detectGateNoise(req.StatsRequest, th)
+	gateFindings, err := db.detectGateNoise(ctx, req.StatsRequest, th)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +184,7 @@ func (db *DB) Detect(req DetectRequest) ([]Finding, error) {
 // stats` already exposes, so this adds threshold-based flagging on top
 // rather than a second query engine.
 func (db *DB) detectStageFailureRate(req StatsRequest, th Thresholds) ([]Finding, error) {
-	stages, err := db.stageStats(req)
+	stages, err := db.stageStats(context.Background(), req)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: detect stage failure rate: %w", err)
 	}
@@ -231,7 +232,7 @@ func (db *DB) stageFailingRuns(req StatsRequest, stage string, limit int) ([]Jou
 		ORDER BY r.started_at DESC, sa.run_id DESC
 		LIMIT ?`, clause)
 	args = append(append([]any{}, args...), stage, stageStatusFailure, limit)
-	return queryRunIDs(db, query, args)
+	return queryRunIDs(context.Background(), db, query, args)
 }
 
 // detectErrorSignatures flags recurring (code, error_class) patterns
@@ -239,7 +240,7 @@ func (db *DB) stageFailingRuns(req StatsRequest, stage string, limit int) ([]Jou
 // TopErrorSignatures, adding threshold-based flagging and a bounded list
 // of contributing runs (TopErrorSignatures itself only names one example).
 func (db *DB) detectErrorSignatures(req StatsRequest, th Thresholds) ([]Finding, error) {
-	sigs, err := db.TopErrorSignatures(req, 0)
+	sigs, err := db.TopErrorSignatures(context.Background(), req, 0)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: detect error signatures: %w", err)
 	}
@@ -278,7 +279,7 @@ func (db *DB) errorSignatureRuns(req StatsRequest, code, errorClass string, limi
 		ORDER BY e.occurred_at DESC, e.run_id DESC
 		LIMIT ?`, clause)
 	args = append(append([]any{}, args...), code, errorClass, limit)
-	return queryRunIDs(db, query, args)
+	return queryRunIDs(context.Background(), db, query, args)
 }
 
 // gateOutcomePass mirrors internal/gate.OutcomePass's wire value ("pass") —
@@ -301,13 +302,13 @@ type gateAggregate struct {
 // (repassAttempt/escalated, #128), so this parses every matching row rather
 // than aggregating in SQL (kept portable across the pure-Go sqlite driver,
 // no JSON1 dependency).
-func (db *DB) detectGateNoise(req StatsRequest, th Thresholds) ([]Finding, error) {
+func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "g.occurred_at", req)
 	query := fmt.Sprintf(`
 		SELECT g.gate, g.verdict, g.runner_json FROM gate_verdicts g
 		JOIN runs r ON r.run_id = g.run_id
 		%s`, where)
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: detect gate noise: %w", err)
 	}
@@ -346,7 +347,7 @@ func (db *DB) detectGateNoise(req StatsRequest, th Thresholds) ([]Finding, error
 			continue
 		}
 		if a.nonPass == 0 {
-			runs, err := db.gateRuns(req, gate, "", th.MaxFlaggedRuns)
+			runs, err := db.gateRuns(ctx, req, gate, "", th.MaxFlaggedRuns)
 			if err != nil {
 				return nil, err
 			}
@@ -362,7 +363,7 @@ func (db *DB) detectGateNoise(req StatsRequest, th Thresholds) ([]Finding, error
 		}
 		escalationRate := float64(a.escalated) / float64(a.total)
 		if escalationRate >= th.MaxGateEscalationRate {
-			runs, err := db.gateRuns(req, gate, "escalated", th.MaxFlaggedRuns)
+			runs, err := db.gateRuns(ctx, req, gate, "escalated", th.MaxFlaggedRuns)
 			if err != nil {
 				return nil, err
 			}
@@ -397,7 +398,7 @@ func gateEscalated(runnerJSON string) bool {
 // gateRuns returns the runs (newest first, bounded by limit) where gate
 // evaluated, optionally filtered to only escalated evaluations (mode ==
 // "escalated"); mode == "" returns every evaluating run.
-func (db *DB) gateRuns(req StatsRequest, gate, mode string, limit int) ([]JournalPointer, error) {
+func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string, limit int) ([]JournalPointer, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "g.occurred_at", req)
 	clause := "g.gate = ?"
 	if where != "" {
@@ -408,7 +409,7 @@ func (db *DB) gateRuns(req StatsRequest, gate, mode string, limit int) ([]Journa
 		JOIN runs r ON r.run_id = g.run_id
 		WHERE %s
 		ORDER BY g.occurred_at DESC, g.run_id DESC`, clause)
-	rows, err := db.readDB().Query(query, append(append([]any{}, args...), gate)...)
+	rows, err := db.readDB().QueryContext(ctx, query, append(append([]any{}, args...), gate)...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gate runs: %w", err)
 	}
@@ -443,7 +444,7 @@ func (db *DB) gateRuns(req StatsRequest, gate, mode string, limit int) ([]Journa
 func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 	var out []Finding
 	for _, workflow := range sortedKeys(req.Workflows) {
-		count, err := db.workflowRunCount(req.StatsRequest, workflow)
+		count, err := db.workflowRunCount(context.Background(), req.StatsRequest, workflow)
 		if err != nil {
 			return nil, fmt.Errorf("rollup: detect coverage gap for workflow %q: %w", workflow, err)
 		}
@@ -458,7 +459,7 @@ func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 			continue // no runs at all means no stage could have been reached either
 		}
 		for _, stage := range req.Workflows[workflow] {
-			stageCount, err := db.workflowStageAttemptCount(req.StatsRequest, workflow, stage)
+			stageCount, err := db.workflowStageAttemptCount(context.Background(), req.StatsRequest, workflow, stage)
 			if err != nil {
 				return nil, fmt.Errorf("rollup: detect coverage gap for %s/%s: %w", workflow, stage, err)
 			}
@@ -476,14 +477,14 @@ func (db *DB) detectCoverageGaps(req CoverageRequest) ([]Finding, error) {
 	return out, nil
 }
 
-func (db *DB) workflowRunCount(req StatsRequest, workflow string) (int, error) {
+func (db *DB) workflowRunCount(ctx context.Context, req StatsRequest, workflow string) (int, error) {
 	where, args := statsWhere("workflow", "gaggle", "started_at", req)
 	clause := "workflow = ?"
 	if where != "" {
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	var count int
-	err := db.readDB().QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM runs WHERE %s`, clause),
+	err := db.readDB().QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM runs WHERE %s`, clause),
 		append(append([]any{}, args...), workflow)...).Scan(&count)
 	if err != nil {
 		return 0, err
@@ -491,14 +492,14 @@ func (db *DB) workflowRunCount(req StatsRequest, workflow string) (int, error) {
 	return count, nil
 }
 
-func (db *DB) workflowStageAttemptCount(req StatsRequest, workflow, stage string) (int, error) {
+func (db *DB) workflowStageAttemptCount(ctx context.Context, req StatsRequest, workflow, stage string) (int, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "r.started_at", req)
 	clause := "r.workflow = ? AND sa.stage = ?"
 	if where != "" {
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	var count int
-	err := db.readDB().QueryRow(fmt.Sprintf(`
+	err := db.readDB().QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		WHERE %s`, clause),
@@ -512,8 +513,8 @@ func (db *DB) workflowStageAttemptCount(req StatsRequest, workflow, stage string
 // queryRunIDs runs query/args and collects distinct run ids in result order
 // into JournalPointers — the shared tail every per-finding "which runs"
 // lookup above uses.
-func queryRunIDs(db *DB, query string, args []any) ([]JournalPointer, error) {
-	rows, err := db.readDB().Query(query, args...)
+func queryRunIDs(ctx context.Context, db *DB, query string, args []any) ([]JournalPointer, error) {
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run ids: %w", err)
 	}

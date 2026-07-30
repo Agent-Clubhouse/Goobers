@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -127,8 +128,8 @@ type SpanEventSummary struct {
 
 // Runs returns every run in the rollup, ordered by start time then run id for
 // a stable, comparable result set (rebuild-is-reproducible acceptance, #22).
-func (db *DB) Runs() ([]RunSummary, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT r.run_id, r.workflow, r.workflow_version, r.workflow_digest, rgd.goober_digest,
 		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms
 		FROM runs r
@@ -205,12 +206,12 @@ type RunListFilter struct {
 // cursorStartedAt / empty cursorRunID starts from the newest run. started_at
 // is stored fixed-width (see timeFormat) so the SQL text comparisons agree
 // with chronological order.
-func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursorRunID string, limit int) ([]RunRef, error) {
+func (db *DB) RunRefPage(ctx context.Context, filter RunListFilter, cursorStartedAt time.Time, cursorRunID string, limit int) ([]RunRef, error) {
 	query, args, empty := runRefPageQuery(filter, cursorStartedAt, cursorRunID, limit)
 	if empty {
 		return nil, nil
 	}
-	return db.runRefRows(query, args)
+	return db.runRefRows(ctx, query, args)
 }
 
 // runRefPageQuery builds the paged run-reference statement.
@@ -271,8 +272,8 @@ func runRefPageQuery(filter RunListFilter, cursorStartedAt time.Time, cursorRunI
 }
 
 // runRefRows executes a run-reference statement and scans its rows.
-func (db *DB) runRefRows(query string, args []any) ([]RunRef, error) {
-	rows, err := db.readDB().Query(query, args...)
+func (db *DB) runRefRows(ctx context.Context, query string, args []any) ([]RunRef, error) {
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run refs: %w", err)
 	}
@@ -296,7 +297,7 @@ func (db *DB) runRefRows(query string, args []any) ([]RunRef, error) {
 // LatestWorkflowRunRefs returns the newest indexed run for each workflow in
 // scope. Status is deliberately not considered because the journal is
 // authoritative and the derived row may lag a finish or resume.
-func (db *DB) LatestWorkflowRunRefs(gaggle, workflow string) ([]WorkflowRunRef, error) {
+func (db *DB) LatestWorkflowRunRefs(ctx context.Context, gaggle, workflow string) ([]WorkflowRunRef, error) {
 	query := `
 		SELECT run_id, gaggle, workflow, started_at
 		FROM (
@@ -321,7 +322,7 @@ func (db *DB) LatestWorkflowRunRefs(gaggle, workflow string) ([]WorkflowRunRef, 
 		WHERE row_rank = 1
 		ORDER BY started_at DESC, run_id ASC`
 
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query latest workflow run refs: %w", err)
 	}
@@ -347,8 +348,8 @@ func (db *DB) LatestWorkflowRunRefs(gaggle, workflow string) ([]WorkflowRunRef, 
 // were never ingested (e.g. imported or migrated telemetry) so they can be
 // backfilled before a list is served — the index is thereby kept complete and
 // can never silently hide a run.
-func (db *DB) IndexedRunIDs() (map[string]struct{}, error) {
-	rows, err := db.readDB().Query("SELECT run_id FROM runs")
+func (db *DB) IndexedRunIDs(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := db.readDB().QueryContext(ctx, "SELECT run_id FROM runs")
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run ids: %w", err)
 	}
@@ -367,8 +368,8 @@ func (db *DB) IndexedRunIDs() (map[string]struct{}, error) {
 
 // StageAttempts returns every stage attempt for runID, ordered by stage then
 // durable traversal number. Attempt numbers can restart at one after a repass.
-func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT sa.stage, sa.branch, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
 		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
@@ -416,8 +417,8 @@ func (db *DB) StageAttempts(runID string) ([]StageAttempt, error) {
 }
 
 // AgentInvocations returns every indexed agentic span for runID.
-func (db *DB) AgentInvocations(runID string) ([]AgentInvocation, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) AgentInvocations(ctx context.Context, runID string) ([]AgentInvocation, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT span_id, kind, stage, traversal, attempt, model, harness_version
 		FROM agent_invocations WHERE run_id = ? ORDER BY span_id`, runID)
 	if err != nil {
@@ -457,8 +458,8 @@ func optionalFloat64(value sql.NullFloat64) *float64 {
 }
 
 // GateVerdicts returns every gate evaluation for runID, in seq order.
-func (db *DB) GateVerdicts(runID string) ([]GateVerdict, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) GateVerdicts(ctx context.Context, runID string) ([]GateVerdict, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT seq, branch, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
@@ -499,8 +500,8 @@ type HarnessTranscript struct {
 
 // HarnessTranscripts returns every within-stage transcript pointer for runID,
 // in seq order.
-func (db *DB) HarnessTranscripts(runID string) ([]HarnessTranscript, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) HarnessTranscripts(ctx context.Context, runID string) ([]HarnessTranscript, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT h.seq, h.stage, h.name, COALESCE(s.schema, ''), h.ref_digest, h.ref_size, h.occurred_at
 		FROM harness_transcripts h
 		LEFT JOIN harness_transcript_schemas s ON s.run_id = h.run_id AND s.seq = h.seq
@@ -546,7 +547,7 @@ type SchedulerEvent struct {
 // SchedulerEvents returns scheduler decisions in seq order, optionally
 // filtered to one workflow (empty = every workflow) — "why didn't a run start
 // at tick N" (issue #128).
-func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
+func (db *DB) SchedulerEvents(ctx context.Context, workflow string) ([]SchedulerEvent, error) {
 	query := `
 		SELECT s.seq, s.type, s.workflow, s.run_id, s.reason, s.status,
 		       e.code, e.error_class, e.message, s.occurred_at
@@ -559,7 +560,7 @@ func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
 	}
 	query += ` ORDER BY s.seq`
 
-	rows, err := db.readDB().Query(query, args...)
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query scheduler_events: %w", err)
 	}
@@ -584,8 +585,8 @@ func (db *DB) SchedulerEvents(workflow string) ([]SchedulerEvent, error) {
 
 // ProviderMutations returns every external-ref-touched event for runID, in
 // seq order — the traceable-mutation surface #12's MutationRecorder feeds.
-func (db *DB) ProviderMutations(runID string) ([]ProviderMutation, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) ProviderMutations(ctx context.Context, runID string) ([]ProviderMutation, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT seq, provider, kind, external_id, url, operation, occurred_at FROM provider_mutations
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
@@ -610,8 +611,8 @@ func (db *DB) ProviderMutations(runID string) ([]ProviderMutation, error) {
 }
 
 // RunErrors returns every error event for runID, in seq order.
-func (db *DB) RunErrors(runID string) ([]RunError, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) RunErrors(ctx context.Context, runID string) ([]RunError, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT seq, stage, attempt, code, error_class, message, occurred_at FROM run_errors
 		WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {
@@ -638,8 +639,8 @@ func (db *DB) RunErrors(runID string) ([]RunError, error) {
 }
 
 // Spans returns every span for runID, ordered by start time then span id.
-func (db *DB) Spans(runID string) ([]SpanSummary, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) Spans(ctx context.Context, runID string) ([]SpanSummary, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT s.span_id, s.parent_span_id, s.name, s.kind, s.status, s.status_message, s.start_time, s.end_time, s.duration_ms, b.business_status
 		FROM spans s LEFT JOIN span_business_status b ON b.run_id = s.run_id AND b.span_id = s.span_id
 		WHERE s.run_id = ? ORDER BY s.start_time, s.span_id`, runID)
@@ -672,8 +673,8 @@ func (db *DB) Spans(runID string) ([]SpanSummary, error) {
 // SpanEvents returns the within-stage harness events attached to spanID, in
 // occurrence order — the granularity #22's acceptance criteria requires to
 // survive rollup (queries return both stage-level and within-stage rows).
-func (db *DB) SpanEvents(runID, spanID string) ([]SpanEventSummary, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) SpanEvents(ctx context.Context, runID, spanID string) ([]SpanEventSummary, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT seq, name, occurred_at, attributes_json FROM span_events
 		WHERE run_id = ? AND span_id = ? ORDER BY seq`, runID, spanID)
 	if err != nil {

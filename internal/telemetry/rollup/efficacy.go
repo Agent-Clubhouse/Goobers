@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -25,8 +26,8 @@ type DigestChange struct {
 // pin) rather than treated as a real transition. Returns an empty slice,
 // not an error, for a workflow with fewer than two distinct digests (no
 // transition has ever happened).
-func (db *DB) DigestHistory(workflow string) ([]DigestChange, error) {
-	rows, err := db.readDB().Query(`
+func (db *DB) DigestHistory(ctx context.Context, workflow string) ([]DigestChange, error) {
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT workflow_digest, started_at FROM runs
 		WHERE workflow = ? AND workflow_digest IS NOT NULL AND workflow_digest != ''
 		ORDER BY started_at, run_id`, workflow)
@@ -135,17 +136,17 @@ type EfficacyResult struct {
 // under NewDigest and renders a helped/regressed/no-change verdict (TUT-008,
 // the metrics half — no agentic diagnosis here, just the aggregate
 // comparison a Tutor's change-efficacy stage or a human reviewer consumes).
-func (db *DB) AssessEfficacy(req EfficacyRequest) (EfficacyResult, error) {
+func (db *DB) AssessEfficacy(ctx context.Context, req EfficacyRequest) (EfficacyResult, error) {
 	th := req.Thresholds
 	if th == (EfficacyThresholds{}) {
 		th = DefaultEfficacyThresholds()
 	}
 
-	before, err := db.runStatsByDigest(req.Workflow, req.OldDigest, req.Since)
+	before, err := db.runStatsByDigest(ctx, req.Workflow, req.OldDigest, req.Since)
 	if err != nil {
 		return EfficacyResult{}, fmt.Errorf("rollup: assess efficacy (before segment): %w", err)
 	}
-	after, err := db.runStatsByDigest(req.Workflow, req.NewDigest, req.Since)
+	after, err := db.runStatsByDigest(ctx, req.Workflow, req.NewDigest, req.Since)
 	if err != nil {
 		return EfficacyResult{}, fmt.Errorf("rollup: assess efficacy (after segment): %w", err)
 	}
@@ -186,8 +187,8 @@ func (db *DB) AssessEfficacy(req EfficacyRequest) (EfficacyResult, error) {
 // Tutor PR help or regress," without the caller needing to already know
 // which two digests to compare. Returns EfficacyInsufficientData (no error)
 // if the workflow has never changed digests within the observed history.
-func (db *DB) AssessLatestEfficacy(workflow string, since time.Time, th EfficacyThresholds) (EfficacyResult, error) {
-	changes, err := db.DigestHistory(workflow)
+func (db *DB) AssessLatestEfficacy(ctx context.Context, workflow string, since time.Time, th EfficacyThresholds) (EfficacyResult, error) {
+	changes, err := db.DigestHistory(ctx, workflow)
 	if err != nil {
 		return EfficacyResult{}, fmt.Errorf("rollup: assess latest efficacy for %q: %w", workflow, err)
 	}
@@ -195,7 +196,7 @@ func (db *DB) AssessLatestEfficacy(workflow string, since time.Time, th Efficacy
 		return EfficacyResult{Workflow: workflow, Verdict: EfficacyInsufficientData}, nil
 	}
 	latest := changes[len(changes)-1]
-	return db.AssessEfficacy(EfficacyRequest{
+	return db.AssessEfficacy(ctx, EfficacyRequest{
 		Workflow:   workflow,
 		OldDigest:  latest.FromDigest,
 		NewDigest:  latest.ToDigest,
@@ -209,7 +210,7 @@ func (db *DB) AssessLatestEfficacy(workflow string, since time.Time, th Efficacy
 // ever run under — the single-segment aggregate AssessEfficacy's before/
 // after comparison needs. Returns the RunStats zero value (TotalRuns=0) for
 // a digest with no runs, not an error.
-func (db *DB) runStatsByDigest(workflow, digest string, since time.Time) (RunStats, error) {
+func (db *DB) runStatsByDigest(ctx context.Context, workflow, digest string, since time.Time) (RunStats, error) {
 	clauses := []string{"workflow = ?", "workflow_digest = ?"}
 	args := []any{workflow, digest}
 	if !since.IsZero() {
@@ -228,7 +229,7 @@ func (db *DB) runStatsByDigest(workflow, digest string, since time.Time) (RunSta
 	var s RunStats
 	var avg sql.NullFloat64
 	var min, max sql.NullInt64
-	err := db.readDB().QueryRow(query, queryArgs...).Scan(&s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
+	err := db.readDB().QueryRowContext(ctx, query, queryArgs...).Scan(&s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("rollup: run stats for %q@%q: %w", workflow, digest, err)
 	}
@@ -268,12 +269,12 @@ type ChurnGuardResult struct {
 // flags it when the count meets or exceeds req.MaxChanges — the guard a
 // Tutor change-proposal stage checks before authoring another config PR for
 // a workflow that's already been flip-flopping.
-func (db *DB) ChurnGuard(req ChurnGuardRequest) (ChurnGuardResult, error) {
+func (db *DB) ChurnGuard(ctx context.Context, req ChurnGuardRequest) (ChurnGuardResult, error) {
 	maxChanges := req.MaxChanges
 	if maxChanges <= 0 {
 		maxChanges = 3
 	}
-	all, err := db.DigestHistory(req.Workflow)
+	all, err := db.DigestHistory(ctx, req.Workflow)
 	if err != nil {
 		return ChurnGuardResult{}, fmt.Errorf("rollup: churn guard for %q: %w", req.Workflow, err)
 	}

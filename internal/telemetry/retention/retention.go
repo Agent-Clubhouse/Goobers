@@ -2,6 +2,7 @@
 package retention
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -199,7 +200,7 @@ func pruneOne(candidate Result, db *rollup.DB) (bool, error) {
 			clearErr,
 		)
 	}
-	if err := db.DeleteRun(candidate.RunID); err != nil {
+	if err := db.DeleteRun(context.Background(), candidate.RunID); err != nil {
 		rollbackErr := os.Rename(staged, candidate.RunDir)
 		if rollbackErr == nil {
 			rollbackErr = journal.ClearPruneReservation(candidate.RunDir)
@@ -259,7 +260,7 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 			} else if !errors.Is(openErr, fs.ErrNotExist) {
 				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
 			}
-			if err := db.DeleteRun(runID); err != nil {
+			if err := db.DeleteRun(context.Background(), runID); err != nil {
 				return fmt.Errorf("telemetry retention: finish rollup prune for run %s: %w", runID, err)
 			}
 			if err := os.RemoveAll(dir); err != nil {

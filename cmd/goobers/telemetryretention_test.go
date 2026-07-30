@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -63,7 +64,7 @@ func TestConfiguredTelemetryRetentionDefaultsOffThenPrunes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
 	}
 

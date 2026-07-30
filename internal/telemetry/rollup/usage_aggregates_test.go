@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -139,11 +140,11 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 		}})
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun task repass: %v", err)
 	}
 
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 		t.Fatalf("repass usage = %#v, want usage attached to each traversal", attempts)
 	}
 
-	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	stats, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement"})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -187,10 +188,10 @@ func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
 		}})
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
 		t.Fatalf("branch-attributed attempts = %#v", attempts)
 	}
 
-	grouped, err := db.Stats(StatsRequest{Workflow: "quality-sprint", GroupByBranch: true})
+	grouped, err := db.Stats(context.Background(), StatsRequest{Workflow: "quality-sprint", GroupByBranch: true})
 	if err != nil {
 		t.Fatalf("Stats grouped by branch: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
 	}
 
 	branch := 2
-	filtered, err := db.Stats(StatsRequest{Workflow: "quality-sprint", Branch: &branch})
+	filtered, err := db.Stats(context.Background(), StatsRequest{Workflow: "quality-sprint", Branch: &branch})
 	if err != nil {
 		t.Fatalf("Stats filtered by branch: %v", err)
 	}
@@ -251,11 +252,11 @@ func TestUsageRollupDoesNotShiftAcrossMissingRepassSpan(t *testing.T) {
 		}})
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun task repass with missing span: %v", err)
 	}
 
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("StageAttempts: %v, %#v", err, attempts)
 	}
@@ -268,7 +269,7 @@ func TestUsageRollupDoesNotShiftAcrossMissingRepassSpan(t *testing.T) {
 		t.Fatalf("later repass usage = %#v", attempts[1])
 	}
 
-	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	stats, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement"})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -297,25 +298,25 @@ func TestUsageRollupIgnoresAttemptlessTerminalFailureDiagnostic(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun terminal stage failure: %v", err)
 	}
 
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
 	if len(attempts) != 1 || attempts[0].Traversal != 1 || attempts[0].Attempt != 1 {
 		t.Fatalf("terminal stage attempts = %#v, want one real traversal", attempts)
 	}
-	stats, err := db.Stats(StatsRequest{})
+	stats, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if len(stats.Stages) != 1 || stats.Stages[0].RetryWasteAttempts != 0 {
 		t.Fatalf("terminal failure retry waste = %#v, want none", stats.Stages)
 	}
-	errs, err := db.RunErrors(fixtureRunID)
+	errs, err := db.RunErrors(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("RunErrors: %v", err)
 	}
@@ -346,11 +347,11 @@ func TestUsageRollupDerivesRetryDurationFromExecutorError(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, dirSpans, fileSpans), "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun executor retry: %v", err)
 	}
 
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("StageAttempts: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestUsageRollupDerivesRetryDurationFromExecutorError(t *testing.T) {
 	if attempts[0].Status != stageStatusFailure || attempts[0].DurationMs != 10 || !attempts[0].FinishedAt.Equal(firstFailed) {
 		t.Fatalf("failed retry attempt = %#v, want executor-error boundary and 10ms duration", attempts[0])
 	}
-	stats, err := db.Stats(StatsRequest{})
+	stats, err := db.Stats(context.Background(), StatsRequest{})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -426,7 +427,7 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	attempts, err := db.StageAttempts("1111111111111111abababababababab")
+	attempts, err := db.StageAttempts(context.Background(), "1111111111111111abababababababab")
 	if err != nil || len(attempts) != 1 {
 		t.Fatalf("StageAttempts: %v, %#v", err, attempts)
 	}
@@ -438,7 +439,7 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		t.Fatalf("rollup usage = %#v, want envelope metrics %#v", got, envelope.Metrics)
 	}
 
-	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	stats, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement"})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -499,7 +500,7 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if unmetered.HasTokens || unmetered.HasCost || unmetered.TokenSamples != 0 || unmetered.CostSamples != 0 {
 		t.Fatalf("missing usage became observed: %#v", unmetered)
 	}
-	missing, err := db.StageAttempts("5555555555555555abababababababab")
+	missing, err := db.StageAttempts(context.Background(), "5555555555555555abababababababab")
 	if err != nil || len(missing) != 1 {
 		t.Fatalf("unmetered StageAttempts: %v, %#v", err, missing)
 	}
@@ -507,7 +508,7 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		missing[0].CopilotPremiumRequests != nil || missing[0].CostUSD != nil {
 		t.Fatalf("missing raw usage became zero: %#v", missing[0])
 	}
-	zero, err := db.StageAttempts("6666666666666666abababababababab")
+	zero, err := db.StageAttempts(context.Background(), "6666666666666666abababababababab")
 	if err != nil || len(zero) != 1 {
 		t.Fatalf("zero-metered StageAttempts: %v, %#v", err, zero)
 	}
@@ -533,10 +534,10 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		t.Fatalf("reported zero premium requests became missing: %#v", zeroUsage)
 	}
 
-	if err := db.IngestRun(firstDir); err != nil {
+	if err := db.IngestRun(context.Background(), firstDir); err != nil {
 		t.Fatalf("re-ingest usage run: %v", err)
 	}
-	if err := db.IngestRun(unmeteredDir); err != nil {
+	if err := db.IngestRun(context.Background(), unmeteredDir); err != nil {
 		t.Fatalf("re-ingest unmetered run: %v", err)
 	}
 }
@@ -568,7 +569,7 @@ func TestUsageRollupGroupsObservedUsageByModel(t *testing.T) {
 
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
-	stats, err := db.Stats(StatsRequest{Workflow: "implement"})
+	stats, err := db.Stats(context.Background(), StatsRequest{Workflow: "implement"})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
@@ -599,7 +600,7 @@ func TestUsageRollupGroupsObservedUsageByModel(t *testing.T) {
 	if rows != 4 {
 		t.Fatalf("stage_model_usage rows = %d, want 4 including filtered workflow", rows)
 	}
-	if err := db.IngestRun(firstDir); err != nil {
+	if err := db.IngestRun(context.Background(), firstDir); err != nil {
 		t.Fatalf("re-ingest model usage: %v", err)
 	}
 }
@@ -659,11 +660,11 @@ func TestIngestSkipsAgenticGateUsage(t *testing.T) {
 	mustWriteFile(t, spansPath, string(spanData)+string(gateData)+"\n")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(dir); err != nil {
+	if err := db.IngestRun(context.Background(), dir); err != nil {
 		t.Fatalf("IngestRun with agentic gate usage: %v", err)
 	}
 
-	attempts, err := db.StageAttempts(fixtureRunID)
+	attempts, err := db.StageAttempts(context.Background(), fixtureRunID)
 	if err != nil || len(attempts) != 1 {
 		t.Fatalf("StageAttempts: %v, %#v", err, attempts)
 	}
@@ -684,7 +685,7 @@ func TestIngestSkipsAgenticGateUsage(t *testing.T) {
 	if spanCount != 2 || usageCount != 1 {
 		t.Fatalf("ingested spans/usage = %d/%d, want 2/1", spanCount, usageCount)
 	}
-	invocations, err := db.AgentInvocations(fixtureRunID)
+	invocations, err := db.AgentInvocations(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +730,7 @@ func TestStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	filtered, err := db.Stats(StatsRequest{Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3"})
+	filtered, err := db.Stats(context.Background(), StatsRequest{Model: "gpt-5.6-sol", HarnessVersion: "copilot version 1.2.3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,7 +739,7 @@ func TestStatsFiltersAndGroupsAgentProvenance(t *testing.T) {
 		t.Fatalf("filtered stats = %#v", filtered)
 	}
 
-	grouped, err := db.Stats(StatsRequest{GroupByModel: true, GroupByHarnessVersion: true})
+	grouped, err := db.Stats(context.Background(), StatsRequest{GroupByModel: true, GroupByHarnessVersion: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +823,7 @@ func TestIngestRejectsInvalidUsageSpans(t *testing.T) {
 			}
 
 			db := openTestDB(t, tmp)
-			if err := db.IngestRun(dir); err == nil {
+			if err := db.IngestRun(context.Background(), dir); err == nil {
 				t.Fatal("IngestRun succeeded with invalid usage span")
 			}
 		})

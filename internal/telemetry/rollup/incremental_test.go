@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -9,7 +10,7 @@ import (
 // the shape the incremental-ingest tests assert on.
 func schedulerEventTypes(t *testing.T, db *DB) []string {
 	t.Helper()
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestIngestSchedulerLogAppendsIncrementally(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("first IngestSchedulerLog: %v", err)
 	}
 	if got := schedulerEventTypes(t, db); len(got) != 5 {
@@ -78,7 +79,7 @@ func TestIngestSchedulerLogAppendsIncrementally(t *testing.T) {
 	if err := writeInstanceEvents(t, schedulerDir, append(firstFive(), nextThree()...)); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("second IngestSchedulerLog: %v", err)
 	}
 	got := schedulerEventTypes(t, db)
@@ -91,7 +92,7 @@ func TestIngestSchedulerLogAppendsIncrementally(t *testing.T) {
 	}
 
 	// The new error event must be captured too.
-	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	sigs, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures: %v", err)
 	}
@@ -110,13 +111,13 @@ func TestIngestSchedulerLogNoOpReingestIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("first ingest: %v", err)
 	}
 	offset1, lastSeq1, _ := schedulerCursorRow(t, db)
 
 	for i := 0; i < 3; i++ {
-		if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+		if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 			t.Fatalf("re-ingest %d: %v", i, err)
 		}
 	}
@@ -140,7 +141,7 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("first ingest: %v", err)
 	}
 
@@ -149,7 +150,7 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	if err := writeInstanceEvents(t, schedulerDir, nextThree()[:2]); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("post-shrink ingest: %v", err)
 	}
 	// The five originally-ingested events remain; the two new ones are added.
@@ -173,7 +174,7 @@ func TestIngestSchedulerLogUpgradesFromFullReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("seed ingest: %v", err)
 	}
 	// Drop the cursor to look like a DB rolled up by the pre-#1411 code.
@@ -184,7 +185,7 @@ func TestIngestSchedulerLogUpgradesFromFullReplay(t *testing.T) {
 	if err := writeInstanceEvents(t, schedulerDir, append(firstFive(), nextThree()...)); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("post-upgrade ingest: %v", err)
 	}
 	if got := schedulerEventTypes(t, db); len(got) != 8 {
@@ -209,13 +210,13 @@ func TestIngestSchedulerLogMatchesFullReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	incDB := openTestDB(t, incTmp)
-	if err := incDB.IngestSchedulerLog(incDir); err != nil {
+	if err := incDB.IngestSchedulerLog(context.Background(), incDir); err != nil {
 		t.Fatalf("incremental seed: %v", err)
 	}
 	if err := writeInstanceEvents(t, incDir, lines); err != nil {
 		t.Fatal(err)
 	}
-	if err := incDB.IngestSchedulerLog(incDir); err != nil {
+	if err := incDB.IngestSchedulerLog(context.Background(), incDir); err != nil {
 		t.Fatalf("incremental tail: %v", err)
 	}
 
@@ -226,7 +227,7 @@ func TestIngestSchedulerLogMatchesFullReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	fullDB := openTestDB(t, fullTmp)
-	if err := fullDB.IngestSchedulerLog(fullDir); err != nil {
+	if err := fullDB.IngestSchedulerLog(context.Background(), fullDir); err != nil {
 		t.Fatalf("full ingest: %v", err)
 	}
 

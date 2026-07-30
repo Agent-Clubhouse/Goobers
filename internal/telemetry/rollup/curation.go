@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -57,7 +58,7 @@ type ImplementationOutcome struct {
 
 // ImplementationOutcomes returns terminal implementation runs that claimed an
 // issue, with the latest error and gate verdict retained as bounded evidence.
-func (db *DB) ImplementationOutcomes(gaggle string, since time.Time) ([]ImplementationOutcome, error) {
+func (db *DB) ImplementationOutcomes(ctx context.Context, gaggle string, since time.Time) ([]ImplementationOutcome, error) {
 	clauses := []string{
 		"r.workflow = 'implementation'",
 		"r.finished_at IS NOT NULL",
@@ -73,7 +74,7 @@ func (db *DB) ImplementationOutcomes(gaggle string, since time.Time) ([]Implemen
 		clauses = append(clauses, "r.started_at >= ?")
 		args = append(args, formatTime(since).String)
 	}
-	rows, err := db.readDB().Query(`
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT DISTINCT
 			r.run_id, pm.external_id, COALESCE(r.status, ''),
 			r.started_at, r.finished_at,
@@ -120,7 +121,7 @@ func (db *DB) ImplementationOutcomes(gaggle string, since time.Time) ([]Implemen
 	return outcomes, nil
 }
 
-func (db *DB) curationStats(req StatsRequest, transitions []storedReadyLabelTransition) (CurationStats, error) {
+func (db *DB) curationStats(ctx context.Context, req StatsRequest, transitions []storedReadyLabelTransition) (CurationStats, error) {
 	if agentStatsActive(req) || (req.Workflow != "" && req.Workflow != "backlog-curation") {
 		return CurationStats{}, nil
 	}
@@ -153,7 +154,7 @@ func (db *DB) curationStats(req StatsRequest, transitions []storedReadyLabelTran
 		JOIN runs r ON r.run_id = ca.run_id
 		WHERE ` + strings.Join(clauses, " AND ")
 	var out CurationStats
-	if err := db.readDB().QueryRow(query, args...).Scan(
+	if err := db.readDB().QueryRowContext(ctx, query, args...).Scan(
 		&out.Runs, &out.ReportedRuns, &out.Ready, &out.NeedsHuman,
 		&out.Closed, &out.Deduped, &out.Split, &out.Stale,
 		&out.Reconciled, &out.Milestoned, &out.Bounced,
@@ -165,6 +166,7 @@ func (db *DB) curationStats(req StatsRequest, transitions []storedReadyLabelTran
 }
 
 func (db *DB) readyPoolHealth(
+	ctx context.Context,
 	req StatsRequest,
 	curation CurationStats,
 	transitions []storedReadyLabelTransition,
@@ -188,7 +190,7 @@ func (db *DB) readyPoolHealth(
 		sampleArgs = append(sampleArgs, formatTime(req.Until).String)
 	}
 	var observedAt sql.NullString
-	err := db.readDB().QueryRow(`
+	err := db.readDB().QueryRowContext(ctx, `
 		SELECT s.observed_at, s.depth, s.average_age_seconds, s.oldest_age_seconds
 		FROM ready_pool_samples s
 		JOIN runs r ON r.run_id = s.run_id
@@ -224,7 +226,7 @@ func (db *DB) readyPoolHealth(
 		claimClauses = append(claimClauses, "rc.claimed_at <= ?")
 		claimArgs = append(claimArgs, formatTime(req.Until).String)
 	}
-	if err := db.readDB().QueryRow(`
+	if err := db.readDB().QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(AVG(rc.ready_age_seconds), 0)
 		FROM ready_claims rc
 		JOIN runs r ON r.run_id = rc.run_id
@@ -248,7 +250,7 @@ func (db *DB) readyPoolHealth(
 		demandClauses = append(demandClauses, "pm.occurred_at <= ?")
 		demandArgs = append(demandArgs, formatTime(req.Until).String)
 	}
-	if err := db.readDB().QueryRow(`
+	if err := db.readDB().QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM provider_mutations pm
 		JOIN runs r ON r.run_id = pm.run_id
@@ -271,14 +273,14 @@ type storedReadyLabelTransition struct {
 	OccurredAt time.Time
 }
 
-func (db *DB) readyLabelTransitions(req StatsRequest) ([]storedReadyLabelTransition, error) {
+func (db *DB) readyLabelTransitions(ctx context.Context, req StatsRequest) ([]storedReadyLabelTransition, error) {
 	clauses := []string{"r.workflow = 'backlog-curation'"}
 	var args []any
 	if req.Gaggle != "" {
 		clauses = append(clauses, "r.gaggle = ?")
 		args = append(args, req.Gaggle)
 	}
-	rows, err := db.readDB().Query(`
+	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT rt.event_id, MIN(rt.item_id), MIN(rt.transition), MIN(rt.occurred_at)
 		FROM ready_label_transitions rt
 		JOIN runs r ON r.run_id = rt.run_id

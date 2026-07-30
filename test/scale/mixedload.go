@@ -529,7 +529,7 @@ func ingestLoad(stop <-chan struct{}, counts *writeCounters, layout instance.Lay
 			if err != nil {
 				continue
 			}
-			if err := db.IngestRun(dir); err == nil {
+			if err := db.IngestRun(context.Background(), dir); err == nil {
 				counts.ingests.Add(1)
 			}
 		}
