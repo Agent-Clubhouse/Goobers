@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -44,6 +45,12 @@ type NormativeEvent struct {
 	Name                string
 	Integrity           apiv1.Integrity
 	MinimumIntegrity    apiv1.Integrity
+
+	// Outputs is a stable encoding of a stage.finished event's scalar-only
+	// Outputs (event.go's doc comment: fully normative). Encoded rather than
+	// kept as map[string]any so NormativeEvent stays flat and ==-comparable
+	// (a struct containing a map is not comparable at all).
+	Outputs string
 
 	// Parallel/branch identity (§6.2). Completeness is a FLATTENED encoding of
 	// the branch completeness record rather than a slice, because
@@ -103,6 +110,7 @@ func projectNormative(e Event) NormativeEvent {
 		Parallel:  e.Parallel, BranchName: e.BranchName,
 		BranchStatus: e.BranchStatus,
 		Completeness: encodeCompleteness(e.Completeness),
+		Outputs:      encodeOutputs(e.Outputs),
 	}
 	if e.Ref != nil {
 		ne.RefIntegrity = e.Ref.Integrity
@@ -130,6 +138,8 @@ func projectNormative(e Event) NormativeEvent {
 
 // encodeArtifactRefs flattens the normative fields of stage.finished artifact
 // pointers in their envelope order. Storage metadata remains excluded.
+// ORDER-preserving, not sorted — production order is itself normative (it is
+// what a branch-qualified inputsFrom union reads).
 func encodeArtifactRefs(refs []Ref) string {
 	if len(refs) == 0 {
 		return ""
@@ -137,6 +147,25 @@ func encodeArtifactRefs(refs []Ref) string {
 	parts := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		parts = append(parts, fmt.Sprintf("%s@%s", ref.Digest, ref.Integrity))
+	}
+	return strings.Join(parts, ",")
+}
+
+// encodeOutputs flattens a stage's scalar-only Outputs into a stable string,
+// KEY-SORTED because map iteration order is not itself meaningful (unlike
+// encodeCompleteness's declaration order, which assigns branch ids).
+func encodeOutputs(outputs map[string]any) string {
+	if len(outputs) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(outputs))
+	for k := range outputs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, outputs[k]))
 	}
 	return strings.Join(parts, ",")
 }
@@ -190,12 +219,12 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
 		ne.Actor, ne.InstructionAddendum, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
-		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness,
+		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs,
 	)
 }
 
