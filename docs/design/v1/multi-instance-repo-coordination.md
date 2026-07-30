@@ -124,15 +124,34 @@ it's a pure safety hardening in the shared claim path (`backlog-query --claim`)
 with no legitimate reason to disable, so it applies unconditionally to any
 workflow that claims items, once it ships.
 
+### Sibling identity — what actually makes two gaggles "the same coordination domain"
+
+A gaggle's name (`GaggleSpec.DisplayName`) is **purely local** — `ConfigSet.Gaggles`
+is a plain slice loaded from one instance's own config directory, not a shared
+registry or namespace. Confirmed: nothing in the system today compares gaggle
+names across two different instance *processes*, because no instance has any
+way to know another instance exists. Two unrelated teams both naming a gaggle
+`"backend"` in their own separate `instance.yaml` is pure coincidence and
+carries **zero** weight — the string match means nothing.
+
+So sibling matching in MIRC-2 **must not key on gaggle name**. The thing that
+actually identifies "these two gaggles are operating on the same coordination
+domain" is `GaggleSpec.Project` — the target repo (provider + owner + name).
+Two gaggles are only meaningfully siblings if they target the same repo; a
+sibling declaration should describe *what repo the other gaggle targets and
+what its effective scope is* (required label(s), branch namespace), with the
+other side's gaggle/instance name carried along only as a human-readable label
+for the warning message — never as the match key.
+
 - **New: sibling-overlap validation + gaggle-level region-label default.** A
   gaggle declares its own default required label (inherited by its workflows'
   `backlog-query` tasks unless overridden) and can optionally declare known
-  "siblings" (other instances/gaggles expected to operate on the same repo) and
-  their scopes; `goobers validate`/`lint` warns when two declared siblings'
-  effective required-label sets are not disjoint. Catches the misconfiguration
-  case (the likely dominant failure mode with 10-20 independently-configured
-  teams) before it produces a live collision, without requiring a shared
-  coordination service.
+  "siblings" — identified by **target repo** (provider/owner/name), not gaggle
+  name — and their scopes; `goobers validate`/`lint` warns when two declared
+  siblings targeting the **same repo** have effective required-label sets that
+  are not disjoint. Catches the misconfiguration case (the likely dominant
+  failure mode with 10-20 independently-configured teams) before it produces a
+  live collision, without requiring a shared coordination service.
 - **New: claim-race detection, not elimination.** Harden the claim path with a
   write-then-reread pattern: after writing the claim marker, re-fetch the item
   shortly after and confirm the marker still names this instance's claim. If a
