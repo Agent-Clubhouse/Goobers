@@ -84,6 +84,85 @@ func TestReadModelMatchesTheReferenceAcrossPages(t *testing.T) {
 	compareIDs(t, want, got)
 }
 
+// TestCutoverServesTheSameAnswersWithZeroJournalOpens is the cutover's own gate.
+//
+// The flag must change HOW a page is answered, never WHAT it answers. This runs
+// the same readservice.ListRuns request with the read-model path off and on, and
+// requires identical results — then confirms the difference is only in the work.
+func TestCutoverServesTheSameAnswersWithZeroJournalOpens(t *testing.T) {
+	ctx := context.Background()
+	gen, service, store := differentialFixture(t, 140)
+
+	// Attach the read model and enable the cutover on a second service, so both
+	// paths are live against the same corpus at once.
+	cutover, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      gen.Layout,
+		Definitions: instancefixture.Inventory(gen.Inventory),
+		Telemetry:   nil,
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("construct cutover service: %v", err)
+	}
+	cutover.EnableReadModelReads()
+
+	for _, options := range []readservice.RunListOptions{
+		{Limit: 50},
+		{Gaggle: instancefixture.GaggleName(0), Limit: 50},
+		{Gaggle: instancefixture.GaggleName(0), Workflow: instancefixture.WorkflowName(0), Limit: 50},
+		{Phase: journal.PhaseCompleted, Limit: 50},
+	} {
+		name := fmt.Sprintf("gaggle=%q workflow=%q phase=%q", options.Gaggle, options.Workflow, options.Phase)
+		t.Run(name, func(t *testing.T) {
+			want := referenceRunIDs(t, ctx, service, options)
+
+			readprobe.Enable()
+			before := readprobe.Take()
+			got := referenceRunIDs(t, ctx, cutover, options)
+			work := readprobe.Take().Sub(before)
+			readprobe.Disable()
+
+			compareIDs(t, want, got)
+			if work.JournalOpens != 0 || work.ActiveScanOpens != 0 {
+				t.Errorf("the cutover path opened %d journals (%d via the active scan); the whole "+
+					"point of the cutover is that it opens none",
+					work.JournalOpens, work.ActiveScanOpens)
+			}
+		})
+	}
+}
+
+// TestCutoverFallsBackRatherThanRefusing pins that turning the flag on cannot
+// REMOVE an answer the portal can get today.
+//
+// A stage filter is outside the closed set, so the read model refuses it. The
+// service must fall through to the journal-derived path rather than surface the
+// refusal: the cutover is an optimization, and an optimization that makes a
+// working query stop working is a regression.
+func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
+	ctx := context.Background()
+	gen, service, store := differentialFixture(t, 40)
+
+	cutover, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      gen.Layout,
+		Definitions: instancefixture.Inventory(gen.Inventory),
+		Telemetry:   nil,
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("construct cutover service: %v", err)
+	}
+	cutover.EnableReadModelReads()
+
+	options := readservice.RunListOptions{Stage: instancefixture.StageName(0), Limit: 50}
+	want := referenceRunIDs(t, ctx, service, options)
+	got := referenceRunIDs(t, ctx, cutover, options)
+	compareIDs(t, want, got)
+	if len(got) == 0 {
+		t.Error("the stage-filtered query returned nothing on both paths; the fixture does not exercise the fallback")
+	}
+}
+
 // TestReadModelListDoesNoJournalWork pins §14.2 end to end, against a real
 // generated corpus rather than hand-written rows.
 func TestReadModelListDoesNoJournalWork(t *testing.T) {

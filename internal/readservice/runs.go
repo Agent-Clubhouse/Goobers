@@ -411,6 +411,14 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 		cursor = &decoded
 	}
 
+	// The read-model path answers with ZERO journal opens (§6.6 step 3). It is
+	// tried first when eligible; anything it cannot serve — an unsupported filter
+	// combination, LatestPerWorkflow, or a store that is not attached — falls to
+	// the existing paths rather than being refused, because the cutover must not
+	// remove an answer the portal can get today.
+	if s.readModelEligible(options) {
+		return s.listRunsFromReadModel(ctx, options, cursor, limit)
+	}
 	if s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
