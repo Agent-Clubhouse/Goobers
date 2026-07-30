@@ -159,7 +159,7 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, l instance.Layout,
 	// records it to the instance log, matching resumeInterruptedRuns' own
 	// resume_unresolvable_workflow convention, without changing the
 	// swallow-and-continue control flow.
-	if err := db.IngestRun(filepath.Join(l.RunsDir(), runID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(l.RunsDir(), runID)); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
 	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
@@ -178,7 +178,7 @@ func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *ro
 }
 
 func ingestSchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, runID string) {
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		logIngestFailure(log, runID, "telemetry_ingest_scheduler_log_failed", err)
 	}
 }

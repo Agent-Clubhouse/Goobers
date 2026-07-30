@@ -1,6 +1,7 @@
 package retention
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -45,7 +46,7 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	}
 	for _, fixture := range fixtures {
 		dir := createRetentionRun(t, runLayout, fixture.id, now.Add(-fixture.age), fixture.state)
-		if err := db.IngestRun(dir); err != nil {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
 			t.Fatalf("ingest %s: %v", fixture.id, err)
 		}
 	}
@@ -136,11 +137,11 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestSchedulerLog(layout.SchedulerDir()); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), layout.SchedulerDir()); err != nil {
 		t.Fatalf("ingest scheduler log: %v", err)
 	}
 	for _, dir := range []string{firstDir, prDir} {
-		if err := db.IngestRun(dir); err != nil {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
 			t.Fatalf("ingest %s: %v", dir, err)
 		}
 	}
@@ -157,7 +158,7 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("Prune removed %d runs, want 2", len(results))
 	}
-	metric, err := db.TimeToFirstPR()
+	metric, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -216,7 +217,7 @@ func TestPruneFinishesPartiallyRemovedStagedJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
 	}
 	reserved, err := journal.ReserveTerminalForPrune(runDir)
@@ -279,7 +280,7 @@ func TestPruneSerializesWithInFlightIngestion(t *testing.T) {
 
 	ingestErr := make(chan error, 1)
 	go func() {
-		ingestErr <- db.IngestRun(runDir)
+		ingestErr <- db.IngestRun(context.Background(), runDir)
 	}()
 	waitForRunLock(t, runDir)
 
@@ -337,7 +338,7 @@ func TestIngestRunHonorsPruneReservation(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	err = db.IngestRun(runDir)
+	err = db.IngestRun(context.Background(), runDir)
 	if !errors.Is(err, journal.ErrPruneReserved) {
 		t.Fatalf("IngestRun error = %v, want ErrPruneReserved", err)
 	}
@@ -422,7 +423,7 @@ func createRetentionRun(
 
 func assertRollupRunIDs(t *testing.T, db *rollup.DB, want ...string) {
 	t.Helper()
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

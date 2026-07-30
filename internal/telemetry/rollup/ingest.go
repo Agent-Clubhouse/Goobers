@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -19,13 +20,13 @@ import (
 // incremental ingestion (call it once a run finishes — "hooks the runner",
 // TEL-032) and the per-run primitive Rebuild uses to rederive the whole store
 // from the journals (the rollup is derived state, never the source of truth).
-func (db *DB) IngestRun(runDir string) error {
+func (db *DB) IngestRun(ctx context.Context, runDir string) error {
 	return journal.WithPruneProtection(runDir, func() error {
-		return db.ingestRun(runDir)
+		return db.ingestRun(ctx, runDir)
 	})
 }
 
-func (db *DB) ingestRun(runDir string) error {
+func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 	identity, err := readRunIdentity(runDir)
 	if err != nil {
 		return err
@@ -39,29 +40,29 @@ func (db *DB) ingestRun(runDir string) error {
 		return err
 	}
 
-	tx, err := db.sql.Begin()
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("rollup: begin ingest tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	runID := identity.RunID
-	if err := deleteRun(tx, runID); err != nil {
+	if err := deleteRun(ctx, tx, runID); err != nil {
 		return err
 	}
-	if err := insertRun(tx, identity, events); err != nil {
+	if err := insertRun(ctx, tx, identity, events); err != nil {
 		return err
 	}
-	if err := insertEvents(tx, runID, events); err != nil {
+	if err := insertEvents(ctx, tx, runID, events); err != nil {
 		return err
 	}
 	if err := insertBacklogProjections(tx, runDir, identity, events); err != nil {
 		return err
 	}
-	if err := insertSpans(tx, runID, spans); err != nil {
+	if err := insertSpans(ctx, tx, runID, spans); err != nil {
 		return err
 	}
-	if err := upsertTimeToFirstPR(tx, time.Time{}, runFirstPROpenAt(events)); err != nil {
+	if err := upsertTimeToFirstPR(ctx, tx, time.Time{}, runFirstPROpenAt(events)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -75,9 +76,9 @@ func (db *DB) ingestRun(runDir string) error {
 // table added to insertEvents/insertSpans silently repeating this gap.
 var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
-func deleteRun(tx *sql.Tx, runID string) error {
+func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
-		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ?`, table), runID); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE run_id = ?`, table), runID); err != nil {
 			return fmt.Errorf("rollup: clear %s for run %s: %w", table, runID, err)
 		}
 	}
@@ -86,16 +87,16 @@ func deleteRun(tx *sql.Tx, runID string) error {
 
 // DeleteRun removes every rollup row derived from one run in a single
 // transaction. The caller coordinates deletion of the source journal.
-func (db *DB) DeleteRun(runID string) error {
+func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 	if runID == "" {
 		return fmt.Errorf("rollup: run id is required")
 	}
-	tx, err := db.sql.Begin()
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("rollup: begin delete tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := deleteRun(tx, runID); err != nil {
+	if err := deleteRun(ctx, tx, runID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -105,7 +106,7 @@ func (db *DB) DeleteRun(runID string) error {
 	return nil
 }
 
-func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
+func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	var status string
 	var finishedAt time.Time
 	for _, ev := range events {
@@ -118,7 +119,7 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 			finishedAt = ev.Time
 		}
 	}
-	_, err := tx.Exec(`
+	_, err := tx.ExecContext(ctx, `
 		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id.RunID, id.Workflow, id.WorkflowVersion, nullIfEmpty(id.WorkflowDigest), id.Gaggle,
@@ -128,7 +129,7 @@ func insertRun(tx *sql.Tx, id runIdentity, events []journalEvent) error {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
 	}
 	if id.GooberDigest != "" {
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO run_goober_digests (run_id, goober_digest)
 			VALUES (?, ?)`, id.RunID, id.GooberDigest); err != nil {
 			return fmt.Errorf("rollup: insert goober digest for run %s: %w", id.RunID, err)
@@ -160,7 +161,7 @@ type stageAttemptKey struct {
 	attempt int
 }
 
-func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
+func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journalEvent) error {
 	stages := map[stageKey]*stageAttemptAccum{}
 	var order []stageKey
 	current := map[stageAttemptKey]stageKey{}
@@ -257,7 +258,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
 				if !standaloneErrorCodes[k][ev.Error.Code] {
-					if _, err := tx.Exec(`
+					if _, err := tx.ExecContext(ctx, `
 						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
@@ -272,7 +273,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				continue
 			}
 			class := string(telemetry.ClassifyError(ev.Error.Code))
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
@@ -302,7 +303,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at, runner_json, branch)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time), rj, ev.Branch); err != nil {
@@ -322,14 +323,14 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 				digest = nullIfEmpty(ev.Ref.Digest)
 				size = nullIfZeroInt64(ev.Ref.Size)
 			}
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO harness_transcripts (run_id, seq, stage, name, ref_digest, ref_size, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, ev.Stage, ev.Name, digest, size, formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert harness_transcript seq %d: %w", ev.Seq, err)
 			}
 			if ev.DataSchema != "" {
-				if _, err := tx.Exec(`
+				if _, err := tx.ExecContext(ctx, `
 					INSERT INTO harness_transcript_schemas (run_id, seq, schema)
 					VALUES (?, ?, ?)`, runID, ev.Seq, ev.DataSchema); err != nil {
 					return fmt.Errorf("rollup: insert harness_transcript schema seq %d: %w", ev.Seq, err)
@@ -344,7 +345,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
@@ -356,7 +357,7 @@ func insertEvents(tx *sql.Tx, runID string, events []journalEvent) error {
 
 	for _, k := range order {
 		a := stages[k]
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO stage_attempts (run_id, stage, traversal, attempt, attempt_class, status, started_at, finished_at, duration_ms, error_code, error_class, runner_json, branch)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, k.stage, k.traversal, a.attempt, nullIfEmpty(a.attemptClass), nullIfEmpty(a.status),
@@ -380,25 +381,25 @@ var curationAgentOutputKeys = []string{
 
 func insertBacklogProjections(tx *sql.Tx, runDir string, id runIdentity, events []journalEvent) error {
 	if id.Workflow == "backlog-curation" {
-		if err := insertCurationAction(tx, id.RunID, events); err != nil {
+		if err := insertCurationAction(context.Background(), tx, id.RunID, events); err != nil {
 			return err
 		}
-		if err := insertReadyPoolSample(tx, id.RunID, events); err != nil {
+		if err := insertReadyPoolSample(context.Background(), tx, id.RunID, events); err != nil {
 			return err
 		}
-		if err := insertReadyLabelTransitions(tx, runDir, id.RunID, events); err != nil {
+		if err := insertReadyLabelTransitions(context.Background(), tx, runDir, id.RunID, events); err != nil {
 			return err
 		}
 	}
 	if id.Workflow == "implementation" {
-		if err := insertReadyClaims(tx, id.RunID, events); err != nil {
+		if err := insertReadyClaims(context.Background(), tx, id.RunID, events); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error {
+func insertCurationAction(ctx context.Context, tx *sql.Tx, runID string, events []journalEvent) error {
 	counts := make([]int, 9)
 	reported := false
 	status := ""
@@ -442,7 +443,7 @@ func insertCurationAction(tx *sql.Tx, runID string, events []journalEvent) error
 	if occurredAt.IsZero() {
 		return nil
 	}
-	_, err := tx.Exec(`
+	_, err := tx.ExecContext(ctx, `
 		INSERT INTO curation_actions (
 			run_id, status, reported, ready_count, needs_human_count, closed_count,
 			deduped_count, split_count, stale_count, reconciled_count,
@@ -467,7 +468,7 @@ type readyPoolArtifact struct {
 	} `json:"readyTransitions"`
 }
 
-func insertReadyLabelTransitions(tx *sql.Tx, runDir, runID string, events []journalEvent) error {
+func insertReadyLabelTransitions(ctx context.Context, tx *sql.Tx, runDir, runID string, events []journalEvent) error {
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
 		return err
@@ -499,7 +500,7 @@ func insertReadyLabelTransitions(tx *sql.Tx, runDir, runID string, events []jour
 				if transition.Added {
 					kind = "ready"
 				}
-				if _, insertErr := tx.Exec(`
+				if _, insertErr := tx.ExecContext(ctx, `
 					INSERT OR IGNORE INTO ready_label_transitions (
 						run_id, event_id, item_id, transition, occurred_at
 					) VALUES (?, ?, ?, ?, ?)`,
@@ -513,7 +514,7 @@ func insertReadyLabelTransitions(tx *sql.Tx, runDir, runID string, events []jour
 	return nil
 }
 
-func insertReadyPoolSample(tx *sql.Tx, runID string, events []journalEvent) error {
+func insertReadyPoolSample(ctx context.Context, tx *sql.Tx, runID string, events []journalEvent) error {
 	for _, ev := range events {
 		if ev.Type != eventStageFinished || ev.Stage != "sample-ready-pool" || ev.Status != stageStatusSuccess {
 			continue
@@ -526,7 +527,7 @@ func insertReadyPoolSample(tx *sql.Tx, runID string, events []journalEvent) erro
 		if !ok || !averageOK || !oldestOK || !observedOK || timeErr != nil {
 			continue
 		}
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO ready_pool_samples (
 				run_id, depth, average_age_seconds, oldest_age_seconds, observed_at
 			) VALUES (?, ?, ?, ?, ?)`,
@@ -537,7 +538,7 @@ func insertReadyPoolSample(tx *sql.Tx, runID string, events []journalEvent) erro
 	return nil
 }
 
-func insertReadyClaims(tx *sql.Tx, runID string, events []journalEvent) error {
+func insertReadyClaims(ctx context.Context, tx *sql.Tx, runID string, events []journalEvent) error {
 	for _, ev := range events {
 		if ev.Type != eventStageFinished || ev.Stage != "query-backlog" || ev.Status != stageStatusSuccess {
 			continue
@@ -551,7 +552,7 @@ func insertReadyClaims(tx *sql.Tx, runID string, events []journalEvent) error {
 			continue
 		}
 		itemID, _ := ev.Outputs["id"].(string)
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO ready_claims (run_id, seq, item_id, ready_age_seconds, claimed_at)
 			VALUES (?, ?, ?, ?, ?)`,
 			runID, ev.Seq, nullIfEmpty(itemID), ev.Time.Sub(readyAt).Seconds(), formatTime(ev.Time)); err != nil {
@@ -633,8 +634,8 @@ func readSchedulerCursor(sqlDB *sql.DB) (schedulerCursor, error) {
 	return c, nil
 }
 
-func writeSchedulerCursor(tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
-	if _, err := tx.Exec(`
+func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
 		VALUES (1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
@@ -653,7 +654,7 @@ func writeSchedulerCursor(tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
 // Rebuild; INSERT ... ON CONFLICT keeps a re-read after a journal reset, or a
 // historical duplicate seq (corruption), from ever duplicating a row (the first
 // occurrence wins, so one bad record can't block all rollup).
-func (db *DB) IngestSchedulerLog(schedulerDir string) error {
+func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error {
 	cursor, err := readSchedulerCursor(db.sql)
 	if err != nil {
 		return err
@@ -667,7 +668,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		return err
 	}
 
-	tx, err := db.sql.Begin()
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("rollup: begin scheduler ingest tx: %w", err)
 	}
@@ -689,7 +690,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		}
 		switch ev.Type {
 		case eventInitCompleted, eventTriggerFired, eventTickSkipped, eventProviderQuotaReset, eventPollShed, eventClaimAcquired, eventClaimReleased, eventClaimForceReleased, eventRunStarted, eventRunFinished, eventError:
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(seq) DO NOTHING`,
@@ -697,7 +698,7 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 				return fmt.Errorf("rollup: insert scheduler_event seq %d: %w", ev.Seq, err)
 			}
 			if ev.Type == eventError && ev.Error != nil {
-				if _, err := tx.Exec(`
+				if _, err := tx.ExecContext(ctx, `
 					INSERT INTO scheduler_errors (seq, code, error_class, message, occurred_at)
 					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT(seq) DO NOTHING`,
@@ -707,12 +708,12 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 				}
 			}
 			if ev.Type == eventInitCompleted {
-				if err := upsertTimeToFirstPR(tx, ev.Time, time.Time{}); err != nil {
+				if err := upsertTimeToFirstPR(ctx, tx, ev.Time, time.Time{}); err != nil {
 					return err
 				}
 			}
 		case eventWorkflowStarved:
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO scheduler_events (seq, type, workflow, run_id, reason, status, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(seq) DO NOTHING`,
@@ -725,14 +726,14 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 		if span.TraceID == "" {
 			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
 		}
-		if err := deleteSpan(tx, span.TraceID, span.SpanID); err != nil {
+		if err := deleteSpan(ctx, tx, span.TraceID, span.SpanID); err != nil {
 			return err
 		}
-		if err := insertSpans(tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
+		if err := insertSpans(ctx, tx, span.TraceID, []telemetry.SpanRecord{span}); err != nil {
 			return err
 		}
 	}
-	if err := writeSchedulerCursor(tx, newOffset, maxSeq); err != nil {
+	if err := writeSchedulerCursor(ctx, tx, newOffset, maxSeq); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -754,21 +755,21 @@ func (db *DB) IngestSchedulerLog(schedulerDir string) error {
 	return nil
 }
 
-func deleteSpan(tx *sql.Tx, runID, spanID string) error {
+func deleteSpan(ctx context.Context, tx *sql.Tx, runID, spanID string) error {
 	for _, table := range []string{"span_events", "span_business_status", "agent_invocations"} {
-		if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE run_id = ? AND span_id = ?`, table), runID, spanID); err != nil {
 			return fmt.Errorf("rollup: clear %s for span %s: %w", table, spanID, err)
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM spans WHERE run_id = ? AND span_id = ?`, runID, spanID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM spans WHERE run_id = ? AND span_id = ?`, runID, spanID); err != nil {
 		return fmt.Errorf("rollup: clear span %s: %w", spanID, err)
 	}
 	return nil
 }
 
-func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
+func insertSpans(ctx context.Context, tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 	for _, s := range spans {
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO spans (run_id, span_id, parent_span_id, name, kind, status, status_message, start_time, end_time, duration_ms)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, s.SpanID, nullIfEmpty(s.ParentSpanID), s.Name, nullIfEmpty(s.Kind), s.Status,
@@ -787,17 +788,17 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 			businessStatus = s.Attributes["goobers.business_status"]
 		}
 		if businessStatus != "" {
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO span_business_status (run_id, span_id, business_status)
 				VALUES (?, ?, ?)`,
 				runID, s.SpanID, businessStatus); err != nil {
 				return fmt.Errorf("rollup: insert span_business_status %s: %w", s.SpanID, err)
 			}
 		}
-		if err := insertAgentInvocation(tx, runID, s); err != nil {
+		if err := insertAgentInvocation(ctx, tx, runID, s); err != nil {
 			return err
 		}
-		if err := insertStageUsage(tx, runID, s); err != nil {
+		if err := insertStageUsage(ctx, tx, runID, s); err != nil {
 			return err
 		}
 		for i, ev := range s.Events {
@@ -805,7 +806,7 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`
+			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO span_events (run_id, span_id, seq, name, occurred_at, attributes_json)
 				VALUES (?, ?, ?, ?, ?, ?)`,
 				runID, s.SpanID, i, ev.Name, formatTime(ev.Time), attrsJSON); err != nil {
@@ -816,7 +817,7 @@ func insertSpans(tx *sql.Tx, runID string, spans []telemetry.SpanRecord) error {
 	return nil
 }
 
-func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
+func insertAgentInvocation(ctx context.Context, tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
 	model, hasModel := span.Attributes[telemetry.AttrModel]
 	harnessVersion, hasHarnessVersion := span.Attributes[telemetry.AttrHarnessVersion]
 	if !hasModel && !hasHarnessVersion {
@@ -839,7 +840,7 @@ func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) 
 		if err != nil || attemptNumber < 1 {
 			return fmt.Errorf("rollup: agent span %s has invalid %s attribute %q", span.SpanID, telemetry.AttrAttemptNumber, span.Attributes[telemetry.AttrAttemptNumber])
 		}
-		traversalNumber, matched, err := matchingTraversalForSpan(tx, runID, stage, attemptNumber, span)
+		traversalNumber, matched, err := matchingTraversalForSpan(ctx, tx, runID, stage, attemptNumber, span)
 		if err != nil {
 			return err
 		}
@@ -849,7 +850,7 @@ func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) 
 		attempt = sql.NullInt64{Int64: int64(attemptNumber), Valid: true}
 	}
 
-	if _, err := tx.Exec(`
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_invocations (
 			run_id, span_id, kind, stage, traversal, attempt, model, harness_version
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -859,7 +860,7 @@ func insertAgentInvocation(tx *sql.Tx, runID string, span telemetry.SpanRecord) 
 	return nil
 }
 
-func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
+func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span telemetry.SpanRecord) error {
 	// Agentic gates use the same harness as tasks, so they also carry usage
 	// attributes. Gates have no stage-attempt identity and are intentionally
 	// outside the per-stage aggregates.
@@ -923,7 +924,7 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 	}
 
 	if hasAggregate {
-		result, err := tx.Exec(`
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO stage_usage (
 				run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd, branch
 			)
@@ -945,7 +946,7 @@ func insertStageUsage(tx *sql.Tx, runID string, span telemetry.SpanRecord) error
 		}
 	}
 	for _, model := range models {
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO stage_model_usage (
 				run_id, stage, traversal, attempt, model, input_tokens, output_tokens,
 				copilot_premium_requests, cost_usd
@@ -1013,7 +1014,7 @@ func modelUsageFromSpan(span telemetry.SpanRecord) ([]modelUsageRecord, error) {
 }
 
 func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, error) {
-	traversal, matched, err := matchingTraversalForSpan(tx, runID, stage, attempt, span)
+	traversal, matched, err := matchingTraversalForSpan(context.Background(), tx, runID, stage, attempt, span)
 	if err != nil {
 		return 0, err
 	}
@@ -1023,7 +1024,7 @@ func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span te
 	return traversal, nil
 }
 
-func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, bool, error) {
+func matchingTraversalForSpan(ctx context.Context, tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, bool, error) {
 	if span.StartTime.IsZero() || span.EndTime.IsZero() || span.EndTime.Before(span.StartTime) {
 		return 0, false, fmt.Errorf("rollup: span %s has invalid time window", span.SpanID)
 	}
@@ -1041,7 +1042,7 @@ func matchingTraversalForSpan(tx *sql.Tx, runID, stage string, attempt int, span
 		args = append(args, branch)
 	}
 	query += ` ORDER BY traversal`
-	rows, err := tx.Query(query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("rollup: query traversal for span %s: %w", span.SpanID, err)
 	}

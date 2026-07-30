@@ -241,9 +241,9 @@ type TelemetryError struct {
 }
 
 type telemetryStore interface {
-	Stats(rollup.StatsRequest) (rollup.StatsResult, error)
-	TopErrorSignatures(rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
-	Errors(rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
+	Stats(context.Context, rollup.StatsRequest) (rollup.StatsResult, error)
+	TopErrorSignatures(context.Context, rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
+	Errors(context.Context, rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
 }
 
 // Telemetry projects the telemetry rollup into the shared read contract.
@@ -270,7 +270,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	if err := ctx.Err(); err != nil {
 		return TelemetryStatsResult{}, err
 	}
-	stats, err := s.store.Stats(rollup.StatsRequest{
+	stats, err := s.store.Stats(ctx, rollup.StatsRequest{
 		Workflow:              req.Workflow,
 		Gaggle:                req.Gaggle,
 		Branch:                req.Branch,
@@ -480,7 +480,7 @@ func (s *Telemetry) TelemetryErrorSignatures(ctx context.Context, req TelemetryE
 	if err := ctx.Err(); err != nil {
 		return TelemetryErrorSignaturesResult{}, err
 	}
-	signatures, err := s.store.TopErrorSignatures(rollup.StatsRequest{
+	signatures, err := s.store.TopErrorSignatures(ctx, rollup.StatsRequest{
 		Workflow: req.Workflow,
 		Gaggle:   req.Gaggle,
 		Stage:    req.Stage,
@@ -532,7 +532,7 @@ func (s *Telemetry) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequ
 	if err := ctx.Err(); err != nil {
 		return TelemetryErrorsPage{}, err
 	}
-	events, err := s.store.Errors(rollup.ErrorsRequest{
+	events, err := s.store.Errors(ctx, rollup.ErrorsRequest{
 		Workflow:         req.Workflow,
 		Gaggle:           req.Gaggle,
 		Stage:            req.Stage,

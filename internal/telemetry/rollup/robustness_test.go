@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,11 +107,11 @@ func TestIngestRunToleratesTornEventsTail(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, runsDir, fixtureRunID, complete+torn, "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: want the torn tail tolerated, got error: %v", err)
 	}
 
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("Runs: %v, %#v", err, runs)
 	}
@@ -131,11 +132,11 @@ func TestIngestRunToleratesTornSpansTail(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, runsDir, fixtureRunID, events, completeSpan+tornSpan)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(runDir); err != nil {
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatalf("IngestRun: want the torn spans tail tolerated, got error: %v", err)
 	}
 
-	spans, err := db.Spans(fixtureRunID)
+	spans, err := db.Spans(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("Spans: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestIngestRunRejectsCorruptCompleteEventLine(t *testing.T) {
 	runDir := writeRunWithRawEvents(t, runsDir, fixtureRunID, body, "")
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(runDir); err == nil {
+	if err := db.IngestRun(context.Background(), runDir); err == nil {
 		t.Fatal("IngestRun: want an error for a corrupt COMPLETE line, got nil")
 	}
 }
@@ -195,7 +196,7 @@ func TestConcurrentIngestAndQueryUnderWAL(t *testing.T) {
 				return
 			}
 			defer func() { _ = db.Close() }()
-			if err := db.IngestRun(dir); err != nil {
+			if err := db.IngestRun(context.Background(), dir); err != nil {
 				errs <- fmt.Errorf("ingest %s: %w", dir, err)
 			}
 		}(runDirs[i])
@@ -209,7 +210,7 @@ func TestConcurrentIngestAndQueryUnderWAL(t *testing.T) {
 				return
 			}
 			defer func() { _ = db.Close() }()
-			if _, err := db.Stats(StatsRequest{}); err != nil {
+			if _, err := db.Stats(context.Background(), StatsRequest{}); err != nil {
 				errs <- fmt.Errorf("stats: %w", err)
 			}
 		}()
@@ -221,7 +222,7 @@ func TestConcurrentIngestAndQueryUnderWAL(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil {
 		t.Fatalf("Runs: %v", err)
 	}

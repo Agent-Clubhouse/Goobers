@@ -39,7 +39,7 @@ func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetric, error) {
 	var initCompletedAt, firstPROpenAt time.Time
 	if s.sources.Telemetry != nil {
-		persisted, err := s.sources.Telemetry.TimeToFirstPR()
+		persisted, err := s.sources.Telemetry.TimeToFirstPR(ctx)
 		if err != nil {
 			return telemetry.TimeToFirstPRMetric{}, err
 		}

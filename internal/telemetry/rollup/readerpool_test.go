@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -194,7 +195,7 @@ func TestCompactSucceedsWithReaderPoolOpen(t *testing.T) {
 		t.Skip("no read-only pool on this platform")
 	}
 
-	if err := db.Compact(); err != nil {
+	if err := db.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact failed with a reader pool open: %v", err)
 	}
 

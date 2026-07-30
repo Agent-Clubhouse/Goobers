@@ -34,7 +34,7 @@ func buildIndex(t *testing.T, layout instance.Layout, names ...string) *rollup.D
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, name := range names {
-		if err := db.IngestRun(filepath.Join(layout.RunsDir(), name)); err != nil {
+		if err := db.IngestRun(context.Background(), filepath.Join(layout.RunsDir(), name)); err != nil {
 			t.Fatalf("ingest %s: %v", name, err)
 		}
 	}

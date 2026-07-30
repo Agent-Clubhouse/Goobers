@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -70,7 +71,7 @@ func TestDetectStageFailureRateThresholdBoundary(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestDetectStageFailureRateThresholdBoundary(t *testing.T) {
 	}
 	db2 := openTestDB(t, tmp2)
 	seedAndIngest(t, db2, runsDir2)
-	findings2, err := db2.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings2, err := db2.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestDetectStageFailureRateRequiresMinSamples(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestDetectErrorSignatureThreshold(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestDetectGateNeverFails(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestDetectGateNeverFailsRequiresMinEvaluations(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestDetectGateRepassChurn(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -287,7 +288,7 @@ func TestDetectCoverageGaps(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{
+	findings, err := db.Detect(context.Background(), DetectRequest{
 		Coverage: CoverageRequest{
 			Workflows: map[string][]string{
 				"implement": {"build", "deploy"},
@@ -346,11 +347,11 @@ func TestDetectIsDeterministic(t *testing.T) {
 			Workflows: map[string][]string{"implement": {"build", "deploy"}, "nominate": nil},
 		},
 	}
-	first, err := db.Detect(req)
+	first, err := db.Detect(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Detect (1st): %v", err)
 	}
-	second, err := db.Detect(req)
+	second, err := db.Detect(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Detect (2nd): %v", err)
 	}
@@ -387,7 +388,7 @@ func TestDetectRedactCanary(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	findings, err := db.Detect(DetectRequest{Thresholds: DefaultThresholds()})
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}

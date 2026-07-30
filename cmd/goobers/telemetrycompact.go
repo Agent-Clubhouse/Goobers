@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -109,13 +110,13 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 		pf(stderr, "error: open telemetry db: %v\n", err)
 		return 1
 	}
-	prunedRows, err := db.PruneSchedulerBefore(cutoff)
+	prunedRows, err := db.PruneSchedulerBefore(context.Background(), cutoff)
 	if err != nil {
 		_ = db.Close()
 		pf(stderr, "error: prune scheduler rollup rows: %v\n", err)
 		return 1
 	}
-	if err := db.Compact(); err != nil {
+	if err := db.Compact(context.Background()); err != nil {
 		_ = db.Close()
 		pf(stderr, "error: vacuum telemetry db: %v\n", err)
 		return 1

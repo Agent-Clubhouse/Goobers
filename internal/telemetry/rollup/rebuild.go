@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,7 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 	defer func() { _ = db.Close() }()
 
 	if err := db.recordTimeToFirstPR(
+		context.Background(),
 		timeOrZero(firstSuccess.InitCompletedAt),
 		timeOrZero(firstSuccess.FirstPROpenAt),
 	); err != nil {
@@ -55,12 +57,12 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 			return err
 		}
 		for _, dir := range dirs {
-			if err := db.IngestRun(dir); err != nil {
+			if err := db.IngestRun(context.Background(), dir); err != nil {
 				return fmt.Errorf("rollup: ingest %s: %w", dir, err)
 			}
 		}
 	}
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		return fmt.Errorf("rollup: ingest scheduler log %s: %w", schedulerDir, err)
 	}
 	return nil
@@ -80,7 +82,7 @@ func existingTimeToFirstPR(dbPath string) telemetry.TimeToFirstPRMetric {
 	if err != nil {
 		return empty
 	}
-	metric, queryErr := db.TimeToFirstPR()
+	metric, queryErr := db.TimeToFirstPR(context.Background())
 	closeErr := db.Close()
 	if queryErr != nil || closeErr != nil {
 		return empty

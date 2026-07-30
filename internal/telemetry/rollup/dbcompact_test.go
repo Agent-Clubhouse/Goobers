@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,28 +22,28 @@ func TestPruneSchedulerBeforeAndCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
 	// instanceEventLine stamps event N at fixtureStart+N seconds; cut off before
 	// seq 3 so seq 1 and 2 (which includes the error row) are pruned.
 	cutoff := fixtureStart.Add(3 * time.Second)
-	removed, err := db.PruneSchedulerBefore(cutoff)
+	removed, err := db.PruneSchedulerBefore(context.Background(), cutoff)
 	if err != nil {
 		t.Fatalf("PruneSchedulerBefore: %v", err)
 	}
 	if removed != 2 {
 		t.Fatalf("removed scheduler_events = %d, want 2", removed)
 	}
-	events, err := db.SchedulerEvents("")
+	events, err := db.SchedulerEvents(context.Background(), "")
 	if err != nil {
 		t.Fatalf("SchedulerEvents: %v", err)
 	}
 	if len(events) != 2 {
 		t.Fatalf("remaining scheduler events = %d, want 2: %#v", len(events), events)
 	}
-	sigs, err := db.TopErrorSignatures(StatsRequest{}, 10)
+	sigs, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
 	if err != nil {
 		t.Fatalf("TopErrorSignatures: %v", err)
 	}
@@ -50,11 +51,11 @@ func TestPruneSchedulerBeforeAndCompact(t *testing.T) {
 		t.Fatalf("error signatures after prune = %#v, want 0 (the error row was pruned)", sigs)
 	}
 
-	if err := db.Compact(); err != nil {
+	if err := db.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	// Still fully usable after VACUUM.
-	if events, err = db.SchedulerEvents(""); err != nil || len(events) != 2 {
+	if events, err = db.SchedulerEvents(context.Background(), ""); err != nil || len(events) != 2 {
 		t.Fatalf("post-compact SchedulerEvents = %d (err %v), want 2", len(events), err)
 	}
 }
@@ -69,10 +70,10 @@ func TestPruneSchedulerBeforeZeroCutoffIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := openTestDB(t, tmp)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
-	removed, err := db.PruneSchedulerBefore(time.Time{})
+	removed, err := db.PruneSchedulerBefore(context.Background(), time.Time{})
 	if err != nil {
 		t.Fatalf("PruneSchedulerBefore(zero): %v", err)
 	}

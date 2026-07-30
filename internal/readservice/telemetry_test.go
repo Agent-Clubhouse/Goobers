@@ -24,20 +24,20 @@ type fakeTelemetryStore struct {
 	signatureCalls int
 }
 
-func (f *fakeTelemetryStore) Stats(req rollup.StatsRequest) (rollup.StatsResult, error) {
+func (f *fakeTelemetryStore) Stats(_ context.Context, req rollup.StatsRequest) (rollup.StatsResult, error) {
 	f.statsCalled++
 	f.statsReq = req
 	return f.stats, f.err
 }
 
-func (f *fakeTelemetryStore) TopErrorSignatures(req rollup.StatsRequest, limit int) ([]rollup.ErrorSignature, error) {
+func (f *fakeTelemetryStore) TopErrorSignatures(_ context.Context, req rollup.StatsRequest, limit int) ([]rollup.ErrorSignature, error) {
 	f.signatureCalls++
 	f.signatureReq = req
 	f.signatureLimit = limit
 	return f.signatures, f.err
 }
 
-func (f *fakeTelemetryStore) Errors(req rollup.ErrorsRequest) ([]rollup.ErrorEvent, error) {
+func (f *fakeTelemetryStore) Errors(_ context.Context, req rollup.ErrorsRequest) ([]rollup.ErrorEvent, error) {
 	f.errorReqs = append(f.errorReqs, req)
 	if f.err != nil {
 		return nil, f.err

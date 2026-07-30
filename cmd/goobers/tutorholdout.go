@@ -647,7 +647,7 @@ func assessTutorHoldout(
 				anyPending = true
 				continue
 			}
-			history, err := db.DigestHistoryByEffectiveVersionForGaggle(record.Gaggle, target.Workflow)
+			history, err := db.DigestHistoryByEffectiveVersionForGaggle(context.Background(), record.Gaggle, target.Workflow)
 			if err != nil {
 				return fmt.Errorf("verify Tutor finding %s added workflow %q: %w", record.ID, target.Workflow, err)
 			}
@@ -662,6 +662,7 @@ func assessTutorHoldout(
 				cohortSince = final.ChangedAt
 			}
 			cohort, err := db.FirstEffectiveVersionCohortForGaggle(
+				context.Background(),
 				record.Gaggle,
 				target.Workflow,
 				liveAxes.WorkflowDigest,
@@ -719,7 +720,7 @@ func assessTutorHoldout(
 			anyPending = true
 			continue
 		}
-		history, err := db.DigestHistoryByEffectiveVersionForGaggle(record.Gaggle, target.Workflow)
+		history, err := db.DigestHistoryByEffectiveVersionForGaggle(context.Background(), record.Gaggle, target.Workflow)
 		if err != nil {
 			return fmt.Errorf("verify Tutor finding %s workflow %q: %w", record.ID, target.Workflow, err)
 		}
@@ -745,7 +746,7 @@ func assessTutorHoldout(
 		if matchedIndex+1 < len(history) {
 			afterUntil = history[matchedIndex+1].ChangedAt
 		}
-		result, err := db.AssessEfficacyByEffectiveVersion(rollup.EffectiveVersionEfficacyRequest{
+		result, err := db.AssessEfficacyByEffectiveVersion(context.Background(), rollup.EffectiveVersionEfficacyRequest{
 			Gaggle:      record.Gaggle,
 			Workflow:    target.Workflow,
 			OldVersion:  matched.FromVersion,

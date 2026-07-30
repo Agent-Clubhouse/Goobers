@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -357,7 +358,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	if *format == telemetryQueryEffectiveVersionEfficacyFormat {
 		efficacyThresholds := rollup.DefaultEfficacyThresholds()
 		efficacyThresholds.MinSamples = thresholds.MinSamples
-		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(*workflow, since, efficacyThresholds)
+		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(context.Background(), *workflow, since, efficacyThresholds)
 		if err != nil {
 			pf(stderr, "error: assess effective-version efficacy: %v\n", err)
 			return 1
@@ -399,7 +400,7 @@ func detectCandidateFindings(
 	aggregates telemetryAggregateValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
-	findings, err := db.Detect(rollup.DetectRequest{
+	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
 	})

@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,11 +89,11 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 	initCompletedAt := now.Add(-48 * time.Hour)
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 
-	all, err := db.InstanceSummaryStats(time.Time{})
+	all, err := db.InstanceSummaryStats(context.Background(), time.Time{})
 	if err != nil {
 		t.Fatalf("InstanceSummaryStats: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 	if all.LongestAgenticWorkflow != "implement" || all.LongestAgenticStage != "agent" || all.LongestAgenticRunID != "2222222222222222eeeeeeeeeeeeeeee" {
 		t.Fatalf("longest agentic stage identity = %#v", all)
 	}
-	timeToFirstPR, err := db.TimeToFirstPR()
+	timeToFirstPR, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatalf("TimeToFirstPR: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 		t.Fatalf("time to first PR = %#v", timeToFirstPR)
 	}
 
-	windowed, err := db.InstanceSummaryStats(now.Add(-24 * time.Hour))
+	windowed, err := db.InstanceSummaryStats(context.Background(), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("InstanceSummaryStats windowed: %v", err)
 	}
@@ -140,14 +141,14 @@ func TestInstanceSummaryStatsReconcilesLifetimeAndWindow(t *testing.T) {
 
 func TestInstanceSummaryStatsEmpty(t *testing.T) {
 	db := openTestDB(t, t.TempDir())
-	got, err := db.InstanceSummaryStats(time.Time{})
+	got, err := db.InstanceSummaryStats(context.Background(), time.Time{})
 	if err != nil {
 		t.Fatalf("InstanceSummaryStats: %v", err)
 	}
 	if got != (InstanceSummary{}) {
 		t.Fatalf("empty summary = %#v", got)
 	}
-	timeToFirstPR, err := db.TimeToFirstPR()
+	timeToFirstPR, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatalf("TimeToFirstPR: %v", err)
 	}
@@ -183,11 +184,11 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 	seedAndIngest(t, db, runsDir)
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 	for _, runID := range []string{fixtureRunID, fixtureRunID2} {
-		if err := db.DeleteRun(runID); err != nil {
+		if err := db.DeleteRun(context.Background(), runID); err != nil {
 			t.Fatalf("DeleteRun(%s): %v", runID, err)
 		}
 	}
@@ -227,10 +228,10 @@ func TestTimeToFirstPRRejectsPROpenBeforeInitCompletion(t *testing.T) {
 	)
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(filepath.Join(runsDir, fixtureRunID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, fixtureRunID)); err != nil {
 		t.Fatalf("IngestRun(pre-init): %v", err)
 	}
-	metric, err := db.TimeToFirstPR()
+	metric, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,10 +240,10 @@ func TestTimeToFirstPRRejectsPROpenBeforeInitCompletion(t *testing.T) {
 	}
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
-	metric, err = db.TimeToFirstPR()
+	metric, err = db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,10 +262,10 @@ func TestTimeToFirstPRRejectsPROpenBeforeInitCompletion(t *testing.T) {
 		0,
 		summaryMutation{kind: "pr", operation: "open"},
 	)
-	if err := db.IngestRun(filepath.Join(runsDir, fixtureRunID2)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, fixtureRunID2)); err != nil {
 		t.Fatalf("IngestRun(post-init): %v", err)
 	}
-	if err := db.IngestRun(filepath.Join(runsDir, fixtureRunID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, fixtureRunID)); err != nil {
 		t.Fatalf("re-IngestRun(pre-init): %v", err)
 	}
 	assertTimeToFirstPR(t, db, initCompletedAt, initCompletedAt.Add(5*time.Minute+time.Second))
@@ -278,7 +279,7 @@ func TestEarlierInitAnchorSelectsRetainedPROpen(t *testing.T) {
 	firstPROpenAt := earlierInit.Add(time.Hour + time.Second)
 
 	db := openTestDB(t, tmp)
-	if err := db.recordTimeToFirstPR(laterInit, time.Time{}); err != nil {
+	if err := db.recordTimeToFirstPR(context.Background(), laterInit, time.Time{}); err != nil {
 		t.Fatalf("record later init: %v", err)
 	}
 	seedSummaryRun(
@@ -291,13 +292,13 @@ func TestEarlierInitAnchorSelectsRetainedPROpen(t *testing.T) {
 		0,
 		summaryMutation{kind: "pr", operation: "open"},
 	)
-	if err := db.IngestRun(filepath.Join(runsDir, fixtureRunID)); err != nil {
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, fixtureRunID)); err != nil {
 		t.Fatalf("IngestRun: %v", err)
 	}
 
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, earlierInit)
-	if err := db.IngestSchedulerLog(schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("IngestSchedulerLog: %v", err)
 	}
 	assertTimeToFirstPR(t, db, earlierInit, firstPROpenAt)
@@ -473,7 +474,7 @@ func TestChronologyMigrationRepairsPreInitMilestone(t *testing.T) {
 
 func assertTimeToFirstPR(t *testing.T, db *DB, initCompletedAt, firstPROpenAt time.Time) {
 	t.Helper()
-	metric, err := db.TimeToFirstPR()
+	metric, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

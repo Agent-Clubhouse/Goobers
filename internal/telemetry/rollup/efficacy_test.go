@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -63,7 +64,7 @@ func TestDigestHistoryDetectsTransitions(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	changes, err := db.DigestHistory("nominate")
+	changes, err := db.DigestHistory(context.Background(), "nominate")
 	if err != nil {
 		t.Fatalf("DigestHistory: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestDigestHistoryNoTransitionsWithOneDigest(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	changes, err := db.DigestHistory("nominate")
+	changes, err := db.DigestHistory(context.Background(), "nominate")
 	if err != nil {
 		t.Fatalf("DigestHistory: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestAssessEfficacyHelped(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessEfficacy(EfficacyRequest{
+	result, err := db.AssessEfficacy(context.Background(), EfficacyRequest{
 		Workflow: "nominate", OldDigest: "sha256:aaaa", NewDigest: "sha256:bbbb",
 		Thresholds: DefaultEfficacyThresholds(),
 	})
@@ -154,7 +155,7 @@ func TestAssessEfficacyRegressed(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessEfficacy(EfficacyRequest{
+	result, err := db.AssessEfficacy(context.Background(), EfficacyRequest{
 		Workflow: "nominate", OldDigest: "sha256:aaaa", NewDigest: "sha256:bbbb",
 		Thresholds: DefaultEfficacyThresholds(),
 	})
@@ -195,7 +196,7 @@ func TestAssessEfficacyNoChangeWithinThreshold(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessEfficacy(EfficacyRequest{
+	result, err := db.AssessEfficacy(context.Background(), EfficacyRequest{
 		Workflow: "nominate", OldDigest: "sha256:aaaa", NewDigest: "sha256:bbbb",
 		Thresholds: DefaultEfficacyThresholds(),
 	})
@@ -224,7 +225,7 @@ func TestAssessEfficacyInsufficientData(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessEfficacy(EfficacyRequest{
+	result, err := db.AssessEfficacy(context.Background(), EfficacyRequest{
 		Workflow: "nominate", OldDigest: "sha256:aaaa", NewDigest: "sha256:bbbb",
 		Thresholds: DefaultEfficacyThresholds(),
 	})
@@ -259,7 +260,7 @@ func TestAssessLatestEfficacyFindsMostRecentTransition(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.AssessLatestEfficacy("nominate", time.Time{}, DefaultEfficacyThresholds())
+	result, err := db.AssessLatestEfficacy(context.Background(), "nominate", time.Time{}, DefaultEfficacyThresholds())
 	if err != nil {
 		t.Fatalf("AssessLatestEfficacy: %v", err)
 	}
@@ -287,7 +288,7 @@ func TestChurnGuardFlagsRepeatedFlipFlops(t *testing.T) {
 	db := openTestDB(t, tmp)
 	seedAndIngest(t, db, runsDir)
 
-	result, err := db.ChurnGuard(ChurnGuardRequest{Workflow: "nominate", MaxChanges: 3})
+	result, err := db.ChurnGuard(context.Background(), ChurnGuardRequest{Workflow: "nominate", MaxChanges: 3})
 	if err != nil {
 		t.Fatalf("ChurnGuard: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestChurnGuardFlagsRepeatedFlipFlops(t *testing.T) {
 	}
 
 	// A lower bar of 2 transitions is fine — must not flag.
-	notFlagged, err := db.ChurnGuard(ChurnGuardRequest{Workflow: "steady-workflow", MaxChanges: 3})
+	notFlagged, err := db.ChurnGuard(context.Background(), ChurnGuardRequest{Workflow: "steady-workflow", MaxChanges: 3})
 	if err != nil {
 		t.Fatalf("ChurnGuard (no history): %v", err)
 	}
@@ -321,7 +322,7 @@ func TestChurnGuardRespectsWindow(t *testing.T) {
 
 	// Window starts right before the last transition (day 3) — only 1
 	// change should count, below MaxChanges=2.
-	windowed, err := db.ChurnGuard(ChurnGuardRequest{
+	windowed, err := db.ChurnGuard(context.Background(), ChurnGuardRequest{
 		Workflow:   "nominate",
 		Since:      base.Add(2*24*time.Hour + time.Hour),
 		MaxChanges: 2,

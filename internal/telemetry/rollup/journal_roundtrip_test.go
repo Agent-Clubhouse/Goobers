@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -88,11 +89,11 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 	}
 
 	db := openTestDB(t, tmp)
-	if err := db.IngestRun(run.Dir()); err != nil {
+	if err := db.IngestRun(context.Background(), run.Dir()); err != nil {
 		t.Fatalf("IngestRun against real journal output: %v", err)
 	}
 
-	runs, err := db.Runs()
+	runs, err := db.Runs(context.Background())
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("Runs: %v, %#v", err, runs)
 	}
@@ -103,7 +104,7 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		t.Fatalf("unexpected run row from real journal output: %#v", r)
 	}
 
-	stages, err := db.StageAttempts(runID)
+	stages, err := db.StageAttempts(context.Background(), runID)
 	if err != nil || len(stages) != 2 {
 		t.Fatalf("StageAttempts: %v, %#v", err, stages)
 	}
@@ -111,12 +112,12 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		t.Fatalf("unexpected deploy stage: %#v", stages[1])
 	}
 
-	gates, err := db.GateVerdicts(runID)
+	gates, err := db.GateVerdicts(context.Background(), runID)
 	if err != nil || len(gates) != 1 || gates[0].Verdict != "approve" {
 		t.Fatalf("GateVerdicts: %v, %#v", err, gates)
 	}
 
-	muts, err := db.ProviderMutations(runID)
+	muts, err := db.ProviderMutations(context.Background(), runID)
 	if err != nil || len(muts) != 1 || muts[0].ExternalID != "42" || muts[0].Operation != "claim" {
 		t.Fatalf("ProviderMutations: %v, %#v", err, muts)
 	}

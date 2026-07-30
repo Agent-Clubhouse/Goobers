@@ -232,7 +232,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("idle tick created %d run directories", len(entries))
 	}
-	events, err := db.SchedulerEvents("implement")
+	events, err := db.SchedulerEvents(context.Background(), "implement")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(spanData), &record); err != nil {
 		t.Fatal(err)
 	}
-	spans, err := db.Spans(record.TraceID)
+	spans, err := db.Spans(context.Background(), record.TraceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
 	if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
 		t.Fatalf("decode scheduler span: %v", err)
 	}
-	spans, err := setup.RollupDB.Spans(record.TraceID)
+	spans, err := setup.RollupDB.Spans(context.Background(), record.TraceID)
 	if err != nil {
 		t.Fatalf("query scheduler spans: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
 		spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
 		t.Fatalf("scheduler spans = %#v", spans)
 	}
-	runs, err := setup.RollupDB.Runs()
+	runs, err := setup.RollupDB.Runs(context.Background())
 	if err != nil {
 		t.Fatalf("query runs: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
 				t.Fatalf("reopen telemetry rollup: %v", err)
 			}
 			defer func() { _ = db.Close() }()
-			spans, err := db.Spans(record.TraceID)
+			spans, err := db.Spans(context.Background(), record.TraceID)
 			if err != nil {
 				t.Fatalf("query scheduler spans: %v", err)
 			}
@@ -366,7 +366,7 @@ func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
 				spans[0].BusinessStatus != string(telemetry.OutcomeBlocked) {
 				t.Fatalf("scheduler spans = %#v", spans)
 			}
-			runs, err := db.Runs()
+			runs, err := db.Runs(context.Background())
 			if err != nil {
 				t.Fatalf("query runs: %v", err)
 			}
