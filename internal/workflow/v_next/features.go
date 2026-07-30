@@ -655,23 +655,13 @@ var previewFeatures = map[FeatureID]struct{}{
 	// workflow.SupportsStageQualifiedInputs gates the runner — so a 1.4
 	// workflow cannot reach it by accident.
 	featureTaskInputsFromQualified: {},
-	// The read-only repo workspace and the task/gate-level workspace seam are
-	// preview alongside the fan-out work they exist for (#1562): they change
-	// where a stage runs, and only the fan-out conformance corpus exercises
-	// the concurrent case they were added for.
-	featureStageWorkspaceRepoReadOnly: {},
-	featureStageWorkspace:             {},
-	featureGateAgenticWorkspace:       {},
-	// Static fan-out/fan-in enters preview: the DSL surface and its compile-time
-	// validation land first, and the runner still refuses to EXECUTE a parallel.
-	// These graduate to GA once the conformance corpus is green (FO-8, #1566).
-	featureWorkflowParallels:             {},
-	featureParallelFailurePolicy:         {},
-	featureParallelBranches:              {},
-	featureParallelJoin:                  {},
-	featureParallelOnFailure:             {},
-	featureParallelBranchTimeout:         {},
-	featureParallelMaxConcurrentBranches: {},
+	// Static fan-out/fan-in and the read-only repo workspace / task/gate-level
+	// workspace seam it motivated (#1562) graduated to GA once FO-8's
+	// conformance corpus went green (#1566, internal/runner/
+	// parallel_conformance_test.go) — the runner now genuinely executes a
+	// parallel (bounded concurrency, branch timeout, failure-policy routing,
+	// crash recovery), so these are no longer "DSL surface with the runner
+	// still refusing to execute it."
 }
 
 type featureSet map[FeatureID]struct{}

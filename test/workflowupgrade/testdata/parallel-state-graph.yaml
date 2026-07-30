@@ -20,12 +20,14 @@ spec:
       goal: Analyze security.
       run:
         command: ["analyze-security"]
+        workspace: scratch
       next: "@join"
     - name: performance
       type: deterministic
       goal: Analyze performance.
       run:
         command: ["analyze-performance"]
+        workspace: scratch
       next: "@join"
     - name: implement
       type: agentic

@@ -56,7 +56,7 @@
     },
     {
       "name": "gate.evaluator.agentic.workspace",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
@@ -316,12 +316,12 @@
     },
     {
       "name": "stage.workspace",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "stage.workspace.repo-readonly",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
@@ -481,37 +481,37 @@
     },
     {
       "name": "workflow.spec.parallels",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.branchTimeoutSeconds",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.branches",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.failurePolicy",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.join",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.maxConcurrentBranches",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "workflow.spec.parallels.onFailure",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {

@@ -124,17 +124,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 		wantLevel := SupportGA
 		switch feature.ID {
 		case featureGaggleSandbox, featureGaggleCheckoutSparse,
-			featureTaskInputsFromQualified,
-			featureStageWorkspaceRepoReadOnly,
-			featureStageWorkspace,
-			featureGateAgenticWorkspace,
-			featureWorkflowParallels,
-			featureParallelFailurePolicy,
-			featureParallelBranches,
-			featureParallelJoin,
-			featureParallelOnFailure,
-			featureParallelBranchTimeout,
-			featureParallelMaxConcurrentBranches:
+			featureTaskInputsFromQualified:
 			wantLevel = SupportPreview
 			previewSeen++
 		}

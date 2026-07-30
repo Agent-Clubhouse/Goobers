@@ -109,8 +109,8 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
 		if activeParallel != nil {
 			jr.SetBranchCursors(activeParallel.cursors())
-			if current := activeParallel.current(); current != nil {
-				jr.SetBranch(current.id)
+			if owner := rerunOwnerBranch(activeParallel, in.Machine, in.Stage); owner != nil {
+				jr.SetBranch(owner.id)
 			}
 		}
 		item, err := resumeItem(rd, id)
@@ -178,6 +178,56 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		completeRunSpan(span, result)
 		return result, nil
 	})
+}
+
+// rerunOwnerBranch resolves which branch a rerun request should be attributed
+// to. activeParallel.current() is only "whichever branch's EventBranchStarted
+// happened to journal last" (pendingParallel's reconstruction) — in a wide
+// (maxConcurrentBranches > 1) parallel that is not necessarily the branch
+// containing stage, e.g. a sibling can start after the paused branch already
+// began. Resolving the owner explicitly keeps the rerun-request event (and
+// jr.SetBranch below) attributed to the branch that actually owns stage,
+// falling back to current() only if resolution can't place it at all
+// (defensive; should not happen given compile-time rule 1's disjoint branch
+// subgraphs).
+func rerunOwnerBranch(activeParallel *parallelExec, machine *workflow.Machine, stage string) *branchState {
+	owner := activeParallel.current()
+	if name := branchOwningState(machine, activeParallel.spec, stage); name != "" {
+		if b := activeParallel.branch(name); b != nil {
+			owner = b
+		}
+	}
+	return owner
+}
+
+// branchOwningState returns the name of the branch within spec whose subgraph
+// reaches state, walking each branch's declared states from its Start via
+// machine.Outgoing. Compile-time rule 1 (parallel.go's parallelBodyProblems)
+// guarantees branch subgraphs are disjoint and none of them include the
+// parallel's own Join, so the first branch whose walk reaches state is the
+// only one that can. Returns "" if no branch reaches it (state is outside
+// this parallel, or the parallel has already fully settled).
+func branchOwningState(machine *workflow.Machine, spec apiv1.Parallel, state string) string {
+	for _, branch := range spec.Branches {
+		seen := make(map[string]bool)
+		queue := []string{branch.Start}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			if cur == "" || cur == spec.Join || seen[cur] {
+				continue
+			}
+			seen[cur] = true
+			if cur == state {
+				return branch.Name
+			}
+			if !machine.Has(cur) {
+				continue
+			}
+			queue = append(queue, machine.Outgoing(cur)...)
+		}
+	}
+	return ""
 }
 
 func validateRerunTarget(machine *workflow.Machine, stage string) (bool, error) {

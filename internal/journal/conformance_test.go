@@ -32,6 +32,7 @@ func baseNormativeEvent() Event {
 		Status:              "success",
 		WorkflowVersion:     3,
 		WorkflowDigest:      "sha256:definition",
+		Outputs:             map[string]any{"summary": "ok", "count": float64(2)},
 		Artifacts: []Ref{
 			{Path: "artifacts/sha256/11/11", Digest: "sha256:1111", Size: 11, MediaType: "text/plain", Integrity: apiv1.IntegrityDerived},
 			{Path: "artifacts/sha256/22/22", Digest: "sha256:2222", Size: 22, MediaType: "application/json", Integrity: apiv1.IntegrityMaintainer},
@@ -81,6 +82,9 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"WorkflowVersion", func(e Event) Event { e.WorkflowVersion = 4; return e }},
 		{"WorkflowDigest", func(e Event) Event { e.WorkflowDigest = "sha256:other"; return e }},
 		{"Name", func(e Event) Event { e.Name = "other.txt"; return e }},
+		{"Outputs", func(e Event) Event { e.Outputs = map[string]any{"summary": "different", "count": float64(2)}; return e }},
+		{"Outputs presence", func(e Event) Event { e.Outputs = nil; return e }},
+		{"Artifacts presence", func(e Event) Event { e.Artifacts = nil; return e }},
 		{"RefDigest", func(e Event) Event { r := *e.Ref; r.Digest = "sha256:cccc"; e.Ref = &r; return e }},
 		{"Ref.Integrity", func(e Event) Event { r := *e.Ref; r.Integrity = apiv1.IntegrityUnapproved; e.Ref = &r; return e }},
 		{"Artifacts[0].Digest", func(e Event) Event {

@@ -371,6 +371,62 @@ func TestRunnerRerunStageRestoresActiveBranch(t *testing.T) {
 	}
 }
 
+// branchOwningState must resolve each branch's own states, never the sibling's
+// or the join's, from the branch's declared Start alone.
+func TestBranchOwningStateResolvesDisjointBranches(t *testing.T) {
+	machine := rerunBranchGateMachine(t)
+	spec, ok := machine.Parallel("fan")
+	if !ok {
+		t.Fatalf("machine has no parallel %q", "fan")
+	}
+	cases := map[string]string{
+		"review-security":    "security",
+		"accept-security":    "security",
+		"review-performance": "performance",
+		"collate":            "", // the join belongs to no branch
+		"no-such-state":      "",
+	}
+	for state, want := range cases {
+		if got := branchOwningState(machine, spec, state); got != want {
+			t.Errorf("branchOwningState(%q) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+// rerunOwnerBranch must attribute a rerun to the branch that actually owns the
+// requested stage, not activeParallel.current() — pendingParallel sets current
+// to whichever branch's EventBranchStarted happened to journal last, which in
+// a wide (maxConcurrentBranches > 1) parallel can be a sibling of the branch
+// actually paused for rerun (#1566 review finding).
+func TestRerunOwnerBranchOverridesStaleCurrentBranch(t *testing.T) {
+	machine := rerunBranchGateMachine(t)
+	spec, ok := machine.Parallel("fan")
+	if !ok {
+		t.Fatalf("machine has no parallel %q", "fan")
+	}
+	pe := newParallelExec(spec)
+	// Simulate reconstruction landing on "performance" as current (e.g. it
+	// started chronologically after "security" in a wide run), even though
+	// the rerun target ("accept-security") belongs to "security".
+	performance := pe.branch("performance")
+	if performance == nil {
+		t.Fatalf("parallelExec has no branch %q", "performance")
+	}
+	for i, b := range pe.branches {
+		if b.name == "performance" {
+			pe.active = i
+		}
+	}
+	if pe.current().name != "performance" {
+		t.Fatalf("test setup: current = %q, want %q", pe.current().name, "performance")
+	}
+
+	owner := rerunOwnerBranch(pe, machine, "accept-security")
+	if owner == nil || owner.name != "security" {
+		t.Fatalf("rerunOwnerBranch = %+v, want branch %q", owner, "security")
+	}
+}
+
 func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	const addendum = "Do not block on the generated fixture."
 	machine := rerunGateMachine(t)
@@ -971,7 +1027,7 @@ func rerunBranchGateMachine(t *testing.T) *workflow.Machine {
 			Gates: []apiv1.Gate{{
 				Name:      "accept-security",
 				Evaluator: apiv1.EvaluatorAgentic,
-				Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceRepoReadOnly},
 				Branches: map[string]string{
 					string(apiv1.VerdictPass):         workflow.TargetJoin,
 					string(apiv1.VerdictNeedsChanges): workflow.TargetEscalate,

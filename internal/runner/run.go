@@ -1074,6 +1074,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, startState, steps, err)
 				}
 				current.started = true
+				current.startedAt = time.Now()
 			}
 			jr.SetBranch(current.id)
 		}
@@ -1084,6 +1085,17 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
 		}
 		steps = int(stepBudget.Load())
+		// A branch that exceeded branchTimeoutSeconds terminates at its next
+		// stage boundary (never mid-stage), is recorded timed-out, and is
+		// then handled as an ordinary branch failure under the declared
+		// policy — so route it through the same @join settle-and-advance
+		// path below rather than starting the stage it was about to run.
+		if par != nil && state != workflow.TargetJoin {
+			if deadline := par.currentDeadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
+				par.markCurrentTimedOut()
+				state = workflow.TargetJoin
+			}
+		}
 		// A branch reached @join: settle it and move to the next declared
 		// branch, or close the parallel and continue at its join state.
 		if state == workflow.TargetJoin {
@@ -1128,6 +1140,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 				}
 				next.started = true
+				next.startedAt = time.Now()
 				jr.SetBranch(next.id)
 				state = next.start
 				continue
@@ -1197,6 +1210,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
 			}
 			first.started = true
+			first.startedAt = time.Now()
 			jr.SetBranch(first.id)
 			state = first.start
 			continue
@@ -1475,6 +1489,28 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				state = retryTarget
 				continue
 			}
+			if par != nil {
+				switch gr.Target {
+				case workflow.TargetAbort, workflow.TargetEscalate:
+					// A gate inside a branch routing directly to a reserved
+					// terminal bypasses @join entirely (unlike an ordinary
+					// task failure, which always settles at @join first) —
+					// gateTransition below calls r.finish for this target
+					// with no idea a parallel is still open, so the parallel
+					// must be closed here first: this branch settles failed
+					// (a loud exit, same as the concurrent path's
+					// terminalGate handling), every other unsettled branch is
+					// cancelled, and parallel.finished records gr.Target
+					// itself as the completeness Target — NOT route()'s
+					// policy-derived target, which would silently discard
+					// this gate's own explicit choice.
+					if err := r.closeParallelForLoudExit(jr, par, gr.Target); err != nil {
+						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
+					}
+					par = nil
+					fanIn = nil
+				}
+			}
 			next, res, advance, oerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item, gr, lastStage, lastResult, steps)
 			if oerr != nil {
 				return res, oerr
@@ -1522,6 +1558,46 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 
 		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
 	}
+}
+
+// closeParallelForLoudExit journals the current branch's terminal settlement,
+// cancels every other unsettled branch, and appends parallel.finished with
+// target as the recorded completeness Target — used when a stage inside a
+// branch (currently: a gate) routes DIRECTLY to a reserved terminal
+// (@abort/@escalate) instead of through @join. Mirrors the concurrent
+// orchestrator's own terminalGate/terminalTask handling in parallel_run.go,
+// which already closes the parallel before its equivalent reserved-target
+// routing; the sequential walk's ordinary @join arrival (above) does the
+// same thing for a task failure, just via route()'s policy-derived target
+// rather than a stage's own explicit one.
+func (r *Runner) closeParallelForLoudExit(jr *journal.Run, par *parallelExec, target string) error {
+	if settling := par.current(); settling != nil && !settling.settled {
+		status := journal.BranchFailed
+		cursors := par.settleBranch(settling.id, status, settling.artifacts, settling.pointers, settling.produced, true, settling.noOutput)
+		jr.SetBranchCursors(cursors)
+		if err := jr.Append(journal.Event{
+			Type: journal.EventBranchFinished, Branch: settling.id,
+			Parallel: par.spec.Name, BranchName: settling.name,
+			BranchStatus: status,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, cancelled := range par.cancelRemaining() {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventBranchFinished, Branch: cancelled.id,
+			Parallel: par.spec.Name, BranchName: cancelled.name,
+			BranchStatus: journal.BranchCancelled,
+		}); err != nil {
+			return err
+		}
+	}
+	jr.SetBranch(0)
+	jr.SetBranchCursors(nil)
+	return jr.Append(journal.Event{
+		Type: journal.EventParallelFinished, Parallel: par.spec.Name,
+		Completeness: par.completeness(), Target: target,
+	})
 }
 
 func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID string, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, lastStage string, lastResult apiv1.ResultEnvelope, steps int) (string, Result, bool, error) {

@@ -3,6 +3,7 @@ package runner
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -24,8 +25,24 @@ type branchState struct {
 	produced  bool
 	failed    bool
 	noOutput  bool
+	timedOut  bool
 	started   bool
 	settled   bool
+	// startedAt is when the branch's first stage began, reconstructed from
+	// its EventBranchStarted on resume rather than reset to "now" — a
+	// resumed branch gets its REMAINING budget, not a fresh one. Zero when
+	// the branch has not started or the parallel declares no
+	// branchTimeoutSeconds.
+	startedAt time.Time
+}
+
+// deadline returns when this branch's declared branchTimeoutSeconds budget
+// expires, or the zero Time if unbounded (seconds <= 0) or not yet started.
+func (b *branchState) deadline(seconds int32) time.Time {
+	if seconds <= 0 || b.startedAt.IsZero() {
+		return time.Time{}
+	}
+	return b.startedAt.Add(time.Duration(seconds) * time.Second)
 }
 
 // parallelExec is the runner's live state for one parallel. The default
@@ -124,6 +141,30 @@ func (p *parallelExec) markCurrentFailed() {
 	}
 }
 
+// markCurrentTimedOut records that the active branch exceeded
+// branchTimeoutSeconds. Checked at the next stage boundary (never
+// mid-stage — see BranchTimeoutSeconds' doc comment), so it is a plain flag
+// like markCurrentFailed, not a preemptive cancellation.
+func (p *parallelExec) markCurrentTimedOut() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if current := p.currentLocked(); current != nil {
+		current.timedOut = true
+	}
+}
+
+// currentDeadline returns the active branch's branchTimeoutSeconds deadline,
+// or the zero Time if unbounded or no branch is active.
+func (p *parallelExec) currentDeadline() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.currentLocked()
+	if current == nil {
+		return time.Time{}
+	}
+	return current.deadline(p.spec.BranchTimeoutSeconds)
+}
+
 func (p *parallelExec) markCurrentNoOutput() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -165,6 +206,9 @@ func branchStatus(branch *branchState) journal.BranchStatus {
 	if branch.settled && branch.status != "" {
 		return branch.status
 	}
+	if branch.timedOut {
+		return journal.BranchTimedOut
+	}
 	if branch.failed {
 		return journal.BranchFailed
 	}
@@ -187,6 +231,9 @@ func (p *parallelExec) startBranch(index int) (branchState, []journal.BranchCurs
 	defer p.mu.Unlock()
 	branch := p.branches[index]
 	branch.started = true
+	if branch.startedAt.IsZero() {
+		branch.startedAt = time.Now()
+	}
 	snapshot := *branch
 	snapshot.pointers = append([]apiv1.ContextPointer(nil), branch.pointers...)
 	return snapshot, p.cursorsLocked()

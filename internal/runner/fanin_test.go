@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -23,22 +23,6 @@ type capturingFanInExecutor struct {
 
 func (c *capturingFanInExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	c.envs[env.TaskID] = env
-	return c.delegate.Run(ctx, env, run)
-}
-
-type committingFanInExecutor struct {
-	t        *testing.T
-	delegate *stubDeterministic
-}
-
-func (c *committingFanInExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	c.t.Helper()
-	name := strings.ReplaceAll(env.TaskID, ":", "-") + ".txt"
-	if err := os.WriteFile(filepath.Join(env.Workspace, name), []byte(env.TaskID+"\n"), 0o644); err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	runGit(c.t, env.Workspace, "add", name)
-	runGit(c.t, env.Workspace, "commit", "-m", env.TaskID)
 	return c.delegate.Run(ctx, env, run)
 }
 
@@ -272,7 +256,7 @@ func agenticGateFanInMachine(t *testing.T) *workflow.Machine {
 	task := func(name string) apiv1.Task {
 		return apiv1.Task{
 			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
-			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
 			Next: workflow.TargetJoin,
 		}
 	}
@@ -512,11 +496,9 @@ func TestRunnerAgenticJoinReceivesBranchArtifactsOnce(t *testing.T) {
 	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return reviewer, nil
 	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-		return &committingFanInExecutor{
-			t:        t,
-			delegate: &stubDeterministic{rec: rec, byTask: results},
-		}, nil
+		return &stubDeterministic{rec: rec, byTask: results}, nil
 	})
+	r.cfg.ScratchDir = t.TempDir()
 
 	result, err := r.Start(context.Background(), StartInput{
 		RunID: runID, Machine: agenticGateFanInMachine(t), Gaggle: "goobers",
@@ -532,17 +514,18 @@ func TestRunnerAgenticJoinReceivesBranchArtifactsOnce(t *testing.T) {
 	if !reviewer.called {
 		t.Fatal("agentic join reviewer was not invoked")
 	}
-	if len(reviewer.gotPointers) != 3 {
-		t.Fatalf("reviewer pointers = %+v, want two branch artifacts and one diff", reviewer.gotPointers)
+	// Exactly the two branch artifacts, each tagged with its own branch — no
+	// diff pointer, since rule 9 now forbids a writable repo workspace inside
+	// any branch (any width), so a branch can never produce a committed diff
+	// for the join to see.
+	if len(reviewer.gotPointers) != 2 {
+		t.Fatalf("reviewer pointers = %+v, want exactly two branch artifacts", reviewer.gotPointers)
 	}
 	for i, branch := range []string{"security", "performance"} {
 		pointer := reviewer.gotPointers[i]
 		if pointer.Branch != i+1 || pointer.BranchName != branch || pointer.Artifact == nil {
 			t.Errorf("pointer %d = %+v, want artifact tagged branch %d/%q", i, pointer, i+1, branch)
 		}
-	}
-	if reviewer.gotPointers[2].Name != "collate.diff" {
-		t.Fatalf("final pointer = %+v, want reviewer diff", reviewer.gotPointers[2])
 	}
 }
 
@@ -993,6 +976,30 @@ func TestPendingParallelDoesNotCrossTerminalResume(t *testing.T) {
 	}
 	if par, _ := pendingParallel(stageRerun, machine); par == nil {
 		t.Fatal("pending parallel is nil after a stage rerun reopened the branch")
+	}
+}
+
+// pendingParallel must reconstruct a branch's ORIGINAL start instant from its
+// EventBranchStarted, not reset it to resumption time — a resumed branch gets
+// its remaining branchTimeoutSeconds budget, not a fresh one (#1566).
+func TestPendingParallelReconstructsBranchStartedAtForTimeoutBudget(t *testing.T) {
+	machine := continueOnErrorFanInMachine(t)
+	startedAt := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
+	events := []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "security",
+			Stage: "review-security", Time: startedAt},
+	}
+	par, _ := pendingParallel(events, machine)
+	if par == nil {
+		t.Fatal("pending parallel is nil")
+	}
+	branch := par.branch("security")
+	if branch == nil {
+		t.Fatal("reconstructed parallel has no security branch")
+	}
+	if !branch.startedAt.Equal(startedAt) {
+		t.Fatalf("branch.startedAt = %v, want the original EventBranchStarted time %v", branch.startedAt, startedAt)
 	}
 }
 
