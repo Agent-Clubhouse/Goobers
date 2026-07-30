@@ -183,9 +183,12 @@ func TestParallelAndBranchNamesMayNotContainDots(t *testing.T) {
 
 // Preview gating: every parallel field is preview until FO-8, so a workflow
 // declaring one must not compile without the explicit opt-in.
-func TestParallelRequiresPreviewOptIn(t *testing.T) {
-	if _, err := Compile(parallelDef()); err == nil {
-		t.Fatal("a parallel must not compile without the preview-features opt-in")
+// Static fan-out/fan-in graduated to GA once FO-8's conformance corpus went
+// green (#1566, internal/runner/parallel_conformance_test.go): a parallel no
+// longer needs the preview-features opt-in to compile.
+func TestParallelCompilesWithoutPreviewOptIn(t *testing.T) {
+	if _, err := Compile(parallelDef()); err != nil {
+		t.Fatalf("a GA parallel should compile without the preview-features opt-in: %v", err)
 	}
 }
 
