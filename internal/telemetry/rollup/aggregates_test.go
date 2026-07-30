@@ -177,7 +177,7 @@ func TestRebuildAllAndStatsFilterByGaggle(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(tmp, "telemetry.db")
-	if err := RebuildAll(dbPath, []string{alphaRuns, betaRuns}, filepath.Join(tmp, "scheduler")); err != nil {
+	if err := RebuildAll(context.Background(), dbPath, []string{alphaRuns, betaRuns}, filepath.Join(tmp, "scheduler")); err != nil {
 		t.Fatal(err)
 	}
 	db, err := Open(dbPath)

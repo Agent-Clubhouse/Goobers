@@ -23,13 +23,20 @@ import (
 // deterministic run-over-run; each run's own IngestRun is itself idempotent
 // (delete-then-insert), so the resulting rows are identical regardless of
 // processing order or whether a run was previously ingested incrementally.
-func Rebuild(dbPath, runsDir, schedulerDir string) error {
-	return RebuildAll(dbPath, []string{runsDir}, schedulerDir)
+func Rebuild(ctx context.Context, dbPath, runsDir, schedulerDir string) error {
+	return RebuildAll(ctx, dbPath, []string{runsDir}, schedulerDir)
 }
 
 // RebuildAll derives telemetry.db from every per-gaggle run root.
-func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
-	firstSuccess := existingTimeToFirstPR(dbPath)
+//
+// Takes a context because a rebuild is the longest operation in the system —
+// measured at ~51 s over 29,759 runs at 1x, and proportionally longer at 3x/10x
+// — so an operator who interrupts it must have it actually stop. The
+// context-threading pass initially resolved this the other way, calling
+// context.Background() at each statement inside the loop, which compiled and ran
+// but left the whole rebuild uncancellable.
+func RebuildAll(ctx context.Context, dbPath string, runsDirs []string, schedulerDir string) error {
+	firstSuccess := existingTimeToFirstPR(ctx, dbPath)
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
@@ -43,7 +50,7 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 	defer func() { _ = db.Close() }()
 
 	if err := db.recordTimeToFirstPR(
-		context.Background(),
+		ctx,
 		timeOrZero(firstSuccess.InitCompletedAt),
 		timeOrZero(firstSuccess.FirstPROpenAt),
 	); err != nil {
@@ -57,12 +64,12 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 			return err
 		}
 		for _, dir := range dirs {
-			if err := db.IngestRun(context.Background(), dir); err != nil {
+			if err := db.IngestRun(ctx, dir); err != nil {
 				return fmt.Errorf("rollup: ingest %s: %w", dir, err)
 			}
 		}
 	}
-	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+	if err := db.IngestSchedulerLog(ctx, schedulerDir); err != nil {
 		return fmt.Errorf("rollup: ingest scheduler log %s: %w", schedulerDir, err)
 	}
 	return nil
@@ -71,7 +78,7 @@ func RebuildAll(dbPath string, runsDirs []string, schedulerDir string) error {
 // existingTimeToFirstPR is best-effort so an unreadable projection cannot
 // prevent an explicit rebuild. Journal ingestion repopulates any milestone that
 // retention has not already removed.
-func existingTimeToFirstPR(dbPath string) telemetry.TimeToFirstPRMetric {
+func existingTimeToFirstPR(ctx context.Context, dbPath string) telemetry.TimeToFirstPRMetric {
 	empty := telemetry.NewTimeToFirstPRMetric(time.Time{}, time.Time{})
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return empty
@@ -82,7 +89,7 @@ func existingTimeToFirstPR(dbPath string) telemetry.TimeToFirstPRMetric {
 	if err != nil {
 		return empty
 	}
-	metric, queryErr := db.TimeToFirstPR(context.Background())
+	metric, queryErr := db.TimeToFirstPR(ctx)
 	closeErr := db.Close()
 	if queryErr != nil || closeErr != nil {
 		return empty

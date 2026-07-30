@@ -643,7 +643,7 @@ func rebuildAllRoots(gen GenerateResult) error {
 	if err != nil {
 		return err
 	}
-	return rollup.RebuildAll(gen.Layout.TelemetryDB(), roots, gen.Layout.SchedulerDir())
+	return rollup.RebuildAll(context.Background(), gen.Layout.TelemetryDB(), roots, gen.Layout.SchedulerDir())
 }
 
 // allOrphanDirs returns every generated orphan directory across all run roots.

@@ -24,7 +24,7 @@ import (
 func buildIndex(t *testing.T, layout instance.Layout, names ...string) *rollup.DB {
 	t.Helper()
 	if len(names) == 0 {
-		if err := rollup.RebuildAll(layout.TelemetryDB(), []string{layout.RunsDir()}, layout.SchedulerDir()); err != nil {
+		if err := rollup.RebuildAll(context.Background(), layout.TelemetryDB(), []string{layout.RunsDir()}, layout.SchedulerDir()); err != nil {
 			t.Fatalf("rebuild index: %v", err)
 		}
 	}

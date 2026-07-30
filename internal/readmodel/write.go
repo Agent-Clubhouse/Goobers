@@ -1,0 +1,271 @@
+package readmodel
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
+)
+
+// UpsertRun writes a projection in ONE transaction.
+//
+// The run row, its stage rows, and (later) the change row and dirty-day marks
+// commit together because §6.2 requires exactly that: they are atomic as a
+// group, and they must stay in one database for that reason. A list that saw a
+// run row without its stages would answer a stage-filtered query wrongly, and a
+// change row published before the fact it describes would tell a client to
+// refetch data that is not there yet.
+//
+// Idempotent on last_seq: re-applying a projection whose sequence is not newer
+// is a no-op. That is what makes the post-commit acknowledgement in §4.3 safe —
+// a crash between committing the projection and acknowledging the watermark
+// simply reprocesses, harmlessly.
+func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("readmodel: begin upsert: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := upsertRunRow(ctx, tx, p.Run); err != nil {
+		return err
+	}
+	// Stage rows are replaced wholesale for this run rather than merged. A stage
+	// set only grows within a run, so a delete-then-insert cannot lose data, and
+	// it keeps the write idempotent under re-projection without needing to
+	// reason about which stages a partial tail touched.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_stage WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear stages for %s: %w", p.Run.RunID, err)
+	}
+	for _, stage := range p.Stages {
+		if err := insertStageRow(ctx, tx, stage); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("readmodel: commit upsert: %w", err)
+	}
+	return nil
+}
+
+func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run (
+			run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
+			trigger_kind, trigger_ref, phase, terminal, current_stage,
+			started_at, finished_at, last_activity_at, last_seq,
+			repass_count, retry_count, policy_retry_count, infra_retry_count,
+			outcome_verdict, outcome_target
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id) DO UPDATE SET
+			gaggle = excluded.gaggle,
+			workflow = excluded.workflow,
+			workflow_version = excluded.workflow_version,
+			workflow_digest = excluded.workflow_digest,
+			goober_digest = excluded.goober_digest,
+			trigger_kind = excluded.trigger_kind,
+			trigger_ref = excluded.trigger_ref,
+			phase = excluded.phase,
+			terminal = excluded.terminal,
+			current_stage = excluded.current_stage,
+			started_at = excluded.started_at,
+			finished_at = excluded.finished_at,
+			last_activity_at = excluded.last_activity_at,
+			last_seq = excluded.last_seq,
+			repass_count = excluded.repass_count,
+			retry_count = excluded.retry_count,
+			policy_retry_count = excluded.policy_retry_count,
+			infra_retry_count = excluded.infra_retry_count,
+			outcome_verdict = excluded.outcome_verdict,
+			outcome_target = excluded.outcome_target
+		-- Idempotence, and the guard that makes out-of-order delivery safe: an
+		-- older projection never overwrites a newer one. Without it, a repair
+		-- sweep racing live projection could rewind a run's phase.
+		WHERE excluded.last_seq >= run.last_seq`,
+		row.RunID, row.Gaggle, row.Workflow, row.WorkflowVersion,
+		nullString(row.WorkflowDigest), nullString(row.GooberDigest),
+		nullString(row.TriggerKind), nullString(row.TriggerRef),
+		string(row.Phase), boolInt(row.Terminal), nullString(row.CurrentStage),
+		formatTime(row.StartedAt), nullTime(row.FinishedAt), nullTimeValue(row.LastActivity),
+		row.LastSeq,
+		row.RepassCount, row.RetryCount, row.PolicyRetryCount, row.InfraRetryCount,
+		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget),
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: upsert run %s: %w", row.RunID, err)
+	}
+	return nil
+}
+
+func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_stage (run_id, stage, attempts, last_status, last_attempt_class, started_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		stage.RunID, stage.Stage, stage.Attempts,
+		nullString(stage.LastStatus), nullString(stage.LastAttemptClass),
+		nullTime(stage.StartedAt), nullTime(stage.FinishedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)
+	}
+	return nil
+}
+
+// GetRun reads a projected run row back.
+//
+// Present so a projection can be verified without a query surface — the list
+// contract itself lands in a later slice (§5.7's enumerated combinations).
+func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) {
+	row := s.readDB().QueryRowContext(ctx, `
+		SELECT run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
+		       trigger_kind, trigger_ref, phase, terminal, current_stage,
+		       started_at, finished_at, last_activity_at, last_seq,
+		       repass_count, retry_count, policy_retry_count, infra_retry_count,
+		       outcome_verdict, outcome_target
+		FROM run WHERE run_id = ?`, runID)
+
+	var (
+		out                                           RunRow
+		digest, gooberDigest, triggerKind, triggerRef sql.NullString
+		currentStage, verdict, target                 sql.NullString
+		startedAt, finishedAt, lastActivity           sql.NullString
+		phase                                         string
+		terminal                                      int
+	)
+	err := row.Scan(&out.RunID, &out.Gaggle, &out.Workflow, &out.WorkflowVersion,
+		&digest, &gooberDigest, &triggerKind, &triggerRef, &phase, &terminal, &currentStage,
+		&startedAt, &finishedAt, &lastActivity, &out.LastSeq,
+		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
+		&verdict, &target)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return RunRow{}, false, nil
+	case err != nil:
+		return RunRow{}, false, fmt.Errorf("readmodel: read run %s: %w", runID, err)
+	}
+
+	out.WorkflowDigest = digest.String
+	out.GooberDigest = gooberDigest.String
+	out.TriggerKind = triggerKind.String
+	out.TriggerRef = triggerRef.String
+	out.Phase = journal.RunPhase(phase)
+	out.Terminal = terminal != 0
+	out.CurrentStage = currentStage.String
+	out.OutcomeVerdict = verdict.String
+	out.OutcomeTarget = target.String
+
+	var parseErr error
+	if out.StartedAt, parseErr = requiredTime(startedAt); parseErr != nil {
+		return RunRow{}, false, parseErr
+	}
+	if out.FinishedAt, parseErr = optionalTime(finishedAt); parseErr != nil {
+		return RunRow{}, false, parseErr
+	}
+	if lastActivity.Valid {
+		if out.LastActivity, parseErr = requiredTime(lastActivity); parseErr != nil {
+			return RunRow{}, false, parseErr
+		}
+	}
+
+	if out.Stages, err = s.runStages(ctx, runID); err != nil {
+		return RunRow{}, false, err
+	}
+	return out, true, nil
+}
+
+// runStages returns the stage names recorded for a run, in stable order.
+func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
+	rows, err := s.readDB().QueryContext(ctx,
+		`SELECT stage FROM run_stage WHERE run_id = ? ORDER BY stage`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: read stages for %s: %w", runID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var stage string
+		if err := rows.Scan(&stage); err != nil {
+			return nil, fmt.Errorf("readmodel: scan stage: %w", err)
+		}
+		out = append(out, stage)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: stage rows for %s: %w", runID, err)
+	}
+	return out, nil
+}
+
+// CountByPhase returns run counts grouped by phase.
+//
+// This is what §5.4 replaces the 17.2-second directory walk with: "stored, that
+// becomes one indexed aggregate over phase = 'running'". It is served by
+// idx_run_phase_recency without touching a journal.
+func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error) {
+	rows, err := s.readDB().QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: count by phase: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[journal.RunPhase]int{}
+	for rows.Next() {
+		var phase string
+		var n int
+		if err := rows.Scan(&phase, &n); err != nil {
+			return nil, fmt.Errorf("readmodel: scan phase count: %w", err)
+		}
+		out[journal.RunPhase(phase)] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: phase count rows: %w", err)
+	}
+	return out, nil
+}
+
+// formatTime renders a timestamp in the store's fixed-width UTC layout, which is
+// what makes lexicographic comparison a correct time comparison and lets
+// started_at lead an ordering index.
+func formatTime(t time.Time) string { return t.UTC().Format(timeFormat) }
+
+func nullTime(t *time.Time) any {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	return formatTime(*t)
+}
+
+func nullTimeValue(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return formatTime(t)
+}
+
+func nullString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// requiredTime parses a column that must be present.
+func requiredTime(ns sql.NullString) (time.Time, error) {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return time.Time{}, fmt.Errorf("readmodel: missing required timestamp")
+	}
+	t, err := time.Parse(timeFormat, ns.String)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("readmodel: parse timestamp %q: %w", ns.String, err)
+	}
+	return t, nil
+}

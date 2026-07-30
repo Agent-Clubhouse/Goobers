@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -67,7 +68,7 @@ func TestStatsJSONAndSinceWindow(t *testing.T) {
 	writeStatsCommandRun(t, root, "old-run", "implement", now.Add(-48*time.Hour), journal.PhaseCompleted)
 	writeStatsCommandRun(t, root, "recent-run", "nominate", now.Add(-time.Hour), journal.PhaseFailed)
 	l := instance.NewLayout(root)
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+	if err := rollup.Rebuild(context.Background(), l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 
@@ -106,7 +107,7 @@ func TestStatsHumanCard(t *testing.T) {
 	root := initDemo(t)
 	writeStatsCommandRun(t, root, "completed-run", "implement", time.Now().Add(-time.Hour), journal.PhaseCompleted)
 	l := instance.NewLayout(root)
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+	if err := rollup.Rebuild(context.Background(), l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 
@@ -166,7 +167,7 @@ func TestStatsSinceWithNoMatchingRuns(t *testing.T) {
 	root := initDemo(t)
 	writeStatsCommandRun(t, root, "old-run", "implement", time.Now().Add(-48*time.Hour), journal.PhaseCompleted)
 	l := instance.NewLayout(root)
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+	if err := rollup.Rebuild(context.Background(), l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 
