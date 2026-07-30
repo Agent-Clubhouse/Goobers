@@ -24,8 +24,9 @@
 
 §1 is the decision. §2 is measured evidence from the live instance — it changes
 two of the diagnosis's conclusions and adds a defect the diagnosis did not have.
-§3–§12 are the architecture. §13 is the cloud trajectory. §14 is the acceptance
-bar. §15 answers the diagnosis's open questions. §16 is the harness. §17 is the
+§3–§12 are the architecture, and **§11A is what changes on screen** — including
+the two places this design does not achieve strict UX parity. §13 is the cloud
+trajectory. §14 is the acceptance bar. §15 answers the diagnosis's open questions. §16 is the harness. §17 is the
 plan, with a risk and rollback posture per wave. §18 is revision history.
 
 The shape of the plan: **Wave 1 is five small independent diffs targeting the
@@ -383,6 +384,11 @@ Every writer, in-process or not, upserts on **every query-visible transition**
 INSERT INTO run_intake (run_id, source_seq, noticed_at) VALUES (?, ?, ?)
 ON CONFLICT(run_id) DO UPDATE SET
   source_seq = MAX(source_seq, excluded.source_seq),
+  -- A higher source_seq is proof that a pending removal intent is stale:
+  -- retention crashed between intent and unlink (§ below) and the run has
+  -- since advanced or been resumed. Without this, the projector takes the
+  -- removal branch and deletes a live run's rows.
+  removing   = CASE WHEN excluded.source_seq > source_seq THEN 0 ELSE removing END,
   noticed_at = excluded.noticed_at;
 ```
 
@@ -435,6 +441,13 @@ A crash at any step leaves a marker that resolves on the next pass. A crash
 between 1 and 2 leaves a run marked for removal whose journal still exists —
 resolved by retention retrying, and visible meanwhile because a `removing` marker
 is reported in `readState`.
+
+**And if that run advances instead, the intent is cancelled, not honoured.** The
+upsert above clears `removing` whenever an incoming watermark advances
+`source_seq`, so a run that is written to or resumed while a stale removal intent
+is pending is never deleted. This is the one ordering in the protocol where the
+writer overrides retention, and it is the correct direction: a live run outranks a
+crashed intent to delete it.
 
 **Repair reconciles both directions.** It is not only "on disk but not
 projected." It must also handle **projected but no longer on disk above the
@@ -657,7 +670,11 @@ and §7.1's enforced cancellation.
 
 **Change rows commit through a single serialized loop.** The projector may read
 journals and prepare work concurrently on a bounded worker set, but the commit of
-`(run row, run_stage rows, change row, watermark ack)` is serialized. Without
+`(run row, run_stage rows, population rollups, change row, last_projected_seq)`
+— one `read.db` transaction — is serialized. The intake acknowledgement is **not**
+part of it: it is a guarded post-commit write to a separate store (§4.3, §6.2),
+because SQLite WAL offers no cross-file atomicity and idempotent projection makes
+it unnecessary. Without
 this, two workers allocate `10` and `11`, `11` commits first, a client advances
 past `11`, then `10` commits — and `WHERE seq > 11` never returns it. The second
 pass described a "bounded worker set" and a "leader-elected single instance"
@@ -783,8 +800,16 @@ The sequence is therefore explicit:
    current epoch stays open and readable throughout. Because intake lives in
    `intake.db` and is never rebuilt (§4.3), external writers keep recording
    watermarks correctly across the whole rebuild.
-2. Validate *E* (schema version, row counts, differential spot-check).
-3. **Barrier:** stop the commit loop, then catch *E* up from **two** sources:
+2. **Copy the projection floor and tombstones into *E* first, before projecting
+   any journal, and apply the floor while building.** They are derived *policy*
+   state living in the old `read.db`, not journal facts, so a rebuild from
+   journals alone does not reproduce them. Skipping this makes a post-retention
+   rebuild briefly re-admit every expired journal — a removal and change-feed
+   burst, and a rebuild whose size is proportional to total history rather than to
+   the retained window, which defeats §14.12's rebuild-time and store-size
+   targets outright.
+3. Validate *E* (schema version, row counts, differential spot-check).
+4. **Barrier:** stop the commit loop, then catch *E* up from **two** sources:
    - every `run_id` appearing in the old epoch's `change` where
      `seq > rebuildFromSeq` (the old epoch's `change.seq` recorded in step 1); and
    - every pending `run_intake` marker, including `removing` markers.
@@ -799,14 +824,24 @@ The sequence is therefore explicit:
    Then **assert that no run's `last_projected_seq` regresses** between the old
    epoch and *E*. A regression means the catch-up was incomplete and the swap
    must abort rather than publish.
-4. Quiesce and **close the entire reader pool**, update the epoch pointer, reopen
+5. Quiesce and **close the entire reader pool**, update the epoch pointer, reopen
    against *E*. Requests during the swap get 503 + `Retry-After`, not a stale
    inode.
-5. Retain the previous epoch's file until the swap is confirmed, then remove it.
+6. Retain the previous epoch's file until the swap is confirmed, then remove it.
+7. **Release the change-retention pin** (§4.2) — see below.
 
-A crash before step 4 leaves the old epoch authoritative and discards or resumes
+A crash before step 5 leaves the old epoch authoritative and discards or resumes
 *E*; it can never partially publish. Clients holding a pre-swap cursor get
 `epoch_changed` (§4.2) and refetch a snapshot.
+
+**The change-retention pin is released on every terminal outcome, not only
+success.** §4.2 pins `min_change_seq` at `rebuildFromSeq` so the barrier's
+catch-up rows survive; the release rule must therefore cover **success, abort,
+discard, and startup recovery of a stale or expired build**, or an aborted rebuild
+prevents `change` pruning indefinitely and the table grows without bound. The pin
+is recorded with the build it belongs to, so startup drops a pin whose build is no
+longer in progress. Kill-at-every-boundary coverage (§14.8) includes the pin's
+release.
 
 `telemetry.db` rebuilds independently; lists never wait on it. Rebuild is an
 **availability metric with a budget**, measured against the real input split
@@ -1078,6 +1113,62 @@ engineering one.** 90 days is a recommendation.
 
 ---
 
+## 11A. What changes on screen
+
+The brief was parity: same featureset, better reliability. That mostly holds — the
+page inventory, the data on each page, and every diagnostic surface are unchanged.
+But it does not hold *entirely*, and the deviations should be visible to a reader
+rather than inferred from §7.2.
+
+**Unchanged.** Overview, Workflows, Runs, Run detail, Insight, Errors. What each
+page shows. Graph, stages, attempts, evidence, escalation cause, replay. Filter
+*meanings*. The 50/200 page sizes and keyset paging. Insight's metrics — same
+numbers, answered from buckets. No new mutations; the three routes stay 501.
+
+**Behavior fixes users will feel.** Paging is no longer discarded by an arriving
+event (#1713 — today `runsHistory.ts:178` calls `refresh()`, which resets the
+cursor). A dead stream stops reporting "connected" (#1711). Stage attempts refresh
+on a live run (#1714).
+
+**One genuinely new surface: freshness means something different.** The indicator
+exists today (`LiveFreshness` → `DaemonQueryState`) but reports the *SSE
+connection* — connected / reconnecting / stale / offline / polling-fallback —
+which is not how current the data is, and is precisely why an operator cannot
+distinguish "slow" from "broken."
+
+| Today | After |
+|---|---|
+| "connected" (about the socket) | "current" / "stale by 4 s" (about the data) |
+| A spinner that dies at 10 s with no reason | "Unavailable — <reason>" with retry |
+| Standalone loads slowly and silently | "Building read model, 61%" |
+| — | "Partial — analytics 41% projected", with an expiry |
+
+Plus a degraded-mode banner on a read-only volume (run detail works, lists do
+not), and — during Wave 1.4 only — active-run counts labelled "as of N s ago".
+This is design work someone has to do, not just a data contract.
+
+**Two capability reductions, both requiring a decision.**
+
+1. **Unsupported filter combinations become a typed refusal (§5.7), and parity
+   here is a condition, not a guarantee.** The Runs page constructs
+   `gaggle × workflow × stage × outcome × population × since × until × phase`
+   (`runsHistory.ts:36–39`), and Insight drill-through builds combinations
+   *programmatically* from a metric (`InsightPage.tsx:1051–1073`). The set is
+   enumerable because that catalog is finite — not because users cannot ask
+   arbitrary questions. **If the enumeration misses a combination drill-through
+   can produce, that is a regression against behavior that works today.** §14.2's
+   API-surface enumeration test is what makes this a condition rather than a
+   hazard, and it must pass before Wave 2 lands.
+2. **The 90-day window (§11.4).** A six-month-old run stays answerable in
+   aggregate but may not be individually listable. Straightforwardly less than
+   today, and gating Wave 6.
+
+Also new but currently invisible: a multi-gaggle scope above `maxMergeFanout`
+returns "narrow your scope" (§5.5). Unreachable today, since `AllowAll` takes the
+unrestricted fast path; reachable once #644's RBAC lands.
+
+---
+
 ## 12. What gets deleted
 
 | Removed | Where | Because |
@@ -1191,7 +1282,7 @@ not claimed.
 | 5 | Bounded behavior under **sustained mixed load** | Scoped invalidations after commit; coalescing; admission control (§7.1, §8, §9) | Not a 60-second burst: **sustained concurrent reads, scheduler writes, projection, SSE traffic, rebuild, restart, and retention together.** Unrelated views perform zero refreshes; per-family in-flight ≤ 1 and queued ≤ 1; zero aborts attributable to a newer event; **bounded queue depth** per class |
 | 6 | Legible freshness, bounded honestly | `readState` bounded by pending intake **or** last sweep; three states; narrow `partial` (§4.1, §7.2) | Fault injection yields exactly one of current / stale-with-number / unavailable-with-reason. **An interrupted or over-budget page returns 503, never a 200 with `partial`** — including `SQLITE_INTERRUPT`. `partial` always names a partition and an expiry. `pendingIntake` is nonzero whenever an unconsumed watermark exists, **and a fixture that kills the writer between journal fsync and intake write asserts freshness falls back to `lastSweepCompletedAt` rather than reporting current** |
 | 7 | No silent omission | Completeness from `projection_state`; authz as an indexed predicate (§5.3, §5.5) | Differential test per filter and cursor against the journal-derived reference under an injected clock. Injecting a dirty run / incomplete sweep yields `partial`. A test asserts no list applies an authz filter after `LIMIT` |
-| 8 | Crash, restart, and **adverse-state** safety | One `read.db` transaction plus a guarded post-commit ack; epoch swap with `rebuildFromSeq` catch-up (§6.2, §6.5) | Kill at every boundary during project, rebuild, and **epoch swap**: previous epoch intact or resumed; no partial epoch readable. **A run that advances during a rebuild and is acknowledged by the old epoch is still caught up in the new one** (§6.5's exact scenario, as a fixture), and **no run's `last_projected_seq` regresses across the swap**. An external process writing intake across a swap loses nothing. Restart is O(active + pending). Plus **disk-full, read-only volume, corrupt store, and daemon↔standalone transitions** |
+| 8 | Crash, restart, and **adverse-state** safety | One `read.db` transaction plus a guarded post-commit ack; epoch swap with `rebuildFromSeq` catch-up (§6.2, §6.5) | Kill at every boundary during project, rebuild, and **epoch swap**: previous epoch intact or resumed; no partial epoch readable. **A run that advances during a rebuild and is acknowledged by the old epoch is still caught up in the new one** (§6.5's exact scenario, as a fixture), and **no run's `last_projected_seq` regresses across the swap**. An external process writing intake across a swap loses nothing. **The rebuilt epoch inherits the projection floor and tombstones** rather than re-admitting expired journals, and **the change-retention pin is released on every terminal outcome** — success, abort, discard, and startup recovery of an orphaned build — so an aborted rebuild cannot block `change` pruning. **A run that advances while a stale removal intent is pending is not deleted.** Restart is O(active + pending). Plus **disk-full, read-only volume, corrupt store, and daemon↔standalone transitions** |
 | 9 | Determinism | Pure `(prevRow, events) → nextRow`; buckets recomputed (§5.6, §10) | Rebuilding from the same journals produces byte-identical canonical rows; recomputing a day's bucket twice is identical |
 | 10 | Single-run isolation | `useSingleRun` keyed by `(runId, fingerprint)` (§7.1, §8.2) | Run detail cost independent of H; an unchanged journal parsed **at most once** per fingerprint across summary + events + attempts |
 | 11 | **Instance-log sequence uniqueness survives Wave 1.1** | Backward scan to the last *parseable, non-zero-`Seq`* event under the existing cross-process lock, with a byte budget and a full-recovery fallback (§17 Wave 1.1) | `TestInstanceLogConcurrentAppendsAllocateUniqueMonotonicSequence` (25 independent handles) and the sequential independent-writer test **retained and passing**, plus a bytes-read-per-append bound, plus **the existing NUL-cascade crash fixtures (#116) added to the sequence-allocation coverage** — a newline-terminated fill-only tail must not recover `seq=0` |
@@ -1517,6 +1608,23 @@ had asserted, and one of those was a factual error about the driver.
 | **The interrupt claim was factually wrong** | This document said `modernc.org/sqlite` exposes no interrupt. **It does** — `interruptOnDone` (`sqlite.go:78`) wires context cancellation to `sqlite3_interrupt`, used from `stmt.go:105`/`295` and `tx.go:71`. I had checked the exported API surface rather than driver behavior. This matters because it *supplies* the enforcement mechanism the document claimed to want but had none for | §7.1 — all request queries on `QueryContext`/`ExecContext`; **`SQLITE_INTERRUPT` maps to 503, never a partial 200**. (The separate claim that no `stmt_status` or progress handler is exposed was re-verified and stands) |
 | **The acceptance bar stopped being falsifiable** | "Budgets come from measured p99.9" always passes by adopting whatever came out | §14.12 — **absolute targets** for warm/cold p99.9, hard maxima, queue depth, sustained event rate, lag, sweep cycle, rebuild time, store size, and WAL size. Wave 0 may revise them **once**, with sign-off |
 | **Unconditional 503 above 30 s lag is wrong for an operator portal** | Honestly-labelled stale data usually beats a blank page during exactly the incident that caused the lag | §6.4 — **serve-labelled-stale is the default**; bounded freshness is opt-in per request (`maxLag`, `If-Source-Applied`) or per deployment (`strictFreshness`). Recorded as a product decision alongside the 90-day window |
+
+### 18.1a Fourth-pass amendments (convergence review)
+
+Accepted as design authority with three non-blocking amendments and one
+consistency fix, all taken here. Three of the four close holes the fourth pass
+itself introduced.
+
+| Amendment | Why | Resolution |
+|---|---|---|
+| A newer observation must cancel stale removal intent | Retention crashing between intent and unlink leaves `removing = 1`; if the run then advances or is resumed, the projector takes the removal branch and deletes a **live** run's rows. A higher `source_seq` is proof the intent is stale | §4.3 — the upsert clears `removing` when the incoming watermark advances. The one place a writer overrides retention, and the correct direction. Fixture: "run advances while removal intent is pending." Closes before Wave 3 |
+| A rebuilt epoch must inherit the projection floor and tombstones | They are derived *policy* state in the old `read.db`, not journal facts, so a rebuild from journals alone does not reproduce them — briefly re-admitting every expired journal, bursting removals and the change feed, and making rebuild size proportional to total history rather than the retained window. That defeats §14.12's rebuild-time and store-size targets | §6.5 step 2 — copy floor and tombstones **before** projecting any journal, and apply the floor while building. Gates Wave 6 |
+| The change-retention pin must release on **every** terminal rebuild outcome | The pin was specified without a release rule, so an aborted or discarded rebuild blocks `change` pruning indefinitely and the table grows without bound | §6.5 — release on success, abort, discard, and startup recovery of a stale build; the pin is recorded with its build so startup can drop an orphan. Added to kill-at-every-boundary coverage |
+| §6.1 still listed the watermark ack inside the serialized commit tuple | Contradicted §4.3/§6.2, which had correctly moved it to a guarded post-commit write in `intake.db` | §6.1 — tuple is now `(run row, run_stage rows, population rollups, change row, last_projected_seq)` in one `read.db` transaction, with the ack explicitly outside it |
+
+Added in the same pass, not from review: **§11A**, stating what changes on screen
+and naming the two places this design does not achieve strict UX parity — the
+enumerated filter-combination set and the 90-day window.
 
 ### 18.2 Second pass → third pass (first review)
 
