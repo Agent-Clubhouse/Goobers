@@ -175,4 +175,40 @@ CREATE INDEX IF NOT EXISTS idx_change_run ON change(run_id, seq);
 -- Scoped tails: a client watching one gaggle should not walk another's changes.
 CREATE INDEX IF NOT EXISTS idx_change_gaggle ON change(gaggle, seq);
 `,
+
+	// v3: the latest-terminal-outcome aggregate (#1891, §5.2).
+	//
+	// The Workflows page asks for each workflow's most recent TERMINAL run — the
+	// last time it actually finished. The ordering indexes cover
+	// (gaggle, workflow, started_at DESC, run_id), so adding `terminal = 1` to
+	// that query makes terminality a RESIDUAL predicate: SQLite reports
+	// `SEARCH run USING INDEX idx_run_gaggle_workflow_recency` while silently
+	// evaluating the terminal test per row, which is exactly the shape §5.7 says
+	// a plan cannot be trusted to reveal.
+	//
+	// It happens to be a cheap residual today, because almost every run is
+	// terminal and the newest one usually is. That is a property of the current
+	// corpus, not of the query: a workflow whose recent history is a run of
+	// in-flight or abandoned attempts walks every one of them before it finds an
+	// outcome, and nothing reports that it did. §5.7's discipline is that the
+	// bound comes from a declared index rather than from a hope about the data,
+	// so terminality moves into a partial index and stops being residual.
+	//
+	// A partial index rather than a fourth column: `terminal` is a constant
+	// within the index, so it costs no key bytes, and only terminal rows are
+	// indexed at all — roughly the whole table today, but the write cost tracks
+	// what the query actually reads.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_terminal_gaggle_workflow_recency
+	ON run(gaggle, workflow, started_at DESC, run_id ASC)
+	WHERE terminal = 1;
+
+-- The active-run count the concurrency ceiling is compared against, as an
+-- indexed aggregate rather than a directory walk (§5.4). Partial on the
+-- running phase because that is the only value it is ever asked about, and
+-- running rows are a small minority of the table.
+CREATE INDEX IF NOT EXISTS idx_run_running_gaggle_workflow
+	ON run(gaggle, workflow)
+	WHERE phase = 'running';
+`,
 }
