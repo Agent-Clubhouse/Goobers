@@ -5,6 +5,31 @@ import (
 	"path/filepath"
 )
 
+// treeSizeAcross totals the bytes of every file named name under any of roots.
+//
+// Callers must pass the *run* roots, not the instance root. The instance journal
+// is also called events.jsonl (scheduler/events.jsonl), so walking the instance
+// root silently folds a 324 MB instance journal into the "run events" figure —
+// and, worse, makes it the maximum of the per-run size distribution, which
+// inverts every tail assertion built on that distribution.
+func treeSizeAcross(roots []string, name string) int64 {
+	var total int64
+	for _, root := range roots {
+		total += treeSize(root, name)
+	}
+	return total
+}
+
+// treeSizeUnderAcross totals the bytes beneath a directory named dir under any
+// of roots.
+func treeSizeUnderAcross(roots []string, dir string) int64 {
+	var total int64
+	for _, root := range roots {
+		total += treeSizeUnder(root, dir)
+	}
+	return total
+}
+
 // treeSize totals the bytes of every file named name under root.
 //
 // It exists so the report can state the run-events and span footprints

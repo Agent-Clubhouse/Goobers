@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instancefixture"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -39,6 +40,18 @@ func correctnessSpec(root string) Spec {
 		OrphanDirs:      3,
 		OversizedRuns:   2,
 		Seed:            1,
+		// A populated inventory, because the runs are attributed to the gaggles
+		// and workflows it declares. An empty one produces runs whose gaggle no
+		// definition mentions, and then every inventory surface reports zero
+		// while looking healthy.
+		Inventory: instancefixture.InventorySpec{
+			InstanceName:      "scale-harness",
+			Gaggles:           2,
+			Workflows:         4,
+			GoobersPerGaggle:  1,
+			TasksPerWorkflow:  2,
+			MaxConcurrentRuns: 2,
+		},
 	}
 }
 
@@ -62,7 +75,7 @@ func TestGenerateProducesReadableRuns(t *testing.T) {
 		t.Fatal("scheduler journal is empty")
 	}
 
-	if err := rollup.Rebuild(gen.Layout.TelemetryDB(), gen.Layout.RunsDir(), gen.Layout.SchedulerDir()); err != nil {
+	if err := rebuildAllRoots(gen); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 	db, err := rollup.Open(gen.Layout.TelemetryDB())
@@ -73,7 +86,7 @@ func TestGenerateProducesReadableRuns(t *testing.T) {
 
 	service, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      gen.Layout,
-		Definitions: minimalDefinitions(),
+		Definitions: instancefixture.Inventory(gen.Inventory),
 		Telemetry:   db,
 	}, func() bool { return true })
 	if err != nil {
@@ -130,7 +143,7 @@ func TestOrphanDirsSurviveRollupAndScan(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	// The orphan directories really exist under runs/.
-	orphans, err := filepath.Glob(filepath.Join(gen.Layout.RunsDir(), "orphan-*"))
+	orphans, err := allOrphanDirs(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +151,7 @@ func TestOrphanDirsSurviveRollupAndScan(t *testing.T) {
 		t.Fatalf("found %d orphan dirs on disk, want %d", len(orphans), spec.OrphanDirs)
 	}
 
-	if err := rollup.Rebuild(gen.Layout.TelemetryDB(), gen.Layout.RunsDir(), gen.Layout.SchedulerDir()); err != nil {
+	if err := rebuildAllRoots(gen); err != nil {
 		t.Fatalf("rebuild must skip orphan dirs, not fail: %v", err)
 	}
 	db, err := rollup.Open(gen.Layout.TelemetryDB())
@@ -148,7 +161,7 @@ func TestOrphanDirsSurviveRollupAndScan(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	service, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      gen.Layout,
-		Definitions: minimalDefinitions(),
+		Definitions: instancefixture.Inventory(gen.Inventory),
 		Telemetry:   db,
 	}, func() bool { return true })
 	if err != nil {
@@ -184,7 +197,7 @@ func TestGeneratedEventSizesMatchLiveDistribution(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 
-	sizes := eventLogSizes(t, gen.Layout.RunsDir())
+	sizes := eventLogSizes(t, gen)
 	if len(sizes) != spec.Runs {
 		t.Fatalf("found %d event logs, want %d", len(sizes), spec.Runs)
 	}
@@ -239,7 +252,7 @@ func TestEventsPerRunPinsDistributionWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	sizes := eventLogSizes(t, gen.Layout.RunsDir())
+	sizes := eventLogSizes(t, gen)
 	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
 	p50, max := sizes[len(sizes)/2], sizes[len(sizes)-1]
 	if p50 <= 0 {
@@ -274,8 +287,12 @@ func TestSpanToEventByteRatioMatchesLiveInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	events := treeSize(gen.Layout.RunsDir(), "events.jsonl")
-	spans := treeSizeUnder(gen.Layout.RunsDir(), "spans")
+	roots, err := gen.Layout.RunDirs()
+	if err != nil {
+		t.Fatalf("enumerate run roots: %v", err)
+	}
+	events := treeSizeAcross(roots, "events.jsonl")
+	spans := treeSizeUnderAcross(roots, "spans")
 	if events == 0 {
 		t.Fatal("no run events generated")
 	}
@@ -312,7 +329,7 @@ func TestOrphanDirsCarryLockFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	orphans, err := filepath.Glob(filepath.Join(gen.Layout.RunsDir(), "orphan-*"))
+	orphans, err := allOrphanDirs(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,11 +417,30 @@ func TestGiantSchedulerRecordsExceedWaveOneByteBudget(t *testing.T) {
 	}
 }
 
-// eventLogSizes returns the byte size of every run's events.jsonl under runsDir.
-func eventLogSizes(t *testing.T, runsDir string) []int64 {
+// eventLogSizes returns the byte size of every run's events.jsonl under root.
+//
+// It walks from the instance root rather than a single runs directory because
+// runs live in per-gaggle roots (gaggles/<g>/runs) by default, matching the live
+// instance. Walking only Layout.RunsDir() finds nothing and the assertion
+// vacuously passes on an empty slice — so this takes the root.
+func eventLogSizes(t *testing.T, gen GenerateResult) []int64 {
+	t.Helper()
+	roots, err := gen.Layout.RunDirs()
+	if err != nil {
+		t.Fatalf("enumerate run roots: %v", err)
+	}
+	var sizes []int64
+	for _, root := range roots {
+		sizes = append(sizes, eventLogSizesUnder(t, root)...)
+	}
+	return sizes
+}
+
+// eventLogSizesUnder collects run event-log sizes beneath one run root.
+func eventLogSizesUnder(t *testing.T, root string) []int64 {
 	t.Helper()
 	var sizes []int64
-	err := filepath.WalkDir(runsDir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "events.jsonl" {
 			return nil
 		}
@@ -547,7 +583,7 @@ func BenchmarkListRunsFirstPage(b *testing.B) {
 	if err != nil {
 		b.Fatalf("generate: %v", err)
 	}
-	if err := rollup.Rebuild(gen.Layout.TelemetryDB(), gen.Layout.RunsDir(), gen.Layout.SchedulerDir()); err != nil {
+	if err := rebuildAllRoots(gen); err != nil {
 		b.Fatalf("rebuild rollup: %v", err)
 	}
 	db, err := rollup.Open(gen.Layout.TelemetryDB())
@@ -557,7 +593,7 @@ func BenchmarkListRunsFirstPage(b *testing.B) {
 	b.Cleanup(func() { _ = db.Close() })
 	service, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      gen.Layout,
-		Definitions: minimalDefinitions(),
+		Definitions: instancefixture.Inventory(gen.Inventory),
 		Telemetry:   db,
 	}, func() bool { return true })
 	if err != nil {
@@ -596,4 +632,127 @@ func countAllRuns(t *testing.T, service *readservice.Local) int {
 		}
 		options.Cursor = page.NextCursor
 	}
+}
+
+// rebuildAllRoots rebuilds the rollup over every per-gaggle run root. Runs live
+// in gaggles/<g>/runs, so rollup.Rebuild over a single directory ingests nothing
+// and every read then measures an empty index — a silent pass, not a failure.
+func rebuildAllRoots(gen GenerateResult) error {
+	roots, err := gen.Layout.RunDirs()
+	if err != nil {
+		return err
+	}
+	return rollup.RebuildAll(gen.Layout.TelemetryDB(), roots, gen.Layout.SchedulerDir())
+}
+
+// allOrphanDirs returns every generated orphan directory across all run roots.
+func allOrphanDirs(gen GenerateResult) ([]string, error) {
+	roots, err := gen.Layout.RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, root := range roots {
+		found, err := filepath.Glob(filepath.Join(root, "orphan-*"))
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, found...)
+	}
+	return dirs, nil
+}
+
+// TestInventorySurfacesCostGrowsWithRunHistory is the Wave 0 measurement that
+// makes design §2.1 falsifiable in-tree, and it is written to FAIL once the
+// defect is fixed.
+//
+// The claim under test: /v1/instance, /v1/gaggles, /v1/gaggles/{g}/workflows,
+// the workflow-detail route, and ListRuns(LatestPerWorkflow) all reach
+// activeRunCounts, which walks every run directory in history and opens each
+// journal to reconstruct phase. Their cost therefore tracks *total history*
+// rather than the inventory they render or the active set they report.
+//
+// Measured here at 1,200 runs / 200 workflows: a bounded list page is ~9 ms
+// while every inventory surface is ~160 ms and LatestPerWorkflow is ~200 ms,
+// which is the full unindexed status scan's own cost — i.e. it is doing the
+// scan. On the live instance the same shape measures 17.2 s cold to answer "2".
+//
+// **This test asserts the defect exists.** When #1741 and Wave 2's stored phase
+// land, the inventory surfaces stop scanning and this fails — deliberately. Its
+// failure is the signal to invert it into the bound §14.3 wants. Until then it
+// documents, in executable form, the thing five previous patches each described
+// correctly and none measured.
+func TestInventorySurfacesCostGrowsWithRunHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generates a multi-hundred-run corpus")
+	}
+	small := measureAtRunCount(t, 150)
+	large := measureAtRunCount(t, 600)
+
+	// The control: a bounded, indexed list page must NOT grow materially with
+	// history. If this fails, the corpus or the index is the problem, not the
+	// inventory path, and the comparison below would be meaningless.
+	pageGrowth := growth(stat(small, opListRunsPage).P50, stat(large, opListRunsPage).P50)
+	t.Logf("listruns_page p50: %s -> %s (%.2fx)", stat(small, opListRunsPage).P50, stat(large, opListRunsPage).P50, pageGrowth)
+
+	// The subjects. Each should grow roughly linearly with run count today.
+	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail, opLatestPerWorkflow} {
+		lo, hi := stat(small, op).P50, stat(large, op).P50
+		g := growth(lo, hi)
+		t.Logf("%s p50: %s -> %s (%.2fx) for 4x the runs", op, lo, hi, g)
+		if g < inventoryGrowthFloor {
+			t.Errorf("%s grew only %.2fx when run count grew 4x (%s -> %s).\n"+
+				"Either the active-run scan no longer backs this surface — in which case #1741/Wave 2 has landed and this test "+
+				"should be inverted into a bound — or the harness stopped reaching it. Both need a human look; neither is a pass.",
+				op, g, lo, hi)
+		}
+	}
+}
+
+// inventoryGrowthFloor is how much an inventory surface must grow when the run
+// corpus quadruples for the "cost tracks history" claim to hold. Set well below
+// 4x so scheduler noise cannot flake it while a genuine fix still trips it.
+const inventoryGrowthFloor = 2.0
+
+// growth returns hi/lo as a float, or 0 when lo is zero.
+func growth(lo, hi time.Duration) float64 {
+	if lo <= 0 {
+		return 0
+	}
+	return float64(hi) / float64(lo)
+}
+
+// measureAtRunCount generates a corpus of n runs and measures it. The inventory
+// is held constant across sizes so the only variable is run history — which is
+// the whole point: if the inventory grew too, a growth in inventory-surface cost
+// would prove nothing.
+func measureAtRunCount(t *testing.T, n int) Measurement {
+	t.Helper()
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = n
+	spec.EventsPerRun = 6 // cheap and uniform; this test is about count, not size
+	spec.SpansPerRun = 0
+	spec.SpanBytes = 0
+	spec.ExtraSpanFraction = 0
+	spec.OversizedRuns = 0
+	spec.OrphanDirs = 0
+	spec.SchedulerEvents = 50
+	spec.GiantSchedulerRecords = 0
+	spec.Inventory = instancefixture.InventorySpec{
+		InstanceName:      "growth-fixture",
+		Gaggles:           2,
+		Workflows:         20,
+		GoobersPerGaggle:  1,
+		TasksPerWorkflow:  1,
+		MaxConcurrentRuns: 4,
+	}
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate %d runs: %v", n, err)
+	}
+	m, err := measure(gen.Layout, gen, 6, fsyncDisabled())
+	if err != nil {
+		t.Fatalf("measure %d runs: %v", n, err)
+	}
+	return m
 }

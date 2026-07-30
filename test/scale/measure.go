@@ -6,14 +6,11 @@ import (
 	"os"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/instancefixture"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Measurement is one scale point's cost across the telemetry read/ingest paths
@@ -62,6 +59,22 @@ const (
 	opStatusFullScan   = "status_full_scan"
 	opListRunsGaggle   = "listruns_gaggle_filtered"
 	opListRunsDeepPage = "listruns_deep_page"
+
+	// The inventory surfaces. Every one of these reaches the active-run scan
+	// that measures 17.2 s cold on the live instance to answer "2" (design
+	// §2.1), and **none of them was measured here before** — which is why five
+	// patches to the read path could each be correct about a mechanism while none
+	// of them changed the shape. §2.5 records the gap.
+	opInstance          = "instance"
+	opGaggles           = "gaggles"
+	opWorkflows         = "workflows"
+	opWorkflowDetail    = "workflow_detail"
+	opLatestPerWorkflow = "listruns_latest_per_workflow"
+
+	// Run detail as the portal issues it: three separate calls against one run.
+	// That is the redundant-parse pattern §8.2's useSingleRun collapses, and the
+	// surface #1665's unconfirmed timeout is reported against.
+	opRunDetail = "run_detail_summary_events_attempts"
 )
 
 // measure builds a telemetry rollup over the generated instance and samples the
@@ -82,11 +95,18 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		SchedulerEvents:      gen.SchedulerEvents,
 		SchedulerJournalSize: gen.SchedulerJournalSize,
 	}
-	m.RunEventsSize = treeSize(layout.RunsDir(), "events.jsonl")
-	m.SpansSize = treeSizeUnder(layout.RunsDir(), "spans")
+	// RebuildAll over every per-gaggle run root, not Rebuild over one directory:
+	// runs live in gaggles/<g>/runs, so the single-root form silently ingests
+	// nothing and every subsequent read measures an empty index.
+	roots, err := layout.RunDirs()
+	if err != nil {
+		return Measurement{}, fmt.Errorf("scale: enumerate run roots: %w", err)
+	}
+	m.RunEventsSize = treeSizeAcross(roots, "events.jsonl")
+	m.SpansSize = treeSizeUnderAcross(roots, "spans")
 
 	rebuildStart := time.Now()
-	if err := rollup.Rebuild(layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
+	if err := rollup.RebuildAll(layout.TelemetryDB(), roots, layout.SchedulerDir()); err != nil {
 		return Measurement{}, fmt.Errorf("scale: rebuild rollup: %w", err)
 	}
 	m.RollupRebuild = time.Since(rebuildStart)
@@ -103,7 +123,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 
 	service, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
-		Definitions: minimalDefinitions(),
+		Definitions: instancefixture.Inventory(gen.Inventory),
 		Telemetry:   db,
 	}, func() bool { return true })
 	if err != nil {
@@ -118,6 +138,19 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		return Measurement{}, err
 	}
 
+	// A concrete run to measure the detail surfaces against, and a stage on it.
+	// Resolved outside the loop for the same reason as the cursor.
+	sampleRun, sampleStage, err := sampleRunAndStage(ctx, service)
+	if err != nil {
+		return Measurement{}, err
+	}
+
+	// The gaggle and workflow the inventory actually declares. Using a name the
+	// definitions do not contain is the quiet way to measure nothing: the
+	// surfaces return empty and look fast.
+	firstGaggle := instancefixture.GaggleName(0)
+	firstWorkflow := instancefixture.WorkflowName(0)
+
 	ops := []struct {
 		name string
 		fn   func() error
@@ -127,7 +160,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 			return err
 		}},
 		{opListRunsGaggle, func() error {
-			_, err := service.ListRuns(ctx, readservice.RunListOptions{Gaggle: gaggles[0], Limit: 50})
+			_, err := service.ListRuns(ctx, readservice.RunListOptions{Gaggle: firstGaggle, Limit: 50})
 			return err
 		}},
 		// A deep page is measured because keyset pagination is only bounded if
@@ -147,6 +180,46 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		}},
 		{opStatusFullScan, func() error {
 			_, err := service.ListStatusRuns(ctx)
+			return err
+		}},
+
+		// The four inventory surfaces §2.1 names. Each reaches activeRunCounts.
+		{opInstance, func() error {
+			_, err := service.Instance(ctx)
+			return err
+		}},
+		{opGaggles, func() error {
+			_, err := service.Gaggles(ctx, readservice.PageRequest{Limit: 50})
+			return err
+		}},
+		{opWorkflows, func() error {
+			_, err := service.Workflows(ctx, firstGaggle, readservice.PageRequest{Limit: 50})
+			return err
+		}},
+		{opWorkflowDetail, func() error {
+			_, err := service.Workflow(ctx, firstGaggle, firstWorkflow)
+			return err
+		}},
+		// The Overview's own list path, and the fifth call site §2.1 adds. Issued
+		// without a limit, exactly as the portal issues it (operationalData.ts).
+		{opLatestPerWorkflow, func() error {
+			_, err := service.ListRuns(ctx, readservice.RunListOptions{LatestPerWorkflow: true})
+			return err
+		}},
+
+		// Run detail, all three calls, against one run — the pattern that
+		// reparses the same bytes up to three times today.
+		{opRunDetail, func() error {
+			if _, err := service.GetRun(ctx, sampleRun); err != nil {
+				return err
+			}
+			if _, err := service.RunEvents(ctx, sampleRun); err != nil {
+				return err
+			}
+			if sampleStage == "" {
+				return nil
+			}
+			_, err := service.StageAttempts(ctx, sampleRun, sampleStage)
 			return err
 		}},
 	}
@@ -195,21 +268,31 @@ func cursorAtDepth(ctx context.Context, service *readservice.Local, pages int) (
 	return options.Cursor, nil
 }
 
-// minimalDefinitions builds the smallest ConfigSet readservice.NewLocal accepts.
+// sampleRunAndStage returns a run id and one of its stage names, for measuring
+// the run-detail surfaces against.
 //
-// NOTE: an empty inventory does NOT spare the harness the active-run scan —
-// Local.Instance calls activeRunCounts unconditionally and it is keyed on run
-// directories, not on configured workflows (design §2.5). The reason this
-// harness has never measured that scan is simply that it never calls
-// Instance/Gaggles/Workflows. A parameterizable inventory and coverage of those
-// surfaces is the next slice of #1913.
-func minimalDefinitions() *instance.ConfigSet {
-	return &instance.ConfigSet{Manifest: &apiv1.Manifest{
-		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-			workflow.PreviewFeaturesAnnotation: "true",
-		}},
-		Spec: apiv1.ManifestSpec{
-			Instance: apiv1.InstanceRef{Name: "scale-harness", Environment: apiv1.EnvironmentDev},
-		},
-	}}
+// It takes the *first* page's first run rather than a fixed id, so it works
+// against any corpus size and against a corpus whose oldest runs have been
+// pruned. An empty stage is returned rather than an error when the run has no
+// stage attempts, because a corpus of one in-flight run is legitimate and the
+// caller simply skips the attempts call.
+func sampleRunAndStage(ctx context.Context, service *readservice.Local) (string, string, error) {
+	page, err := service.ListRuns(ctx, readservice.RunListOptions{Limit: 1})
+	if err != nil {
+		return "", "", fmt.Errorf("scale: resolve sample run: %w", err)
+	}
+	if len(page.Runs) == 0 {
+		return "", "", fmt.Errorf("scale: corpus has no readable runs to measure detail against")
+	}
+	runID := page.Runs[0].ID
+	detail, err := service.GetRun(ctx, runID)
+	if err != nil {
+		return "", "", fmt.Errorf("scale: resolve sample run %s: %w", runID, err)
+	}
+	for _, stage := range detail.Stages {
+		if stage != "" {
+			return runID, stage, nil
+		}
+	}
+	return runID, "", nil
 }

@@ -102,6 +102,8 @@ type options struct {
 	measure         bool
 	samples         int
 	jsonOut         string
+	workflows       int
+	gagglesFlag     int
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -126,6 +128,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		spec.SchedulerEvents = opts.schedulerEvents
 		spec.GiantSchedulerRecords = scaleGiantRecords(spec.SchedulerEvents)
 	}
+	if opts.workflows > 0 {
+		spec.Inventory.Workflows = opts.workflows
+	}
+	if opts.gagglesFlag > 0 {
+		spec.Inventory.Gaggles = opts.gagglesFlag
+	}
 	spec.Seed = opts.seed
 
 	// A persisted -out is kept for inspection; without one, generate into a
@@ -142,8 +150,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	spec.Root = root
 
-	_, _ = fmt.Fprintf(stdout, "scale: generating %d runs + %d scheduler events into %s\n",
-		spec.Runs, spec.SchedulerEvents, root)
+	_, _ = fmt.Fprintf(stdout, "scale: generating %d runs + %d scheduler events into %s (%d gaggles, %d workflows)\n",
+		spec.Runs, spec.SchedulerEvents, root, spec.Inventory.Gaggles, spec.Inventory.Workflows)
 	gen, err := generate(spec)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
@@ -209,6 +217,8 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	flags.BoolVar(&opts.measure, "measure", false, "after generating, benchmark the read/ingest/reconcile paths")
 	flags.IntVar(&opts.samples, "samples", 20, "times to sample each read path; the first is cold, the rest warm (>=1000 to state a p99.9)")
 	flags.StringVar(&opts.jsonOut, "json", "", "also write the measurement to this path as JSON (a comparable baseline artifact)")
+	flags.IntVar(&opts.workflows, "workflows", 0, "exact workflow count in the generated inventory (overrides -scale; 2000 is §14.4's fan-out target)")
+	flags.IntVar(&opts.gagglesFlag, "gaggles", 0, "exact gaggle count in the generated inventory (overrides -scale)")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}

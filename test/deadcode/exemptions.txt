@@ -8,6 +8,7 @@ github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory r
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
+github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory retained for exporter and audit consumers.
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator retained for exporter and audit consumers.
