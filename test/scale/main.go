@@ -257,7 +257,10 @@ func writeReport(w io.Writer, m Measurement) {
 	_, _ = fmt.Fprintf(w, "  spans               %s (%s events)\n", humanBytes(m.SpansSize), spanEventRatio(m))
 	_, _ = fmt.Fprintf(w, "  scheduler_journal   %s\n", humanBytes(m.SchedulerJournalSize))
 	_, _ = fmt.Fprintf(w, "  telemetry_db        %s\n", humanBytes(m.TelemetryDBSize))
-	_, _ = fmt.Fprintf(w, "  rollup_rebuild      %s\n", m.RollupRebuild.Round(time.Millisecond))
+	_, _ = fmt.Fprintf(w, "  rollup_rebuild      %s (%d journal opens)\n",
+		m.RollupRebuild.Round(time.Millisecond), m.RebuildOpens)
+	_, _ = fmt.Fprintf(w, "  rebuild_on_blob     %s  SIMULATED at %s/open, not measured on real remote storage\n",
+		m.SimulatedBlobRebuild.Round(time.Millisecond), m.BlobPerOpenLatency)
 	for _, s := range m.Stats {
 		p999 := "n/a"
 		if s.P999Valid {

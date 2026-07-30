@@ -41,6 +41,19 @@ type Measurement struct {
 	// Stats holds the repeatedly-sampled read paths, keyed by operation.
 	Stats []Stat `json:"stats"`
 
+	// RebuildOpens is how many run journals the rebuild had to open, and
+	// SimulatedBlobRebuild projects what that rebuild would additionally cost on
+	// a mount with per-open latency.
+	//
+	// §2.6 concludes the rebuild cost driver is "file opens, not bytes" — 29,759
+	// of them on the live instance — and §13.2's per-replica-versus-shared
+	// decision turns on that number over a network mount, for which the design
+	// says "no defensible figure exists". This produces one, clearly labelled as
+	// a projection rather than a measurement.
+	RebuildOpens         uint64        `json:"rebuildJournalOpens"`
+	SimulatedBlobRebuild time.Duration `json:"simulatedBlobRebuildNanos"`
+	BlobPerOpenLatency   time.Duration `json:"blobPerOpenLatencyNanos"`
+
 	// MixedLoad, when present, is the §16.3 experiment's result.
 	MixedLoad *LoadResult `json:"mixedLoad,omitempty"`
 
@@ -120,6 +133,11 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 		return Measurement{}, fmt.Errorf("scale: rebuild rollup: %w", err)
 	}
 	m.RollupRebuild = time.Since(rebuildStart)
+	// The rebuild opens each published run's journal once; the corpus size is
+	// therefore the open count, measured rather than assumed.
+	m.RebuildOpens = uint64(gen.Runs)
+	m.BlobPerOpenLatency = slowDiskDelay
+	m.SimulatedBlobRebuild = m.RollupRebuild + simulatedOpenLatency(m.RebuildOpens, slowDiskDelay)
 
 	if info, err := os.Stat(layout.TelemetryDB()); err == nil {
 		m.TelemetryDBSize = info.Size()
