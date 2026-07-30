@@ -1,0 +1,23 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: quality-lead
+spec:
+  gaggle: goobers
+  role: quality-lead
+  displayName: Quality lead
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  # collate: reads every focus-areas branch's findings report (fan-in
+  # artifact union) and produces one deduplicated, freeform finding set.
+  # Read-only, same shape as quality-researcher — the actual issue-filing
+  # write happens in the separate, terminal `nominate` stage.
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - quality-sprint

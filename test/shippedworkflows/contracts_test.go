@@ -699,6 +699,7 @@ func TestTerminalScenariosDiscoverConsecutiveGateEscalation(t *testing.T) {
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
+	graph.Edges = resolvedJoinEdges(graph)
 	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
@@ -833,6 +834,67 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 	return nil, false
 }
 
+// resolvedJoinEdges returns graph.Edges with each branch-internal edge whose
+// Target is the reserved "@join" marker rewritten to point at its owning
+// parallel's actual join stage instead. model.GraphEdge deliberately keeps
+// "@join" as a literal target ("Target retains the machine target,
+// including... reserved targets") since a portal-style consumer needs to
+// know structurally that an edge is a join edge — but this file's scenario
+// generator walks the graph to find a path to a terminal, and a run never
+// actually settles "at" the literal state "@join" (the runner resolves it
+// to the join stage immediately), so both the path walk and the generated
+// scenario need the real target, not the DSL-only placeholder.
+func resolvedJoinEdges(graph workflow.Graph) []workflow.GraphEdge {
+	bySource := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		bySource[edge.Source] = append(bySource[edge.Source], edge)
+	}
+
+	branchJoin := map[string]string{} // branch-member state -> real join target
+	for _, node := range graph.Nodes {
+		if node.Kind != workflow.GraphNodeParallel {
+			continue
+		}
+		var joinTarget string
+		var branchStarts []string
+		for _, edge := range bySource[node.ID] {
+			switch {
+			case edge.Outcome == "join":
+				joinTarget = edge.Target
+			case edge.Branch != "":
+				branchStarts = append(branchStarts, edge.Target)
+			}
+		}
+		for _, start := range branchStarts {
+			seen := map[string]bool{}
+			queue := []string{start}
+			for len(queue) > 0 {
+				state := queue[0]
+				queue = queue[1:]
+				if state == "" || state == workflow.TargetJoin || seen[state] {
+					continue
+				}
+				seen[state] = true
+				branchJoin[state] = joinTarget
+				for _, edge := range bySource[state] {
+					queue = append(queue, edge.Target)
+				}
+			}
+		}
+	}
+
+	resolved := make([]workflow.GraphEdge, len(graph.Edges))
+	for i, edge := range graph.Edges {
+		if edge.Target == workflow.TargetJoin {
+			if target, ok := branchJoin[edge.Source]; ok {
+				edge.Target = target
+			}
+		}
+		resolved[i] = edge
+	}
+	return resolved
+}
+
 func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
 	var walk func(string, map[string]bool) ([]workflow.GraphEdge, bool)
 	walk = func(state string, seen map[string]bool) ([]workflow.GraphEdge, bool) {
@@ -944,6 +1006,10 @@ func assertJournalScenario(t *testing.T, definition apiv1.Workflow, events []jou
 	for _, task := range definition.Spec.Tasks {
 		tasks[task.Name] = task
 	}
+	parallels := make(map[string]apiv1.Parallel, len(definition.Spec.Parallels))
+	for _, parallel := range definition.Spec.Parallels {
+		parallels[parallel.Name] = parallel
+	}
 	var sequence []string
 	var terminalEvents int
 	for index, event := range events {
@@ -982,8 +1048,29 @@ func assertJournalScenario(t *testing.T, definition apiv1.Workflow, events []jou
 		t.Fatalf("journal has %d terminal events, want 1", terminalEvents)
 	}
 	var expected []string
+	fanOutIndex := -1
+	var owningParallel *apiv1.Parallel
 	for _, edge := range scenario.steps {
 		if edge.Source == scenario.escalationGate {
+			continue
+		}
+		if parallel, ok := parallels[edge.Source]; ok {
+			// The parallel state itself is never a journaled stage — only
+			// its branches and join task are. This edge is either one
+			// declared branch's fan-out (Branch set) or the aggregate join/
+			// onFailure edge; either way, the scenario's selected path only
+			// ever names ONE branch (the edge it was built around), but
+			// continue_on_error/all_or_nothing run EVERY declared branch to
+			// completion regardless, and their relative order is never
+			// guaranteed (concurrent at maxConcurrentBranches > 1, and not
+			// otherwise promised even sequentially). Defer to
+			// assertParallelSection below instead of asserting one exact
+			// sequence through it.
+			if fanOutIndex < 0 {
+				fanOutIndex = len(expected)
+				p := parallel
+				owningParallel = &p
+			}
 			continue
 		}
 		if _, ok := tasks[edge.Source]; ok {
@@ -992,9 +1079,128 @@ func assertJournalScenario(t *testing.T, definition apiv1.Workflow, events []jou
 		}
 		expected = append(expected, "gate:"+edge.Source+"="+edge.Outcome)
 	}
-	if !reflect.DeepEqual(sequence, expected) {
-		t.Fatalf("journal execution sequence:\n got: %v\nwant: %v", sequence, expected)
+	if owningParallel == nil {
+		if !reflect.DeepEqual(sequence, expected) {
+			t.Fatalf("journal execution sequence:\n got: %v\nwant: %v", sequence, expected)
+		}
+		return
 	}
+	assertParallelSection(t, definition.Spec, *owningParallel, sequence, expected, fanOutIndex)
+}
+
+// assertParallelSection verifies a scenario whose selected path fans out
+// through a parallel. The scenario's own steps only ever name the ONE
+// branch it was built around, but continue_on_error/all_or_nothing run
+// EVERY declared branch to completion regardless — and their relative
+// order to each other is never guaranteed (concurrent at
+// maxConcurrentBranches > 1, and not otherwise promised even sequentially).
+// So instead of one exact sequence through the parallel, this checks: the
+// pre-parallel prefix and post-join suffix match exactly as before, the
+// parallel section contains exactly the union of every declared branch's
+// own expected steps (no more, no fewer), and each branch's own steps keep
+// their declared relative order among themselves (never interleaved with
+// their OWN steps, only with siblings').
+func assertParallelSection(t *testing.T, spec apiv1.WorkflowSpec, parallel apiv1.Parallel, sequence, expectedPath []string, fanOutIndex int) {
+	t.Helper()
+	joinPos := -1
+	for i := fanOutIndex; i < len(expectedPath); i++ {
+		if expectedPath[i] == "task:"+parallel.Join || strings.HasPrefix(expectedPath[i], "gate:"+parallel.Join+"=") {
+			joinPos = i
+			break
+		}
+	}
+	if joinPos < 0 {
+		t.Fatalf("could not locate parallel %q's join stage %q in expected scenario path %v", parallel.Name, parallel.Join, expectedPath)
+	}
+	prefix := expectedPath[:fanOutIndex]
+	suffix := expectedPath[joinPos:]
+
+	var branchChains [][]string
+	wantSteps := map[string]int{}
+	for _, branch := range parallel.Branches {
+		chain := expectedBranchChain(spec, branch.Start)
+		branchChains = append(branchChains, chain)
+		for _, step := range chain {
+			wantSteps[step]++
+		}
+	}
+
+	if len(sequence) < len(prefix)+len(suffix) {
+		t.Fatalf("journal execution sequence %v shorter than prefix %v + suffix %v", sequence, prefix, suffix)
+	}
+	gotPrefix := sequence[:len(prefix)]
+	gotSuffix := sequence[len(sequence)-len(suffix):]
+	gotParallel := sequence[len(prefix) : len(sequence)-len(suffix)]
+
+	if !reflect.DeepEqual(gotPrefix, prefix) {
+		t.Fatalf("journal execution sequence prefix:\n got: %v\nwant: %v", gotPrefix, prefix)
+	}
+	if !reflect.DeepEqual(gotSuffix, suffix) {
+		t.Fatalf("journal execution sequence suffix:\n got: %v\nwant: %v", gotSuffix, suffix)
+	}
+
+	gotSteps := map[string]int{}
+	for _, step := range gotParallel {
+		gotSteps[step]++
+	}
+	if !reflect.DeepEqual(gotSteps, wantSteps) {
+		t.Fatalf("journal execution sequence through parallel %q:\n got: %v\nwant every declared branch's steps: %v",
+			parallel.Name, gotParallel, branchChains)
+	}
+	for _, chain := range branchChains {
+		if !isSubsequence(chain, gotParallel) {
+			t.Fatalf("parallel %q: branch steps %v are not in declared relative order within %v", parallel.Name, chain, gotParallel)
+		}
+	}
+}
+
+// expectedBranchChain walks a branch's own subgraph from its Start,
+// following each task's Next or each gate's "pass" outcome (the happy path
+// every non-selected sibling branch takes in this test's scripted harness),
+// stopping at @join or a reserved terminal target.
+func expectedBranchChain(spec apiv1.WorkflowSpec, start string) []string {
+	tasksByName := make(map[string]apiv1.Task, len(spec.Tasks))
+	for _, tk := range spec.Tasks {
+		tasksByName[tk.Name] = tk
+	}
+	gatesByName := make(map[string]apiv1.Gate, len(spec.Gates))
+	for _, g := range spec.Gates {
+		gatesByName[g.Name] = g
+	}
+	var chain []string
+	state := start
+	for range spec.Tasks {
+		switch state {
+		case "", workflow.TargetJoin, workflow.TargetAbort, workflow.TargetEscalate:
+			return chain
+		}
+		if task, ok := tasksByName[state]; ok {
+			chain = append(chain, "task:"+state)
+			state = task.Next
+			continue
+		}
+		if gate, ok := gatesByName[state]; ok {
+			target, ok := gate.Branches["pass"]
+			if !ok {
+				return chain
+			}
+			chain = append(chain, "gate:"+state+"=pass")
+			state = target
+			continue
+		}
+		return chain
+	}
+	return chain
+}
+
+func isSubsequence(want, got []string) bool {
+	i := 0
+	for _, step := range got {
+		if i < len(want) && step == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
 }
 
 func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []journal.Event) {

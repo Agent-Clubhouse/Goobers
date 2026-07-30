@@ -8,7 +8,7 @@ type Graph = model.Graph
 // GraphNodeKind identifies the execution kind of a graph node.
 type GraphNodeKind = model.GraphNodeKind
 
-// GraphNode is one task or gate in a workflow graph.
+// GraphNode is one task, gate, or parallel in a workflow graph.
 type GraphNode = model.GraphNode
 
 // GraphTerminal identifies how an edge ends a run.
@@ -24,6 +24,8 @@ const (
 	GraphNodeAgentic = model.GraphNodeAgentic
 	// GraphNodeGate identifies a gate.
 	GraphNodeGate = model.GraphNodeGate
+	// GraphNodeParallel identifies a static fan-out/fan-in parallel.
+	GraphNodeParallel = model.GraphNodeParallel
 
 	// GraphTerminalComplete identifies successful completion.
 	GraphTerminalComplete = model.GraphTerminalComplete
