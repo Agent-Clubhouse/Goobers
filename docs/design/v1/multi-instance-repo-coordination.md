@@ -97,12 +97,42 @@ mutex that doesn't exist yet:
   partition axis — useful when a region has enough churn that label-only
   partitioning isn't granular enough (e.g. one team's region has issues that
   individual members want routed to themselves specifically).
-- **New: sibling-overlap validation.** A gaggle can optionally declare its known
+
+### Configuration granularity — where each mechanism actually lives
+
+Confirmed inconsistency worth fixing rather than leaving implicit: `BranchNamespace`
+already has a clean **gaggle-level default, per-task override** pattern (every
+PR-selecting stage falls back to the gaggle's configured namespace unless its own
+task declares a different `headPrefix`). Region labels have **no such default
+today** — `requireLabels`/`excludeLabels`/`respectAssignee` are declared
+independently on each workflow's own `backlog-query` task
+(`implementation.yaml` and `backlog-curation.yaml` each set their own). For a
+10-20-team deployment that means repeating the same required label in every one
+of a team's workflow files, with real drift risk (a new workflow added later
+forgets the label and silently rejoins the shared pool).
+
+**Region-label scoping should get the same shape `BranchNamespace` already has**:
+a gaggle-level default required label, inherited by every workflow's
+`backlog-query` task unless a task explicitly overrides it — not a
+workflow-only concept. This is MIRC-2's job, not a separate issue: sibling-scope
+declaration and the gaggle-level region-label default are the same piece of
+config surface (a gaggle's own declared scope *is* what gets checked for overlap
+against its declared siblings).
+
+Claim-race detection (MIRC-3) is deliberately **not** a per-workflow opt-in —
+it's a pure safety hardening in the shared claim path (`backlog-query --claim`)
+with no legitimate reason to disable, so it applies unconditionally to any
+workflow that claims items, once it ships.
+
+- **New: sibling-overlap validation + gaggle-level region-label default.** A
+  gaggle declares its own default required label (inherited by its workflows'
+  `backlog-query` tasks unless overridden) and can optionally declare known
   "siblings" (other instances/gaggles expected to operate on the same repo) and
-  their label scopes; `goobers validate`/`lint` warns when two declared siblings'
-  required-label sets are not disjoint. Catches the misconfiguration case (the
-  likely dominant failure mode with 10-20 independently-configured teams) before
-  it produces a live collision, without requiring a shared coordination service.
+  their scopes; `goobers validate`/`lint` warns when two declared siblings'
+  effective required-label sets are not disjoint. Catches the misconfiguration
+  case (the likely dominant failure mode with 10-20 independently-configured
+  teams) before it produces a live collision, without requiring a shared
+  coordination service.
 - **New: claim-race detection, not elimination.** Harden the claim path with a
   write-then-reread pattern: after writing the claim marker, re-fetch the item
   shortly after and confirm the marker still names this instance's claim. If a
