@@ -74,7 +74,7 @@ func (db *DB) agentProvenanceByRunForGaggle(gaggle, workflow string) (map[string
 		query += " AND r.gaggle = ?"
 		args = append(args, gaggle)
 	}
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query agent provenance for %q: %w", workflow, err)
 	}
@@ -132,7 +132,7 @@ func (db *DB) effectiveVersionRowsForGaggle(gaggle, workflow string, since time.
 		FROM runs r LEFT JOIN run_goober_digests g ON g.run_id = r.run_id
 		WHERE %s
 		ORDER BY r.started_at, r.run_id`, strings.Join(clauses, " AND "))
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query effective version rows for %q: %w", workflow, err)
 	}

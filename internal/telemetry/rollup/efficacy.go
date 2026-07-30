@@ -26,7 +26,7 @@ type DigestChange struct {
 // not an error, for a workflow with fewer than two distinct digests (no
 // transition has ever happened).
 func (db *DB) DigestHistory(workflow string) ([]DigestChange, error) {
-	rows, err := db.sql.Query(`
+	rows, err := db.readDB().Query(`
 		SELECT workflow_digest, started_at FROM runs
 		WHERE workflow = ? AND workflow_digest IS NOT NULL AND workflow_digest != ''
 		ORDER BY started_at, run_id`, workflow)
@@ -228,7 +228,7 @@ func (db *DB) runStatsByDigest(workflow, digest string, since time.Time) (RunSta
 	var s RunStats
 	var avg sql.NullFloat64
 	var min, max sql.NullInt64
-	err := db.sql.QueryRow(query, queryArgs...).Scan(&s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
+	err := db.readDB().QueryRow(query, queryArgs...).Scan(&s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
 	if err != nil {
 		return RunStats{}, fmt.Errorf("rollup: run stats for %q@%q: %w", workflow, digest, err)
 	}

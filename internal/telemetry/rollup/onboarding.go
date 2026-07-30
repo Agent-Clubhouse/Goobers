@@ -13,7 +13,7 @@ import (
 // instance journal and provider-mutation events during rollup ingestion.
 func (db *DB) TimeToFirstPR() (telemetry.TimeToFirstPRMetric, error) {
 	var initCompleted, firstPROpen sql.NullString
-	if err := db.sql.QueryRow(`
+	if err := db.readDB().QueryRow(`
 		SELECT init_completed_at, first_pr_open_at
 		FROM first_success_milestones
 		WHERE id = 1`).Scan(&initCompleted, &firstPROpen); err != nil {

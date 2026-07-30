@@ -248,7 +248,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 		runStatusEscalated,
 		runStatusRunning,
 	}, runArgs...)
-	if err := db.sql.QueryRow(runQuery, args...).Scan(
+	if err := db.readDB().QueryRow(runQuery, args...).Scan(
 		&out.TotalRuns,
 		&out.CompletedRuns,
 		&out.FailedRuns,
@@ -269,7 +269,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 		GROUP BY workflow
 		ORDER BY run_count DESC, workflow
 		LIMIT 1`, runWhere)
-	err := db.sql.QueryRow(busiestQuery, runArgs...).Scan(&out.BusiestWorkflow, &out.BusiestWorkflowRuns)
+	err := db.readDB().QueryRow(busiestQuery, runArgs...).Scan(&out.BusiestWorkflow, &out.BusiestWorkflowRuns)
 	if err != nil && err != sql.ErrNoRows {
 		return InstanceSummary{}, fmt.Errorf("rollup: query busiest workflow: %w", err)
 	}
@@ -282,7 +282,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 			COALESCE(SUM(CASE WHEN kind = 'issue' AND operation = 'claim' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN kind = 'issue' AND operation = 'close' THEN 1 ELSE 0 END), 0)
 		FROM provider_mutations %s`, mutationWhere)
-	if err := db.sql.QueryRow(mutationQuery, mutationArgs...).Scan(
+	if err := db.readDB().QueryRow(mutationQuery, mutationArgs...).Scan(
 		&out.PullRequestsOpened,
 		&out.PullRequestsMerged,
 		&out.IssuesClaimed,
@@ -306,7 +306,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 		SELECT COUNT(*), COALESCE(AVG(sa.duration_ms), 0), COALESCE(MAX(sa.duration_ms), 0)
 		FROM stage_attempts sa
 		WHERE %s`, stageFilter)
-	if err := db.sql.QueryRow(stageQuery, stageArgs...).Scan(
+	if err := db.readDB().QueryRow(stageQuery, stageArgs...).Scan(
 		&out.AgenticStageAttempts,
 		&out.AvgAgenticStageDurationMs,
 		&out.LongestAgenticStageMs,
@@ -324,7 +324,7 @@ func (db *DB) InstanceSummaryStats(since time.Time) (InstanceSummary, error) {
 		WHERE %s
 		ORDER BY sa.duration_ms DESC, sa.started_at, sa.run_id, sa.traversal
 		LIMIT 1`, stageFilter)
-	if err := db.sql.QueryRow(longestQuery, stageArgs...).Scan(
+	if err := db.readDB().QueryRow(longestQuery, stageArgs...).Scan(
 		&out.LongestAgenticStage,
 		&out.LongestAgenticWorkflow,
 		&out.LongestAgenticRunID,
@@ -402,7 +402,7 @@ func (db *DB) requireKnownBranchAttribution(req StatsRequest) error {
 			%s
 		)`, whereClause(clauses))
 	var unknown bool
-	if err := db.sql.QueryRow(query, args...).Scan(&unknown); err != nil {
+	if err := db.readDB().QueryRow(query, args...).Scan(&unknown); err != nil {
 		return fmt.Errorf("rollup: query unknown branch attribution: %w", err)
 	}
 	if unknown {
@@ -424,7 +424,7 @@ func (db *DB) gaggleStats(req StatsRequest) ([]GaggleStats, error) {
 		GROUP BY gaggle ORDER BY gaggle`, where)
 	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query gaggle stats: %w", err)
 	}
@@ -469,7 +469,7 @@ func (db *DB) runStats(req StatsRequest) ([]RunStats, error) {
 	args := append([]any{runStatusCompleted, runStatusFailed}, joinArgs...)
 	args = append(args, whereArgs...)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run stats: %w", err)
 	}
@@ -533,7 +533,7 @@ func (db *DB) stageStats(req StatsRequest) ([]StageStats, error) {
 		ORDER BY r.gaggle, r.workflow, sa.stage%s`, selectDimensions, join, joinWhere, groupDimensions, groupDimensions)
 	args = append([]any{stageStatusSuccess, stageStatusFailure}, args...)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage stats: %w", err)
 	}
@@ -794,7 +794,7 @@ func (db *DB) Errors(req ErrorsRequest) ([]ErrorEvent, error) {
 		ORDER BY COALESCE(e.occurred_at, '') DESC, COALESCE(e.run_id, '') DESC, e.seq DESC
 		LIMIT ?`, where)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query errors: %w", err)
 	}
@@ -862,7 +862,7 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		LIMIT ?`, where)
 	args = append(args, limit)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query error signatures: %w", err)
 	}
@@ -897,7 +897,7 @@ func (db *DB) TopErrorSignatures(req StatsRequest, limit int) ([]ErrorSignature,
 		var runID, stage sql.NullString
 		var attempt sql.NullInt64
 		args := append(append([]any{}, exampleArgs...), sigs[i].Code, sigs[i].ErrorClass)
-		err := db.sql.QueryRow(fmt.Sprintf(telemetryErrorsCTE+`
+		err := db.readDB().QueryRow(fmt.Sprintf(telemetryErrorsCTE+`
 			SELECT e.run_id, e.stage, e.attempt FROM telemetry_errors e
 			WHERE %s
 			ORDER BY e.occurred_at DESC, e.seq DESC LIMIT 1`, exampleFilter), args...).
@@ -941,7 +941,7 @@ func (db *DB) ProviderMutationCounts(req StatsRequest) ([]ProviderMutationCount,
 		GROUP BY m.provider, m.kind, m.operation
 		ORDER BY cnt DESC, m.provider, m.kind`, where)
 
-	rows, err := db.sql.Query(query, args...)
+	rows, err := db.readDB().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query provider mutation counts: %w", err)
 	}
