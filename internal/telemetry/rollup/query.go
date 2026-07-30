@@ -206,8 +206,25 @@ type RunListFilter struct {
 // is stored fixed-width (see timeFormat) so the SQL text comparisons agree
 // with chronological order.
 func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursorRunID string, limit int) ([]RunRef, error) {
-	query := "SELECT run_id, started_at FROM runs WHERE 1=1"
-	var args []any
+	query, args, empty := runRefPageQuery(filter, cursorStartedAt, cursorRunID, limit)
+	if empty {
+		return nil, nil
+	}
+	return db.runRefRows(query, args)
+}
+
+// runRefPageQuery builds the paged run-reference statement.
+//
+// Extracted from RunRefPage so the query plan can be asserted against the exact
+// statement production runs (#1915). A plan test that reconstructs the SQL
+// independently tests its own copy — and the v17 ordering indexes are only worth
+// anything if the planner chooses them for THIS query, not for one that looks
+// like it.
+//
+// empty reports that the filter cannot match anything, which the caller answers
+// without touching the database.
+func runRefPageQuery(filter RunListFilter, cursorStartedAt time.Time, cursorRunID string, limit int) (query string, args []any, empty bool) {
+	query = "SELECT run_id, started_at FROM runs WHERE 1=1"
 	if filter.Gaggle != "" {
 		query += " AND gaggle = ?"
 		args = append(args, filter.Gaggle)
@@ -230,7 +247,7 @@ func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursor
 	}
 	if filter.Statuses != nil {
 		if len(filter.Statuses) == 0 {
-			return nil, nil
+			return "", nil, true
 		}
 		clauses := make([]string, len(filter.Statuses))
 		for i, status := range filter.Statuses {
@@ -250,7 +267,11 @@ func (db *DB) RunRefPage(filter RunListFilter, cursorStartedAt time.Time, cursor
 	}
 	query += " ORDER BY started_at DESC, run_id ASC LIMIT ?"
 	args = append(args, limit)
+	return query, args, false
+}
 
+// runRefRows executes a run-reference statement and scans its rows.
+func (db *DB) runRefRows(query string, args []any) ([]RunRef, error) {
 	rows, err := db.sql.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run refs: %w", err)

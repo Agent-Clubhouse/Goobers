@@ -554,4 +554,43 @@ CREATE INDEX idx_stage_attempts_branch ON stage_attempts(branch, run_id);
 CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
 CREATE INDEX idx_gate_verdicts_branch ON gate_verdicts(branch, run_id);
 `,
+
+	// v17: ordering indexes on `runs` (#1915, design §5.2/§5.5).
+	//
+	// `runs` had no index beyond its primary key, so every list page was a full
+	// table scan plus a sort — the design's §5.2 "today the 'indexed' list path is
+	// a full scan plus sort". These serve RunRefPage's exact shape:
+	//
+	//   ... WHERE gaggle = ? [AND workflow = ?] ...
+	//       AND (started_at < ? OR (started_at = ? AND run_id > ?))
+	//       ORDER BY started_at DESC, run_id ASC LIMIT ?
+	//
+	// so the column order and per-column direction match the ORDER BY exactly and
+	// SQLite can walk the index instead of materializing and sorting. The trailing
+	// run_id makes each index cover the keyset cursor's tiebreak, which is what
+	// keeps page N as cheap as page 1.
+	//
+	// **gaggle leads** the scoped indexes deliberately, and this is the part that
+	// is cheap now and expensive later (§5.5): once authorization scopes a
+	// principal to a subset of gaggles, the scope has to be a predicate *inside*
+	// the indexed query. Filtering after LIMIT silently omits rows — the
+	// diagnosis's §5.6 failure — and filtering before LIMIT without an index
+	// reintroduces the scan. Retrofitting a leading column into an ordering index
+	// after clients depend on the cursor format is far more disruptive than
+	// shipping it now, which is why the design pulls it into Wave 1.
+	//
+	// idx_runs_recency serves the unrestricted case (AllowAll today, and any
+	// principal provably scoped to every gaggle) without a gaggle predicate, so
+	// the common path does not pay for a column it does not constrain.
+	//
+	// A note on ordering: started_at is TEXT and the comparison is lexicographic
+	// both with and without these indexes, since the existing ORDER BY is already
+	// text-based. The index therefore changes the plan, not the result. Rows
+	// written before timeFormat became fixed-width would sort oddly either way,
+	// and are rewritten by any rebuild.
+	`
+CREATE INDEX IF NOT EXISTS idx_runs_gaggle_recency ON runs(gaggle, started_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_runs_gaggle_workflow_recency ON runs(gaggle, workflow, started_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_runs_recency ON runs(started_at DESC, run_id ASC);
+`,
 }
