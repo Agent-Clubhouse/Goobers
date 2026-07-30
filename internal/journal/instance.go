@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,20 +95,26 @@ func (l *InstanceLog) Append(ev Event) error {
 	defer releaseJournalLock(lock)
 
 	path := filepath.Join(l.dir, fileEvents)
-	// Report what this append had to read to allocate its sequence. Today that
-	// is the whole journal on every append (§2.2), and #1914 replaces it with a
-	// bounded backward scan under the same lock; §14.11 asks for a
-	// bytes-read-per-append bound, which needs this number observable.
-	if info, statErr := os.Stat(path); statErr == nil {
-		readprobe.RecordInstanceLogAppend(int(info.Size()))
-	} else {
-		readprobe.RecordInstanceLogAppend(0)
-	}
-	events, tornBytes, err := readEvents(path)
+
+	// Allocate the sequence from a BOUNDED read of the journal's tail rather than
+	// a full re-read (#1914). The read stays under the same cross-process lock,
+	// because it is the sequence allocator and not merely an optimization
+	// (§2.2, §14.11).
+	highest, tornBytes, bytesRead, err := l.allocateSeqFromTail(path)
 	if err != nil {
 		return err
 	}
-	l.seq = highestEventSeq(events)
+	readprobe.RecordInstanceLogAppend(bytesRead)
+
+	// Never regress below what this handle has already written. The tail read
+	// establishes what OTHER writers have committed; this floor covers the one
+	// case a bounded read cannot see — a sequence this handle allocated whose
+	// record has since been overtaken in the window by a journal carrying the
+	// historical duplicate/regressed sequences #530 left behind.
+	if l.seq > highest {
+		highest = l.seq
+	}
+	l.seq = highest
 	if err := truncateTornTail(path, tornBytes); err != nil {
 		return err
 	}
@@ -121,6 +128,40 @@ func (l *InstanceLog) Append(ev Event) error {
 	}
 	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
 	return err
+}
+
+// allocateSeqFromTail reads the journal's tail to find the highest committed
+// sequence, falling back to a full read when the bounded scan cannot establish
+// it. Returns the sequence, the torn-tail size, and how many bytes were read.
+//
+// The fallback is what makes this safe: an exhausted budget means "I could not
+// determine the highest sequence", and the only correct response to that is to
+// read more — never to allocate from zero, which would duplicate every sequence
+// in the journal (#530).
+func (l *InstanceLog) allocateSeqFromTail(path string) (highest uint64, tornBytes, bytesRead int, err error) {
+	// bytesRead is what was ACTUALLY read, not the budget. Reporting the budget
+	// would make the §14.11 bound assert nothing: on any journal smaller than the
+	// budget it would report the whole file and look unchanged, which is exactly
+	// what the first version of this did.
+	highest, tornBytes, bytesRead, err = tailSequence(path)
+	switch {
+	case err == nil:
+		return highest, tornBytes, bytesRead, nil
+	case errors.Is(err, errTailBudgetExhausted):
+		// Fall through to the full recovery read below.
+	default:
+		return 0, 0, bytesRead, err
+	}
+
+	size := 0
+	if info, statErr := os.Stat(path); statErr == nil {
+		size = int(info.Size())
+	}
+	events, tornBytes, err := readEvents(path)
+	if err != nil {
+		return 0, 0, size, err
+	}
+	return highestEventSeq(events), tornBytes, size, nil
 }
 
 // Close flushes and releases the log's file handle.

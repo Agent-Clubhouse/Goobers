@@ -838,23 +838,22 @@ func TestReadProbeIsOffByDefaultAndCostsNothing(t *testing.T) {
 	}
 }
 
-// TestInstanceLogAppendReadsWholeJournal is #1914's before-number, stated as a
-// deterministic bound rather than a duration.
+// TestInstanceLogAppendReadsBoundedBytes is §14.11's bytes-read-per-append
+// bound, now that #1914 has landed.
 //
-// §2.2 measures InstanceLog.Append at 1.30 s on the live 324 MB journal and
-// notes it grows without bound, from 14 call sites, on a write path sharing the
-// process with every read. The cost is that Append takes the cross-process
-// journal lock and then re-reads the ENTIRE journal to allocate its sequence.
+// This test was written before the fix, asserting the DEFECT: every
+// InstanceLog.Append read 100.0% of the journal to allocate its sequence, so N
+// appends read N times the file — 1.30 s per append at the live instance's
+// 324 MB, growing without bound, on a write path sharing the process with every
+// read (§2.2). Its failure message said to convert it into the bound rather than
+// delete it when the fix landed, and this is that conversion.
 //
-// §14.11 asks for "a bytes-read-per-append bound" as one of the gates on #1914.
-// This is the counter that bound is asserted against. Today every append reads
-// the whole file; after #1914 it must read at most the byte budget, and this
-// test becomes the bound rather than the evidence.
+// Measured after: 65,536 bytes of a 2,708,894-byte journal — 2.42%, and constant
+// rather than proportional.
 //
-// Asserted in bytes, not seconds, for the same reason as every other assertion
-// added in this wave: a contended CI runner cannot defend a duration, but "this
-// append read 4.2 MB" is true on every machine.
-func TestInstanceLogAppendReadsWholeJournal(t *testing.T) {
+// Asserted in bytes rather than seconds, because a contended CI runner cannot
+// defend a duration but "this append read 65,536 bytes" is true on every machine.
+func TestInstanceLogAppendReadsBoundedBytes(t *testing.T) {
 	spec := correctnessSpec(t.TempDir())
 	spec.Runs = 1
 	spec.OrphanDirs = 0
@@ -874,7 +873,7 @@ func TestInstanceLogAppendReadsWholeJournal(t *testing.T) {
 	}
 	size := info.Size()
 	if size < 100_000 {
-		t.Fatalf("instance journal is only %d bytes; too small to demonstrate the defect", size)
+		t.Fatalf("instance journal is only %d bytes; too small to demonstrate a bound", size)
 	}
 
 	log, _, err := journal.OpenInstanceLog(gen.Layout.SchedulerDir())
@@ -898,22 +897,23 @@ func TestInstanceLogAppendReadsWholeJournal(t *testing.T) {
 		t.Fatalf("recorded %d appends, want %d", got.InstanceLogAppends, appends)
 	}
 	perAppend := got.InstanceLogBytes / got.InstanceLogAppends
-	t.Logf("instance journal %d bytes; each append read %d bytes (%.1f%% of the file)",
+	t.Logf("instance journal %d bytes; each append read %d bytes (%.2f%% of the file)",
 		size, perAppend, 100*float64(perAppend)/float64(size))
 
-	// Today: every append reads essentially the whole journal.
-	if perAppend < uint64(size)*9/10 {
-		t.Errorf("each append read only %d bytes of a %d-byte journal.\n"+
-			"If this dropped, #1914's bounded backward scan has landed — replace this assertion with the "+
-			"§14.11 bound (bytes per append <= the byte budget) rather than deleting it.",
-			perAppend, size)
+	// The bound: an append reads a bounded window, not the file. Stated as a
+	// fraction of the journal so it keeps meaning as the fixture grows, and
+	// generously, since the window is chunked and a large final record legitimately
+	// widens it.
+	if perAppend > uint64(size)/2 {
+		t.Errorf("each append read %d bytes of a %d-byte journal (%.1f%%); #1914's bounded tail read is not in effect",
+			perAppend, size, 100*float64(perAppend)/float64(size))
 	}
 
-	// And the total read is quadratic in the append count, which is the shape
-	// that makes it unbounded rather than merely expensive.
-	if got.InstanceLogBytes < uint64(size)*appends*9/10 {
-		t.Errorf("total bytes read across %d appends was %d, expected ~%d (append count x journal size)",
-			appends, got.InstanceLogBytes, uint64(size)*appends)
+	// And the total must NOT be quadratic in the append count, which is the
+	// property that made the old behaviour unbounded rather than merely expensive.
+	if got.InstanceLogBytes >= uint64(size)*appends/2 {
+		t.Errorf("total bytes read across %d appends was %d, which is still proportional to (appends x journal size)",
+			appends, got.InstanceLogBytes)
 	}
 }
 
