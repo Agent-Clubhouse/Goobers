@@ -262,6 +262,20 @@ func writeReport(w io.Writer, m Measurement) {
 			s.Samples,
 		)
 	}
+	_, _ = fmt.Fprintf(w, "  work per invocation:\n")
+	_, _ = fmt.Fprintf(w, "    %-36s %8s %8s %10s %10s\n", "", "opens", "rescans", "scan_dirs", "scan_opens")
+	for _, s := range m.Stats {
+		wk := m.Work[s.Op]
+		// The §14.2 bound is on work, and both paths count: a list page's own
+		// journal opens, and the active-run scan the inventory surfaces reach.
+		total := wk.JournalOpens + wk.ActiveScanOpens
+		flag := ""
+		if total > 0 {
+			flag = fmt.Sprintf("  <-- %d journal opens", total)
+		}
+		_, _ = fmt.Fprintf(w, "    %-36s %8d %8d %10d %10d%s\n",
+			s.Op, wk.JournalOpens, wk.ReconcileScans, wk.ActiveScanDirs, wk.ActiveScanOpens, flag)
+	}
 	if !allP999Valid(m) {
 		_, _ = fmt.Fprintf(w, "  note: p99.9 requires >= %d warm samples (-samples); reported as n/a below that\n", minSamplesForP999)
 	}

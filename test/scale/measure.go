@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/instancefixture"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -39,6 +40,12 @@ type Measurement struct {
 
 	// Stats holds the repeatedly-sampled read paths, keyed by operation.
 	Stats []Stat `json:"stats"`
+
+	// Work is the expensive work each operation performs for ONE invocation,
+	// keyed by operation name. Latency alone cannot distinguish "fast because
+	// bounded" from "fast because the corpus is small", which is how a read path
+	// regresses to O(history) with every timing test still green (§14.2).
+	Work map[string]readprobe.Snapshot `json:"work"`
 }
 
 // dashboardPhases mirror the phases the Overview fans out over, one ListRuns
@@ -223,6 +230,21 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 			return err
 		}},
 	}
+
+	// One instrumented pass per operation, before the timing loop, so the
+	// counters describe a single invocation and the probe's atomic loads never
+	// land inside a measured duration.
+	m.Work = map[string]readprobe.Snapshot{}
+	readprobe.Enable()
+	for _, op := range ops {
+		before := readprobe.Take()
+		if err := op.fn(); err != nil {
+			readprobe.Disable()
+			return Measurement{}, fmt.Errorf("scale: %s (work pass): %w", op.name, err)
+		}
+		m.Work[op.name] = readprobe.Take().Sub(before)
+	}
+	readprobe.Disable()
 
 	for _, op := range ops {
 		// The full status scan is the deliberately-unindexed worst case; at 1×

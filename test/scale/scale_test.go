@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instancefixture"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -667,59 +668,60 @@ func allOrphanDirs(gen GenerateResult) ([]string, error) {
 // defect is fixed.
 //
 // The claim under test: /v1/instance, /v1/gaggles, /v1/gaggles/{g}/workflows,
-// the workflow-detail route, and ListRuns(LatestPerWorkflow) all reach
-// activeRunCounts, which walks every run directory in history and opens each
+// the workflow-detail route, and ListRuns(LatestPerWorkflow) all reach the
+// active-run scan, which walks every run directory in history and opens each
 // journal to reconstruct phase. Their cost therefore tracks *total history*
 // rather than the inventory they render or the active set they report.
 //
-// Measured here at 1,200 runs / 200 workflows: a bounded list page is ~9 ms
-// while every inventory surface is ~160 ms and LatestPerWorkflow is ~200 ms,
-// which is the full unindexed status scan's own cost — i.e. it is doing the
-// scan. On the live instance the same shape measures 17.2 s cold to answer "2".
+// # This asserts work, not wall time, and that is the whole point
 //
-// **This test asserts the defect exists.** When #1741 and Wave 2's stored phase
-// land, the inventory surfaces stop scanning and this fails — deliberately. Its
-// failure is the signal to invert it into the bound §14.3 wants. Until then it
-// documents, in executable form, the thing five previous patches each described
-// correctly and none measured.
+// An earlier version of this test compared p50 latencies across two corpus
+// sizes. It passed locally and failed on CI with the *smaller* corpus measuring
+// five times slower — because the shared, three-way-sharded, -race-enabled
+// runner's scheduling noise dwarfs the signal. That is not a flake to retry
+// around: it is the same lesson the design records in §17 Wave 0, that contended
+// CI runners cannot defend a latency figure, and a test that tries makes the
+// suite unreliable without measuring anything.
+//
+// Journal opens are deterministic. Scanning a 600-run corpus opens 600 journals
+// on any machine, at any load, under -race or not. So the growth claim is
+// asserted on counters and the latencies are logged for information only.
 func TestInventorySurfacesCostGrowsWithRunHistory(t *testing.T) {
-	if testing.Short() {
-		t.Skip("generates a multi-hundred-run corpus")
+	// Both sizes must exceed the 50-row page limit, or the "small" page opens
+	// the whole corpus simply because there is not enough of it to fill a page,
+	// and the control compares two different things.
+	const (
+		smallRuns = 80
+		largeRuns = 320
+		factor    = largeRuns / smallRuns
+	)
+	small := measureAtRunCount(t, smallRuns)
+	large := measureAtRunCount(t, largeRuns)
+
+	// The control: a bounded, indexed list page's work must NOT grow with
+	// history. It opens limit+1 journals for the page it returns, whatever the
+	// corpus size. If this fails, the comparison below would be meaningless.
+	smallPage := small.Work[opListRunsPage].JournalOpens
+	largePage := large.Work[opListRunsPage].JournalOpens
+	t.Logf("listruns_page journal opens: %d -> %d (%dx the runs)", smallPage, largePage, factor)
+	if smallPage != largePage {
+		t.Errorf("bounded list page opened %d journals at %d runs but %d at %d runs; "+
+			"its work must be bounded by the page, not by history",
+			smallPage, smallRuns, largePage, largeRuns)
 	}
-	small := measureAtRunCount(t, 150)
-	large := measureAtRunCount(t, 600)
 
-	// The control: a bounded, indexed list page must NOT grow materially with
-	// history. If this fails, the corpus or the index is the problem, not the
-	// inventory path, and the comparison below would be meaningless.
-	pageGrowth := growth(stat(small, opListRunsPage).P50, stat(large, opListRunsPage).P50)
-	t.Logf("listruns_page p50: %s -> %s (%.2fx)", stat(small, opListRunsPage).P50, stat(large, opListRunsPage).P50, pageGrowth)
-
-	// The subjects. Each should grow roughly linearly with run count today.
+	// The subjects: work grows one-for-one with run count.
 	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail, opLatestPerWorkflow} {
-		lo, hi := stat(small, op).P50, stat(large, op).P50
-		g := growth(lo, hi)
-		t.Logf("%s p50: %s -> %s (%.2fx) for 4x the runs", op, lo, hi, g)
-		if g < inventoryGrowthFloor {
-			t.Errorf("%s grew only %.2fx when run count grew 4x (%s -> %s).\n"+
-				"Either the active-run scan no longer backs this surface — in which case #1741/Wave 2 has landed and this test "+
-				"should be inverted into a bound — or the harness stopped reaching it. Both need a human look; neither is a pass.",
-				op, g, lo, hi)
+		lo := small.Work[op].ActiveScanOpens
+		hi := large.Work[op].ActiveScanOpens
+		t.Logf("%s active-scan journal opens: %d -> %d (p50 %s -> %s)",
+			op, lo, hi, stat(small, op).P50, stat(large, op).P50)
+		if lo < smallRuns || hi < largeRuns {
+			t.Errorf("%s opened %d journals at %d runs and %d at %d runs; expected >= the corpus at each size.\n"+
+				"If these dropped, #1741/Wave 2's stored phase has landed and this test should be inverted into the §14.2 bound.",
+				op, lo, smallRuns, hi, largeRuns)
 		}
 	}
-}
-
-// inventoryGrowthFloor is how much an inventory surface must grow when the run
-// corpus quadruples for the "cost tracks history" claim to hold. Set well below
-// 4x so scheduler noise cannot flake it while a genuine fix still trips it.
-const inventoryGrowthFloor = 2.0
-
-// growth returns hi/lo as a float, or 0 when lo is zero.
-func growth(lo, hi time.Duration) float64 {
-	if lo <= 0 {
-		return 0
-	}
-	return float64(hi) / float64(lo)
 }
 
 // measureAtRunCount generates a corpus of n runs and measures it. The inventory
@@ -755,4 +757,83 @@ func measureAtRunCount(t *testing.T, n int) Measurement {
 		t.Fatalf("measure %d runs: %v", n, err)
 	}
 	return m
+}
+
+// TestWorkPerInvocationIsUnbounded records, in executable form, what each read
+// path actually costs in journal opens today — the §14.2 bar, stated in work
+// rather than latency.
+//
+// Every number below matches a specific claim in the design or the diagnosis,
+// and none of them had ever been measured:
+//
+//   - A bounded 50-row list page opens limit+1 journals — one per returned row.
+//     The diagnosis's Appendix A says "lists open and parse a journal per
+//     returned row"; this is that, quantified. §14.2's target is ZERO.
+//   - Every inventory surface opens one journal per run in *total history* and
+//     walks every run directory, which is §2.1's 17.2 s scan.
+//   - Run detail opens the same run's journal three times for one page load,
+//     which is §2.3's "GetRun and RunEvents each call openRun; stage selection
+//     can call it a third time". §8.2's useSingleRun target is ONE.
+//
+// Like TestInventorySurfacesCostGrowsWithRunHistory, this asserts the CURRENT
+// shape and is meant to fail as the waves land. Each failure is a prompt to
+// tighten the bound here rather than to relax it.
+func TestWorkPerInvocationIsUnbounded(t *testing.T) {
+	m := measureAtRunCount(t, 120)
+
+	get := func(op string) readprobe.Snapshot { return m.Work[op] }
+
+	// A bounded page opens one journal per returned row, plus the lookahead row.
+	// Asserted as a relationship to the page size, not a magic number, so it
+	// stays true if the page size changes.
+	const pageLimit = 50
+	if got := get(opListRunsPage).JournalOpens; got != pageLimit+1 {
+		t.Errorf("bounded %d-row page opened %d journals, expected %d (limit+1, one per row).\n"+
+			"If this dropped to 0, Wave 2's read model has landed and this assertion should become the §14.2 bound.",
+			pageLimit, got, pageLimit+1)
+	}
+
+	// Run detail parses one run's journal three times for one page load.
+	if got := get(opRunDetail).JournalOpens; got != 3 {
+		t.Errorf("run detail opened the same run's journal %d times, expected 3 (GetRun + RunEvents + StageAttempts).\n"+
+			"If this dropped to 1, §8.2's useSingleRun has landed and this should become the bound.", got)
+	}
+
+	// The inventory surfaces open one journal per run in total history. The
+	// corpus is 120 runs, so this is exactly the O(history) shape.
+	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail} {
+		w := get(op)
+		if w.ActiveScanOpens < uint64(m.Runs) {
+			t.Errorf("%s opened %d journals in the active-run scan; expected >= the whole corpus (%d).\n"+
+				"If this dropped, #1741/Wave 2's stored phase has landed and this should become the §14.2 bound.",
+				op, w.ActiveScanOpens, m.Runs)
+		}
+		// And it opens NONE through readservice.openRun — which is why the three
+		// pre-existing observer seams report a clean zero for the most expensive
+		// read in the system, and why readprobe instruments the scan directly.
+		if w.JournalOpens != 0 {
+			t.Logf("%s now opens %d journals via readservice.openRun as well", op, w.JournalOpens)
+		}
+	}
+}
+
+// TestReadProbeIsOffByDefaultAndCostsNothing pins the two properties that make
+// it safe to leave this instrumentation on production hot paths: it records
+// nothing unless enabled, and a disabled call is a single atomic load.
+func TestReadProbeIsOffByDefaultAndCostsNothing(t *testing.T) {
+	// Off by default is asserted behaviourally rather than by reading a flag:
+	// record without enabling, and nothing may be counted.
+	readprobe.Reset()
+	readprobe.RecordJournalOpen()
+	readprobe.RecordActiveScanOpen()
+	if got := readprobe.Take(); !got.Zero() {
+		t.Fatalf("disabled probe recorded %+v; it must record nothing", got)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	readprobe.RecordJournalOpen()
+	if got := readprobe.Take().JournalOpens; got != 1 {
+		t.Fatalf("enabled probe recorded %d journal opens, want 1", got)
+	}
 }

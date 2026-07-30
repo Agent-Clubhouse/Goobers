@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 )
 
 // WorkflowIdentity unambiguously identifies a workflow within its gaggle.
@@ -63,11 +64,13 @@ func visitActiveRuns(runsDir string, visit func(journal.RunIdentity)) error {
 		if !e.IsDir() {
 			continue
 		}
+		readprobe.RecordActiveScanDir()
 		dir := filepath.Join(runsDir, e.Name())
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
 			continue // not a run directory
 		}
+		readprobe.RecordActiveScanOpen()
 		id, err := rd.Identity()
 		if err != nil {
 			continue
