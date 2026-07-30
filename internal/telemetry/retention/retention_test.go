@@ -87,7 +87,7 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rollup.RebuildAll(layout.TelemetryDB(), runRoots, layout.SchedulerDir()); err != nil {
+	if err := rollup.RebuildAll(context.Background(), layout.TelemetryDB(), runRoots, layout.SchedulerDir()); err != nil {
 		t.Fatalf("RebuildAll: %v", err)
 	}
 	rebuilt, err := rollup.Open(layout.TelemetryDB())

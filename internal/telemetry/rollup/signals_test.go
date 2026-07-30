@@ -339,7 +339,7 @@ func TestRebuildIngestsSchedulerLog(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(tmp, "telemetry.db")
-	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
+	if err := Rebuild(context.Background(), dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	db := openTestDB(t, tmp)

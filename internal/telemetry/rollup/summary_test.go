@@ -201,7 +201,7 @@ func TestTimeToFirstPRSurvivesRunDeletionAndRebuild(t *testing.T) {
 	if err := os.RemoveAll(runsDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
+	if err := Rebuild(context.Background(), dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	rebuilt, err := Open(dbPath)
@@ -331,7 +331,7 @@ func TestRebuildSelectsFirstPostInitPROpen(t *testing.T) {
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
 	dbPath := filepath.Join(tmp, "telemetry.db")
-	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
+	if err := Rebuild(context.Background(), dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	db, err := Open(dbPath)
@@ -363,7 +363,7 @@ func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *tes
 	}
 	schedulerDir := filepath.Join(tmp, "scheduler")
 	writeInitCompletedLog(t, schedulerDir, initCompletedAt)
-	if err := Rebuild(dbPath, runsDir, schedulerDir); err != nil {
+	if err := Rebuild(context.Background(), dbPath, runsDir, schedulerDir); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	rebuilt, err := Open(dbPath)

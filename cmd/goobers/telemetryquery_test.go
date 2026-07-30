@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -283,7 +284,7 @@ func rebuildTelemetryQueryRollup(t *testing.T, root string) {
 	if err != nil {
 		t.Fatalf("list run roots: %v", err)
 	}
-	if err := rollup.RebuildAll(l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
+	if err := rollup.RebuildAll(context.Background(), l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 }

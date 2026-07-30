@@ -130,7 +130,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	m.SpansSize = treeSizeUnderAcross(roots, "spans")
 
 	rebuildStart := time.Now()
-	if err := rollup.RebuildAll(layout.TelemetryDB(), roots, layout.SchedulerDir()); err != nil {
+	if err := rollup.RebuildAll(context.Background(), layout.TelemetryDB(), roots, layout.SchedulerDir()); err != nil {
 		return Measurement{}, fmt.Errorf("scale: rebuild rollup: %w", err)
 	}
 	m.RollupRebuild = time.Since(rebuildStart)

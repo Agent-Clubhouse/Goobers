@@ -1,0 +1,384 @@
+package readmodel
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/goobers/goobers/internal/journal"
+)
+
+var projectBase = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+func ev(seq uint64, offset time.Duration, t journal.EventType, mutate func(*journal.Event)) journal.Event {
+	e := journal.Event{
+		Schema: journal.EventSchema,
+		Seq:    seq,
+		Time:   projectBase.Add(offset),
+		Type:   t,
+	}
+	if mutate != nil {
+		mutate(&e)
+	}
+	return e
+}
+
+func testIdentity() journal.RunIdentity {
+	return journal.RunIdentity{
+		RunID:           "run-0001",
+		Workflow:        "implementation",
+		WorkflowVersion: 3,
+		Gaggle:          "alpha",
+		Trigger:         journal.Trigger{Kind: journal.TriggerSchedule, Ref: "0 * * * *"},
+		StartedAt:       projectBase,
+	}
+}
+
+// completedRunEvents is a run that starts, retries once, and completes.
+func completedRunEvents() []journal.Event {
+	return []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "implement" }),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status, e.AttemptClass = "implement", "failure", journal.AttemptPolicy
+		}),
+		ev(3, 3*time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "implement" }),
+		ev(4, 4*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+		}),
+		ev(5, 5*time.Second, journal.EventGateStarted, func(e *journal.Event) { e.Gate = "review" }),
+		ev(6, 6*time.Second, journal.EventGateEvaluated, func(e *journal.Event) { e.Gate = "review" }),
+		ev(7, 7*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+}
+
+// TestProjectionIsIncrementalAndWholeAtOnce is §14.9's determinism property in
+// the form that matters most day to day: projecting a run in one pass and
+// projecting it in tail-sized pieces must produce the SAME row.
+//
+// This is what makes rebuild and incremental projection interchangeable. If they
+// diverged, a rebuilt store would answer differently from an incrementally-built
+// one — and since rebuild is the recovery path, the difference would only ever
+// be discovered after an incident.
+func TestProjectionIsIncrementalAndWholeAtOnce(t *testing.T) {
+	identity := testIdentity()
+	events := completedRunEvents()
+
+	whole := ProjectRun(identity, Projection{}, events)
+
+	// Now the same events, applied in every possible split point.
+	for split := 0; split <= len(events); split++ {
+		first := ProjectRun(identity, Projection{}, events[:split])
+		second := ProjectRun(identity, first, events[split:])
+		if !reflect.DeepEqual(second.Run, whole.Run) {
+			t.Errorf("split at %d produced a different run row:\n incremental = %+v\n whole       = %+v",
+				split, second.Run, whole.Run)
+		}
+		if !reflect.DeepEqual(second.Stages, whole.Stages) {
+			t.Errorf("split at %d produced different stage rows:\n incremental = %+v\n whole       = %+v",
+				split, second.Stages, whole.Stages)
+		}
+	}
+}
+
+// TestProjectionIsDeterministic pins that the same input yields byte-identical
+// output across repeated runs — §14.9's "rebuilding from the same journals
+// produces byte-identical canonical rows".
+//
+// Map iteration is the usual way this breaks, which is why stages and stage rows
+// are sorted rather than emitted in map order.
+func TestProjectionIsDeterministic(t *testing.T) {
+	identity := testIdentity()
+	events := completedRunEvents()
+	first := ProjectRun(identity, Projection{}, events)
+	for i := 0; i < 20; i++ {
+		again := ProjectRun(identity, Projection{}, events)
+		if !reflect.DeepEqual(again, first) {
+			t.Fatalf("projection %d differed from the first:\n got  = %+v\n want = %+v", i, again, first)
+		}
+	}
+}
+
+// TestProjectionMatchesTheRunContract checks the projected values against what
+// the read contract says a run summary means.
+func TestProjectionMatchesTheRunContract(t *testing.T) {
+	p := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
+	run := p.Run
+
+	if run.Phase != journal.PhaseCompleted {
+		t.Errorf("phase = %q, want completed", run.Phase)
+	}
+	if !run.Terminal {
+		t.Error("terminal = false for a completed run")
+	}
+	if run.CurrentStage != "" {
+		t.Errorf("current stage = %q, want empty for a finished run", run.CurrentStage)
+	}
+	if run.FinishedAt == nil {
+		t.Fatal("finished_at is nil for a completed run")
+	}
+	if run.LastSeq != 7 {
+		t.Errorf("last_seq = %d, want 7", run.LastSeq)
+	}
+	// One policy retry, and it counts toward the total but not toward infra.
+	if run.PolicyRetryCount != 1 || run.RetryCount != 1 || run.InfraRetryCount != 0 {
+		t.Errorf("retries = policy %d / total %d / infra %d, want 1/1/0",
+			run.PolicyRetryCount, run.RetryCount, run.InfraRetryCount)
+	}
+	// Gates are stages for filtering purposes: a stage filter must find "review".
+	want := []string{"implement", "review"}
+	if !reflect.DeepEqual(run.Stages, want) {
+		t.Errorf("stages = %v, want %v", run.Stages, want)
+	}
+	if len(p.Stages) != 1 || p.Stages[0].Stage != "implement" || p.Stages[0].Attempts != 2 {
+		t.Errorf("stage rows = %+v, want one 'implement' row with 2 attempts", p.Stages)
+	}
+}
+
+// TestResumeReopensATerminalRun pins the case that would otherwise leave a live
+// run looking finished to every list.
+//
+// runner.ResumeFromTerminal durably reopens an escalated or failed run. If
+// finished_at survived the resume, the run would list as terminal while actually
+// executing — and it would also be excluded from the active-run count, which is
+// the number the scheduler's concurrency ceiling is compared against.
+func TestResumeReopensATerminalRun(t *testing.T) {
+	identity := testIdentity()
+	events := append(completedRunEvents(),
+		ev(8, 8*time.Second, journal.EventRunResumed, func(e *journal.Event) { e.Target = "implement" }),
+	)
+	run := ProjectRun(identity, Projection{}, events).Run
+
+	if run.Phase != journal.PhaseRunning {
+		t.Errorf("phase = %q after resume, want running", run.Phase)
+	}
+	if run.Terminal {
+		t.Error("terminal = true after resume")
+	}
+	if run.FinishedAt != nil {
+		t.Errorf("finished_at = %v after resume, want nil; a resumed run that keeps it lists as finished while executing", run.FinishedAt)
+	}
+	if run.CurrentStage != "implement" {
+		t.Errorf("current stage = %q after resume, want implement", run.CurrentStage)
+	}
+}
+
+// TestUnrecognisedTerminalStatusDoesNotCorruptPhase pins the refusal.
+//
+// phase is an indexed, filtered column. Writing an unrecognised terminal status
+// into it would make the run vanish from every phase-filtered list — a silent
+// omission (§14.7) rather than a visible error.
+func TestUnrecognisedTerminalStatusDoesNotCorruptPhase(t *testing.T) {
+	identity := testIdentity()
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "implement" }),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) { e.Status = "not-a-phase" }),
+	}
+	run := ProjectRun(identity, Projection{}, events).Run
+
+	if run.Phase != journal.PhaseRunning {
+		t.Errorf("phase = %q, want running left intact rather than an unrecognised value", run.Phase)
+	}
+	if run.Terminal {
+		t.Error("run marked terminal from an unrecognised status")
+	}
+	// The sequence still advanced: the event happened even if its meaning was
+	// not accepted, and pretending otherwise would make the run look stale.
+	if run.LastSeq != 2 {
+		t.Errorf("last_seq = %d, want 2", run.LastSeq)
+	}
+}
+
+// TestUpsertIsIdempotentAndNeverRewinds pins the write guard.
+//
+// Re-applying an older projection must not overwrite a newer one. Without the
+// last_seq guard a repair sweep racing live projection could rewind a run's
+// phase — turning a finished run back into a running one, which is #1943's
+// symptom arriving by a different route.
+func TestUpsertIsIdempotentAndNeverRewinds(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	identity := testIdentity()
+	events := completedRunEvents()
+	full := ProjectRun(identity, Projection{}, events)
+	if err := store.UpsertRun(ctx, full); err != nil {
+		t.Fatalf("upsert full: %v", err)
+	}
+
+	// Re-apply identically: a no-op.
+	if err := store.UpsertRun(ctx, full); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got, ok, err := store.GetRun(ctx, identity.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get run: ok=%v err=%v", ok, err)
+	}
+	if got.Phase != journal.PhaseCompleted || got.LastSeq != 7 {
+		t.Fatalf("after re-upsert: phase=%q last_seq=%d, want completed/7", got.Phase, got.LastSeq)
+	}
+
+	// Now an OLDER projection — the run as it was mid-flight.
+	stale := ProjectRun(identity, Projection{}, events[:2])
+	if err := store.UpsertRun(ctx, stale); err != nil {
+		t.Fatalf("upsert stale: %v", err)
+	}
+	got, ok, err = store.GetRun(ctx, identity.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get run after stale: ok=%v err=%v", ok, err)
+	}
+	if got.Phase != journal.PhaseCompleted {
+		t.Errorf("phase = %q after applying an older projection; the last_seq guard did not hold, "+
+			"and a repair sweep racing live projection could rewind a finished run", got.Phase)
+	}
+	if got.LastSeq != 7 {
+		t.Errorf("last_seq = %d after applying an older projection, want 7", got.LastSeq)
+	}
+}
+
+// TestCountByPhaseIsAnIndexedAggregate pins §5.4's replacement for the directory
+// walk: "stored, that becomes one indexed aggregate over phase = 'running'".
+func TestCountByPhaseIsAnIndexedAggregate(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Two finished runs and one still in flight.
+	for i, events := range [][]journal.Event{
+		completedRunEvents(),
+		completedRunEvents(),
+		completedRunEvents()[:3], // no run.finished
+	} {
+		identity := testIdentity()
+		identity.RunID = string(rune('a'+i)) + "-run"
+		if err := store.UpsertRun(ctx, ProjectRun(identity, Projection{}, events)); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	counts, err := store.CountByPhase(ctx)
+	if err != nil {
+		t.Fatalf("count by phase: %v", err)
+	}
+	if counts[journal.PhaseRunning] != 1 {
+		t.Errorf("running = %d, want 1", counts[journal.PhaseRunning])
+	}
+	if counts[journal.PhaseCompleted] != 2 {
+		t.Errorf("completed = %d, want 2", counts[journal.PhaseCompleted])
+	}
+}
+
+// TestBuildFromJournalsProjectsEveryPublishedRun pins §6.6 step 2 — the build
+// path — and the two properties that make it safe to run on a real instance.
+func TestBuildFromJournalsProjectsEveryPublishedRun(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three published runs and one unpublished directory. The unpublished one is
+	// not an edge case: 10,906 of the live instance's 40,665 directories (27%)
+	// have no run.yaml and can never be ingested.
+	for i := 0; i < 3; i++ {
+		writeRunJournal(t, runsDir, fmt.Sprintf("%032x", i), i == 2)
+	}
+	if err := os.MkdirAll(filepath.Join(runsDir, "unpublished-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(filepath.Join(root, FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	result, err := store.BuildFromJournals(ctx, []string{runsDir})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Projected != 3 {
+		t.Errorf("projected %d runs, want 3", result.Projected)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("skipped %d directories, want 1 (the unpublished one)", result.Skipped)
+	}
+
+	// The phase aggregate — §5.4's replacement for the 17.2 s directory walk —
+	// must be answerable from the store alone.
+	counts, err := store.CountByPhase(ctx)
+	if err != nil {
+		t.Fatalf("count by phase: %v", err)
+	}
+	if counts[journal.PhaseCompleted] != 2 || counts[journal.PhaseRunning] != 1 {
+		t.Errorf("phase counts = %v, want 2 completed and 1 running", counts)
+	}
+
+	// Rebuilding over an existing store is idempotent, which is what makes an
+	// interrupted build resumable without bookkeeping.
+	second, err := store.BuildFromJournals(ctx, []string{runsDir})
+	if err != nil {
+		t.Fatalf("second build: %v", err)
+	}
+	if second.Projected != result.Projected {
+		t.Errorf("second build projected %d, want %d", second.Projected, result.Projected)
+	}
+	counts, err = store.CountByPhase(ctx)
+	if err != nil {
+		t.Fatalf("count after rebuild: %v", err)
+	}
+	if counts[journal.PhaseCompleted] != 2 || counts[journal.PhaseRunning] != 1 {
+		t.Errorf("phase counts after rebuild = %v, want unchanged", counts)
+	}
+}
+
+// writeRunJournal creates a real run journal through the production API, so the
+// build path is exercised against the on-disk format rather than a fixture that
+// could drift from it.
+func writeRunJournal(t *testing.T, runsDir, runID string, leaveRunning bool) {
+	t.Helper()
+	clock := projectBase
+	tick := func() time.Time { clock = clock.Add(time.Second); return clock }
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 3,
+		Gaggle:          "alpha",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       clock,
+	}, nil, journal.WithClock(tick))
+	if err != nil {
+		t.Fatalf("create run %s: %v", runID, err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !leaveRunning {
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

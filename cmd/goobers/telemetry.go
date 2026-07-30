@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -197,11 +199,62 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := rollup.RebuildAll(l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
+		if err := rollup.RebuildAll(context.Background(), l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
 			return nil, err
+		}
+		// Rebuild the run read model alongside the analytics store (design §6.5:
+		// "goobers telemetry --rebuild remains the entry point and gains
+		// --read-model / --analytics scoping"). The scoping flags land with the
+		// cutover; until then a rebuild covers both, which is the conservative
+		// order — read.db is derived from the same journals, so leaving it stale
+		// while telemetry.db is fresh would create exactly the divergence §14.9
+		// exists to prevent.
+		//
+		// A read-model failure is reported but does not fail the command: nothing
+		// reads read.db yet (§6.6 step 1), so it must not be able to break a
+		// telemetry query.
+		if err := rebuildReadModel(context.Background(), l, runDirs); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: rebuild read model: %v\n", err)
 		}
 	}
 	return rollup.Open(l.TelemetryDB())
+}
+
+// rebuildReadModel rebuilds read.db from journals.
+//
+// The store is removed first rather than projected over. A rebuild is a
+// whole-store operation (§5.1) and starting from an existing file would leave
+// rows for runs whose journals are gone — the "projected row outlives its
+// journal" state §11.4 calls impossible and which repair exists to reconcile.
+// Deleting is also what mints a fresh epoch, which is correct: a rebuilt store
+// IS a new generation, and any client cursor against the old one must
+// resnapshot (§4.2).
+func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) error {
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Remove(l.ReadDB() + suffix); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing read model %s%s: %w", l.ReadDB(), suffix, err)
+		}
+	}
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	result, err := store.BuildFromJournals(ctx, runDirs)
+	if err != nil {
+		return err
+	}
+	// Report what was built. On the live instance 27% of run directories are
+	// unpublished and can never be ingested, so "scanned 40,665, projected
+	// 29,759" is the difference between a healthy rebuild and a broken one — and
+	// without it an operator cannot tell them apart.
+	counts, err := store.CountByPhase(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "read model rebuilt: %d projected, %d skipped, %d scanned (running=%d)\n",
+		result.Projected, result.Skipped, result.Scanned, counts[journal.PhaseRunning])
+	return nil
 }
 
 const telemetryStatsHelp = "Usage: goobers telemetry stats [--json] [--workflow=name] [--gaggle=name] [--branch=id] [--model=id] [--harness-version=version] [--group-by=branch|model|harness-version]... [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +

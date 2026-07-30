@@ -75,7 +75,7 @@ func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(spanDir, "spans.jsonl"), append(spanData, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := rollup.Rebuild(l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
+	if err := rollup.Rebuild(context.Background(), l.TelemetryDB(), l.RunsDir(), l.SchedulerDir()); err != nil {
 		t.Fatal(err)
 	}
 
