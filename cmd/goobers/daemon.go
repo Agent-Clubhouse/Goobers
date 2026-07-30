@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -51,6 +52,14 @@ type schedulerSetup struct {
 	// ReadModel is the portal run read model (read.db). Present but unread at
 	// this stage — see the construction site and design §6.6 step 1.
 	ReadModel *readmodel.Store
+	// Watermarks is the source-watermark store (#1922). Separate from ReadModel
+	// because they are different databases with different writers: anything that
+	// advances a run records here, while only the projector touches ReadModel.
+	Watermarks *intake.Store
+	// StopProjector shuts the projector's commit loop down. Held on the setup so
+	// the daemon's shutdown path stops it with everything else, rather than the
+	// loop outliving the process's other goroutines.
+	StopProjector func()
 	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
 	// at open so a broken store surfaces at daemon start rather than on the first
 	// read. It becomes the SSE cursor's epoch component in Wave 5.
@@ -202,6 +211,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var rollupDB *rollup.DB
 	var readModel *readmodel.Store
 	var readModelEpoch string
+	var watermarks *intake.Store
+	var stopProjector func()
 	var instanceLog *journal.InstanceLog
 	defer func() {
 		if err == nil {
@@ -266,6 +277,22 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
 			}
+
+			// The projector (#1923). Opening intake and starting the commit loop
+			// is what inverts the coupling: from here the writer records a
+			// watermark and forgets, and this owns discovery and application.
+			//
+			// Like the read model itself, a failure here must not fail daemon
+			// start. Without a projector the read model simply stops advancing,
+			// and the journal-derived paths still answer every request — a
+			// degraded read model is not an outage, but refusing to start would
+			// be.
+			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+			} else {
+				watermarks = intakeStore
+				stopProjector = startProjector(ctx, readStore, intakeStore, l)
+			}
 		}
 	}
 
@@ -311,7 +338,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, readModel, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
 	if err != nil {
 		return nil, err
 	}
@@ -337,6 +364,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Telemetry:         tel,
 		RollupDB:          rollupDB,
 		ReadModel:         readModel,
+		Watermarks:        watermarks,
+		StopProjector:     stopProjector,
 		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,
@@ -441,7 +470,7 @@ func buildSchedulerDefinitions(
 	runnerRegistry *daemonRunnerRegistry,
 	tel *telemetry.Client,
 	rollupDB *rollup.DB,
-	readModel *readmodel.Store,
+	watermarks *intake.Store,
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	wtManagers map[string]*worktree.Manager,
@@ -609,7 +638,7 @@ func buildSchedulerDefinitions(
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
-			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, readModel: readModel, log: instanceLog, runners: runnerRegistry},
+			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, watermarks: watermarks, log: instanceLog, runners: runnerRegistry},
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
@@ -798,8 +827,18 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 		s.ingestSchedulerLog()
 		_ = s.RollupDB.Close()
 	}
+	// The projector stops BEFORE its store closes. Its commit loop holds the
+	// only writable handle, so closing read.db underneath a commit in flight
+	// would fail that projection — and the failure would look like corruption
+	// rather than shutdown. Stop is synchronous: it waits for the loop to drain.
+	if s.StopProjector != nil {
+		s.StopProjector()
+	}
 	if s.ReadModel != nil {
 		_ = s.ReadModel.Close()
+	}
+	if s.Watermarks != nil {
+		_ = s.Watermarks.Close()
 	}
 	if s.InstanceLog != nil {
 		_ = s.InstanceLog.Close()
@@ -829,7 +868,7 @@ type trackedStarter struct {
 	l            instance.Layout
 	tel          *telemetry.Client
 	rollupDB     *rollup.DB
-	readModel    *readmodel.Store
+	watermarks   *intake.Store
 	log          *journal.InstanceLog
 	runners      *daemonRunnerRegistry
 }
@@ -850,7 +889,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})
-	ingestRunTelemetry(s.tel, s.rollupDB, s.readModel, s.l, req.RunID, s.log)
+	ingestRunTelemetry(s.tel, s.rollupDB, s.watermarks, s.l, req.RunID, s.log)
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
@@ -896,11 +935,11 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
-func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, readModel *readmodel.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, readModel, release, wg)
+func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, readModel *readmodel.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
 		return nil, nil, err
@@ -993,7 +1032,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				defer release(runID, wfName)
 				defer untrack()
 				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
-				ingestRunTelemetry(tel, rollupDB, readModel, runLayout, runID, log)
+				ingestRunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:
 				// e.g. a WF-016 refuseResume, or Resume replaying a stage's own

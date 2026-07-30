@@ -75,7 +75,23 @@ type Store struct {
 	// gained nothing from concurrency (0.99x) until it was split.
 	reader *sql.DB
 	path   string
+
+	// clock stamps the one change row that cannot be derived from a journal:
+	// run.removed, whose whole point is that the journal is gone. Injectable so
+	// a test can assert removal ordering without sleeping.
+	clock func() time.Time
 }
+
+// now returns the store's clock, defaulting to the wall clock.
+func (s *Store) now() time.Time {
+	if s.clock == nil {
+		return time.Now().UTC()
+	}
+	return s.clock().UTC()
+}
+
+// SetClock overrides the clock. Test-only; production leaves it nil.
+func (s *Store) SetClock(clock func() time.Time) { s.clock = clock }
 
 // State is projection_state's single row.
 type State struct {

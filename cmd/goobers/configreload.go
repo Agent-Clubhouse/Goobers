@@ -143,7 +143,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.RunnerRegistry,
 		r.setup.Telemetry,
 		r.setup.RollupDB,
-		r.setup.ReadModel,
+		r.setup.Watermarks,
 		r.setup.InstanceLog,
 		r.setup.SharedRegistry,
 		r.setup.WorktreesByGaggle,

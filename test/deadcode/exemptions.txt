@@ -183,15 +183,10 @@ github.com/goobers/goobers/internal/readmodel/conformance.runID # Contract fixtu
 # — the projector (#1923) drains and acknowledges, repair (#1924) inspects single
 # markers, retention (#1932) records removal intent. These entries are expected to
 # go STALE and be deleted as each of those lands; a stale entry fails this gate.
-github.com/goobers/goobers/internal/readmodel/intake.Open # Opened by the projector (#1923) and by every out-of-process writer.
 github.com/goobers/goobers/internal/readmodel/intake.PathFor # Resolves intake.db inside an instance directory for every opener.
-github.com/goobers/goobers/internal/readmodel/intake.Store.Ack # Guarded post-commit acknowledgement (#1923).
-github.com/goobers/goobers/internal/readmodel/intake.Store.AckRemoval # Confirm step of intent-unlink-project-confirm (#1923/#1932).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Close # Lifecycle, held by whoever opened the store.
-github.com/goobers/goobers/internal/readmodel/intake.Store.Count # Pending depth for the freshness surface (#1927).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Get # Single-marker lookup for the removal branch and repair (#1924).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Observed # Source watermark, written by goobers run / the terminalizer / the projector (#1923).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Path # Reported in the freshness surface (#1927).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Pending # Drained by the projector's restart pass (#1923).
-github.com/goobers/goobers/internal/readmodel/intake.Store.Removing # Retention intent, written before the unlink (#1932).
-github.com/goobers/goobers/internal/readmodel/intake.fileURI # DSN parameters require a file: URI.
+
+# Projector observability (#1923). Stats is read by the freshness surface
+# (#1927, Wave 4), which reports projector lag and degraded conditions to the
+# client. Expected to go stale when that lands.
+github.com/goobers/goobers/internal/readmodel/projector.Projector.Stats # Projector counters for the freshness envelope (#1927).
+
