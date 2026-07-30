@@ -104,6 +104,7 @@ type options struct {
 	jsonOut         string
 	workflows       int
 	gagglesFlag     int
+	mixedLoad       time.Duration
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -170,6 +171,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	writeReport(stdout, m)
+	if opts.mixedLoad > 0 {
+		lr, err := runMixedLoad(gen.Layout, gen, DefaultLoadSpec(opts.mixedLoad), opts.samples)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
+			return 1
+		}
+		writeLoadReport(stdout, lr)
+		m.MixedLoad = &lr
+	}
 	if opts.jsonOut != "" {
 		if err := writeJSONReport(opts.jsonOut, m); err != nil {
 			_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
@@ -219,6 +229,7 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	flags.StringVar(&opts.jsonOut, "json", "", "also write the measurement to this path as JSON (a comparable baseline artifact)")
 	flags.IntVar(&opts.workflows, "workflows", 0, "exact workflow count in the generated inventory (overrides -scale; 2000 is §14.4's fan-out target)")
 	flags.IntVar(&opts.gagglesFlag, "gaggles", 0, "exact gaggle count in the generated inventory (overrides -scale)")
+	flags.DurationVar(&opts.mixedLoad, "mixed-load", 0, "after measuring, run the §16.3 mixed-load experiment for this long (e.g. 30s, 30m) — the arbiter of §2.3's head-of-line-blocking hypothesis")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -280,6 +291,54 @@ func writeReport(w io.Writer, m Measurement) {
 		_, _ = fmt.Fprintf(w, "  note: p99.9 requires >= %d warm samples (-samples); reported as n/a below that\n", minSamplesForP999)
 	}
 }
+
+// writeLoadReport prints the mixed-load experiment's verdict.
+//
+// The verdict line is the point of the whole exercise: §2.3 states head-of-line
+// blocking as a hypothesis and §17's Wave 0 exit gates the claim on this
+// experiment, so the harness reports "confirmed" or "not confirmed" explicitly
+// rather than leaving a reader to infer it from a table.
+func writeLoadReport(w io.Writer, r LoadResult) {
+	_, _ = fmt.Fprintf(w, "mixed-load experiment (§16.3): %.0fs, %d readers, %d sched-appends/s, %d run-appends/s, %d ingests/s\n",
+		r.Spec.DurationSeconds, r.Spec.Readers, r.Spec.SchedulerAppendsPerSec, r.Spec.RunAppendsPerSec, r.Spec.IngestPerSec)
+	_, _ = fmt.Fprintf(w, "  writes applied: %d scheduler appends (slowest %s), %d run appends, %d ingests\n",
+		r.WritesApplied.SchedulerAppends,
+		r.WritesApplied.SlowestSchedulerAppendNanos.Round(time.Millisecond),
+		r.WritesApplied.RunAppends, r.WritesApplied.Ingests)
+	_, _ = fmt.Fprintf(w, "  %-28s %-14s %-14s %s\n", "operation", "idle p99", "loaded p99", "degradation")
+	for op, idle := range r.Idle {
+		loaded := r.UnderLoad[op]
+		_, _ = fmt.Fprintf(w, "  %-28s %-14s %-14s %.2fx\n",
+			op, idle.P99.Round(time.Microsecond), loaded.P99.Round(time.Microsecond), r.Degradation[op])
+	}
+	for op, n := range r.Errors {
+		if n > 0 {
+			_, _ = fmt.Fprintf(w, "  errors: %s failed %d times\n", op, n)
+		}
+	}
+	// The verdict keys on the store-bound read, not the worst overall. See
+	// storeBoundOp: the inventory surfaces are filesystem-scan-bound, the write
+	// load warms the cache that scan needs, and reading their (negative)
+	// degradation as evidence would answer a question they cannot be asked.
+	verdict := fmt.Sprintf("NOT CONFIRMED at this scale — the store-bound read (%s) degraded %.2fx under sustained writes",
+		storeBoundOp, r.StoreBoundFactor)
+	if r.StoreBoundFactor >= headOfLineBlockingFactor {
+		verdict = fmt.Sprintf("CONFIRMED — the store-bound read (%s) degraded %.2fx at p99 under sustained writes",
+			storeBoundOp, r.StoreBoundFactor)
+	}
+	_, _ = fmt.Fprintf(w, "  §2.3 head-of-line blocking: %s\n", verdict)
+	if r.StoreBoundFactor < headOfLineBlockingFactor {
+		_, _ = fmt.Fprintf(w, "  note: the scan-bound surfaces show degradation < 1.0 (faster under load) because the\n")
+		_, _ = fmt.Fprintf(w, "        write load warms the page cache their journal scan depends on. That is a confound,\n")
+		_, _ = fmt.Fprintf(w, "        not a result. A verdict is only settled against a 1x/10x corpus (§16), where the\n")
+		_, _ = fmt.Fprintf(w, "        scan is seconds rather than milliseconds; this run bounds the claim, it does not close it.\n")
+	}
+}
+
+// headOfLineBlockingFactor is the p99 degradation at which concurrent writes are
+// judged to be materially blocking reads. Set at 2x: below that the effect is
+// within the noise of a contended host and does not support a causal claim.
+const headOfLineBlockingFactor = 2.0
 
 // spanEventRatio expresses the span:event byte ratio the corpus achieved. The
 // live instance measures ~12×; a corpus far from that is not modelling the

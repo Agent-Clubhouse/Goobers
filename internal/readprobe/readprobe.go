@@ -52,6 +52,8 @@ var (
 	streamJournalReads atomic.Uint64
 	activeScanDirs     atomic.Uint64
 	activeScanOpens    atomic.Uint64
+	instanceLogAppends atomic.Uint64
+	instanceLogBytes   atomic.Uint64
 )
 
 // Snapshot is a point-in-time reading of the counters.
@@ -81,6 +83,18 @@ type Snapshot struct {
 	// taking 18x a bounded list page.
 	ActiveScanDirs  uint64 `json:"activeScanDirs"`
 	ActiveScanOpens uint64 `json:"activeScanOpens"`
+	// InstanceLogAppends counts instance-journal appends, and InstanceLogBytes
+	// the bytes those appends READ to allocate their sequence.
+	//
+	// §2.2's defect measured directly: InstanceLog.Append takes the cross-process
+	// journal lock and re-reads the entire journal — 1.30 s at 324 MB, growing
+	// without bound, from a write path that shares the process with every read.
+	// §14.11 asks for "a bytes-read-per-append bound" as one of the gates on
+	// #1914, and this is the counter that bound is asserted against: today
+	// InstanceLogBytes/InstanceLogAppends is the whole journal, and afterwards it
+	// must be the byte budget.
+	InstanceLogAppends uint64 `json:"instanceLogAppends"`
+	InstanceLogBytes   uint64 `json:"instanceLogBytesRead"`
 }
 
 // Enable turns recording on and zeroes the counters, so a caller measuring a
@@ -102,6 +116,8 @@ func Reset() {
 	streamJournalReads.Store(0)
 	activeScanDirs.Store(0)
 	activeScanOpens.Store(0)
+	instanceLogAppends.Store(0)
+	instanceLogBytes.Store(0)
 }
 
 // Take returns the current counter values.
@@ -113,6 +129,8 @@ func Take() Snapshot {
 		StreamJournalReads: streamJournalReads.Load(),
 		ActiveScanDirs:     activeScanDirs.Load(),
 		ActiveScanOpens:    activeScanOpens.Load(),
+		InstanceLogAppends: instanceLogAppends.Load(),
+		InstanceLogBytes:   instanceLogBytes.Load(),
 	}
 }
 
@@ -127,6 +145,8 @@ func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 		StreamJournalReads: s.StreamJournalReads - earlier.StreamJournalReads,
 		ActiveScanDirs:     s.ActiveScanDirs - earlier.ActiveScanDirs,
 		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
+		InstanceLogAppends: s.InstanceLogAppends - earlier.InstanceLogAppends,
+		InstanceLogBytes:   s.InstanceLogBytes - earlier.InstanceLogBytes,
 	}
 }
 
@@ -175,5 +195,16 @@ func RecordActiveScanDir() {
 func RecordActiveScanOpen() {
 	if enabled.Load() {
 		activeScanOpens.Add(1)
+	}
+}
+
+// RecordInstanceLogAppend records one instance-journal append and the number of
+// bytes it read to allocate its sequence.
+func RecordInstanceLogAppend(bytesRead int) {
+	if enabled.Load() {
+		instanceLogAppends.Add(1)
+		if bytesRead > 0 {
+			instanceLogBytes.Add(uint64(bytesRead))
+		}
 	}
 }

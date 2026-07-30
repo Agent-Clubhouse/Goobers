@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/readprobe"
 )
 
 // InstanceLog is the instance-level journal — <instance-root>/scheduler/events.jsonl
@@ -91,12 +93,22 @@ func (l *InstanceLog) Append(ev Event) error {
 	}
 	defer releaseJournalLock(lock)
 
-	events, tornBytes, err := readEvents(filepath.Join(l.dir, fileEvents))
+	path := filepath.Join(l.dir, fileEvents)
+	// Report what this append had to read to allocate its sequence. Today that
+	// is the whole journal on every append (§2.2), and #1914 replaces it with a
+	// bounded backward scan under the same lock; §14.11 asks for a
+	// bytes-read-per-append bound, which needs this number observable.
+	if info, statErr := os.Stat(path); statErr == nil {
+		readprobe.RecordInstanceLogAppend(int(info.Size()))
+	} else {
+		readprobe.RecordInstanceLogAppend(0)
+	}
+	events, tornBytes, err := readEvents(path)
 	if err != nil {
 		return err
 	}
 	l.seq = highestEventSeq(events)
-	if err := truncateTornTail(filepath.Join(l.dir, fileEvents), tornBytes); err != nil {
+	if err := truncateTornTail(path, tornBytes); err != nil {
 		return err
 	}
 	if tornBytes > 0 {

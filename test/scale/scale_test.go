@@ -837,3 +837,145 @@ func TestReadProbeIsOffByDefaultAndCostsNothing(t *testing.T) {
 		t.Fatalf("enabled probe recorded %d journal opens, want 1", got)
 	}
 }
+
+// TestInstanceLogAppendReadsWholeJournal is #1914's before-number, stated as a
+// deterministic bound rather than a duration.
+//
+// §2.2 measures InstanceLog.Append at 1.30 s on the live 324 MB journal and
+// notes it grows without bound, from 14 call sites, on a write path sharing the
+// process with every read. The cost is that Append takes the cross-process
+// journal lock and then re-reads the ENTIRE journal to allocate its sequence.
+//
+// §14.11 asks for "a bytes-read-per-append bound" as one of the gates on #1914.
+// This is the counter that bound is asserted against. Today every append reads
+// the whole file; after #1914 it must read at most the byte budget, and this
+// test becomes the bound rather than the evidence.
+//
+// Asserted in bytes, not seconds, for the same reason as every other assertion
+// added in this wave: a contended CI runner cannot defend a duration, but "this
+// append read 4.2 MB" is true on every machine.
+func TestInstanceLogAppendReadsWholeJournal(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 1
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 4000
+	spec.GiantSchedulerRecords = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	journalPath := filepath.Join(gen.Layout.SchedulerDir(), "events.jsonl")
+	info, err := os.Stat(journalPath)
+	if err != nil {
+		t.Fatalf("stat instance journal: %v", err)
+	}
+	size := info.Size()
+	if size < 100_000 {
+		t.Fatalf("instance journal is only %d bytes; too small to demonstrate the defect", size)
+	}
+
+	log, _, err := journal.OpenInstanceLog(gen.Layout.SchedulerDir())
+	if err != nil {
+		t.Fatalf("open instance log: %v", err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	const appends = 5
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	before := readprobe.Take()
+	for i := 0; i < appends; i++ {
+		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Reason: "probe"}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	got := readprobe.Take().Sub(before)
+
+	if got.InstanceLogAppends != appends {
+		t.Fatalf("recorded %d appends, want %d", got.InstanceLogAppends, appends)
+	}
+	perAppend := got.InstanceLogBytes / got.InstanceLogAppends
+	t.Logf("instance journal %d bytes; each append read %d bytes (%.1f%% of the file)",
+		size, perAppend, 100*float64(perAppend)/float64(size))
+
+	// Today: every append reads essentially the whole journal.
+	if perAppend < uint64(size)*9/10 {
+		t.Errorf("each append read only %d bytes of a %d-byte journal.\n"+
+			"If this dropped, #1914's bounded backward scan has landed — replace this assertion with the "+
+			"§14.11 bound (bytes per append <= the byte budget) rather than deleting it.",
+			perAppend, size)
+	}
+
+	// And the total read is quadratic in the append count, which is the shape
+	// that makes it unbounded rather than merely expensive.
+	if got.InstanceLogBytes < uint64(size)*appends*9/10 {
+		t.Errorf("total bytes read across %d appends was %d, expected ~%d (append count x journal size)",
+			appends, got.InstanceLogBytes, uint64(size)*appends)
+	}
+}
+
+// TestMixedLoadExperimentProducesAVerdict is a smoke test for §16.3's
+// experiment: it must run end to end, apply real concurrent writes, and produce
+// a comparable idle/loaded pair. It deliberately asserts nothing about the
+// verdict itself — whether head-of-line blocking is confirmed is a measurement
+// on a real corpus, not something a 2-second unit test may decide.
+//
+// What it does pin is that the experiment cannot silently measure nothing,
+// which is how the first version of it failed: it accepted a Duration and then
+// ran the load only for as long as one pass of the read mix took.
+func TestMixedLoadExperimentProducesAVerdict(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 40
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 200
+	spec.GiantSchedulerRecords = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := rebuildAllRoots(gen); err != nil {
+		t.Fatalf("rebuild rollup: %v", err)
+	}
+
+	load := DefaultLoadSpec(2 * time.Second)
+	res, err := runMixedLoad(gen.Layout, gen, load, 4)
+	if err != nil {
+		t.Fatalf("mixed load: %v", err)
+	}
+
+	// Every operation must have been measured in both phases, or the comparison
+	// is between different sets.
+	for op := range res.Idle {
+		if _, ok := res.UnderLoad[op]; !ok {
+			t.Errorf("%s measured idle but not under load", op)
+		}
+		if _, ok := res.Degradation[op]; !ok {
+			t.Errorf("%s has no degradation figure", op)
+		}
+	}
+	if len(res.Idle) == 0 {
+		t.Fatal("no operations measured")
+	}
+
+	// The load must actually have been applied. Zero writes would mean the
+	// "under load" phase measured an idle instance and every degradation figure
+	// is meaningless.
+	w := res.WritesApplied
+	t.Logf("writes applied: %d scheduler appends (slowest %s), %d run appends, %d ingests",
+		w.SchedulerAppends, w.SlowestSchedulerAppendNanos, w.RunAppends, w.Ingests)
+	if w.SchedulerAppends == 0 && w.RunAppends == 0 && w.Ingests == 0 {
+		t.Fatal("no writes were applied during the loaded phase; the experiment measured an idle instance twice")
+	}
+
+	// The sustained phase must have run for at least the requested duration.
+	// This is what the first version got wrong.
+	if res.Spec.DurationSeconds != load.Duration.Seconds() {
+		t.Errorf("reported duration %.1fs does not match the requested %.1fs",
+			res.Spec.DurationSeconds, load.Duration.Seconds())
+	}
+}

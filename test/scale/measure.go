@@ -41,6 +41,9 @@ type Measurement struct {
 	// Stats holds the repeatedly-sampled read paths, keyed by operation.
 	Stats []Stat `json:"stats"`
 
+	// MixedLoad, when present, is the §16.3 experiment's result.
+	MixedLoad *LoadResult `json:"mixedLoad,omitempty"`
+
 	// Work is the expensive work each operation performs for ONE invocation,
 	// keyed by operation name. Latency alone cannot distinguish "fast because
 	// bounded" from "fast because the corpus is small", which is how a read path
