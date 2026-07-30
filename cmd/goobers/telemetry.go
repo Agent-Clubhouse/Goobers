@@ -252,8 +252,16 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "read model rebuilt: %d projected, %d skipped, %d scanned (running=%d)\n",
-		result.Projected, result.Skipped, result.Scanned, counts[journal.PhaseRunning])
+	// The change-feed head is reported alongside the row counts because a rebuild
+	// mints a NEW epoch (§4.2), so every connected client's cursor is about to be
+	// invalidated. An operator who can see the new generation's starting position
+	// can tell a healthy rebuild from one that produced no feed at all.
+	head, err := store.LatestChangeSeq(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "read model rebuilt: %d projected, %d skipped, %d scanned (running=%d, change seq %d)\n",
+		result.Projected, result.Skipped, result.Scanned, counts[journal.PhaseRunning], head)
 	return nil
 }
 

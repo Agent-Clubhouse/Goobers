@@ -11,6 +11,11 @@ github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-as
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.Store.runStages # Reachable only from Store.GetRun, which is itself exempted until the query surface lands (#1918/#1920).
 github.com/goobers/goobers/internal/readmodel.requiredTime # Timestamp decoder used by Store.GetRun, exempted for the same reason (#1918/#1920).
+github.com/goobers/goobers/internal/readmodel.Cursor.String # SSE cursor wire form (<schemaVersion>:<epoch>:<seq>), tested and landing ahead of its consumer per the design's own sequencing; consumed by the change-cursor stream (#1929).
+github.com/goobers/goobers/internal/readmodel.ParseCursor # Counterpart to Cursor.String, exempted for the same reason (#1919/#1929).
+github.com/goobers/goobers/internal/readmodel.EvaluateCursor # Resolves a client cursor to one of the three named conditions (epoch_changed/feed_truncated/schema_changed); consumed by the stream in #1929.
+github.com/goobers/goobers/internal/readmodel.Store.Changes # Reads the change tail an SSE subscriber replays from; consumed in #1929.
+github.com/goobers/goobers/internal/readmodel.Store.PruneChanges # Enforces the change-retention floor (§4.2); driven by the projector in #1923.
 github.com/goobers/goobers/internal/readmodel.Store.GetRun # Read half of the run read model, exercised by the projection idempotence tests; its production callers arrive with the query surface (#1920) that this store was built for (#1918).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory retained for exporter and audit consumers.
