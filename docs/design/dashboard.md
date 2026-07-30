@@ -235,6 +235,16 @@ Light and dark are independently tuned themes, not inversions. Baseline:
 
 ## 7. Shared read model and HTTP contract
 
+> **Extended by [`portal-read-architecture.md`](portal-read-architecture.md)
+> §7.** Everything here still holds — the envelope, the versioning, keyset
+> cursors, and the page limits. Four things are **added** there, all additive to
+> the wire contract: a declared cost class and server-side budget per route; a
+> `readState` freshness envelope on every read response; `503`-not-`partial`
+> semantics for an interrupted or over-budget page; and a typed
+> `unsupported_filter_combination` refusal, since "list endpoints support filters"
+> becomes "list endpoints support an **enumerated set of filter combinations**,
+> each with a covering index."
+
 The production contract is versioned under `/api/v1`. IDs are stable and
 unambiguous; workflow identity includes gaggle and version/digest where needed.
 List endpoints support deterministic sorting, pagination/cursors, and filters.
@@ -301,6 +311,22 @@ Artifact reads use the journal's containment, digest verification, redaction,
 and media-type rules. The API never exposes arbitrary filesystem paths.
 
 ## 8. Live transport
+
+> **Superseded by
+> [`portal-read-architecture.md`](portal-read-architecture.md) §8.1.** The
+> transport (SSE, `GET /api/v1/events`, the `snapshot`-then-`invalidate` shape,
+> and the atomic subscriber registration below) is retained. **Three specifics in
+> this section are replaced**, and they are shipped behavior with tests, so the
+> contradiction is named rather than left to inference:
+>
+> | This section | Replaced by |
+> |---|---|
+> | A **session-scoped** monotonic `id`, generated per process | A durable, process-independent cursor `<schemaVersion>:<epoch>:<change.seq>`, portable across replicas and across a daemon restart |
+> | `409 stale_cursor` for a cursor from an older session | **Three named conditions** — `epoch_changed` (equality on an opaque per-build ULID), `feed_truncated` (`cursor.seq < min_change_seq`, a persisted comparison against a defined retention floor), and `schema_changed` |
+> | Change discovery by **polling the filesystem**, with polling as the documented client fallback | A tail of the `change` table, written in the same transaction as the fact it describes. The 100 ms ticker, the 5 s sweep, and the per-run stream state are deleted |
+>
+> Heartbeats are retained at 15 s and **promoted to a liveness contract**: two
+> consecutive missed heartbeats mean the stream is dead (#1711).
 
 Use Server-Sent Events for local live updates, with polling as a documented
 fallback.
