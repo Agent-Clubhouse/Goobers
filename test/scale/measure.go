@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -159,6 +160,19 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	}
 	ctx := context.Background()
 
+	// Model the daemon, not a one-shot CLI: the daemon moves the active-run count
+	// off the request path with a background sampler (#1741), and a harness that
+	// omits it would measure a code path production does not take. Readers then
+	// serve the last sample from memory.
+	stopSampler := service.StartActiveRunSampler(time.Hour)
+	defer stopSampler()
+	// Wait for the first sample so the measurement reflects a warm daemon rather
+	// than the "not sampled yet" state. That state is real and the portal renders
+	// it, but it is a startup transient, not the steady state under test.
+	if err := waitForActiveSample(ctx, service); err != nil {
+		return Measurement{}, err
+	}
+
 	// A deep cursor is resolved once, outside the timed loop, so the deep-page
 	// stat measures the page fetch rather than the walk that found the cursor.
 	deepCursor, err := cursorAtDepth(ctx, service, 10)
@@ -310,6 +324,27 @@ func cursorAtDepth(ctx context.Context, service *readservice.Local, pages int) (
 	}
 	return options.Cursor, nil
 }
+
+// waitForActiveSample blocks until the background active-run sampler has
+// published its first sample, so the measured steady state is a warm daemon.
+func waitForActiveSample(ctx context.Context, service *readservice.Local) error {
+	deadline := time.Now().Add(activeSampleWait)
+	for {
+		if _, err := service.Instance(ctx); err == nil {
+			return nil
+		} else if !errors.Is(err, readservice.ErrActiveCountsUnavailable) {
+			return fmt.Errorf("scale: warm the active-run sampler: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("scale: active-run sampler produced no sample within %s", activeSampleWait)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// activeSampleWait bounds how long the harness waits for the first sample. At
+// 10x the walk is tens of seconds, so this is generous rather than tight.
+const activeSampleWait = 5 * time.Minute
 
 // sampleRunAndStage returns a run id and one of its stage names, for measuring
 // the run-detail surfaces against.

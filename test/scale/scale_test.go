@@ -663,64 +663,71 @@ func allOrphanDirs(gen GenerateResult) ([]string, error) {
 	return dirs, nil
 }
 
-// TestInventorySurfacesCostGrowsWithRunHistory is the Wave 0 measurement that
-// makes design §2.1 falsifiable in-tree, and it is written to FAIL once the
-// defect is fixed.
+// TestInventorySurfacesDoNotScanRunHistory is the §14.2 bound, converted from
+// the Wave 0 measurement that asserted the defect.
 //
-// The claim under test: /v1/instance, /v1/gaggles, /v1/gaggles/{g}/workflows,
-// the workflow-detail route, and ListRuns(LatestPerWorkflow) all reach the
-// active-run scan, which walks every run directory in history and opens each
-// journal to reconstruct phase. Their cost therefore tracks *total history*
-// rather than the inventory they render or the active set they report.
+// Before #1741, /v1/instance, /v1/gaggles, /v1/gaggles/{g}/workflows and the
+// workflow-detail route each walked every run directory in history and opened
+// every journal to reconstruct phase — per request. The Wave 0 version of this
+// test asserted exactly that, and its failure message said to invert it into a
+// bound when the fix landed. This is that inversion.
 //
-// # This asserts work, not wall time, and that is the whole point
+//	before: instance 233.6ms p50, 2,000 journal opens at a 2,000-run corpus
+//	after:  instance     1us p50,     0 journal opens
 //
-// An earlier version of this test compared p50 latencies across two corpus
-// sizes. It passed locally and failed on CI with the *smaller* corpus measuring
-// five times slower — because the shared, three-way-sharded, -race-enabled
-// runner's scheduling noise dwarfs the signal. That is not a flake to retry
-// around: it is the same lesson the design records in §17 Wave 0, that contended
-// CI runners cannot defend a latency figure, and a test that tries makes the
-// suite unreliable without measuring anything.
-//
-// Journal opens are deterministic. Scanning a 600-run corpus opens 600 journals
-// on any machine, at any load, under -race or not. So the growth claim is
-// asserted on counters and the latencies are logged for information only.
-func TestInventorySurfacesCostGrowsWithRunHistory(t *testing.T) {
-	// Both sizes must exceed the 50-row page limit, or the "small" page opens
-	// the whole corpus simply because there is not enough of it to fill a page,
-	// and the control compares two different things.
+// Asserted on work rather than wall time. An earlier version compared p50
+// latencies across corpus sizes and failed on CI with the SMALLER corpus five
+// times slower — a contended, three-way-sharded, -race runner cannot defend a
+// duration. Journal opens are deterministic on any machine at any load.
+func TestInventorySurfacesDoNotScanRunHistory(t *testing.T) {
 	const (
 		smallRuns = 80
 		largeRuns = 320
-		factor    = largeRuns / smallRuns
 	)
 	small := measureAtRunCount(t, smallRuns)
 	large := measureAtRunCount(t, largeRuns)
 
-	// The control: a bounded, indexed list page's work must NOT grow with
-	// history. It opens limit+1 journals for the page it returns, whatever the
-	// corpus size. If this fails, the comparison below would be meaningless.
+	// The control: a bounded list page's work is fixed by the page, not history.
 	smallPage := small.Work[opListRunsPage].JournalOpens
 	largePage := large.Work[opListRunsPage].JournalOpens
-	t.Logf("listruns_page journal opens: %d -> %d (%dx the runs)", smallPage, largePage, factor)
+	t.Logf("listruns_page journal opens: %d -> %d", smallPage, largePage)
 	if smallPage != largePage {
 		t.Errorf("bounded list page opened %d journals at %d runs but %d at %d runs; "+
 			"its work must be bounded by the page, not by history",
 			smallPage, smallRuns, largePage, largeRuns)
 	}
 
-	// The subjects: work grows one-for-one with run count.
-	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail, opLatestPerWorkflow} {
-		lo := small.Work[op].ActiveScanOpens
-		hi := large.Work[op].ActiveScanOpens
-		t.Logf("%s active-scan journal opens: %d -> %d (p50 %s -> %s)",
-			op, lo, hi, stat(small, op).P50, stat(large, op).P50)
-		if lo < smallRuns || hi < largeRuns {
-			t.Errorf("%s opened %d journals at %d runs and %d at %d runs; expected >= the corpus at each size.\n"+
-				"If these dropped, #1741/Wave 2's stored phase has landed and this test should be inverted into the §14.2 bound.",
-				op, lo, smallRuns, hi, largeRuns)
+	// The bound: the inventory surfaces perform NO active-run scan at all. They
+	// serve the background sample from memory (#1741).
+	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail} {
+		for _, m := range []struct {
+			runs int
+			w    readprobe.Snapshot
+		}{{smallRuns, small.Work[op]}, {largeRuns, large.Work[op]}} {
+			if m.w.ActiveScanOpens != 0 || m.w.ActiveScanDirs != 0 {
+				t.Errorf("%s at %d runs walked %d directories and opened %d journals; the §14.2 bound is zero.\n"+
+					"The active-run count must come from the background sampler, never a request-path walk.",
+					op, m.runs, m.w.ActiveScanDirs, m.w.ActiveScanOpens)
+			}
+			if m.w.JournalOpens != 0 {
+				t.Errorf("%s at %d runs opened %d journals via openRun; the §14.2 bound is zero",
+					op, m.runs, m.w.JournalOpens)
+			}
 		}
+		t.Logf("%s: 0 journal opens at both %d and %d runs", op, smallRuns, largeRuns)
+	}
+
+	// LatestPerWorkflow no longer scans, but still opens one journal per
+	// candidate row — the residual candidate loop #1782 and Wave 2's read model
+	// remove. Recorded rather than asserted at zero, so the remaining work stays
+	// visible instead of being forgotten.
+	lo := small.Work[opLatestPerWorkflow]
+	hi := large.Work[opLatestPerWorkflow]
+	t.Logf("listruns_latest_per_workflow: scan opens %d -> %d (bounded), candidate opens %d -> %d (#1782 removes these)",
+		lo.ActiveScanOpens, hi.ActiveScanOpens, lo.JournalOpens, hi.JournalOpens)
+	if lo.ActiveScanOpens != 0 || hi.ActiveScanOpens != 0 {
+		t.Errorf("latest_per_workflow still performs an active-run scan (%d, %d opens)",
+			lo.ActiveScanOpens, hi.ActiveScanOpens)
 	}
 }
 
@@ -769,8 +776,9 @@ func measureAtRunCount(t *testing.T, n int) Measurement {
 //   - A bounded 50-row list page opens limit+1 journals — one per returned row.
 //     The diagnosis's Appendix A says "lists open and parse a journal per
 //     returned row"; this is that, quantified. §14.2's target is ZERO.
-//   - Every inventory surface opens one journal per run in *total history* and
-//     walks every run directory, which is §2.1's 17.2 s scan.
+//   - Every inventory surface now opens ZERO journals, since #1741 moved the
+//     active-run count to a background sampler. Before it, each opened one
+//     journal per run in total history — §2.1's 17.2 s scan.
 //   - Run detail opens the same run's journal three times for one page load,
 //     which is §2.3's "GetRun and RunEvents each call openRun; stage selection
 //     can call it a third time". §8.2's useSingleRun target is ONE.
@@ -799,20 +807,13 @@ func TestWorkPerInvocationIsUnbounded(t *testing.T) {
 			"If this dropped to 1, §8.2's useSingleRun has landed and this should become the bound.", got)
 	}
 
-	// The inventory surfaces open one journal per run in total history. The
-	// corpus is 120 runs, so this is exactly the O(history) shape.
+	// The inventory surfaces perform no journal work at all, since #1741 moved
+	// the active-run count to a background sampler.
 	for _, op := range []string{opInstance, opGaggles, opWorkflows, opWorkflowDetail} {
 		w := get(op)
-		if w.ActiveScanOpens < uint64(m.Runs) {
-			t.Errorf("%s opened %d journals in the active-run scan; expected >= the whole corpus (%d).\n"+
-				"If this dropped, #1741/Wave 2's stored phase has landed and this should become the §14.2 bound.",
-				op, w.ActiveScanOpens, m.Runs)
-		}
-		// And it opens NONE through readservice.openRun — which is why the three
-		// pre-existing observer seams report a clean zero for the most expensive
-		// read in the system, and why readprobe instruments the scan directly.
-		if w.JournalOpens != 0 {
-			t.Logf("%s now opens %d journals via readservice.openRun as well", op, w.JournalOpens)
+		if w.ActiveScanOpens != 0 || w.JournalOpens != 0 {
+			t.Errorf("%s performed journal work (%d scan opens, %d openRun); the §14.2 bound is zero",
+				op, w.ActiveScanOpens, w.JournalOpens)
 		}
 	}
 }

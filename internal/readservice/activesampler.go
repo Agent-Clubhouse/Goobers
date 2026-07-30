@@ -1,0 +1,198 @@
+package readservice
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
+)
+
+// The active-run sampler (#1741, design §17 Wave 1.4).
+//
+// # What it removes
+//
+// Six production call sites answered "how many runs are live" by walking every
+// run directory in history and replaying each run's event log to reconstruct its
+// phase. Measured on the live instance: 17.2 s cold / 4.3 s warm to return the
+// answer "2", against a client that aborts at 10 s (§2.1). Measured in the Wave 0
+// harness at 1x: 4.06 s p50, 11.26 s p99, walking 40,665 directories and opening
+// 29,759 journals — per request.
+//
+// The read paths were paying that. Now a background sampler pays it, once per
+// interval, and readers take the last sample from memory with its age.
+//
+// # Why "no sample" must not fall back to the scan
+//
+// §17 Wave 1.4 corrects an earlier version of the design that "kept the
+// 17-second scan as the no-sample fallback and so preserved the exact failure on
+// a cold daemon". That is the whole trap: a fallback which is only taken when
+// the cache is cold is taken exactly when the instance is busiest — at startup,
+// after a restart, during a deploy — so the mitigation evaporates under the
+// conditions that motivated it.
+//
+// So a reader with no sample gets a typed "not sampled yet" and the caller
+// renders that state. It is the §7.2 rule applied early: current, stale by a
+// stated amount, or unavailable with a reason — never an unbounded wait.
+//
+// # Deliberately throwaway
+//
+// Wave 2 replaces this entirely with an indexed query over a stored phase
+// column (§5.4), at which point the sampler and the walk both go. It exists
+// because that is several waves away and the portal is unusable now.
+
+// ErrActiveCountsUnavailable reports that no active-run sample has been taken
+// yet. Callers surface it as an explicitly degraded state rather than blocking
+// or falling back to the synchronous walk.
+var ErrActiveCountsUnavailable = errors.New("readservice: active run counts not sampled yet")
+
+// activeSample is one completed observation of the active-run set.
+type activeSample struct {
+	counts  map[localscheduler.WorkflowIdentity]int
+	takenAt time.Time
+	// err is the sampling error, retained so a persistently failing sample is
+	// reported rather than silently serving an ever-staler success. One
+	// unreadable event log fails the whole walk today (localscheduler returns
+	// the error), so this is reachable.
+	err error
+}
+
+// activeRunSampler walks the run roots on an interval and publishes the result.
+//
+// It holds no reference to a request context: the walk must not be cancellable
+// by whichever reader happened to trigger it, which was one of the ways the old
+// request-path scan wasted work — a client giving up at 10 s discarded a scan
+// that was 9 s in.
+type activeRunSampler struct {
+	layout   instance.Layout
+	interval time.Duration
+	now      func() time.Time
+
+	mu     sync.RWMutex
+	sample *activeSample
+
+	// sampling guards against overlapping walks. At 1x a walk takes seconds; an
+	// interval shorter than the walk would otherwise stack them and turn a
+	// mitigation into a load generator.
+	sampling sync.Mutex
+
+	stop     chan struct{}
+	stopOnce sync.Once
+	done     chan struct{}
+}
+
+// defaultActiveSampleInterval is how often the sampler refreshes.
+//
+// Chosen against the measured walk cost rather than a round number: at 1x the
+// walk is ~4 s, so 30 s keeps duty cycle near 13% while bounding staleness to
+// well under the time a human spends reading a page. The age is reported either
+// way, so a stale sample is visible rather than assumed fresh.
+const defaultActiveSampleInterval = 30 * time.Second
+
+// newActiveRunSampler creates a sampler. It does not start until Start is
+// called, so a read service constructed for a one-shot CLI command does not
+// spawn a goroutine it will never use.
+func newActiveRunSampler(layout instance.Layout, interval time.Duration, now func() time.Time) *activeRunSampler {
+	if interval <= 0 {
+		interval = defaultActiveSampleInterval
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &activeRunSampler{
+		layout:   layout,
+		interval: interval,
+		now:      now,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+// Start begins sampling in the background. The first sample is taken
+// immediately, so a daemon that has been up for one interval is not still
+// reporting "unavailable".
+func (a *activeRunSampler) Start() {
+	go func() {
+		defer close(a.done)
+		a.refresh()
+		ticker := time.NewTicker(a.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-a.stop:
+				return
+			case <-ticker.C:
+				a.refresh()
+			}
+		}
+	}()
+}
+
+// Stop halts sampling and waits for the in-flight walk to finish.
+func (a *activeRunSampler) Stop() {
+	a.stopOnce.Do(func() { close(a.stop) })
+	<-a.done
+}
+
+// refresh takes one sample.
+func (a *activeRunSampler) refresh() {
+	// Skip rather than queue if a walk is already running: overlapping
+	// multi-second walks would compound rather than refresh.
+	if !a.sampling.TryLock() {
+		return
+	}
+	defer a.sampling.Unlock()
+
+	counts, err := a.walk()
+	a.mu.Lock()
+	a.sample = &activeSample{counts: counts, takenAt: a.now(), err: err}
+	a.mu.Unlock()
+}
+
+// walk performs the O(history) directory walk the read paths no longer do.
+func (a *activeRunSampler) walk() (map[localscheduler.WorkflowIdentity]int, error) {
+	runDirs, err := a.layout.RunDirs()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate run roots: %w", err)
+	}
+	counts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
+	if err != nil {
+		return nil, fmt.Errorf("read active run projection: %w", err)
+	}
+	return counts, nil
+}
+
+// Counts returns the most recent sample and how old it is.
+//
+// It never walks. A caller that gets ErrActiveCountsUnavailable must render the
+// degraded state, not retry synchronously — see the package comment for why the
+// fallback is the trap rather than the safety net.
+func (a *activeRunSampler) Counts() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+	a.mu.RLock()
+	sample := a.sample
+	a.mu.RUnlock()
+
+	if sample == nil {
+		return nil, 0, ErrActiveCountsUnavailable
+	}
+	age := a.now().Sub(sample.takenAt)
+	if sample.err != nil {
+		return nil, age, sample.err
+	}
+	return sample.counts, age, nil
+}
+
+// SampleNow forces a synchronous sample. It exists for tests and for one-shot
+// CLI commands that have no daemon to have warmed the cache and would otherwise
+// always report unavailable; it is never called from an HTTP read path.
+func (a *activeRunSampler) SampleNow(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.refresh()
+	_, _, err := a.Counts()
+	return err
+}
