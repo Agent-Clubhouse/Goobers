@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 )
 
 const (
@@ -382,6 +383,7 @@ func (s *EventStream) pollActiveSources(now time.Time, scanErrors *[]error) {
 			continue
 		}
 		source := state.source
+		readprobe.RecordStreamJournalRead()
 		if journalReadObserver != nil {
 			journalReadObserver(path)
 		}

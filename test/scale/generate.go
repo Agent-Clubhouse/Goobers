@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/instancefixture"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -143,10 +144,26 @@ func eventsForRun(rng *rand.Rand, spec Spec) int {
 	return runEventCountQuantiles[len(runEventCountQuantiles)-1].events
 }
 
-// gaggles is the fixed set of gaggle names the generator spreads runs across so
-// gaggle-filtered read paths (ListRuns Gaggle filter, per-gaggle rollup) are
-// exercised. Order is stable for deterministic run assignment.
-var gaggles = []string{"goobers", "acme-web", "widget-service", "selfhost"}
+// gaggleNames returns the gaggle names runs are spread across, taken from the
+// inventory spec so runs and definitions agree.
+//
+// They must be the same names. A generator with its own list — this one used
+// {"goobers", "acme-web", "widget-service", "selfhost"} while the inventory
+// declared none at all — produces runs whose gaggle no definition mentions, and
+// then every inventory surface reports zero active runs *while looking perfectly
+// healthy*. That is the worst kind of harness bug: it makes the measurement
+// meaningless without making it fail.
+func gaggleNames(spec Spec) []string {
+	n := spec.Inventory.Gaggles
+	if n < 1 {
+		n = 1
+	}
+	names := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		names = append(names, instancefixture.GaggleName(i))
+	}
+	return names
+}
 
 // Spec is the parameterizable shape of a synthetic instance. The zero value is
 // not useful; build one with defaultSpec or scaledSpec and override fields as
@@ -207,6 +224,21 @@ type Spec struct {
 	// Seed makes the run/label distribution deterministic so a given Spec
 	// reproduces byte-for-byte across machines and runs.
 	Seed int64
+	// Inventory describes the gaggle/workflow definitions generated alongside the
+	// runs. It is part of the Spec rather than supplied separately at measure time
+	// because the runs must be attributed to the gaggles and workflows the
+	// definitions declare — see gaggleNames for what goes wrong when they diverge.
+	Inventory instancefixture.InventorySpec
+	// FlatRunsDir writes every run into the legacy single <root>/runs directory
+	// instead of per-gaggle roots.
+	//
+	// Per-gaggle is the default because it is what the live instance uses: its
+	// root `runs` is a *symlink* to `gaggles/goobers/runs`, and Layout.RunDirs
+	// deliberately skips that symlink and enumerates `gaggles/*/runs` instead. A
+	// harness on the flat layout therefore exercises a different code path from
+	// production — one run root instead of N — and cannot measure the multi-root
+	// walk that ActiveRunCountsByWorkflowDirs actually performs.
+	FlatRunsDir bool
 }
 
 // scaledSpec builds a Spec at mult× the measured live instance. mult=1
@@ -240,7 +272,42 @@ func scaledSpec(root string, mult float64) Spec {
 		// live journal's byte count.
 		GiantSchedulerRecords: scaleGiantRecords(scale(baselineSchedulerEvents)),
 		Seed:                  1,
+		// The inventory is scaled too, because §14.4's fan-out property is stated
+		// in workflow count: "a page showing W workflows issues a request count
+		// that does not grow with W". At 1× that is baselineWorkflows; the design
+		// asks for 2,000 at the fan-out assertion, which -workflows pins directly.
+		Inventory: instancefixture.InventorySpec{
+			InstanceName:      "scale-harness",
+			Gaggles:           baselineGaggles,
+			Workflows:         scaleWorkflows(mult),
+			GoobersPerGaggle:  baselineGoobersPerGaggle,
+			TasksPerWorkflow:  baselineTasksPerWorkflow,
+			MaxConcurrentRuns: 4,
+		},
 	}
+}
+
+// Inventory baseline constants. The live instance runs a single gaggle with a
+// handful of workflows, but a single gaggle cannot exercise the gaggle-leading
+// authorization predicate (§5.5) or the multi-root walk that
+// ActiveRunCountsByWorkflowDirs performs, so the baseline declares several.
+const (
+	baselineGaggles          = 4
+	baselineWorkflows        = 40
+	baselineGoobersPerGaggle = 3
+	baselineTasksPerWorkflow = 3
+)
+
+// scaleWorkflows grows the workflow count with the multiplier but keeps it
+// bounded: workflow count drives definition-inventory cost, which is
+// independent of run history, so scaling it linearly with runs would conflate
+// two dimensions the harness needs to separate.
+func scaleWorkflows(mult float64) int {
+	n := int(float64(baselineWorkflows) * mult)
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // baselineGiantSchedulerRecords is the measured count of #1414-residue records on
@@ -273,6 +340,11 @@ type GenerateResult struct {
 	SchedulerEvents      int
 	SchedulerJournalSize int64
 	Elapsed              time.Duration
+	// Inventory is the definition spec the runs were attributed to, carried
+	// through so the measurement builds definitions that match the corpus.
+	Inventory instancefixture.InventorySpec
+	// Gaggles are the run roots' gaggle names, in generation order.
+	Gaggles []string
 }
 
 // generate synthesizes the instance described by spec, writing every run
@@ -287,8 +359,14 @@ func generate(spec Spec) (GenerateResult, error) {
 	}
 	start := time.Now()
 	layout := instance.NewLayout(spec.Root)
-	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
-		return GenerateResult{}, fmt.Errorf("scale: create runs dir: %w", err)
+	// One run root per gaggle, matching the live instance's layout (see
+	// Spec.FlatRunsDir). Every root is created up front so a worker never races
+	// another on MkdirAll.
+	names := gaggleNames(spec)
+	for _, name := range names {
+		if err := os.MkdirAll(runsDirFor(layout, spec, name), 0o755); err != nil {
+			return GenerateResult{}, fmt.Errorf("scale: create runs dir for %s: %w", name, err)
+		}
 	}
 	// A fixed epoch keeps StartedAt deterministic; runs march forward one
 	// minute apart so newest-first ordering and time-window filters have a real
@@ -320,7 +398,17 @@ func generate(spec Spec) (GenerateResult, error) {
 		SchedulerEvents:      spec.SchedulerEvents,
 		SchedulerJournalSize: schedSize,
 		Elapsed:              time.Since(start),
+		Inventory:            spec.Inventory,
+		Gaggles:              names,
 	}, nil
+}
+
+// runsDirFor returns the run root a given gaggle's runs belong in.
+func runsDirFor(layout instance.Layout, spec Spec, gaggle string) string {
+	if spec.FlatRunsDir {
+		return layout.RunsDir()
+	}
+	return layout.ForGaggle(gaggle).RunsDir()
 }
 
 // generateRunsParallel fans run generation across a bounded worker pool. The
@@ -378,7 +466,13 @@ func generateRunsParallel(layout instance.Layout, spec Spec, epoch time.Time) er
 // monotonically so LastActivityAt and durations are meaningful.
 func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, epoch time.Time) error {
 	runID := fmt.Sprintf("run-%08d", index)
-	gaggle := gaggles[index%len(gaggles)]
+	names := gaggleNames(spec)
+	gaggle := names[index%len(names)]
+	// Attribute the run to a workflow the inventory actually declares, so
+	// LatestPerWorkflow and the workflow-detail surface have matching data
+	// instead of resolving to nothing.
+	workflowName := instancefixture.WorkflowName(index % maxInt(spec.Inventory.Workflows, 1))
+	stageName := instancefixture.StageName(0)
 	trigger := journal.Trigger{Kind: journal.TriggerSchedule, Ref: "0 * * * *"}
 	if index%3 == 0 {
 		trigger = journal.Trigger{Kind: journal.TriggerManual}
@@ -391,9 +485,9 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 		clock = clock.Add(time.Second)
 		return clock
 	}
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+	run, err := journal.Create(runsDirFor(layout, spec, gaggle), journal.RunIdentity{
 		RunID:           runID,
-		Workflow:        "implementation",
+		Workflow:        workflowName,
 		WorkflowVersion: 3,
 		Gaggle:          gaggle,
 		Trigger:         trigger,
@@ -412,10 +506,10 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 		attempts = 1
 	}
 	for a := 1; a <= attempts; a++ {
-		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: a}); err != nil {
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: stageName, Attempt: a}); err != nil {
 			return fmt.Errorf("scale: append stage.started %s: %w", runID, err)
 		}
-		if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implement", Attempt: a}); err != nil {
+		if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: stageName, Attempt: a}); err != nil {
 			return fmt.Errorf("scale: append stage.heartbeat %s: %w", runID, err)
 		}
 		status := "success"
@@ -426,7 +520,7 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 			class = journal.AttemptPolicy
 		}
 		if err := run.Append(journal.Event{
-			Type: journal.EventStageFinished, Stage: "implement", Attempt: a, AttemptClass: class, Status: status,
+			Type: journal.EventStageFinished, Stage: stageName, Attempt: a, AttemptClass: class, Status: status,
 		}); err != nil {
 			return fmt.Errorf("scale: append stage.finished %s: %w", runID, err)
 		}
@@ -440,7 +534,7 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 	}
 
 	for s, n := 0, spansForRun(rng, spec); s < n; s++ {
-		if _, err := run.RecordSpan("implement", fmt.Sprintf("transcript-%d", s), spanPayload(runID, s, spec.SpanBytes)); err != nil {
+		if _, err := run.RecordSpan(stageName, fmt.Sprintf("transcript-%d", s), spanPayload(runID, s, spec.SpanBytes)); err != nil {
 			return fmt.Errorf("scale: record span %s: %w", runID, err)
 		}
 	}
@@ -591,8 +685,9 @@ func schedulerEvent(spec Spec, index int, epoch time.Time) journal.Event {
 		Seq:    seq,
 		Time:   epoch.Add(time.Duration(index) * time.Second),
 	}
-	workflow := "implementation"
-	gaggle := gaggles[index%len(gaggles)]
+	names := gaggleNames(spec)
+	workflow := instancefixture.WorkflowName(index % maxInt(spec.Inventory.Workflows, 1))
+	gaggle := names[index%len(names)]
 	switch index % 5 {
 	case 0:
 		ev.Type = journal.EventTriggerFired

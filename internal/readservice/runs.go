@@ -19,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -847,6 +848,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 	if !s.lastReconcile.IsZero() && s.now().Sub(s.lastReconcile) < reconcileInterval {
 		return nil
 	}
+	readprobe.RecordReconcileScan()
 	if reconcileScanObserver != nil {
 		reconcileScanObserver()
 	}
@@ -896,6 +898,7 @@ func (s *Local) reconcileIndex(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			readprobe.RecordReconcileInspect()
 			if reconcileInspectObserver != nil {
 				reconcileInspectObserver(entry.Name())
 			}
@@ -1402,6 +1405,7 @@ func (s *Local) RunTraceRepassCount(ctx context.Context, runID string) (int, err
 var openRunObserver func(runID string)
 
 func (s *Local) openRun(runID string) (runRead, error) {
+	readprobe.RecordJournalOpen()
 	if openRunObserver != nil {
 		openRunObserver(runID)
 	}
