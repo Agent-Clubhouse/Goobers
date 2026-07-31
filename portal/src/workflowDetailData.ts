@@ -22,7 +22,7 @@ export function useWorkflowDetail(
   gaggle: string,
   workflowName: string,
 ): WorkflowDetailQuery {
-  const { cache, subscribe } = useLiveData();
+  const { cache, freshness, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("workflow-detail", gaggle, workflowName);
   const [state, setState] = useState<QueryState<WorkflowDetailSnapshot>>(() => {
     const cached = cache.get<WorkflowDetailSnapshot>(cacheKey);
@@ -95,6 +95,28 @@ export function useWorkflowDetail(
       request.current = undefined;
     };
   }, [cache, cacheKey, refresh, subscribe]);
+
+  // Freshness downgrade (#1714).
+  //
+  // Every other query hook has this; these two did not, so a detail page kept
+  // reporting "ready" after the live stream dropped — the row looked current
+  // while the stream behind it was gone. The status is what the page renders
+  // its freshness indicator from, so without this the indicator lies.
+  //
+  // It moves ready -> stale on disconnect and back on reconnect, and never
+  // clears an error: a stale-with-error state must stay visibly errored rather
+  // than silently becoming "ready" because the socket came back.
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
 
   const retry = useCallback(() => {
     cache.remove(cacheKey);

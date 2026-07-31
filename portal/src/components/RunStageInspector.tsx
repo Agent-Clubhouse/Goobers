@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLiveData } from "../liveData";
 import type {
   ArtifactContent,
   ArtifactMetadata,
@@ -123,6 +124,38 @@ export function RunStageInspector({
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const stageId = node?.id;
+  // Bumped by a live event for this run, which re-runs the fetch below.
+  //
+  // #1714: the attempt list was fetched in a plain effect keyed on
+  // [client, runId, stageId] and never subscribed to live data. RunPage keys
+  // RunDetailWorkspace on run.id, which is stable across refreshes, so the
+  // inspector was never remounted either. A user watching a running stage retry
+  // three times saw the graph and event timeline update while the attempt list
+  // stayed frozen at whatever it was when the node was first clicked — on the
+  // portal's primary live-debugging surface. They had to click away and back.
+  const [liveRevision, setLiveRevision] = useState(0);
+  const { subscribe } = useLiveData();
+  useEffect(() => {
+    if (!runId) {
+      return;
+    }
+    // Scoped to this run: an event for a different run must not refetch this
+    // one's attempts. On a busy instance that would be a request per event.
+    return subscribe(
+      ["run"],
+      (_models, reason) => {
+        // "initial" is the subscription handshake, not a change. The fetch
+        // effect below already runs on mount, so acting on it would double
+        // every load.
+        if (reason !== "initial") {
+          setLiveRevision((revision) => revision + 1);
+        }
+        return true;
+      },
+      { runId },
+    );
+  }, [runId, subscribe]);
+
   useEffect(() => {
     if (!stageId) {
       setAttempts([]);
@@ -152,7 +185,7 @@ export function RunStageInspector({
         setLoadState("error");
       });
     return () => controller.abort();
-  }, [client, runId, selectedEvidence, stageId]);
+  }, [client, liveRevision, runId, selectedEvidence, stageId]);
 
   if (!node) {
     return (
