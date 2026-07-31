@@ -32,6 +32,30 @@ export interface LiveDataConfig {
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
+  /**
+   * How long the stream may go completely silent before it is treated as dead.
+   *
+   * The daemon emits a heartbeat every 15s specifically so a client can detect
+   * a dead-but-open connection. This is the deadline that makes that heartbeat
+   * mean something: without it the client parsed heartbeats and threw them
+   * away, so it could not detect the exact failure they exist to expose.
+   *
+   * Set above 2x the server interval so a single dropped or delayed heartbeat
+   * does not tear down a healthy stream, but low enough that a wall-mounted
+   * dashboard notices within a minute.
+   */
+  streamIdleTimeoutMs: number;
+  /**
+   * How long a connection must survive before its success clears the backoff.
+   *
+   * Receiving ANY event used to reset failureCount to 0. A buffering proxy or a
+   * daemon in a restart loop accepts the request, flushes the initial snapshot,
+   * then closes — which reset the count, so the delay never grew past the
+   * 250ms base and the client reconnected four times a second indefinitely,
+   * never reaching failuresBeforePolling. Time connected, not bytes received,
+   * is what distinguishes a working stream from one that dies on arrival.
+   */
+  connectionSettledMs: number;
   failuresBeforePolling: number;
   pollingIntervalMs: number;
   /** Ceiling for the backoff applied to consecutively failing refreshes. */
@@ -42,6 +66,8 @@ const defaultConfig: LiveDataConfig = {
   invalidationWindowMs: 50,
   reconnectBaseDelayMs: 250,
   reconnectMaxDelayMs: 30_000,
+  streamIdleTimeoutMs: 45_000,
+  connectionSettledMs: 10_000,
   failuresBeforePolling: 3,
   pollingIntervalMs: 5_000,
   refreshMaxDelayMs: 60_000,
@@ -104,6 +130,8 @@ export function LiveDataProvider({
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
       config?.reconnectMaxDelayMs,
+      config?.streamIdleTimeoutMs,
+      config?.connectionSettledMs,
       config?.refreshMaxDelayMs,
       diagnostics,
     ],
@@ -163,6 +191,14 @@ export class LiveDataController {
   private polling = false;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Fires when the stream has been silent past streamIdleTimeoutMs.
+   *
+   * Armed on connect and re-armed on EVERY frame including heartbeats — that is
+   * the entire point. A heartbeat carries no data, so applyEvent still discards
+   * it; what it now does is prove the connection is alive.
+   */
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshFailureCount = 0;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
@@ -320,7 +356,7 @@ export class LiveDataController {
     cause: string,
   ): Promise<void> {
     let stream: DaemonEventStream | undefined;
-    let receivedEvent = false;
+    let connectedAt = 0;
     const resumeCursor = this.cursor;
     try {
       stream = await this.client.connectEvents(
@@ -332,6 +368,8 @@ export class LiveDataController {
         return;
       }
       this.activeStream = stream;
+      connectedAt = Date.now();
+      this.armIdleWatchdog(generation, controller);
       this.dependencies.diagnostics?.recordSSE({ event: "connect", cause });
       this.clearPollingTimer();
       this.setFreshness(resumeCursor ? "connected" : "stale");
@@ -344,8 +382,18 @@ export class LiveDataController {
         if (!this.isCurrent(generation, controller)) {
           return;
         }
-        receivedEvent = true;
-        this.failureCount = 0;
+        // Re-arm on every frame, heartbeat included. A heartbeat is not data
+        // and applyEvent still drops it, but it IS evidence the socket is
+        // carrying bytes — which is the only thing that distinguishes a live
+        // stream from a NAT rebind that left the connection open and silent.
+        this.armIdleWatchdog(generation, controller);
+        // The backoff clears only once the connection has lasted long enough to
+        // count as working. Resetting on the first event let a proxy that
+        // flushes the snapshot and closes hold the client at a 250ms retry
+        // forever.
+        if (connectedAt !== 0 && Date.now() - connectedAt >= this.config.connectionSettledMs) {
+          this.failureCount = 0;
+        }
         this.applyEvent(event);
       }
       if (this.isCurrent(generation, controller)) {
@@ -359,15 +407,52 @@ export class LiveDataController {
         this.recoverStaleCursor();
         return;
       }
-      if (receivedEvent) {
+      if (connectedAt !== 0 && Date.now() - connectedAt >= this.config.connectionSettledMs) {
         this.failureCount = 0;
       }
       this.handleDisconnect("stream-error");
     } finally {
+      this.clearIdleWatchdog();
       if (this.activeStream === stream) {
         this.activeStream = undefined;
       }
       stream?.close();
+    }
+  }
+
+  /**
+   * Arms the silence deadline for the current connection.
+   *
+   * The client's only existing timeout is cleared as soon as response HEADERS
+   * arrive (httpClient.ts), so the body read loop had no deadline at all: on a
+   * silently-dropped TCP connection `reader.read()` neither resolves nor
+   * rejects, freshness stayed "connected", no reconnect was scheduled, and the
+   * polling fallback never engaged. The portal showed arbitrarily stale state
+   * behind a green "live" indicator.
+   */
+  private armIdleWatchdog(generation: number, controller: AbortController): void {
+    this.clearIdleWatchdog();
+    this.idleTimer = setTimeout(() => {
+      if (!this.isCurrent(generation, controller)) {
+        return;
+      }
+      this.dependencies.diagnostics?.recordSSE({
+        event: "reconnect",
+        cause: "idle-timeout",
+        delayMs: this.config.streamIdleTimeoutMs,
+      });
+      // Abort the read so the socket is actually released rather than leaked;
+      // handleDisconnect then applies normal backoff, so a stream that keeps
+      // going silent escalates to polling instead of thrashing.
+      controller.abort();
+      this.handleDisconnect("stream-idle");
+    }, this.config.streamIdleTimeoutMs);
+  }
+
+  private clearIdleWatchdog(): void {
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
     }
   }
 
@@ -487,6 +572,12 @@ export class LiveDataController {
 
   private closeConnection(cause: string): void {
     const connected = this.activeStream !== undefined;
+    // The watchdog belongs to the connection, so it dies with it. Without this
+    // it outlives every teardown path — provider stop, offline, tab hidden,
+    // reconnect — and fires against a generation that no longer exists, leaving
+    // a timer pending after stop() and re-arming reconnects on a stopped
+    // controller.
+    this.clearIdleWatchdog();
     this.generation += 1;
     this.connectController?.abort();
     this.connectController = undefined;

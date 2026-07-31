@@ -28,6 +28,10 @@ const testConfig: LiveDataConfig = {
   failuresBeforePolling: 2,
   pollingIntervalMs: 200,
   refreshMaxDelayMs: 1_000,
+  // High enough that it never fires in tests about something else; the
+  // watchdog gets its own config below.
+  streamIdleTimeoutMs: 300_000,
+  connectionSettledMs: 50,
 };
 
 beforeEach(() => {
@@ -191,6 +195,136 @@ describe("LiveDataController", () => {
     );
     expect(unrelatedRun).not.toHaveBeenCalled();
     expect(unrelatedWorkflow).not.toHaveBeenCalled();
+
+    controller.stop();
+  });
+
+  // #1711 defect 1: a dead-but-open stream showed as "connected" forever.
+  //
+  // The daemon emits a heartbeat every 15s precisely so a client can detect
+  // this. The client parsed heartbeats and threw them away, and had no liveness
+  // deadline — its only timeout is cleared as soon as response HEADERS arrive,
+  // so the body read loop had none at all. On a NAT rebind or an idle-timeout
+  // proxy, `reader.read()` neither resolves nor rejects: freshness stayed
+  // "connected", no reconnect was scheduled, and the polling fallback never
+  // engaged. A visible, untouched dashboard showed arbitrarily stale state
+  // behind a green "live" indicator — the wall-monitor case, which the
+  // visibilitychange/online handlers do not cover.
+  it("reconnects when the stream goes silent past the idle deadline", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      streamIdleTimeoutMs: 1_000,
+    });
+    controller.start();
+    await settle();
+    expect(client.requests).toHaveLength(1);
+
+    // The socket stays open and completely silent — no data, no heartbeat, no
+    // error. This is exactly what a silently-dropped TCP connection looks like.
+    await vi.advanceTimersByTimeAsync(900);
+    expect(client.requests).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(client.requests).toHaveLength(2);
+
+    controller.stop();
+  });
+
+  // The other half of the same mechanism: a heartbeat carries no data and is
+  // still discarded by applyEvent, but it must keep the connection alive. If
+  // the watchdog only re-armed on data, an idle-but-healthy instance would
+  // reconnect every 45 seconds forever.
+  it("treats a heartbeat as proof of life without applying it", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      streamIdleTimeoutMs: 1_000,
+    });
+    const listener = vi.fn();
+    controller.subscribe(["run"], listener);
+    controller.start();
+    await settle();
+    listener.mockClear();
+
+    for (let beat = 0; beat < 3; beat += 1) {
+      await vi.advanceTimersByTimeAsync(800);
+      stream.push({ id: `heartbeat:${beat}`, type: "heartbeat" } as never);
+      await settle();
+    }
+
+    // 2.4s elapsed against a 1s deadline, and still one connection.
+    expect(client.requests).toHaveLength(1);
+    // And the heartbeats did not masquerade as data.
+    expect(listener).not.toHaveBeenCalled();
+
+    controller.stop();
+  });
+
+  // #1711 defect 2: reconnect backoff reset on the first byte.
+  //
+  // A buffering reverse proxy, or a daemon in a restart loop, accepts the SSE
+  // request, flushes the initial snapshot, then closes. Receiving ANY event
+  // reset failureCount to 0, so handleDisconnect set it back to 1, the delay
+  // stayed at the 250ms base, and the client reconnected four times a second
+  // indefinitely — never reaching failuresBeforePolling, never backing off, and
+  // driving an invalidation flush from the replayed snapshot every cycle.
+  //
+  // Time connected, not bytes received, is what distinguishes a working stream
+  // from one that dies on arrival.
+  it("does not reset backoff for a stream that dies immediately after its first event", async () => {
+    const streams = [
+      new ControlledEventStream(),
+      new ControlledEventStream(),
+      new ControlledEventStream(),
+    ];
+    let index = 0;
+    const client = new ScriptedClient(
+      streams.map((stream) => () => {
+        index += 1;
+        return Promise.resolve(stream);
+      }),
+    );
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 10_000,
+      connectionSettledMs: 5_000,
+    });
+    controller.start();
+    await settle();
+    expect(client.requests).toHaveLength(1);
+
+    // Flush one event, then die — well inside connectionSettledMs.
+    streams[0]?.push(update("session:1", ["run"]));
+    await settle();
+    streams[0]?.end();
+    await settle();
+
+    // First retry at the base delay.
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+    expect(client.requests).toHaveLength(2);
+
+    streams[1]?.push(update("session:2", ["run"]));
+    await settle();
+    streams[1]?.end();
+    await settle();
+
+    // The second retry must be LONGER than the base. Under the old behaviour
+    // the event reset the count and this fired at 100ms again, forever.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.requests).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(150);
+    await settle();
+    expect(client.requests).toHaveLength(3);
 
     controller.stop();
   });
