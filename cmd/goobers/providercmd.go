@@ -169,6 +169,8 @@ func providerRepo(root string) (providers.RepositoryRef, error) {
 		return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}, nil
 	case providers.ProviderADO:
 		return providers.RepositoryRef{Provider: providers.ProviderADO, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}, nil
+	case providers.ProviderGitea:
+		return providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: repo.Owner, Name: repo.Name, URL: repo.BaseURL}, nil
 	default:
 		return providers.RepositoryRef{}, fmt.Errorf("provider-chain command does not yet support repository provider %q", repo.Provider)
 	}
@@ -187,6 +189,13 @@ func validateRoutedRepo(routed providers.RepositoryRef) error {
 	case providers.ProviderADO:
 		if routed.Owner == "" || routed.Project == "" || routed.Name == "" {
 			return fmt.Errorf("invalid routed ado repository in %s/%s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoProjectEnvVar, executor.RepoNameEnvVar)
+		}
+		return nil
+	case providers.ProviderGitea:
+		// Gitea addresses a repo like GitHub (owner+name); BaseURL is resolved
+		// from instance config by giteaRepoRefForStage, not carried on the wire.
+		if routed.Owner == "" || routed.Name == "" {
+			return fmt.Errorf("invalid routed gitea repository in %s/%s/%s", executor.RepoProviderEnvVar, executor.RepoOwnerEnvVar, executor.RepoNameEnvVar)
 		}
 		return nil
 	default:

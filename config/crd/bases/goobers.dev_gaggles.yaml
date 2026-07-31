@@ -61,6 +61,12 @@ spec:
                     RepoRef points at a git repository through a provider connection. Auth is a
                     SecretRef — never an inline token.
                   properties:
+                    baseUrl:
+                      description: |-
+                        BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
+                        required when provider=gitea (self-hosted Gitea has no fixed host) and
+                        omitted for github/ado.
+                      type: string
                     branch:
                       default: main
                       description: Branch is the default branch goober runs check
@@ -104,6 +110,7 @@ spec:
                       enum:
                       - github
                       - ado
+                      - gitea
                       type: string
                   required:
                   - name
@@ -115,6 +122,12 @@ spec:
                 description: Backlog is the singleton source of work-item truth for
                   this gaggle.
                 properties:
+                  baseUrl:
+                    description: |-
+                      BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
+                      required when provider=gitea (self-hosted Gitea has no fixed host) and
+                      omitted for github/ado.
+                    type: string
                   connectionRef:
                     description: ConnectionRef names the connection (credentials)
                       used to reach the backlog.
@@ -151,6 +164,7 @@ spec:
                     enum:
                     - github
                     - ado
+                    - gitea
                     type: string
                   query:
                     type: string
@@ -209,6 +223,12 @@ spec:
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
+                  baseUrl:
+                    description: |-
+                      BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
+                      required when provider=gitea (self-hosted Gitea has no fixed host) and
+                      omitted for github/ado.
+                    type: string
                   branch:
                     default: main
                     description: Branch is the default branch goober runs check out
@@ -252,6 +272,7 @@ spec:
                     enum:
                     - github
                     - ado
+                    - gitea
                     type: string
                 required:
                 - name

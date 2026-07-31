@@ -16,6 +16,7 @@ type ProviderKind string
 const (
 	ProviderGitHub ProviderKind = "github"
 	ProviderADO    ProviderKind = "ado"
+	ProviderGitea  ProviderKind = "gitea"
 )
 
 // Goobers marker labels applied to backlog items. The claim label mirrors the

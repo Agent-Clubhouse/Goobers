@@ -56,6 +56,19 @@ func (r EnvProviderResolver) RepoProvider(provider apiv1.Provider, repo apiv1.Re
 			return nil, fmt.Errorf("github repo provider requires GOOBERS_GITHUB_TOKEN or GITHUB_TOKEN")
 		}
 		return providers.NewGitHubProvider(token, providers.WithRateLimitObserver(r.RateLimitObserver)), nil
+	case apiv1.ProviderGitea:
+		token := firstEnv("GOOBERS_GITEA_TOKEN", "GITEA_TOKEN")
+		if token == "" {
+			return nil, fmt.Errorf("gitea repo provider requires GOOBERS_GITEA_TOKEN or GITEA_TOKEN")
+		}
+		baseURL := repo.BaseURL
+		if baseURL == "" {
+			baseURL = firstEnv("GOOBERS_GITEA_BASE_URL")
+		}
+		if baseURL == "" {
+			return nil, fmt.Errorf("gitea repo provider requires baseUrl (repo.baseUrl or GOOBERS_GITEA_BASE_URL)")
+		}
+		return providers.NewGiteaProvider(baseURL, token, providers.WithGiteaRateLimitObserver(r.RateLimitObserver)), nil
 	case apiv1.ProviderADO:
 		token := firstEnv("GOOBERS_ADO_TOKEN", "AZURE_DEVOPS_TOKEN", "ADO_TOKEN")
 		org, project := adoCoordinates(repo)
