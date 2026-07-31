@@ -434,7 +434,18 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// startup rather than as a burned mid-run agentic attempt.
 	if len(c.AuthCheckArgs) > 0 {
 		command := resolveHarnessCommand(c.Command)
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: baseEnv(c.ExtraEnvAllowlist)})
+		// Preflight has no RunRequest, so it cannot resolve the agent:model
+		// credential the way credentialEnv does at run time — the sign-in probe
+		// would only ever reflect an ambient CLI login and would fail a valid
+		// headless-PAT setup (COPILOT_GITHUB_TOKEN provided via env), then burn
+		// the whole run at the first agentic stage. When a copilot model token is
+		// present in the ambient environment, carry it into the probe so the
+		// check reflects the same auth the run will use.
+		authEnv := baseEnv(c.ExtraEnvAllowlist)
+		if tok := ambientCopilotToken(); tok != "" {
+			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
+		}
+		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: authEnv})
 		if err != nil {
 			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
 		}
@@ -443,6 +454,20 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+// ambientCopilotToken returns a Copilot model token found in the ambient
+// process environment, if any, so the sign-in preflight can reflect a headless
+// PAT setup that provides the token by env rather than an interactive CLI
+// login. COPILOT_GITHUB_TOKEN is the CLI's own variable; GH_TOKEN/GITHUB_TOKEN
+// are accepted as the conventional fallbacks the Copilot CLI also honors.
+func ambientCopilotToken() string {
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func firstOutputLine(output []byte) string {
