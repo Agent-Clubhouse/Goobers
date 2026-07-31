@@ -807,6 +807,25 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		req.RemoveLabels = adoParkRemovalLabels(req.RemoveLabels)
 		return provider.UpdateWorkItem(ctx, req)
 	}
+	if req.Repository.Provider == providers.ProviderGitea {
+		// Gitea authenticates with a static token like GitHub (resolved per call
+		// through the rotation-aware resolver), but the mutation must reach the
+		// self-hosted forge — newGiteaProviderForStage resolves its BaseURL from
+		// instance config. The claim marker is the plain LabelClaimed (as GitHub),
+		// so no ADO status-label rewrite is needed, and backlogRepoRefForGaggle is
+		// a no-op for gitea (code repo and backlog coincide).
+		ref := req.Repository.Owner + "/" + req.Repository.Name
+		token, err := c.resolver.Resolve(ctx, ref)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+		}
+		c.reg.Register([]byte(token))
+		provider, err := newGiteaProviderForStage(c.layout.Root, req.Repository, token)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.UpdateWorkItem(ctx, req)
+	}
 	ref := req.Repository.Owner + "/" + req.Repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)
 	if err != nil {

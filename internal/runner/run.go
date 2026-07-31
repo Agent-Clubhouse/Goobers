@@ -3921,6 +3921,15 @@ func defaultRepoCloneURL(ref apiv1.RepoRef) (string, error) {
 		}
 		return fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
 			url.PathEscape(organization), url.PathEscape(project), url.PathEscape(ref.Name)), nil
+	case apiv1.ProviderGitea:
+		// BaseURL here is the forge host root (e.g. https://gitea.example.com),
+		// NOT the /api/v1 REST root: git clone/fetch speak smart-HTTP against
+		// <root>/<owner>/<name>.git. This URL keys the MGV-11 git-auth resolver.
+		base := strings.TrimSuffix(strings.TrimSpace(ref.BaseURL), "/")
+		if base == "" {
+			return "", fmt.Errorf("runner: gitea repo requires baseUrl")
+		}
+		return fmt.Sprintf("%s/%s/%s.git", base, ref.Owner, ref.Name), nil
 	default:
 		return "", fmt.Errorf("runner: unsupported repo provider %q", ref.Provider)
 	}

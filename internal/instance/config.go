@@ -326,8 +326,12 @@ type PortalSupportLink struct {
 
 // RepoRef is a target repository this instance connects to.
 type RepoRef struct {
-	// Provider is the backing system: "github" or "ado".
+	// Provider is the backing system: "github", "ado", or "gitea".
 	Provider string `json:"provider" yaml:"provider"`
+	// BaseURL is the forge root URL (e.g. https://gitea.example.com). Required
+	// when provider=gitea so stage subprocesses can resolve the self-hosted
+	// host from config; omitted for github/ado.
+	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner is the GitHub owner or Azure DevOps organization.
 	Owner string `json:"owner" yaml:"owner"`
 	// Project is required for Azure DevOps and omitted for GitHub.
