@@ -195,6 +195,20 @@ spec:
         command: ["make", "ci"]
         # Pull in build/test behavior fixes that landed after this run branched.
         syncBase: true
+      # Declared, not inherited (#1969). The executor's built-in fallback is 10
+      # minutes, sized for short commands; `make ci` on this repo runs 8.1m at
+      # p50 and 9.5m at p90, so the default left ~90 seconds of headroom and any
+      # host contention pushed the stage over. A SIGQUIT at the deadline is
+      # reported as an ordinary CI failure, routed back to implement, and the
+      # implementer — correctly finding no defect to fix — changes nothing, so
+      # the run escalates on an identical diff. 25 minutes is ~2.5x the observed
+      # p99 and absorbs both contention and the cold golangci-lint cache each
+      # fresh worktree now pays for (#1971).
+      #
+      # Deliberately still maxAttempts 1: a timeout is reported retryable, but
+      # retrying immediately would meet the same contention, and two attempts at
+      # this budget would outlast the run-level stall timeout.
+      timeoutSeconds: 1500
       retry:
         maxAttempts: 1
       next: local-gate

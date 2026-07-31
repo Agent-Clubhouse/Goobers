@@ -203,6 +203,22 @@ type RunnerConfig struct {
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
+	// DefaultStageTimeout is the baseline deadline for a deterministic stage
+	// that declares no timeoutSeconds of its own. Empty keeps the built-in
+	// executor.DefaultTimeout, so an unconfigured instance is unchanged.
+	//
+	// The deterministic twin of the goober-level harness default (#1070): a
+	// stage's own timeoutSeconds has always been declarable, but the value it
+	// falls back to was a hardcoded 10 minutes with no lever. That default was
+	// sized for short commands and is smaller than a real build+test command on
+	// a mature repo — an adopter whose `make ci` takes 15 minutes otherwise has
+	// to stamp timeoutSeconds onto every such stage in every workflow. A
+	// timed-out stage is reported retryable, but a workflow that routes the
+	// failure to an agent instead spends a repass on something no diff can fix
+	// (#1969).
+	//
+	// Per-stage timeoutSeconds still wins; this only moves the floor.
+	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -755,6 +771,24 @@ func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// DefaultStageTimeoutDuration resolves the baseline deterministic-stage
+// deadline. Zero means "unset" — the caller keeps its own built-in default
+// rather than substituting one here, so the fallback stays owned by the
+// executor that applies it.
+func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
+	if c.DefaultStageTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.DefaultStageTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.defaultStageTimeout %q: %w", c.DefaultStageTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.defaultStageTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
+}
+
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
@@ -970,6 +1004,13 @@ func (c *Config) Validate() error {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
 			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
 		}
+	}
+	// Checked here, not only where it is applied: the value is consumed once
+	// per run when the deterministic executor is built, so a malformed duration
+	// would otherwise fail every run at dispatch instead of failing `goobers
+	// validate` once.
+	if _, err := c.Runner.DefaultStageTimeoutDuration(); err != nil {
+		return err
 	}
 	if c.Telemetry.OTLP != nil {
 		if err := c.Telemetry.OTLP.Validate(); err != nil {
