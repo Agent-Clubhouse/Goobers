@@ -63,6 +63,7 @@ const (
 
 // Instance is the overview inventory projection.
 type Instance struct {
+	ReadStateEnvelope
 	APIVersion    string                  `json:"apiVersion"`
 	SchemaVersion string                  `json:"schemaVersion"`
 	Name          string                  `json:"name"`
@@ -111,6 +112,7 @@ type Gaggle struct {
 
 // GagglePage is a deterministic page of gaggles.
 type GagglePage struct {
+	ReadStateEnvelope
 	Items []Gaggle `json:"items"`
 	Page  PageInfo `json:"page"`
 }
@@ -144,6 +146,7 @@ type RepositoryConnection struct {
 
 // GaggleConnections is the repository topology for one configured gaggle.
 type GaggleConnections struct {
+	ReadStateEnvelope
 	Gaggle       string                 `json:"gaggle"`
 	Repositories []RepositoryConnection `json:"repositories"`
 }
@@ -184,6 +187,7 @@ type Goober struct {
 
 // GooberPage is a deterministic page of goobers.
 type GooberPage struct {
+	ReadStateEnvelope
 	Items []Goober `json:"items"`
 	Page  PageInfo `json:"page"`
 }
@@ -217,6 +221,7 @@ type WorkflowSummary struct {
 
 // WorkflowPage is a deterministic page of workflows within one gaggle.
 type WorkflowPage struct {
+	ReadStateEnvelope
 	Items []WorkflowSummary `json:"items"`
 	Page  PageInfo          `json:"page"`
 }
@@ -233,6 +238,7 @@ type StageDefinition struct {
 
 // WorkflowDetail adds the canonical graph and stage definitions to the summary.
 type WorkflowDetail struct {
+	ReadStateEnvelope
 	WorkflowSummary
 	Graph  workflow.Graph    `json:"graph"`
 	Stages []StageDefinition `json:"stages"`
@@ -325,7 +331,7 @@ func validateWorkflowOwners(def *apiv1.Workflow, gooberGaggles map[string]string
 }
 
 // Instance returns the current overview inventory and warning projection.
-func (s *Local) Instance(ctx context.Context) (Instance, error) {
+func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if err := ctx.Err(); err != nil {
 		return Instance{}, err
 	}
@@ -373,7 +379,7 @@ func (s *Local) Instance(ctx context.Context) (Instance, error) {
 }
 
 // Gaggles returns configured gaggles sorted by identity.
-func (s *Local) Gaggles(ctx context.Context, request PageRequest) (GagglePage, error) {
+func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (GagglePage, error) {
 	if err := ctx.Err(); err != nil {
 		return GagglePage{}, err
 	}
@@ -420,7 +426,7 @@ func (s *Local) Gaggles(ctx context.Context, request PageRequest) (GagglePage, e
 }
 
 // Goobers returns provisioned goober definitions for one gaggle.
-func (s *Local) Goobers(ctx context.Context, gaggle string, request PageRequest) (GooberPage, error) {
+func (s *Local) goobersUnannotated(ctx context.Context, gaggle string, request PageRequest) (GooberPage, error) {
 	if err := ctx.Err(); err != nil {
 		return GooberPage{}, err
 	}
@@ -502,7 +508,7 @@ func (s *Local) Goobers(ctx context.Context, gaggle string, request PageRequest)
 }
 
 // Workflows returns current workflow summaries for one gaggle.
-func (s *Local) Workflows(ctx context.Context, gaggle string, request PageRequest) (WorkflowPage, error) {
+func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request PageRequest) (WorkflowPage, error) {
 	if err := ctx.Err(); err != nil {
 		return WorkflowPage{}, err
 	}
@@ -532,7 +538,7 @@ func (s *Local) Workflows(ctx context.Context, gaggle string, request PageReques
 }
 
 // Connections returns the secret-free repository routing topology for one gaggle.
-func (s *Local) Connections(ctx context.Context, gaggle string) (GaggleConnections, error) {
+func (s *Local) connectionsUnannotated(ctx context.Context, gaggle string) (GaggleConnections, error) {
 	if err := ctx.Err(); err != nil {
 		return GaggleConnections{}, err
 	}
@@ -569,7 +575,7 @@ func repositoryConnection(repo apiv1.RepoRef, accessMode RepositoryAccessMode) R
 }
 
 // Workflow returns current workflow detail, scoped by gaggle.
-func (s *Local) Workflow(ctx context.Context, gaggle, name string) (WorkflowDetail, error) {
+func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (WorkflowDetail, error) {
 	if err := ctx.Err(); err != nil {
 		return WorkflowDetail{}, err
 	}
@@ -864,4 +870,82 @@ func decodeCursor(encoded string) (pageCursor, error) {
 		return pageCursor{}, errors.New("cursor fields are required")
 	}
 	return cursor, nil
+}
+
+// Instance returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around instanceUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Instance(ctx context.Context) (Instance, error) {
+	out, err := s.instanceUnannotated(ctx)
+	if err != nil {
+		return Instance{}, err
+	}
+	return annotated[Instance](ctx, s, out), nil
+}
+
+// Gaggles returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around gagglesUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Gaggles(ctx context.Context, request PageRequest) (GagglePage, error) {
+	out, err := s.gagglesUnannotated(ctx, request)
+	if err != nil {
+		return GagglePage{}, err
+	}
+	return annotated[GagglePage](ctx, s, out), nil
+}
+
+// Goobers returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around goobersUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Goobers(ctx context.Context, gaggle string, request PageRequest) (GooberPage, error) {
+	out, err := s.goobersUnannotated(ctx, gaggle, request)
+	if err != nil {
+		return GooberPage{}, err
+	}
+	return annotated[GooberPage](ctx, s, out), nil
+}
+
+// Workflows returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around workflowsUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Workflows(ctx context.Context, gaggle string, request PageRequest) (WorkflowPage, error) {
+	out, err := s.workflowsUnannotated(ctx, gaggle, request)
+	if err != nil {
+		return WorkflowPage{}, err
+	}
+	return annotated[WorkflowPage](ctx, s, out), nil
+}
+
+// Connections returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around connectionsUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Connections(ctx context.Context, gaggle string) (GaggleConnections, error) {
+	out, err := s.connectionsUnannotated(ctx, gaggle)
+	if err != nil {
+		return GaggleConnections{}, err
+	}
+	return annotated[GaggleConnections](ctx, s, out), nil
+}
+
+// Workflow returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around workflowUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Workflow(ctx context.Context, gaggle, name string) (WorkflowDetail, error) {
+	out, err := s.workflowUnannotated(ctx, gaggle, name)
+	if err != nil {
+		return WorkflowDetail{}, err
+	}
+	return annotated[WorkflowDetail](ctx, s, out), nil
 }

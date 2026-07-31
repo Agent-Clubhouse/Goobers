@@ -11,6 +11,7 @@ import (
 // carries an explicit null (rather than an omitted key) when unset, matching
 // the generated portal types.
 type PortalConfig struct {
+	ReadStateEnvelope
 	Brand   PortalBrandResponse   `json:"brand"`
 	Theme   PortalThemeResponse   `json:"theme"`
 	Support PortalSupportResponse `json:"support"`
@@ -57,8 +58,8 @@ type PortalSupportLink struct {
 // the operator's configured values with built-in defaults applied. A nil
 // instance config yields the defaults (EffectivePortalConfig handles the nil
 // receiver).
-func (s *Local) PortalConfig(_ context.Context) (PortalConfig, error) {
-	return projectPortalConfig(s.sources.Config.EffectivePortalConfig()), nil
+func (s *Local) PortalConfig(ctx context.Context) (PortalConfig, error) {
+	return annotated[PortalConfig](ctx, s, projectPortalConfig(s.sources.Config.EffectivePortalConfig())), nil
 }
 
 func projectPortalConfig(c instance.PortalConfig) PortalConfig {

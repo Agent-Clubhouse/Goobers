@@ -135,6 +135,21 @@ type Intake interface {
 	Removing(ctx context.Context, runID string) error
 }
 
+// FreshnessReporter is the freshness surface (#1927).
+//
+// Separate from Reader because it is optional: a backend that cannot describe
+// its own currency is still a usable read model, it simply cannot carry a
+// readState envelope. Folding these into Reader would make every future backend
+// implement them before it could answer a single query.
+type FreshnessReporter interface {
+	ReadState(ctx context.Context, input ReadStateInput) (ReadState, error)
+	SourceApplied(ctx context.Context, runID string) (SourcePosition, bool, error)
+	SatisfiesSourceApplied(ctx context.Context, required SourcePosition) (bool, error)
+}
+
+// Store satisfies FreshnessReporter.
+var _ FreshnessReporter = (*Store)(nil)
+
 // Backend is a complete read-model store.
 type Backend interface {
 	Reader
