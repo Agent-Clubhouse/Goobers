@@ -88,10 +88,17 @@ export function useRunsHistory(
     }
   }, [cache, cacheKey, scope.gaggle, scope.workflow]);
 
-  // Reset pagination and load the first bounded page. Used on mount, filter
-  // change, retry, and live run invalidation — the history reflects current
-  // daemon state, always starting from one bounded page.
-  const refresh = useCallback(() => {
+  // Reset pagination and load the first bounded page.
+  //
+  // Used on mount, filter change, and retry — NOT on live invalidation. A live
+  // event calls refreshWindow below, which merges instead. Resetting here on
+  // every event is #1713: the user pages in five times, any run in scope emits
+  // an event, and the list truncates to 50 rows with the scroll position lost.
+  // On the unfiltered #/runs route scope.gaggle and scope.workflow are both
+  // undefined, so EVERY run event in the instance triggered it — and under the
+  // polling fallback that is every 5s, making the page unusable on a busy
+  // instance precisely when someone is trying to watch it.
+  const reload = useCallback(() => {
     request.current?.abort();
     const dependencies = runsHistoryDependencies(scope);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
@@ -127,6 +134,70 @@ export function useRunsHistory(
       },
     );
   }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
+
+  // Merge the newest page into the loaded window, preserving pagination.
+  //
+  // This is what a live event triggers instead of reload(). It fetches a fresh
+  // FIRST page and merges by run id, so:
+  //
+  //   - runs the user paged in stay loaded, and the scroll position holds;
+  //   - new runs appear at the head;
+  //   - a run already in the window that changed is updated, because mergeRuns
+  //     is keyed by id and the incoming copy wins.
+  //
+  // Known limit, stated rather than hidden: a run that changed but is NOT on
+  // the first page keeps its stale row until the next reload. Refetching every
+  // loaded page on every event would restore the cost this change exists to
+  // remove — on a busy instance under the polling fallback that is every 5s
+  // across N pages. The change feed carries the affected run ids (#1919), so
+  // Wave 5's client primitives (#1930) can patch those rows in place; until
+  // then the first page covers the common case, which is a run that just
+  // started or just finished.
+  const refreshWindow = useCallback(() => {
+    // Deliberately does NOT abort an in-flight loadMore. A live event arriving
+    // while the user is paging must not cancel their page — that was another
+    // way the old reset lost work.
+    if (loadingMore.current) {
+      return Promise.resolve(true);
+    }
+    // Nothing loaded yet means there is no window to preserve — an invalidation
+    // can outrun the initial load, and merging into an empty window would
+    // publish hasMore=false off an empty stream set, hiding "Load more"
+    // entirely.
+    if (streams.current.length === 0) {
+      return reload();
+    }
+    request.current?.abort();
+    const dependencies = runsHistoryDependencies(scope);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
+    const controller = new AbortController();
+    request.current = controller;
+
+    // A throwaway stream set positioned at the top. streams.current is left
+    // untouched, so "Load more" continues from where the user actually is.
+    const head: RunsStream[] = FILTER_PHASES[filter].map((phase) => ({
+      phase,
+      cursor: undefined,
+      exhausted: false,
+    }));
+
+    return advanceStreams(client, head, scope, controller.signal).then(
+      (fetched) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        runs.current = mergeRuns(runs.current, fetched);
+        publish(isFresh(), cacheRevision);
+        return true;
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted) {
+          setState((current) => runsError(current, error));
+        }
+        return false;
+      },
+    );
+  }, [cache, cacheKey, client, filter, isFresh, publish, reload, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
   const loadMore = useCallback(() => {
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
@@ -175,7 +246,9 @@ export function useRunsHistory(
           );
           return true;
         }
-        return refresh();
+        // reason === "initial" with no cache is a genuine first load; anything
+        // else is a live invalidation, which must not discard the window.
+        return reason === "initial" ? reload() : refreshWindow();
       },
       { gaggle: scope.gaggle, workflow: scope.workflow },
     );
@@ -183,7 +256,7 @@ export function useRunsHistory(
       unsubscribe();
       request.current?.abort();
     };
-  }, [cache, cacheKey, isFresh, publish, refresh, subscribe]);
+  }, [cache, cacheKey, isFresh, publish, refreshWindow, reload, subscribe]);
 
   useEffect(() => {
     setState((current) => {
@@ -199,8 +272,8 @@ export function useRunsHistory(
 
   const retry = useCallback(() => {
     cache.remove(cacheKey);
-    void refresh();
-  }, [cache, cacheKey, refresh]);
+    void reload();
+  }, [cache, cacheKey, reload]);
   return { loadMore, retry, state };
 }
 
