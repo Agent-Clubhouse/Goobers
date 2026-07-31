@@ -42,6 +42,7 @@ import type {
   TranscriptContent,
   WorkflowDetail,
   WorkflowPage,
+  ReadState,
 } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -82,6 +83,17 @@ export interface HttpDaemonClientConfig {
   timeoutMs?: number;
   fetch?: typeof fetch;
   diagnostics?: PortalDiagnostics;
+  /**
+   * Called with the readState envelope on every JSON response that carries one
+   * (#1928).
+   *
+   * Wired here, at the single JSON decode point, rather than in each of the
+   * twelve query hooks: freshness is a property of the CONNECTION TO THE DATA,
+   * not of any one query, and threading it through every hook would mean each
+   * one could forget. One place, or the "data freshness" indicator quietly
+   * reflects only the surfaces someone remembered to wire.
+   */
+  onReadState?: (state: ReadState) => void;
 }
 
 export class HttpDaemonClient implements DaemonClient {
@@ -89,6 +101,7 @@ export class HttpDaemonClient implements DaemonClient {
   private readonly diagnostics: PortalDiagnostics | undefined;
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
+  private readonly onReadState: ((state: ReadState) => void) | undefined;
 
   constructor(config: HttpDaemonClientConfig = {}) {
     const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -97,6 +110,7 @@ export class HttpDaemonClient implements DaemonClient {
     }
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "");
     this.diagnostics = config.diagnostics;
+    this.onReadState = config.onReadState;
     this.timeoutMs = timeoutMs;
     const fetcher = config.fetch ?? globalThis.fetch;
     if (typeof fetcher !== "function") {
@@ -421,8 +435,33 @@ export class HttpDaemonClient implements DaemonClient {
       } catch (error) {
         throw new MalformedResponseError(undefined, { cause: error });
       }
+      this.observeReadState(value);
       return value as T;
     }, pathParameters);
+  }
+
+  /**
+   * Reports a response's freshness envelope, if it carries one.
+   *
+   * Deliberately tolerant: the field is optional (the CLI and standalone
+   * topologies attach no read model), an older daemon omits it entirely, and a
+   * malformed one must not break a response that is otherwise fine. This is
+   * metadata about an answer that already parsed — it cannot be allowed to fail
+   * the answer.
+   */
+  private observeReadState(value: unknown): void {
+    if (!this.onReadState || typeof value !== "object" || value === null) {
+      return;
+    }
+    const candidate = (value as { readState?: unknown }).readState;
+    if (typeof candidate !== "object" || candidate === null) {
+      return;
+    }
+    const state = candidate as Partial<ReadState>;
+    if (typeof state.lagSeconds !== "number" || !Array.isArray(state.degraded)) {
+      return;
+    }
+    this.onReadState(state as ReadState);
   }
 
   private async withResponse<T>(

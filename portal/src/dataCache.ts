@@ -1,6 +1,17 @@
 import type { ModelInvalidation, UpdateModel, WorkflowUpdateReference } from "./api/types";
 
-export const DATA_CACHE_TTL_MS = 30_000;
+// A short coherence window, not a staleness bound (#1928).
+//
+// This was 30 s, from before there was an ordered change sequence. With scoped
+// invalidations and a monotonic cursor the cache no longer needs a TTL to bound
+// staleness — invalidation does that, precisely, per entity. What remains is a
+// coherence window: how long two reads issued back-to-back may disagree.
+//
+// 30 s is also incompatible with read-your-write (§7.4). A user who approves a
+// stage and immediately reloads must not be served a pre-mutation entry for the
+// next half-minute, and no If-Source-Applied bound can help if the response
+// never leaves the client's own cache.
+export const DATA_CACHE_TTL_MS = 2_000;
 
 export type DataCacheDependency =
   // Inventory changes are definition-wide workflow invalidations. Run events

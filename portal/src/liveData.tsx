@@ -5,6 +5,7 @@ import {
   useMemo,
   useState,
   type ReactNode,
+  useCallback,
 } from "react";
 import { DaemonApiError } from "./api/errors";
 import type {
@@ -13,6 +14,7 @@ import type {
   DaemonUpdateEvent,
   ModelInvalidation,
   UpdateModel,
+  ReadState,
 } from "./api/types";
 import { SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
@@ -93,9 +95,42 @@ export interface LiveDataDependencies {
   cache?: SessionDataCache;
 }
 
+/**
+ * How current the DATA is, as distinct from whether the socket is open.
+ *
+ * #1928: the existing indicator reports connection state — connected,
+ * reconnecting, stale, offline, polling. That is not how current the data is,
+ * and it is why an operator cannot distinguish "slow" from "broken". A stream
+ * can be perfectly connected to a projector that is ten minutes behind, and a
+ * stream can be reconnecting over data that is current to the second.
+ */
+export type DataFreshness =
+  | { kind: "unknown" }
+  | { kind: "current"; lagSeconds: number }
+  | { kind: "lagging"; lagSeconds: number; degraded: readonly string[] }
+  | {
+      kind: "partial";
+      lagSeconds: number;
+      missing: readonly { name: string; reason: string; expectedBy: string }[];
+    };
+
+/**
+ * Above this, data is described as lagging rather than current.
+ *
+ * Not zero: the reported lag is an upper bound that includes the repair sweep's
+ * cycle age, so a perfectly healthy instance reports a few seconds at all times.
+ * Treating that as "lagging" would make the warning state permanent and
+ * therefore meaningless.
+ */
+const LAGGING_THRESHOLD_SECONDS = 30;
+
 interface LiveDataContextValue {
   cache: SessionDataCache;
   freshness: LiveFreshness;
+  /** How current the data is. Independent of `freshness`. */
+  dataFreshness: DataFreshness;
+  /** Called by the HTTP client for every response carrying a readState. */
+  reportReadState: (state: ReadState) => void;
   isFresh: () => boolean;
   refresh: (models?: readonly UpdateModel[]) => void;
   subscribe: (
@@ -137,6 +172,16 @@ export function LiveDataProvider({
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
+  const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
+
+  const reportReadState = useCallback((state: ReadState) => {
+    setDataFreshness(deriveDataFreshness(state));
+  }, []);
+
+  // Registered in a layout effect so the sink is live before the first paint,
+  // and torn down with the provider — a stale sink would keep a dead
+  // component's setState alive across a provider swap.
+  useLayoutEffect(() => setReadStateSink(reportReadState), [reportReadState]);
 
   useLayoutEffect(() => {
     const unsubscribe = controller.subscribeState(setFreshness);
@@ -151,11 +196,13 @@ export function LiveDataProvider({
     () => ({
       cache,
       freshness,
+      dataFreshness,
+      reportReadState,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       subscribe: controller.subscribe,
     }),
-    [cache, controller, freshness],
+    [cache, controller, dataFreshness, freshness, reportReadState],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -815,4 +862,55 @@ function parseCursor(cursor: string | undefined):
     sequence: BigInt(rawSequence),
     session: cursor.slice(0, separator),
   };
+}
+
+/**
+ * Maps a server envelope onto the three states the UI renders.
+ *
+ * Three, not four: §11A requires "no fourth indefinite state". `unknown` is not
+ * a fourth — it is the absence of any envelope at all (a standalone read, an
+ * older daemon), and it renders as the connection indicator alone rather than
+ * as a freshness claim.
+ *
+ * `partial` outranks `lagging` because a named missing partition is a stronger
+ * statement than a number: the user needs to know something is absent before
+ * they need to know how old the rest is.
+ */
+/**
+ * The bridge between the HTTP client and the provider.
+ *
+ * The client is a module-level singleton constructed at import time
+ * (App.tsx), before any provider exists, so it cannot be handed a callback at
+ * construction. A registered sink is the smallest thing that connects them
+ * without making the client depend on React or the provider depend on a
+ * specific client instance.
+ *
+ * Unregistered by default: in tests that render without a provider, and in the
+ * standalone build, reports are simply dropped.
+ */
+let readStateSink: ((state: ReadState) => void) | undefined;
+
+/** Registers the provider's reporter. Returns an unregister function. */
+export function setReadStateSink(sink: (state: ReadState) => void): () => void {
+  readStateSink = sink;
+  return () => {
+    if (readStateSink === sink) {
+      readStateSink = undefined;
+    }
+  };
+}
+
+/** Called by the HTTP client for every response carrying a readState. */
+export function publishReadState(state: ReadState): void {
+  readStateSink?.(state);
+}
+
+export function deriveDataFreshness(state: ReadState): DataFreshness {
+  if (state.completeness === "partial" && state.missing && state.missing.length > 0) {
+    return { kind: "partial", lagSeconds: state.lagSeconds, missing: state.missing };
+  }
+  if (state.lagSeconds > LAGGING_THRESHOLD_SECONDS || state.degraded.length > 0) {
+    return { kind: "lagging", lagSeconds: state.lagSeconds, degraded: state.degraded };
+  }
+  return { kind: "current", lagSeconds: state.lagSeconds };
 }

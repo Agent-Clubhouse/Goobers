@@ -782,3 +782,36 @@ export interface DaemonClient {
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage>;
 }
+
+/**
+ * How current the data in a response is (#1927, design §7.2).
+ *
+ * Distinct from connection state. "The socket is open" and "the data is fresh"
+ * are different facts, and conflating them is why an operator cannot tell slow
+ * from broken (#1928).
+ *
+ * `lagSeconds` is an honest upper bound, not a measurement: the journal append
+ * and the intake write are in different files and cannot be atomic, so the
+ * server reports `max(oldest pending watermark age, time since the last
+ * completed repair sweep)`.
+ */
+export interface ReadState {
+  epoch: string;
+  appliedSeq: number;
+  sourceApplied?: { runId: string; journalSeq: number };
+  observedAt: string;
+  lagSeconds: number;
+  pendingIntake: number;
+  oldestPendingSourceAge: number;
+  intakeWriteFailures: number;
+  lastSweepCompletedAt?: string;
+  minChangeSeq: number;
+  completeness: "complete" | "partial";
+  missing?: { name: string; reason: string; expectedBy: string }[];
+  degraded: string[];
+}
+
+/** Every read response carries one, when served from the read model. */
+export interface WithReadState {
+  readState?: ReadState;
+}
