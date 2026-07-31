@@ -9,6 +9,9 @@ const (
 	ProviderGitHub Provider = "github"
 	// ProviderADO is Azure DevOps (repos + boards backlog).
 	ProviderADO Provider = "ado"
+	// ProviderGitea is a self-hosted Gitea forge (repos + issues backlog). Gitea
+	// has no fixed host, so a RepoRef/BacklogRef using it must also set BaseURL.
+	ProviderGitea Provider = "gitea"
 )
 
 // SecretRef references a secret without storing its value in the repo. Secrets
@@ -31,9 +34,14 @@ type SecretRef struct {
 // RepoRef points at a git repository through a provider connection. Auth is a
 // SecretRef — never an inline token.
 type RepoRef struct {
-	// +kubebuilder:validation:Enum=github;ado
+	// +kubebuilder:validation:Enum=github;ado;gitea
 	// +kubebuilder:validation:Required
 	Provider Provider `json:"provider" yaml:"provider"`
+	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
+	// required when provider=gitea (self-hosted Gitea has no fixed host) and
+	// omitted for github/ado.
+	// +optional
+	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner/organization (GitHub org/user or Azure DevOps organization).
 	// +kubebuilder:validation:Required
 	Owner string `json:"owner" yaml:"owner"`
@@ -80,9 +88,14 @@ func (r RepoRef) EnvelopeRef() RepoRef {
 
 // BacklogRef points at the singleton backlog a gaggle draws work from.
 type BacklogRef struct {
-	// +kubebuilder:validation:Enum=github;ado
+	// +kubebuilder:validation:Enum=github;ado;gitea
 	// +kubebuilder:validation:Required
 	Provider Provider `json:"provider" yaml:"provider"`
+	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
+	// required when provider=gitea (self-hosted Gitea has no fixed host) and
+	// omitted for github/ado.
+	// +optional
+	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Project scopes the backlog (GitHub repo "owner/name" or ADO project).
 	// +kubebuilder:validation:Required
 	Project string `json:"project" yaml:"project"`

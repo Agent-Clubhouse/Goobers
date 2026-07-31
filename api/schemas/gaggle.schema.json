@@ -88,7 +88,8 @@
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Repository provider." },
+        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
         "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
         "project": { "type": "string", "minLength": 1, "description": "Azure DevOps project. Omit for GitHub repositories." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },
@@ -128,7 +129,8 @@
       "additionalProperties": false,
       "required": ["provider", "project"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Backlog provider." },
+        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Backlog provider." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
         "project": { "type": "string", "minLength": 1, "description": "GitHub owner/repository or Azure DevOps project that scopes the backlog." },
         "labels": { "type": "array", "description": "Required labels used to narrow candidate work items.", "items": { "type": "string" } },
         "labelPredicate": {

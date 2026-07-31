@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -71,8 +72,24 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		publisher = adoProvider
+	case providers.ProviderGitea:
+		// Gitea publishes goobers' evidence as a native commit status a
+		// status-check branch policy can gate on, so this stage is no longer
+		// ADO-only (#772). The token flows through the same capability grant the
+		// GitHub PR stages use.
+		token, err := providerToken(capability.GitHubPRWrite)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		giteaProvider, err := newGiteaProviderForStage(root, repo, token)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		publisher = giteaProvider
 	default:
-		pf(stderr, "error: provider %q does not support publishing a policy-gate-able PR status (Azure DevOps only, #772)\n", repo.Provider)
+		pf(stderr, "error: provider %q does not support publishing a policy-gate-able PR status (Azure DevOps and Gitea only, #772)\n", repo.Provider)
 		return 1
 	}
 
