@@ -53,21 +53,40 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
+	// ADO-or-GitHub-default silently opened a gitea-routed repo's PR against
+	// api.github.com with a GitHub capability token.
 	var provider openPRProvider
-	if repo.Provider == providers.ProviderADO {
+	switch repo.Provider {
+	case providers.ProviderADO:
 		adoProvider, err := newADOProviderForStage(root, repo)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		provider = adoProvider
-	} else {
+	case providers.ProviderGitea:
+		token, err := providerToken(capability.GitHubPRWrite)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		giteaProvider, err := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		provider = giteaProvider
+	case providers.ProviderGitHub:
 		token, err := providerToken(capability.GitHubPRWrite)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	default:
+		pf(stderr, "error: open-pr does not support repository provider %q\n", repo.Provider)
+		return 1
 	}
 
 	runID, workflow, err := providerRunContext()

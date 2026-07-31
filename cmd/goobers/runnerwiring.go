@@ -634,7 +634,21 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 		githubProjectEnv = env
 	}
 
-	if len(readRefByURL) == 0 && adoSource == nil && githubProjectEnv == nil {
+	// Gitea project-repo authentication: a static/store-backed token for the
+	// gaggle's own Gitea repo, scoped to its clone URL, so run-branch push (and
+	// private-repo clone/fetch) authenticate. nil when the project repo is not
+	// an authenticated Gitea repo (public read, or another provider). Unlike
+	// GitHub, Gitea has no app-install auth — only a configured token.
+	var giteaProjectEnv func(context.Context, string) ([]string, error)
+	if giteaRepo, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
+		env, err := giteaWorktreeGitEnvironment(giteaRepo, reg, stores)
+		if err != nil {
+			return nil, fmt.Errorf("configure Gitea worktree authentication: %w", err)
+		}
+		giteaProjectEnv = env
+	}
+
+	if len(readRefByURL) == 0 && adoSource == nil && githubProjectEnv == nil && giteaProjectEnv == nil {
 		return nil, nil // nothing bespoke — keep the Manager's ambient behavior
 	}
 	return func(ctx context.Context, repoURL string) ([]string, error) {
@@ -652,6 +666,10 @@ func buildWorktreeGitEnv(cfg *instance.Config, workcopiesDir string, gaggleProje
 			// Scoped to the project repo's clone URL; returns nil (ambient) for
 			// any other URL.
 			return githubProjectEnv(ctx, repoURL)
+		}
+		if giteaProjectEnv != nil {
+			// Scoped to the Gitea project repo's clone URL; nil (ambient) elsewhere.
+			return giteaProjectEnv(ctx, repoURL)
 		}
 		return nil, nil // ambient
 	}, nil
@@ -805,6 +823,25 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		}
 		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
 		req.RemoveLabels = adoParkRemovalLabels(req.RemoveLabels)
+		return provider.UpdateWorkItem(ctx, req)
+	}
+	if req.Repository.Provider == providers.ProviderGitea {
+		// Gitea authenticates with a static token like GitHub (resolved per call
+		// through the rotation-aware resolver), but the mutation must reach the
+		// self-hosted forge — newGiteaProviderForStage resolves its BaseURL from
+		// instance config. The claim marker is the plain LabelClaimed (as GitHub),
+		// so no ADO status-label rewrite is needed, and backlogRepoRefForGaggle is
+		// a no-op for gitea (code repo and backlog coincide).
+		ref := req.Repository.Owner + "/" + req.Repository.Name
+		token, err := c.resolver.Resolve(ctx, ref)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+		}
+		c.reg.Register([]byte(token))
+		provider, err := newGiteaProviderForStage(c.layout.Root, req.Repository, token)
+		if err != nil {
+			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
 		return provider.UpdateWorkItem(ctx, req)
 	}
 	ref := req.Repository.Owner + "/" + req.Repository.Name
@@ -2133,6 +2170,60 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 			registrar.Register([]byte(token))
 		}
 		return credentials.GitAuthEnvironment(askpass, token), nil
+	}, nil
+}
+
+// giteaRepoForGaggle returns the instance Gitea repo config backing a gaggle's
+// project repo, mirroring githubRepoForGaggle. A single-repo instance with an
+// unspecified project provider resolves to its sole Gitea repo.
+func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "gitea" {
+		return cfg.Repos[0], true
+	}
+	if project.Provider != apiv1.ProviderGitea {
+		return instance.RepoRef{}, false
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == "gitea" && repo.Owner == project.Owner && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	return instance.RepoRef{}, false
+}
+
+// giteaWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
+// that authenticates mirror clone/fetch and run-branch push of a Gitea repo
+// with its configured token, scoped to the repo's smart-HTTP clone URL
+// (<baseURL>/<owner>/<name>.git — the same URL defaultRepoCloneURL derives).
+// Gitea has no app-install auth, so only a static/store-backed token applies;
+// returns (nil, nil) when the repo carries no configured token (public read,
+// ambient). The token is resolved per call and never persisted.
+func giteaWorktreeGitEnvironment(repo instance.RepoRef, registrar providers.SecretRegistrar, stores credentials.StoreResolver) (func(context.Context, string) ([]string, error), error) {
+	if !repo.Token.Configured() {
+		return nil, nil
+	}
+	base := strings.TrimSuffix(strings.TrimSpace(repo.BaseURL), "/")
+	if base == "" {
+		return nil, fmt.Errorf("gitea repo %s/%s requires baseUrl for worktree authentication", repo.Owner, repo.Name)
+	}
+	refName := repo.Owner + "/" + repo.Name
+	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{repo.Token.CredentialTokenRef(refName)}, stores)
+	if err != nil {
+		return nil, err
+	}
+	cloneURL := fmt.Sprintf("%s/%s/%s.git", base, repo.Owner, repo.Name)
+	return func(ctx context.Context, repoURL string) ([]string, error) {
+		if !sameGitRemote(repoURL, cloneURL) {
+			return nil, nil
+		}
+		token, err := resolver.Resolve(ctx, refName)
+		if err != nil {
+			return nil, err
+		}
+		return providers.GiteaGitAuthEnvironment(token, repoURL, registrar), nil
 	}, nil
 }
 

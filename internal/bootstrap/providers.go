@@ -21,6 +21,16 @@ func BacklogProviderFor(backlog apiv1.BacklogRef, token string, adoSource provid
 		}
 		repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: owner, Name: name}
 		return providers.NewGitHubProvider(token, providers.WithRateLimitObserver(rateObserver)), repo, nil
+	case apiv1.ProviderGitea:
+		owner, name, ok := splitProject(backlog.Project)
+		if !ok {
+			return nil, providers.RepositoryRef{}, fmt.Errorf("gitea backlog project %q must be owner/name", backlog.Project)
+		}
+		if backlog.BaseURL == "" {
+			return nil, providers.RepositoryRef{}, fmt.Errorf("gitea backlog %q requires baseUrl (self-hosted Gitea has no fixed host)", backlog.Project)
+		}
+		repo := providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: owner, Name: name, URL: backlog.BaseURL}
+		return providers.NewGiteaProvider(backlog.BaseURL, token, providers.WithGiteaRateLimitObserver(rateObserver)), repo, nil
 	case apiv1.ProviderADO:
 		org, project, ok := splitProject(backlog.Project)
 		if !ok {

@@ -147,21 +147,40 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
+	// ADO-or-GitHub-default silently sent a gitea-routed repo's PR lookup and
+	// work-item close-out to api.github.com.
 	var provider issueCloseOutProvider
-	if repo.Provider == providers.ProviderADO {
+	switch repo.Provider {
+	case providers.ProviderADO:
 		adoProvider, aerr := newADOProviderForStage(root, repo)
 		if aerr != nil {
 			pf(stderr, "error: %v\n", aerr)
 			return 1
 		}
 		provider = adoProvider
-	} else {
+	case providers.ProviderGitea:
+		token, terr := providerToken(capability.GitHubIssuesWrite)
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if gerr != nil {
+			pf(stderr, "error: %v\n", gerr)
+			return 1
+		}
+		provider = giteaProvider
+	case providers.ProviderGitHub:
 		token, terr := providerToken(capability.GitHubIssuesWrite)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
 		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	default:
+		pf(stderr, "error: issue-close-out does not support repository provider %q\n", repo.Provider)
+		return 1
 	}
 	// Work items (the claimed PBI) live in the backlog project on ADO, not the
 	// routed code repo whose branch/PR this stage links; address them there.
