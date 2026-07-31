@@ -25,7 +25,7 @@ import (
 // a crash between committing the projection and acknowledging the watermark
 // simply reprocesses, harmlessly.
 func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
-	tx, err := s.writer.BeginTx(ctx, nil)
+	tx, err := s.writeDB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin upsert: %w", err)
 	}

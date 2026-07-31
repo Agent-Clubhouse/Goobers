@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
@@ -75,6 +76,11 @@ type Store struct {
 	// gained nothing from concurrency (0.99x) until it was split.
 	reader *sql.DB
 	path   string
+
+	// handles guards writer and reader, which Close mutates and every query
+	// reads. A read lock on the query path is uncontended in the common case and
+	// is the difference between a clean shutdown and a data race.
+	handles sync.RWMutex
 
 	// clock stamps the one change row that cannot be derived from a journal:
 	// run.removed, whose whole point is that the journal is gone. Injectable so
@@ -131,17 +137,53 @@ func Open(path string) (*Store, error) {
 
 // Close releases both handles, reader first so no query is in flight against a
 // database whose writer is going away.
+//
+// Guarded because Close races reads. The handle fields are read by every query
+// through readDB/writeDB, and reassigned by reopen after an epoch swap; until
+// this lock existed that was an unsynchronised data race — caught by the race
+// detector on main, but reachable in production any time a read overlaps daemon
+// shutdown, which is exactly when a long-lived SSE subscription is still
+// draining.
+//
+// # The handles are closed but NOT nilled
+//
+// An earlier version of this fix set them to nil so a post-Close query would
+// "fail cleanly". It does not: QueryContext on a nil *sql.DB dereferences it and
+// SEGFAULTS (database/sql.(*DB).conn, sql.go:1317). That turned a data race into
+// a panic, which the race shard duly caught.
+//
+// A CLOSED *sql.DB is the correct thing to keep: it is safe to call, returns
+// "sql: database is closed", and Close itself is idempotent. So a read that
+// overlaps shutdown gets an error it can report rather than taking the process
+// down with it.
 func (s *Store) Close() error {
+	s.handles.Lock()
+	defer s.handles.Unlock()
 	var readerErr error
 	if s.reader != nil {
 		readerErr = s.reader.Close()
-		s.reader = nil
+	}
+	if s.writer == nil {
+		return readerErr
 	}
 	return errors.Join(readerErr, s.writer.Close())
 }
 
+// writeDB returns the writable handle, under the same guard as readDB.
+//
+// Every write goes through here rather than touching s.writer, so Close cannot
+// race a commit in flight. After Close this is a closed handle, not nil — see
+// Close for why that distinction is load-bearing.
+func (s *Store) writeDB() *sql.DB {
+	s.handles.RLock()
+	defer s.handles.RUnlock()
+	return s.writer
+}
+
 // readDB returns the handle queries should use.
 func (s *Store) readDB() *sql.DB {
+	s.handles.RLock()
+	defer s.handles.RUnlock()
 	if s.reader != nil {
 		return s.reader
 	}

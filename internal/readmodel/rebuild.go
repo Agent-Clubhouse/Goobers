@@ -275,7 +275,7 @@ func removeDatabaseFiles(path string) error {
 
 // setEpoch stamps an epoch onto a freshly opened store.
 func (s *Store) setEpoch(ctx context.Context, epoch string) error {
-	if _, err := s.writer.ExecContext(ctx,
+	if _, err := s.writeDB().ExecContext(ctx,
 		`UPDATE projection_state SET epoch = ? WHERE id = 1`, epoch); err != nil {
 		return fmt.Errorf("readmodel: set epoch: %w", err)
 	}
@@ -410,7 +410,7 @@ func (s *Store) closeHandles() error {
 	}
 	var writerErr error
 	if s.writer != nil {
-		writerErr = s.writer.Close()
+		writerErr = s.writeDB().Close()
 		s.writer = nil
 	}
 	return errors.Join(readerErr, writerErr)

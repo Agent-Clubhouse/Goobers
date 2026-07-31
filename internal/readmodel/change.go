@@ -235,7 +235,7 @@ func (s *Store) LatestChangeSeq(ctx context.Context) (uint64, error) {
 //
 // keepFrom is the oldest sequence to retain. Rows below it are removed.
 func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error) {
-	tx, err := s.writer.BeginTx(ctx, nil)
+	tx, err := s.writeDB().BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("readmodel: begin change prune: %w", err)
 	}
