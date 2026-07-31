@@ -158,3 +158,23 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
+
+# Read-model conformance contract (#1921): a backend-neutral suite imported by
+# each backend's _test.go, so it is unreachable from any main by construction.
+# It is deleted when the read model is, not before; a second backend (#652)
+# will import the same entries.
+github.com/goobers/goobers/internal/readmodel/conformance.Run # Contract entrypoint: the whole suite a backend is handed to.
+github.com/goobers/goobers/internal/readmodel/conformance.absentRunIsAnAnswerNotAnError # Contract case: retention must not look like breakage.
+github.com/goobers/goobers/internal/readmodel/conformance.changeOrderIsSerializedAndDense # Contract case: resuming after a position misses nothing (SS8.2).
+github.com/goobers/goobers/internal/readmodel/conformance.changeSeqIsNeverReused # Contract case: pruned positions are not handed out again.
+github.com/goobers/goobers/internal/readmodel/conformance.closedSetIsFullyServed # Contract case: every declared combination is actually answerable.
+github.com/goobers/goobers/internal/readmodel/conformance.closedSetIsRefusedNotAnswered # Contract case: an unlisted combination is refused, not answered slowly (SS5.7).
+github.com/goobers/goobers/internal/readmodel/conformance.completedRun # Contract fixture builder.
+github.com/goobers/goobers/internal/readmodel/conformance.epochsAreOpaqueAndDistinct # Contract case: a fresh store never reuses an epoch (SS4.2).
+github.com/goobers/goobers/internal/readmodel/conformance.freshnessIsSourceRelative # Contract case: freshness is a source position, never a clock (SS14.7).
+github.com/goobers/goobers/internal/readmodel/conformance.guardedAcknowledgement # Contract case: a stale projection must not overwrite a newer one.
+github.com/goobers/goobers/internal/readmodel/conformance.optionsForDims # Contract fixture builder: maps a declared dimension set to a request.
+github.com/goobers/goobers/internal/readmodel/conformance.pagesAreBoundedAndOrdered # Contract case: page limits and the stable tiebreak keyset cursors need.
+github.com/goobers/goobers/internal/readmodel/conformance.replayIsIdempotent # Contract case: same-position replay emits no change (caught a real defect).
+github.com/goobers/goobers/internal/readmodel/conformance.retentionFloorOnlyAdvances # Contract case: the floor never moves backwards.
+github.com/goobers/goobers/internal/readmodel/conformance.runID # Contract fixture builder.
