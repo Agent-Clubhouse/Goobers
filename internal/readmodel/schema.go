@@ -270,4 +270,66 @@ CREATE TABLE IF NOT EXISTS tombstone (
 );
 CREATE INDEX IF NOT EXISTS idx_tombstone_started ON tombstone(started_at);
 `,
+
+	// v5: day and month aggregate buckets (#1931, §5.6).
+	//
+	// Without pre-aggregation an all-time Insight query scans all matching
+	// history, so "zero timeouts" does not hold on the analytics surface. A day
+	// bucket makes even the widest window a bounded number of rows.
+	//
+	// # Recompute, not accumulate
+	//
+	// When a run in day D changes, D is marked dirty and its buckets are
+	// RECOMPUTED by aggregating that day's indexed run rows. Bounded by runs in
+	// a day, and idempotent — which serves the determinism property for free.
+	//
+	// Reversible deltas were considered and rejected: they require storing each
+	// run's prior contribution and subtracting it on reprojection, which is
+	// fiddly, easy to get wrong, and silently drifts when it is. A recompute
+	// cannot drift, because it does not carry state between passes.
+	`
+CREATE TABLE IF NOT EXISTS bucket_day (
+	day         TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (day, gaggle, workflow, phase, outcome)
+);
+
+-- Recency-ordered so a windowed query seeks rather than scans, and gaggle-led
+-- for the same reason the run indexes are: scope has to be a predicate inside
+-- the indexed query, never a filter applied after LIMIT.
+CREATE INDEX IF NOT EXISTS idx_bucket_day_recency ON bucket_day(day DESC, gaggle, workflow);
+CREATE INDEX IF NOT EXISTS idx_bucket_day_gaggle ON bucket_day(gaggle, day DESC);
+
+-- Month rollups recompute from the dailies on the same rule, so the same
+-- idempotence argument covers both tiers.
+CREATE TABLE IF NOT EXISTS bucket_month (
+	month       TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (month, gaggle, workflow, phase, outcome)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_month_recency ON bucket_month(month DESC, gaggle, workflow);
+
+-- dirty_day is the recompute queue.
+--
+-- A queue rather than a recompute-on-write: a run finishing writes one row here
+-- instead of re-aggregating its whole day inside the projection transaction,
+-- which would put an O(runs-in-day) scan on the commit path. It is also what
+-- lets bucket recompute be the FIRST thing shed under projector overload
+-- (PRA-3b) — the work is durable and can wait, because it is derived from data
+-- that is itself already durable.
+CREATE TABLE IF NOT EXISTS dirty_day (
+	day     TEXT PRIMARY KEY,
+	marked_at TEXT NOT NULL
+);
+`,
 }

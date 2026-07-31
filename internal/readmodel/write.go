@@ -89,6 +89,12 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if err := appendChange(ctx, tx, at, changeKindFor(previous, existed, p.Run), p.Run); err != nil {
 		return err
 	}
+	// Queue the run's day for bucket recompute (#1931). One small insert inside
+	// the transaction rather than an aggregation: recomputing here would put an
+	// O(runs-in-day) scan on every run's commit path.
+	if err := markDayDirty(ctx, tx, p.Run.StartedAt, s.now()); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("readmodel: commit upsert: %w", err)
 	}
