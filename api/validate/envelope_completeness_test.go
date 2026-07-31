@@ -85,6 +85,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		Workspace:           "/workspace",
 		RepoRef: apiv1.RepoRef{
 			Provider:      apiv1.ProviderADO,
+			BaseURL:       "https://gitea.example.com",
 			Owner:         "agent-clubhouse",
 			Project:       "goobers-project",
 			Name:          "goobers",

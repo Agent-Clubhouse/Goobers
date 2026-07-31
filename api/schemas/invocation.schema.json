@@ -89,7 +89,7 @@
       "required": ["id", "provider"],
       "properties": {
         "id": { "type": "string", "minLength": 1, "description": "Provider-native item identifier, such as an issue or work-item number." },
-        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Provider the item came from." },
+        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Provider the item came from." },
         "title": { "type": "string", "description": "Short item title." },
         "body": { "type": "string", "description": "Item description or details." },
         "url": { "type": "string", "description": "Provider URL for the item." },
@@ -117,7 +117,8 @@
       "additionalProperties": false,
       "required": ["provider", "owner", "name"],
       "properties": {
-        "provider": { "type": "string", "enum": ["github", "ado"], "description": "Repository provider." },
+        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
         "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, or Azure DevOps organization." },
         "project": { "type": "string", "description": "Azure DevOps project containing the repository." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },

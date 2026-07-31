@@ -153,6 +153,12 @@ var commands = map[string]Command{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
+	"report-pr-status": {
+		ResultFile: "status-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so publishing the pull-request status fails at runtime (the GitHub PR-write grant also authorizes the Gitea commit-status path)"),
+		},
+	},
 	"push-remediated": {
 		ResultFile: "push-remediated-result.json",
 		Capabilities: []CapabilityUse{

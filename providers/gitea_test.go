@@ -187,9 +187,6 @@ func TestGiteaProviderCreateBranchResolvesBaseSHAViaLsRemote(t *testing.T) {
 
 	// The first RunWithEnv call is ls-remote; its output must carry a SHA the
 	// runner then reuses for fetch+push.
-	var lsRemoteCalls int
-	origRun := runner.RunWithEnv
-	_ = origRun
 	// fakeEnvironmentRunner returns a single fixed output/err for every call, so
 	// give it the ls-remote answer and verify the fetch/push argv shape only.
 	runner.envOutput = []byte("deadbeefcafebabe1234567890abcdef01234567\trefs/heads/main\n")
@@ -228,7 +225,6 @@ func TestGiteaProviderCreateBranchResolvesBaseSHAViaLsRemote(t *testing.T) {
 	if !containsString(push.env, "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+auth) {
 		t.Fatal("push environment does not carry the injected Gitea authorization header")
 	}
-	lsRemoteCalls++
 }
 
 // TestGiteaProviderCreateBranchUsesExplicitBaseSHA proves a non-empty
