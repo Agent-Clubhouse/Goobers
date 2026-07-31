@@ -116,6 +116,7 @@ type RunListOptions struct {
 
 // RunList is one deterministic page of run summaries.
 type RunList struct {
+	ReadStateEnvelope
 	Runs             []RunSummary          `json:"runs"`
 	WorkflowActivity []WorkflowRunActivity `json:"workflowActivity,omitempty"`
 	NextCursor       string                `json:"nextCursor,omitempty"`
@@ -157,6 +158,7 @@ type RunSummary struct {
 // GraphStatus is "pinned" for current runs and "unavailable" for journals that
 // predate graph snapshots.
 type RunDetail struct {
+	ReadStateEnvelope
 	RunSummary
 	Graph       *workflow.Graph  `json:"graph,omitempty"`
 	GraphStatus string           `json:"graphStatus"`
@@ -209,6 +211,7 @@ type EscalationSelector struct {
 
 // EventList is the complete durable event ledger for one run.
 type EventList struct {
+	ReadStateEnvelope
 	RunID  string     `json:"runId"`
 	Events []RunEvent `json:"events"`
 }
@@ -267,6 +270,7 @@ type ArtifactMetadata struct {
 // AttemptList contains every traversal of a stage, including repasses that
 // restart at attempt one.
 type AttemptList struct {
+	ReadStateEnvelope
 	RunID    string         `json:"runId"`
 	Stage    string         `json:"stage"`
 	Attempts []StageAttempt `json:"attempts"`
@@ -331,7 +335,7 @@ type runRead struct {
 
 // ListRuns returns newest-first summaries, with RunID ascending as the stable
 // tie-breaker.
-func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, error) {
+func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions) (RunList, error) {
 	if options.LatestPerWorkflow {
 		if options.Stage != "" ||
 			options.Outcome != "" ||
@@ -938,7 +942,7 @@ func (s *Local) RunIDs(ctx context.Context) ([]string, error) {
 }
 
 // GetRun returns one journal-derived run detail.
-func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
+func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail, error) {
 	if err := ctx.Err(); err != nil {
 		return RunDetail{}, err
 	}
@@ -985,7 +989,7 @@ func (s *Local) RunMetadata(ctx context.Context, runID string) (journal.RunIdent
 }
 
 // RunEvents returns ordered event projections for a run.
-func (s *Local) RunEvents(ctx context.Context, runID string) (EventList, error) {
+func (s *Local) runEventsUnannotated(ctx context.Context, runID string) (EventList, error) {
 	if err := ctx.Err(); err != nil {
 		return EventList{}, err
 	}
@@ -1002,7 +1006,7 @@ func (s *Local) RunEvents(ctx context.Context, runID string) (EventList, error) 
 }
 
 // StageAttempts returns all attempts for one stage in durable traversal order.
-func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (AttemptList, error) {
+func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage string) (AttemptList, error) {
 	if err := ctx.Err(); err != nil {
 		return AttemptList{}, err
 	}
@@ -2472,4 +2476,56 @@ func decodeRunCursor(value string) (runCursor, error) {
 func runAfterCursor(summary RunSummary, cursor runCursor) bool {
 	return summary.StartedAt.Before(cursor.StartedAt) ||
 		(summary.StartedAt.Equal(cursor.StartedAt) && summary.ID > cursor.RunID)
+}
+
+// ListRuns returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around listRunsUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, error) {
+	out, err := s.listRunsUnannotated(ctx, options)
+	if err != nil {
+		return RunList{}, err
+	}
+	return annotated[RunList](ctx, s, out), nil
+}
+
+// GetRun returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around getRunUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
+	out, err := s.getRunUnannotated(ctx, runID)
+	if err != nil {
+		return RunDetail{}, err
+	}
+	return annotated[RunDetail](ctx, s, out), nil
+}
+
+// RunEvents returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around runEventsUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) RunEvents(ctx context.Context, runID string) (EventList, error) {
+	out, err := s.runEventsUnannotated(ctx, runID)
+	if err != nil {
+		return EventList{}, err
+	}
+	return annotated[EventList](ctx, s, out), nil
+}
+
+// StageAttempts returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around stageAttemptsUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) StageAttempts(ctx context.Context, runID, stage string) (AttemptList, error) {
+	out, err := s.stageAttemptsUnannotated(ctx, runID, stage)
+	if err != nil {
+		return AttemptList{}, err
+	}
+	return annotated[AttemptList](ctx, s, out), nil
 }

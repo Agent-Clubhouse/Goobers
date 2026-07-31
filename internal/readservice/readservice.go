@@ -49,6 +49,7 @@ type Reader interface {
 
 // Health is the versioned daemon health response.
 type Health struct {
+	ReadStateEnvelope
 	APIVersion    string           `json:"apiVersion"`
 	SchemaVersion string           `json:"schemaVersion"`
 	Ready         bool             `json:"ready"`
@@ -123,6 +124,10 @@ type Local struct {
 	// The old reconcile that used to provide completeness ran on the request
 	// path and wrote .lock files into 40,665 run directories; it is deleted.
 	readModelReads bool
+
+	// intakeDepth reports how many source watermarks are waiting. Optional; see
+	// AttachIntakeDepth.
+	intakeDepth intakeDepth
 }
 
 type definitionSnapshot struct {
@@ -207,7 +212,7 @@ func newDefinitionSnapshot(definitions *instance.ConfigSet, validation *validate
 
 // Health returns daemon readiness, canonical instance identity, and source
 // freshness.
-func (s *Local) Health(ctx context.Context) (Health, error) {
+func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	if err := ctx.Err(); err != nil {
 		return Health{}, err
 	}
@@ -252,4 +257,17 @@ func (s *Local) Health(ctx context.Context) (Health, error) {
 			LastTickAgeMillis:   lastTickAgeMillis,
 		},
 	}, nil
+}
+
+// Health returns the read response with its freshness envelope attached.
+//
+// A thin wrapper around healthUnannotated so the envelope lands on EVERY success
+// return rather than on whichever ones someone remembered to edit. Several of
+// these methods return successfully from more than one place.
+func (s *Local) Health(ctx context.Context) (Health, error) {
+	out, err := s.healthUnannotated(ctx)
+	if err != nil {
+		return Health{}, err
+	}
+	return annotated[Health](ctx, s, out), nil
 }
