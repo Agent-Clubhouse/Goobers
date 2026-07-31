@@ -195,3 +195,8 @@ github.com/goobers/goobers/internal/readmodel/projector.Projector.Stats # Projec
 # stale when that lands.
 github.com/goobers/goobers/internal/readmodel/repair.Sweeper.Stats # Sweep counters for the freshness envelope (#1927).
 
+# readState envelope (#1927). ParseSourceApplied decodes the If-Source-Applied
+# request header; its caller is the HTTP layer's read-your-write check, which
+# lands with the route wiring in the same wave. Expected to go stale then.
+github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-Applied header decoder (#1927 route wiring).
+
