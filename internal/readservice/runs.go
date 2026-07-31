@@ -425,6 +425,20 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 	if s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
+	// The journal-scanning path is now REACHED DELIBERATELY, not fallen into
+	// (#1933, §11.2).
+	//
+	// It used to be entered silently whenever the indexed sources were absent,
+	// which made "the read path is bounded" a property of one topology rather
+	// than of the service — and gave an operator on the standalone dashboard
+	// O(total history) per request with nothing to indicate it.
+	//
+	// Building and degraded modes refuse instead. A caller that gets this error
+	// can retry, show a progress banner, or opt into the scan explicitly; all of
+	// those beat a request that appears to work and takes minutes.
+	if !s.boundedReadAvailable() {
+		return RunList{}, fmt.Errorf("%w (mode %s)", ErrBoundedReadUnavailable, s.ReadMode())
+	}
 	return s.listRunsScanning(ctx, options, cursor, limit)
 }
 

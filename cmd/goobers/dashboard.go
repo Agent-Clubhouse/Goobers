@@ -391,14 +391,38 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
+	// The standalone dashboard had NO projection at all (#1933, §11.2): no
+	// Telemetry, no ReadModel, so every list was a full scan of all history —
+	// and this is the configuration a new user meets first.
+	//
+	// Open the read model, building it if empty. On a read-only volume this
+	// degrades EXPLICITLY rather than silently falling back to the scan.
+	topology := readservice.TopologyConfig{
+		Topology: readservice.TopologyStandalone,
+		Layout:   layout,
+	}
+	readStore, readMode, _ := readservice.OpenReadModel(topology)
+	if readStore != nil {
+		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
+			// A failed build degrades rather than fails: single-run routes still
+			// work, and saying so beats refusing to start.
+			readMode = readservice.ReadModeDegraded
+		}
+	}
+
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
 		Config:      config,
 		Definitions: definitions,
 		Validation:  report,
+		ReadModel:   readStore,
 	}, func() bool { return true })
 	if err != nil {
 		return dashboardAPI{}, err
+	}
+	reads.SetReadMode(readMode)
+	if readStore != nil {
+		reads.EnableReadModelReads()
 	}
 	manifestInstance := definitions.Manifest.Spec.Instance
 	reader := standaloneDashboardReader{
