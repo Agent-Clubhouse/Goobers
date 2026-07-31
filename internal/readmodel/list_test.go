@@ -47,10 +47,11 @@ func TestListOpensNoJournals(t *testing.T) {
 			"Before the read model this was 51 — one per returned row plus the lookahead.",
 			work.JournalOpens, work.ActiveScanOpens)
 	}
-	if work.ReconcileScans != 0 {
-		t.Errorf("the list path performed %d reconcile scans; reads must not perform maintenance (§2.4)",
-			work.ReconcileScans)
-	}
+	// The reconcile-scan counter is gone, and its absence is a stronger
+	// guarantee than the assertion it replaced (#1924). reconcileIndex no longer
+	// exists, so "the list path performs no reconcile" is now a compile-time
+	// fact rather than something a runtime counter has to keep proving. A
+	// counter that nothing can increment is a vacuous assertion.
 }
 
 // TestPaginationIsFlatInDepth pins that page N costs what page 1 costs.

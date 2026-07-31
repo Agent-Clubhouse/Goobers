@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/projector"
+	"github.com/goobers/goobers/internal/readmodel/repair"
 )
 
 // startProjector runs the read model's sole writer (#1923, §6.1).
@@ -47,6 +48,15 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	p := projector.New(store, watermarks, projector.Options{RunsDirs: runsDirs})
 	stop := p.Start(ctx)
 
+	// The repair sweep (#1924). It runs continuously at a fixed I/O budget,
+	// cycling, with a durable cursor — never on a request path and never taking
+	// a journal lock. It is what makes the read model COMPLETE rather than
+	// merely current: the projector applies what writers reported, and repair
+	// finds what nobody did, in both directions.
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	sweeper := repair.New(store, watermarks, repair.Options{RunsDirs: runsDirs})
+	go sweeper.Run(sweepCtx)
+
 	// The restart pass runs after Start, so its commits go through the same
 	// serialized loop as live ones. Running it before would mean two writers
 	// existed briefly, which is the one thing the commit loop exists to prevent.
@@ -56,5 +66,8 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 		fmt.Fprintf(os.Stderr, "projector restart: drained %d, reprojected %d, missing %d\n",
 			result.Drained, result.Reprojected, result.Missing)
 	}
-	return stop
+	return func() {
+		stopSweep()
+		stop()
+	}
 }

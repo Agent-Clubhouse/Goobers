@@ -192,6 +192,15 @@ func readModelDims(options RunListOptions) []readmodel.Dim {
 
 // EnableReadModelReads turns the cutover on for this service.
 //
-// Off by default — see the package comment above for why that deviates from
-// §6.6's "defaulting on", and what has to land before it flips.
+// On by default when a read model is attached (see NewLocal). Kept as an
+// explicit call because tests construct services with a store attached and want
+// to be unambiguous about which path they are exercising.
 func (s *Local) EnableReadModelReads() { s.readModelReads = true }
+
+// DisableReadModelReads forces the journal-derived paths.
+//
+// This is the rollback §6.6 requires, and it is deliberately a runtime switch
+// rather than a rebuild: rolling back must be a flag flip or deleting a file,
+// never a deploy. No journal is touched at any step, so the old path is always
+// exactly as correct as it was.
+func (s *Local) DisableReadModelReads() { s.readModelReads = false }

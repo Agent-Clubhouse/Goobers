@@ -211,4 +211,63 @@ CREATE INDEX IF NOT EXISTS idx_run_running_gaggle_workflow
 	ON run(gaggle, workflow)
 	WHERE phase = 'running';
 `,
+
+	// v4: the repair sweep's durable cursor, unpublished memo, and tombstones
+	// (#1924, §6.3).
+	`
+-- sweep_cursor is where the continuous repair walk resumes.
+--
+-- §6.3's central correction: the old reasoning — "a run root whose mtime has not
+-- advanced cannot hold anything new, so skip it without a ReadDir" — DOES NOT
+-- BIND. Every new run bumps its parent's mtime, so on a live instance the root
+-- is always dirty and repair reads all 40,665 entries every pass. A bound that
+-- only holds when nothing is happening is not a bound.
+--
+-- The replacement is a fixed I/O budget, walked continuously and cycling. Cost
+-- is constant per unit time; what scales with history is CYCLE TIME (H / rate),
+-- which is reported rather than hidden. That only works if the walk can stop
+-- anywhere and resume, which is what this is.
+CREATE TABLE IF NOT EXISTS sweep_cursor (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	-- root is the runs directory being walked, after_name the last entry
+	-- examined within it. Together they are a resumable position in a
+	-- lexicographic walk.
+	root       TEXT NOT NULL DEFAULT '',
+	after_name TEXT NOT NULL DEFAULT '',
+	-- These turn "how stale can repair be" into a number the freshness surface
+	-- can report, rather than a promise.
+	cycle_started_at        TEXT,
+	last_cycle_completed_at TEXT,
+	-- entries_this_cycle counts work done, so a cycle that is not converging
+	-- shows up as a rising count with no completion.
+	entries_this_cycle INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO sweep_cursor (id) VALUES (1);
+
+-- unpublished remembers directories with no run.yaml, keyed by directory mtime.
+--
+-- 10,906 of 40,665 directories on the live instance are unpublished (27%) and
+-- can never be ingested. Remembering them costs one stat per cycle instead of an
+-- open. Writing run.yaml bumps the directory mtime, so promotion is detected
+-- rather than cached forever.
+CREATE TABLE IF NOT EXISTS unpublished (
+	run_id    TEXT PRIMARY KEY,
+	dir_mtime TEXT NOT NULL,
+	seen_at   TEXT NOT NULL
+);
+
+-- tombstone records a run deliberately aged out below the projection floor.
+--
+-- Without it, "missing" and "deliberately gone" are the same observation, and
+-- repair cannot tell an operator rm from ordinary retention. It is also what
+-- stops the livelock: repair skips a journal below the floor instead of
+-- reprojecting an aged-out run for retention to delete again next cycle.
+CREATE TABLE IF NOT EXISTS tombstone (
+	run_id        TEXT PRIMARY KEY,
+	started_at    TEXT NOT NULL,
+	tombstoned_at TEXT NOT NULL,
+	reason        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tombstone_started ON tombstone(started_at);
+`,
 }
