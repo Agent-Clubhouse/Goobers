@@ -2760,6 +2760,38 @@ a.telemetry-error-row:hover {
   outline-offset: 2px;
 }
 
+.failure-panel {
+  align-items: start;
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line));
+  border-radius: 11px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: auto 1fr;
+  margin-bottom: 18px;
+  padding: 18px;
+}
+
+.failure-panel:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.failure-panel h2 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.failure-errors-link {
+  align-items: center;
+  color: var(--danger);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 640;
+  gap: 6px;
+  margin-top: 12px;
+}
+
 .escalation-content {
   min-width: 0;
 }

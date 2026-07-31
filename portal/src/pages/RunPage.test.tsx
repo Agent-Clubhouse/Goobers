@@ -825,6 +825,27 @@ describe("run detail", () => {
     expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
+
+  it("surfaces the coded failure reason and deep-links from a failed run", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ400FAILED");
+
+    const banner = await screen.findByRole("region", {
+      name: /harness\.crash · Harness exited before producing a result envelope\./,
+    });
+
+    expect(within(banner).getAllByText("harness.crash", { selector: ".mono" })).toHaveLength(2);
+    expect(within(banner).getByRole("link", { name: /view matching errors/i })).toHaveAttribute(
+      "href",
+      "#/errors?gaggle=core&workflow=implementation&stage=implement&code=harness.crash",
+    );
+
+    await user.click(within(banner).getByRole("button", { name: /Failing event/ }));
+
+    expect(
+      screen.getByRole("button", { name: "implement, agentic, Failed at sequence 5" }),
+    ).toBeInTheDocument();
+  });
 });
 
 function renderRun(

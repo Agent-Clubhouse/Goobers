@@ -298,6 +298,10 @@ function runEvents(summary: RunSummary): RunEvent[] {
           attempt: 1,
           attemptClass: "initial",
           status: "failure",
+          error: {
+            code: "harness.crash",
+            message: "Harness exited before producing a result envelope.",
+          },
         }),
         journalEvent(summary, 6, "run.finished", { status: "failed" }),
       ];

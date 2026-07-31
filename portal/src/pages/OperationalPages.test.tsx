@@ -107,6 +107,22 @@ describe("operational overview", () => {
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
   });
 
+  it("labels a failed attention row with its coded telemetry reason", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const failedRow = await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
+    expect(
+      await within(failedRow).findByText(
+        "harness.crash · Harness exited before producing a result envelope.",
+      ),
+    ).toBeInTheDocument();
+
+    const escalatedRow = screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
+    expect(
+      within(escalatedRow).getByText("Run escalated and needs human review."),
+    ).toBeInTheDocument();
+  });
+
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
     const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 60 }));
     const listRuns = vi.spyOn(client, "listRuns");
