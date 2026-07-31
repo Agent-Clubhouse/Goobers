@@ -113,7 +113,7 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 		released = append(released, workflow)
 		sched.ReleaseReconciled(runID, workflow)
 	}
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.ReadModel, release, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, release, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 
 	resumed, warned, err := resumeInterruptedRuns(
 		context.Background(), l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs,
-		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.ReadModel, sched.ReleaseReconciled, &wg,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	var released []string
 	resumed, warned, err := resumeInterruptedRunsWithRunners(
 		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs,
-		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.ReadModel,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks,
 		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
 	)
 	if err != nil {

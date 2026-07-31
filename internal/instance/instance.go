@@ -95,6 +95,17 @@ func (l Layout) TelemetryDB() string { return filepath.Join(l.Root, TelemetryDBN
 // §5.1).
 func (l Layout) ReadDB() string { return filepath.Join(l.Root, ReadDBName) }
 
+// IntakeDBName is the source-watermark database (#1922).
+//
+// Separate from read.db, and never rebuilt. Out-of-process writers record
+// watermarks here, so an epoch swap that replaced this file would lose the
+// watermarks of any process still holding the old inode — and on Windows could
+// not replace it at all while one did.
+const IntakeDBName = "intake.db"
+
+// IntakeDB returns the source-watermark database path.
+func (l Layout) IntakeDB() string { return filepath.Join(l.Root, IntakeDBName) }
+
 // DocsWatermarkPath returns the durable docs-drift watermark file for a
 // (gaggle, workflow) pair (#1015). The watermark records the commit the
 // docs-updater last refreshed docs against; the signal-gather stage reads it to

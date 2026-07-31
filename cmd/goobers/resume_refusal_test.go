@@ -92,7 +92,7 @@ func TestResumeScanFailsDigestMismatchedRunAndReleasesClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.ReadModel, sched.ReleaseReconciled, &wg)
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		t.Fatal(err)
 	}

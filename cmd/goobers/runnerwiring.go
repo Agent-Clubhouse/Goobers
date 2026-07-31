@@ -31,7 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/providersnapshot"
-	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -143,7 +143,7 @@ func (t teeRegistrar) Register(secret []byte) {
 // FlushLocal MUST run before IngestRun reads spans.jsonl: the local journal
 // exporter batches completed spans, but flushing the whole provider would also
 // wait for a configured remote collector and delay scheduler-slot release.
-func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, readModel *readmodel.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
+func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, watermarks *intake.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
 	if tel != nil {
 		if err := tel.FlushLocal(context.Background()); err != nil {
 			logIngestFailure(log, runID, "telemetry_flush_failed", err)
@@ -164,27 +164,41 @@ func ingestRunTelemetry(tel *telemetry.Client, db *rollup.DB, readModel *readmod
 		logIngestFailure(log, runID, "telemetry_ingest_run_failed", err)
 	}
 	ingestSchedulerLog(db, l.SchedulerDir(), log, runID)
-	projectRunIntoReadModel(readModel, l, runID, log)
+	recordRunIntake(watermarks, l, runID, log)
 }
 
-// projectRunIntoReadModel keeps read.db current at the same moment telemetry.db
-// becomes current — the same seam, for the same reason.
+// recordRunIntake records a source watermark rather than projecting inline
+// (#1922/#1923, §6.1).
 //
-// Without this the read model would only be as fresh as its last rebuild, which
-// is not a basis for serving reads: a run that finished thirty seconds ago would
-// be missing or still marked running, and the portal's first question is "what
-// needs me?". The proper mechanism is Wave 3's projector, driven by a durable
-// intake watermark rather than an in-process call from the writer (§6.1). This
-// is the interim, and it inherits the same limitation the current design names:
-// the daemon has no in-memory knowledge of runs written while it was down, which
-// is why repair exists.
+// # The inversion
 //
-// Best-effort but never silent, matching the rollup's convention above (#246): a
-// failure is logged to the instance journal rather than swallowed, because a
-// read model that silently stops updating looks exactly like one with nothing to
-// report.
-func projectRunIntoReadModel(store *readmodel.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
-	if store == nil {
+// This used to call ProjectRunDir here, from the writer, in-process, at run
+// completion — the same coupling `IngestRun` has above. That dependency does not
+// survive separating execution from serving, and it has a defect that shows up
+// long before any separation: a run written while the daemon is down is never
+// projected at all, and nothing notices.
+//
+// Now the writer records "this run advanced to sequence N" and forgets about it.
+// The projector discovers the marker on its own schedule and applies it. A
+// marker written while the daemon is down is still there when it starts, so the
+// restart pass picks it up — which is the whole point.
+//
+// # Why it reads the journal for the sequence
+//
+// The watermark must carry a REAL sequence, not a placeholder. The
+// acknowledgement guard is `source_seq <= projectedSeq`: if every writer
+// recorded zero, an append racing a projection would be acknowledged away as
+// though it had been applied. One journal read here replaces the much larger
+// whole-run ingest that used to happen at this point.
+//
+// # Failure is degradation, not an error
+//
+// Best-effort but never silent (#246). A watermark that fails to record means
+// that run is discovered by the repair sweep instead — slower, but complete. The
+// alternative, failing a run because a read-model hint could not be written,
+// would make the read model an availability dependency of execution.
+func recordRunIntake(watermarks *intake.Store, l instance.Layout, runID string, log *journal.InstanceLog) {
+	if watermarks == nil {
 		return
 	}
 	dir, err := l.FindRunDir(runID)
@@ -192,9 +206,40 @@ func projectRunIntoReadModel(store *readmodel.Store, l instance.Layout, runID st
 		logIngestFailure(log, runID, "read_model_run_dir_failed", err)
 		return
 	}
-	if err := store.ProjectRunDir(context.Background(), dir); err != nil {
-		logIngestFailure(log, runID, "read_model_project_failed", err)
+	seq, err := lastJournalSeq(dir)
+	if err != nil {
+		logIngestFailure(log, runID, "read_model_intake_seq_failed", err)
+		return
 	}
+	if err := watermarks.Observed(context.Background(), runID, seq); err != nil {
+		logIngestFailure(log, runID, "read_model_intake_failed", err)
+	}
+}
+
+// lastJournalSeq reports the highest sequence in a run's journal.
+//
+// Takes the maximum rather than the last record's sequence: the live instance's
+// journals contain duplicate and regressed sequences (1,394 duplicates and 119
+// regressions, from #530), so "the last line" and "the highest sequence" are not
+// the same number. The watermark has to be the highest, or the acknowledgement
+// guard would let a projection at the true maximum acknowledge a marker that
+// still represented unapplied work.
+func lastJournalSeq(dir string) (uint64, error) {
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		return 0, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return 0, err
+	}
+	var highest uint64
+	for _, event := range events {
+		if event.Seq > highest {
+			highest = event.Seq
+		}
+	}
+	return highest, nil
 }
 
 func ingestSchedulerTelemetry(ctx context.Context, tel *telemetry.Client, db *rollup.DB, schedulerDir string, log *journal.InstanceLog) {
