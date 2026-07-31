@@ -1220,6 +1220,40 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "must not configure token",
 		},
 		{
+			name: "valid gitea",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+		},
+		{
+			name: "gitea missing baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "baseUrl is required",
+		},
+		{
+			name: "gitea rejects project",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "project is only valid for provider",
+		},
+		{
+			name: "gitea rejects auth block",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
+			}},
+			wantErr: "supports only a static token",
+		},
+		{
+			name: "gitea missing token",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web"},
+			}},
+			wantErr: "gitea auth requires token",
+		},
+		{
 			name: "missing owner",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Name: "web", Token: TokenRef{Env: "T"}},

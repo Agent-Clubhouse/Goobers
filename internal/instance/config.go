@@ -1007,8 +1007,8 @@ func (c *Config) Validate() error {
 		return err
 	}
 	for i, r := range c.Repos {
-		if r.Provider != "github" && r.Provider != "ado" {
-			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\")", i, r.Provider)
+		if r.Provider != "github" && r.Provider != "ado" && r.Provider != "gitea" {
+			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\", \"gitea\")", i, r.Provider)
 		}
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
@@ -1103,6 +1103,19 @@ func (c *Config) Validate() error {
 			}
 			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
 				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+			}
+		case "gitea":
+			if r.BaseURL == "" {
+				return fmt.Errorf("repos[%d] (%s/%s): baseUrl is required for provider \"gitea\" (self-hosted Gitea has no fixed host)", i, r.Owner, r.Name)
+			}
+			if r.Project != "" {
+				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if r.Auth != nil {
+				return fmt.Errorf("repos[%d] (%s/%s): provider \"gitea\" supports only a static token; remove the auth block", i, r.Owner, r.Name)
+			}
+			if !r.Token.Configured() {
+				return fmt.Errorf("repos[%d] (%s/%s): gitea auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
 			}
 		}
 		if r.Policy != nil {
