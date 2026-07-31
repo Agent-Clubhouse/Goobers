@@ -1,4 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { FixtureDaemonClient } from "../api/fixtureClient";
+import { LiveDataProvider } from "../liveData";
+import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AttemptList,
@@ -12,6 +16,27 @@ import { goWireFixtures } from "../api/wire.generated";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
 import { RunStageInspector } from "./RunStageInspector";
+
+/**
+ * The inspector subscribes to live data now (#1714), so it needs a provider.
+ *
+ * A local wrapper rather than a shared helper: this is the only component test
+ * that needs one, and a fixture client's event stream never emits, so the
+ * subscription is inert here — these tests are about rendering, and the live
+ * refresh has its own test in RunStageInspectorLive.test.tsx.
+ */
+function renderInspector(ui: ReactElement) {
+  const client = new FixtureDaemonClient(populatedDaemonFixtures());
+  const wrap = (node: ReactElement) => (
+    <LiveDataProvider client={client}>{node}</LiveDataProvider>
+  );
+  const view = render(wrap(ui));
+  // rerender must re-wrap. Without this it renders the bare component and the
+  // provider disappears mid-test, which fails with the same "requires a
+  // LiveDataProvider" error as having no wrapper at all.
+  return { ...view, rerender: (node: ReactElement) => view.rerender(wrap(node)) };
+}
+
 
 const reviewNode: WorkflowGraphNode = { id: "review", kind: "gate", evaluator: "agentic" };
 const implementNode: WorkflowGraphNode = { id: "implement", kind: "agentic" };
@@ -124,8 +149,7 @@ describe("run stage inspector", () => {
   });
 
   it("prompts to select a node when none is chosen", () => {
-    render(
-      <RunStageInspector client={stubClient([])} node={undefined} runId="run-1" selectedSeq={9} />,
+    renderInspector(<RunStageInspector client={stubClient([])} node={undefined} runId="run-1" selectedSeq={9} />,
     );
     expect(screen.getByText("Select a node")).toBeInTheDocument();
   });
@@ -139,7 +163,7 @@ describe("run stage inspector", () => {
         artifacts: [{ name: "rationale.md", digest: "sha256:abc", size: 42, mediaType: "text/markdown", recordedSeq: 2 }],
       }),
     ]);
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     expect(await screen.findByText("success")).toBeInTheDocument();
     expect(screen.getByText("approve")).toBeInTheDocument();
@@ -150,14 +174,14 @@ describe("run stage inspector", () => {
 
   it("shows the requested model when the telemetry rollup has indexed it (#1550)", async () => {
     const client = stubClient([attempt({ number: 1, status: "success", model: "auto" })]);
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     expect(await screen.findByText("model: auto")).toBeInTheDocument();
   });
 
   it("omits the model line when telemetry has not indexed one", async () => {
     const client = stubClient([attempt({ number: 1, status: "success" })]);
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     await screen.findByText("success");
     expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
@@ -168,7 +192,7 @@ describe("run stage inspector", () => {
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),
       attempt({ number: 2, startedSeq: 8, finishedSeq: 9 }),
     ]);
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={5} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={5} />);
 
     // Attempt 2 started at seq 8, after the playhead at 5 — it must not appear.
     await waitFor(() => expect(screen.queryByText("Attempt 2")).not.toBeInTheDocument());
@@ -187,8 +211,7 @@ describe("run stage inspector", () => {
       expect(new Set(repeatedInitials.map((candidate) => candidate.id)).size).toBe(2);
 
       const client = stubClient(fixtureAttempts);
-      render(
-        <RunStageInspector
+      renderInspector(<RunStageInspector
           client={client}
           events={reviewerRepassEvents}
           node={implementNode}
@@ -249,8 +272,7 @@ describe("run stage inspector", () => {
 
   it("reveals a repass visit only after its traversal starts", async () => {
     const client = stubClient(goWireFixtures.stageAttempts.attempts);
-    const view = render(
-      <RunStageInspector
+    const view = renderInspector(<RunStageInspector
         client={client}
         events={reviewerRepassEvents}
         node={implementNode}
@@ -293,7 +315,7 @@ describe("run stage inspector", () => {
       ],
       { digest: "sha256:abc", mediaType, size: body.length, etag: null, bytes },
     );
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
     expect(await screen.findByText(body)).toBeInTheDocument();
@@ -311,7 +333,7 @@ describe("run stage inspector", () => {
       ],
       { digest: "sha256:abc", mediaType: "text/plain", size: body.length, etag: null, bytes },
     );
-    render(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
     const preview = await screen.findByText(body);
