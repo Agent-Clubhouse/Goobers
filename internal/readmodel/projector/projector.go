@@ -71,8 +71,18 @@ type Intake interface {
 	AckRemoval(ctx context.Context, runID string) error
 }
 
+// Notifier is woken after each committed projection.
+//
+// Called AFTER the transaction commits, never before: a subscriber woken early
+// reads the feed, finds nothing, and goes back to sleep — and the change it was
+// woken for then waits for some unrelated later commit to be noticed.
+type Notifier interface{ Notify() }
+
 // Options configures a projector.
 type Options struct {
+	// Feed is woken after each commit. Optional; without it subscribers fall
+	// back to their own polling, which is slower but not wrong.
+	Feed Notifier
 	// RunsDirs are the roots holding run directories.
 	RunsDirs []string
 	// Workers bounds concurrent journal reading and projection preparation. The
@@ -221,6 +231,12 @@ func (p *Projector) commitLoop(ctx context.Context) {
 				err = p.store.RemoveRun(ctx, request.runID)
 			} else {
 				err = p.store.UpsertRun(ctx, request.projection)
+			}
+			// Notify only on a successful commit, and only after it. A failed
+			// projection has published nothing, so waking subscribers would send
+			// them to read a change that does not exist.
+			if err == nil && p.options.Feed != nil {
+				p.options.Feed.Notify()
 			}
 			request.result <- err
 		}

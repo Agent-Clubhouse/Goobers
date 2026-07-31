@@ -45,7 +45,13 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 		return func() {}
 	}
 
-	p := projector.New(store, watermarks, projector.Options{RunsDirs: runsDirs})
+	// The change feed the SSE stream will tail (#1929). Wired here so the
+	// projector wakes subscribers as part of the same commit path that writes
+	// the change row, rather than through a second mechanism with its own
+	// latency and failure modes — which is precisely what the filesystem poller
+	// was.
+	feed := readmodel.NewFeed(store)
+	p := projector.New(store, watermarks, projector.Options{RunsDirs: runsDirs, Feed: feed})
 	stop := p.Start(ctx)
 
 	// The repair sweep (#1924). It runs continuously at a fixed I/O budget,
