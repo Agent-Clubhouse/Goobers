@@ -657,3 +657,38 @@ function humanize(value: string): string {
   const words = value.replace(/[._-]+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
 }
+
+// UNSCOPED_EVENT_STAGE labels a journal event that belongs to the run itself
+// rather than to any one stage or gate — run.started, run.finished, and the
+// bare artifact records the runner writes between stages.
+export const UNSCOPED_EVENT_STAGE = "—";
+
+// eventStage is the scope a journal row is scanned by: the stage that produced
+// the event, or the gate that evaluated it. Both exist on RunEvent and only one
+// is ever set, so a single column can carry either — which is what makes the
+// ledger scannable at all. Reading a run means finding "the second implement
+// attempt", and until this was a column that meant reading every row's prose.
+export function eventStage(event: RunEvent): string {
+  return event.stage ?? event.gate ?? UNSCOPED_EVENT_STAGE;
+}
+
+// runEventStages lists every distinct scope present in a run, in first-seen
+// durable order, so a filter can offer exactly the stages this run visited
+// rather than every stage the workflow declares. The unscoped bucket sorts
+// last: it is a fallback, never something a reader is looking for first.
+export function runEventStages(events: RunEvent[]): string[] {
+  const seen = new Set<string>();
+  const stages: string[] = [];
+  for (const event of orderRunEvents(events)) {
+    const stage = eventStage(event);
+    if (stage === UNSCOPED_EVENT_STAGE || seen.has(stage)) {
+      continue;
+    }
+    seen.add(stage);
+    stages.push(stage);
+  }
+  if (events.some((event) => eventStage(event) === UNSCOPED_EVENT_STAGE)) {
+    stages.push(UNSCOPED_EVENT_STAGE);
+  }
+  return stages;
+}

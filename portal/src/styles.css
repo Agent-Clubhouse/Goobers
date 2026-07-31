@@ -3915,7 +3915,44 @@ a.telemetry-error-row:hover {
 }
 
 .ledger-item .run-ledger-button {
-  grid-template-columns: 62px minmax(120px, 0.7fr) 58px 82px minmax(220px, 2fr);
+  grid-template-columns: 62px minmax(96px, 0.55fr) minmax(110px, 0.65fr) 58px 82px minmax(200px, 2fr);
+}
+
+/* The stage a row belongs to, as its own column so the ledger can be scanned
+   vertically for "the second implement attempt" instead of read row by row. */
+.ledger-stage {
+  color: var(--ink);
+  font-size: 8px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-stage-filter {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 8px;
+  gap: 5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.journal-stage-filter select {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: normal;
+  padding: 2px 4px;
+  text-transform: none;
+}
+
+.journal-stage-filter select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .ledger-item .run-ledger-button:focus-visible {
