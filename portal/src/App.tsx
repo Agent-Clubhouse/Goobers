@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, PortalConfig, ValidationWarning } from "./api/types";
@@ -27,7 +28,10 @@ import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
 const portalDiagnostics = createPortalDiagnostics();
-const daemonClient = new HttpDaemonClient({ diagnostics: portalDiagnostics });
+const daemonClient = new HttpDaemonClient({
+  diagnostics: portalDiagnostics,
+  onReadState: publishReadState,
+});
 const noWarnings: readonly ValidationWarning[] = [];
 
 // Warning reads are their own seam, defaulting to the daemon client: in

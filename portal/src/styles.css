@@ -269,6 +269,71 @@ summary:focus-visible {
   color: var(--danger);
 }
 
+/*
+ * Data freshness (#1928), rendered beside — not instead of — the connection
+ * indicator. They answer different questions and a single control cannot say
+ * both.
+ *
+ * Accessibility: state is never carried by colour alone. Each state has
+ * distinct text ("Data current" / "Data stale by 4s" / "Partial — analytics"),
+ * and the mark differs in SHAPE as well as hue: a filled circle when current, a
+ * hollow ring when lagging, a square when partial. That survives a monochrome
+ * display, a colour-vision difference, and a forced-colours mode.
+ */
+.data-freshness {
+  align-items: center;
+  color: var(--muted-strong);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 650;
+  gap: 7px;
+}
+
+.data-freshness-lagging {
+  color: var(--warning, var(--muted-strong));
+}
+
+.data-freshness-partial {
+  color: var(--warning, var(--muted-strong));
+}
+
+.data-mark {
+  border-radius: 50%;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+/* Filled: current. */
+.data-mark-current {
+  background: var(--success, currentColor);
+}
+
+/* Hollow ring: lagging. Distinguishable from filled without colour. */
+.data-mark-lagging {
+  background: transparent;
+  border: 2px solid currentColor;
+}
+
+/* Square: partial. A different shape again, not a third shade. */
+.data-mark-partial {
+  background: currentColor;
+  border-radius: 1px;
+}
+
+@media (forced-colors: active) {
+  /* Forced-colours modes discard background and border colours, so the shape
+     distinction has to survive on its own. */
+  .data-mark-current,
+  .data-mark-partial {
+    background: CanvasText;
+  }
+
+  .data-mark-lagging {
+    border-color: CanvasText;
+  }
+}
+
 .scope-mark {
   align-items: center;
   background: var(--accent-soft);

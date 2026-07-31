@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { useCobrand } from "../cobrand";
-import { useLiveData, type LiveFreshness } from "../liveData";
+import { useLiveData, type DataFreshness, type LiveFreshness } from "../liveData";
 import type { Navigate, PrimaryArea } from "../routing";
 import type { Theme } from "../theme";
 import { Icon } from "../ui/Icon";
@@ -24,7 +24,7 @@ export function PortalShell({
   toggleTheme,
 }: PortalShellProps) {
   const { config } = useCobrand();
-  const { freshness } = useLiveData();
+  const { dataFreshness, freshness } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
@@ -120,11 +120,25 @@ export function PortalShell({
             </span>
           </div>
           <div className="topbar-actions">
+            {/*
+              Two indicators, deliberately: how current the DATA is, and whether
+              the CONNECTION is up (#1928). Conflating them is why an operator
+              could not tell "slow" from "broken" — a stream can be perfectly
+              connected to a projector ten minutes behind, and can be
+              reconnecting over data current to the second.
+
+              The data indicator comes first because it answers the question the
+              user actually has. The connection indicator stays, because a
+              dropped stream means the next change will arrive late even if what
+              is on screen is current.
+            */}
+            <DataFreshnessIndicator state={dataFreshness} />
             <span
               aria-live="polite"
               className={`freshness-status freshness-status-${freshness}`}
               data-state={freshness}
               role="status"
+              title="Live update connection"
             >
               <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
               {freshnessLabel[freshness]}
@@ -163,3 +177,73 @@ const freshnessCopy: Record<LiveFreshness, string> = {
   offline: "Offline; showing stale data",
   "polling-fallback": "SSE unavailable; polling",
 };
+
+/**
+ * Renders how current the data is.
+ *
+ * Accessibility: the state is never conveyed by colour alone (§11A). Each state
+ * carries distinct TEXT, and the mark is decorative (`aria-hidden`) so a screen
+ * reader announces the words rather than a dot. `role="status"` with
+ * `aria-live="polite"` announces transitions without interrupting.
+ */
+export function DataFreshnessIndicator({ state }: { state: DataFreshness }) {
+  if (state.kind === "unknown") {
+    // No envelope: a standalone read, or a daemon with no read model attached.
+    // Rendering "current" here would be a claim nobody made.
+    return null;
+  }
+  return (
+    <span
+      aria-live="polite"
+      className={`data-freshness data-freshness-${state.kind}`}
+      data-state={state.kind}
+      role="status"
+      title={dataFreshnessTitle(state)}
+    >
+      <span aria-hidden="true" className={`data-mark data-mark-${state.kind}`} />
+      {dataFreshnessLabel(state)}
+    </span>
+  );
+}
+
+function dataFreshnessLabel(state: DataFreshness): string {
+  switch (state.kind) {
+    case "current":
+      return "Data current";
+    case "lagging":
+      return `Data stale by ${formatLag(state.lagSeconds)}`;
+    case "partial":
+      return `Partial — ${state.missing.map((entry) => entry.name).join(", ")}`;
+    default:
+      return "";
+  }
+}
+
+function dataFreshnessTitle(state: DataFreshness): string {
+  switch (state.kind) {
+    case "current":
+      return `Read model is current (within ${formatLag(state.lagSeconds)})`;
+    case "lagging":
+      return state.degraded.length > 0
+        ? `Behind by up to ${formatLag(state.lagSeconds)}: ${state.degraded.join(", ")}`
+        : `Behind by up to ${formatLag(state.lagSeconds)}`;
+    case "partial":
+      // The expiry is the difference between a useful partial and wallpaper: it
+      // tells the user whether to wait or to investigate.
+      return state.missing
+        .map((entry) => `${entry.name}: ${entry.reason} (expected by ${entry.expectedBy})`)
+        .join("; ");
+    default:
+      return "";
+  }
+}
+
+/** Whole seconds under a minute, whole minutes above — a lag readout does not
+ *  need sub-second precision and reads worse with it. */
+function formatLag(seconds: number): string {
+  if (seconds < 60) {
+    return `${Math.max(0, Math.round(seconds))}s`;
+  }
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes}m` : `${Math.round(minutes / 60)}h`;
+}
