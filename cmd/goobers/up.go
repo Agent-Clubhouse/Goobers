@@ -383,7 +383,20 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
 	// api.tls upgrades the transport (#640/#644).
 	apiAuthorizer := httpapi.AllowAll
+	// The change-feed stream when a read model exists, the filesystem poller
+	// otherwise (#1929). They are not equivalent: the feed is ordered, durable,
+	// and bounded by ACTIVE WORK, because it tails rows the projector wrote in
+	// the same transaction as the facts they describe. The poller stats every
+	// run that has ever existed and holds an in-memory ring keyed by a random
+	// per-process session id, so a client can only resume against the process
+	// that served it.
+	//
+	// The fallback exists for topologies with no read model; #1933 removes the
+	// divergence and with it the poller.
 	apiHandlerOpts := []httpapi.HandlerOption{httpapi.WithEventStream(eventStream)}
+	if setup.ReadModel != nil {
+		apiHandlerOpts = []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
 			Issuer:     auth.OIDC.Issuer,
