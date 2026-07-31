@@ -2,6 +2,7 @@ package providerscontract
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -552,31 +553,45 @@ func TestContract_ADOClaimExactlyOneWinner(t *testing.T) {
 	}
 	wg.Wait()
 
+	// The guarantees the claim protocol actually makes, matching
+	// TestContract_GitHubClaimExactlyOneWinner: exactly one winner, and both
+	// attempts agree on who it is. The loser's snapshot is a read taken while
+	// the winner is still applying its label, so whether it already carries
+	// that label is a race and is deliberately not asserted — the previous
+	// version of this test asserted it because the old tag-based mechanism
+	// decided the claim in the same patch that wrote the label.
 	winners := 0
+	winnerIndex := -1
 	for i, result := range results {
 		if errs[i] != nil {
 			t.Fatalf("claim %s: %v", runIDs[i], errs[i])
 		}
+		if result.ClaimedBy == "" {
+			t.Fatalf("claim result has no owner: %#v", result)
+		}
 		if result.Claimed {
 			winners++
-		}
-		if result.ClaimedBy == "" || !result.Item.HasLabel(providers.LabelClaimed) {
-			t.Fatalf("claim result = %#v", result)
-		}
-		for _, label := range result.Item.Labels {
-			if strings.HasPrefix(label, "goobers:claim-run:") {
-				t.Fatalf("internal owner tag leaked through labels: %#v", result.Item.Labels)
-			}
+			winnerIndex = i
 		}
 	}
 	if winners != 1 || results[0].ClaimedBy != results[1].ClaimedBy {
 		t.Fatalf("claims did not settle on one winner: %#v", results)
 	}
+	if !results[winnerIndex].Item.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("winner is not labelled claimed: %#v", results[winnerIndex].Item.Labels)
+	}
+
+	// #1979: ownership lives in the comment thread, so a claim must never mint
+	// a per-run entry in the project-global tag namespace. Asserted against the
+	// backend's stored tags, not the mapped labels, because the mapping layer
+	// hides internal tags from callers and would mask a write.
 	backend.mu.Lock()
-	revisionConflicts := backend.revisionConflicts
+	storedTags := append([]string(nil), backend.tags...)
 	backend.mu.Unlock()
-	if revisionConflicts != 1 {
-		t.Fatalf("revision conflicts = %d, want 1", revisionConflicts)
+	for _, tag := range storedTags {
+		if strings.HasPrefix(tag, "goobers:claim-run:") {
+			t.Fatalf("claim wrote a per-run tag into the project tag namespace: %#v", storedTags)
+		}
 	}
 
 	released, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
@@ -635,5 +650,75 @@ func TestContract_ADOWorkItemErrorMapping(t *testing.T) {
 				t.Errorf("IsTransientError = %t, want %t", got, test.wantTransient)
 			}
 		})
+	}
+}
+
+// Items claimed before ownership moved into the comment thread carry a legacy
+// `goobers:claim-run:<b64>` tag and no breadcrumb. Those claims must still be
+// recognized — otherwise the change would orphan every in-flight claim — and
+// releasing one must clear the legacy tag rather than leaving it behind
+// forever in the project's tag namespace (#1979).
+//
+// This test is deleted along with the fallback it covers — #1990, target
+// 2026-08-14.
+func TestContract_ADOLegacyOwnerTagIsHonoredAndCleared(t *testing.T) {
+	legacyOwnerTag := "goobers:claim-run:" + base64.RawURLEncoding.EncodeToString([]byte("run-legacy"))
+	backend := newADOWorkItemBackend()
+	backend.tags = []string{"route/backend", providers.LabelClaimed, legacyOwnerTag}
+	server := backend.server(t)
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
+
+	// A different run must not be able to claim over the legacy owner.
+	result, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo, ID: "42", RunID: "run-new",
+	})
+	if err != nil {
+		t.Fatalf("ClaimWorkItem: %v", err)
+	}
+	if result.Claimed || result.ClaimedBy != "run-legacy" {
+		t.Fatalf("legacy claim was not honored: %#v", result)
+	}
+
+	// The legacy owner re-claiming its own item is idempotent.
+	again, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo, ID: "42", RunID: "run-legacy",
+	})
+	if err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if !again.Claimed || again.ClaimedBy != "run-legacy" {
+		t.Fatalf("legacy owner could not re-claim its own item: %#v", again)
+	}
+
+	released, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo, ID: "42", RunID: "run-legacy",
+	})
+	if err != nil {
+		t.Fatalf("ReleaseWorkItemClaim: %v", err)
+	}
+	if released.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("claim label remained after release: %#v", released.Labels)
+	}
+	backend.mu.Lock()
+	storedTags := append([]string(nil), backend.tags...)
+	backend.mu.Unlock()
+	for _, tag := range storedTags {
+		if strings.HasPrefix(tag, "goobers:claim-run:") {
+			t.Fatalf("release left the legacy owner tag behind: %#v", storedTags)
+		}
+	}
+
+	// With the legacy epoch ended, a new run can take the item.
+	next, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo, ID: "42", RunID: "run-new",
+	})
+	if err != nil {
+		t.Fatalf("claim after release: %v", err)
+	}
+	if !next.Claimed || next.ClaimedBy != "run-new" {
+		t.Fatalf("item was not claimable after release: %#v", next)
 	}
 }

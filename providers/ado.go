@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1147,37 +1148,73 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	if err := validateADOTags([]string{label}); err != nil {
 		return ClaimResult{}, err
 	}
-	ownerTag, err := adoClaimTag(req.RunID)
+
+	// Fast path: an existing claim (breadcrumb, or a legacy owner tag) settles
+	// this without writing anything. The winner may be us on a re-claim.
+	winner, claimed, err := p.adoClaimWinner(ctx, req.Repository, req.ID)
 	if err != nil {
 		return ClaimResult{}, err
 	}
-
-	var conflict error
-	for range adoClaimRetries {
-		current, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if claimed {
+		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
 		if getErr != nil {
 			return ClaimResult{}, getErr
 		}
+		return ClaimResult{Claimed: winner == req.RunID, ClaimedBy: winner, Item: item}, nil
+	}
+
+	// Stake ours, then re-read to settle a race deterministically by comment
+	// order — the same protocol the GitHub provider uses.
+	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID)); err != nil {
+		return ClaimResult{}, err
+	}
+	winner, claimed, err = p.adoClaimWinner(ctx, req.Repository, req.ID)
+	if err != nil {
+		return ClaimResult{}, err
+	}
+	if !claimed {
+		// Our own breadcrumb must be visible; treat an empty read as us winning.
+		winner = req.RunID
+	}
+	if winner != req.RunID {
+		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
+		if getErr != nil {
+			return ClaimResult{}, getErr
+		}
+		return ClaimResult{Claimed: false, ClaimedBy: winner, Item: item}, nil
+	}
+
+	// Mirror the win as the fixed visible label. The rev test keeps the tag
+	// write safe against a concurrent edit; it is not what decides the claim.
+	item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
+	if err != nil {
+		return ClaimResult{}, err
+	}
+	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
+}
+
+// setADOClaimLabel adds and removes work-item tags under the optimistic
+// revision test, retrying a revision conflict the same way the claim path
+// always has.
+func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, id string, add, remove []string) (WorkItem, error) {
+	var conflict error
+	for range adoClaimRetries {
+		current, getErr := p.GetWorkItem(ctx, repo, id)
+		if getErr != nil {
+			return WorkItem{}, getErr
+		}
 		raw, rawErr := rawADOWorkItem(current)
 		if rawErr != nil {
-			return ClaimResult{}, rawErr
+			return WorkItem{}, rawErr
 		}
-		winner, claimed, ownerErr := adoClaimOwner(adoRawTags(raw))
-		if ownerErr != nil {
-			return ClaimResult{}, ownerErr
-		}
-		if claimed {
-			return ClaimResult{Claimed: winner == req.RunID, ClaimedBy: winner, Item: current}, nil
-		}
-
-		labels := applyLabelSet(adoRawTags(raw), []string{label, ownerTag}, nil)
+		labels := applyLabelSet(adoRawTags(raw), add, remove)
 		patch := []adoPatchOperation{
 			{Op: "test", Path: "/rev", Value: raw.Rev},
 			adoTagPatch(labels),
 		}
-		endpoint, endpointErr := p.workURL(p.project(req.Repository), "workitems", req.ID)
+		endpoint, endpointErr := p.workURL(p.project(repo), "workitems", id)
 		if endpointErr != nil {
-			return ClaimResult{}, endpointErr
+			return WorkItem{}, endpointErr
 		}
 		var out adoWorkItem
 		if patchErr := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); patchErr != nil {
@@ -1185,18 +1222,75 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 				conflict = patchErr
 				continue
 			}
-			return ClaimResult{}, patchErr
+			return WorkItem{}, patchErr
 		}
-		item, mapErr := p.mapADOWorkItem(ctx, req.Repository, out)
-		if mapErr != nil {
-			return ClaimResult{}, mapErr
-		}
-		return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
+		return p.mapADOWorkItem(ctx, repo, out)
 	}
-	return ClaimResult{}, fmt.Errorf("claim work item %s after revision conflicts: %w", req.ID, conflict)
+	return WorkItem{}, fmt.Errorf("update claim label on work item %s after revision conflicts: %w", id, conflict)
 }
 
-// ReleaseWorkItemClaim removes an ADO claim marker owned by the requesting run.
+// adoClaimWinner resolves the current claim owner from the work item's comment
+// thread, falling back to a legacy owner tag.
+//
+// Ownership used to live in a tag encoding the run id, which minted a unique,
+// never-reused entry in the project-global tag namespace on every claim — one
+// per run, forever, with a 100% garbage rate (#1979). Comments carry the same
+// information without a shared namespace, and match the GitHub provider's
+// protocol exactly so the two backends do not drift.
+//
+// The legacy tag is still READ so items claimed before this change are not
+// orphaned; it is never written again, and release clears it. That fallback is
+// TEMPORARY — #1990 removes it (target 2026-08-14). A pre-1.0 product should
+// not carry a permanent compat path for a format only Goobers ever wrote.
+//
+// KNOWN GAP vs the GitHub provider: GitHub filters breadcrumbs to the
+// authenticated login, so a project member cannot spoof a claim by posting the
+// marker themselves. The ADO provider has no authenticated-identity lookup
+// wired, so it cannot apply the same filter and a member with comment access
+// could forge one. Tracked separately rather than silently accepted.
+func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
+	comments, err := p.ListComments(ctx, repo, id)
+	if err != nil {
+		return "", false, err
+	}
+	sort.SliceStable(comments, func(i, j int) bool {
+		left, leftErr := strconv.Atoi(comments[i].ID)
+		right, rightErr := strconv.Atoi(comments[j].ID)
+		if leftErr != nil || rightErr != nil {
+			return comments[i].ID < comments[j].ID
+		}
+		return left < right
+	})
+	winner := ""
+	for _, comment := range comments {
+		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
+			if winner == releasedBy {
+				winner = ""
+			}
+			continue
+		}
+		if winner == "" {
+			winner = claimRunID(comment.Body)
+		}
+	}
+	if winner != "" {
+		return winner, true, nil
+	}
+
+	current, err := p.GetWorkItem(ctx, repo, id)
+	if err != nil {
+		return "", false, err
+	}
+	raw, err := rawADOWorkItem(current)
+	if err != nil {
+		return "", false, err
+	}
+	return adoClaimOwner(adoRawTags(raw))
+}
+
+// ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
+// breadcrumb, drops the visible claim label, and clears any legacy owner tag
+// left by a claim taken before ownership moved into the comment thread (#1979).
 func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
 		return WorkItem{}, err
@@ -1212,50 +1306,28 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 		label = LabelClaimed
 	}
 
-	var conflict error
-	for range adoClaimRetries {
-		current, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
-		if getErr != nil {
-			return WorkItem{}, getErr
-		}
-		raw, rawErr := rawADOWorkItem(current)
-		if rawErr != nil {
-			return WorkItem{}, rawErr
-		}
-		winner, claimed, ownerErr := adoClaimOwner(adoRawTags(raw))
-		if ownerErr != nil {
-			return WorkItem{}, ownerErr
-		}
-		if !claimed {
-			return current, nil
-		}
-		if winner != req.RunID && !req.LedgerAuthorized {
-			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-		}
-		ownerTag, tagErr := adoClaimTag(winner)
-		if tagErr != nil {
-			return WorkItem{}, tagErr
-		}
-		labels := applyLabelSet(adoRawTags(raw), nil, []string{label, ownerTag})
-		patch := []adoPatchOperation{
-			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
-		}
-		endpoint, endpointErr := p.workURL(p.project(req.Repository), "workitems", req.ID)
-		if endpointErr != nil {
-			return WorkItem{}, endpointErr
-		}
-		var out adoWorkItem
-		if patchErr := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); patchErr != nil {
-			if isADORevisionConflict(patchErr) {
-				conflict = patchErr
-				continue
-			}
-			return WorkItem{}, patchErr
-		}
-		return p.mapADOWorkItem(ctx, req.Repository, out)
+	winner, claimed, err := p.adoClaimWinner(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
 	}
-	return WorkItem{}, fmt.Errorf("release work item %s after revision conflicts: %w", req.ID, conflict)
+	if !claimed {
+		return p.GetWorkItem(ctx, req.Repository, req.ID)
+	}
+	if winner != req.RunID && !req.LedgerAuthorized {
+		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
+	}
+
+	// The breadcrumb lands first so a successful release never leaves a later
+	// claimer stuck behind the previous owner's durable marker.
+	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+		return WorkItem{}, err
+	}
+	remove := []string{label}
+	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.
+	if legacy, tagErr := adoClaimTag(winner); tagErr == nil {
+		remove = append(remove, legacy)
+	}
+	return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, remove)
 }
 
 // ListWorkItemLabelTransitionsForItem reaches parity in V1: ADO's work-item
@@ -2105,6 +2177,9 @@ func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRe
 	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, nil)
 }
 
+// adoClaimTag renders the LEGACY owner tag. Retained only to recognize and
+// clear claims taken before ownership moved into the comment thread (#1979) —
+// never written by a new claim. Deleted by #1990 (target 2026-08-14).
 func adoClaimTag(runID string) (string, error) {
 	tag := adoClaimTagPrefix + base64.RawURLEncoding.EncodeToString([]byte(runID))
 	if err := validateADOTags([]string{tag}); err != nil {
