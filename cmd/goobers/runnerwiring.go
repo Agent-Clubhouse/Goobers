@@ -685,19 +685,34 @@ type ciPollKindExecutor struct {
 	// builds its poller from instance config (adoauth.Provider shells out to
 	// `az` for the token) rather than materializing a GitHub capability token —
 	// mirroring the CLI PR stages' provider resolution.
-	adoRepo   *instance.RepoRef
+	adoRepo *instance.RepoRef
+	// giteaRepo is set when the gaggle's repo is Gitea; ci-poll then builds a
+	// Gitea poller from its baseURL + the materialized capability token instead
+	// of defaulting to GitHub.
+	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	var poller executor.PRPoller
-	if e.adoRepo != nil {
+	switch {
+	case e.adoRepo != nil:
 		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
 		poller = provider
-	} else {
+	case e.giteaRepo != nil:
+		set, err := e.injector.Materialize(ctx, env.Capabilities)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
+		}
+		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
+		}
+		poller = providers.NewGiteaProvider(e.giteaRepo.BaseURL, token)
+	default:
 		set, err := e.injector.Materialize(ctx, env.Capabilities)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
@@ -728,7 +743,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -738,7 +753,7 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, registrar: registrar}, nil
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
@@ -1912,7 +1927,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if r, ok := adoRepoForGaggle(cfg, gaggleProject); ok {
 				adoRepo = &r
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, reg)
+			var giteaRepo *instance.RepoRef
+			if r, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
+				giteaRepo = &r
+			}
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg)
 			if err != nil {
 				return nil, err
 			}
