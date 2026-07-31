@@ -130,8 +130,27 @@ func (s *feedStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan Stream
 	}
 
 	events := make(chan StreamEvent, subscriberBufferForFeed)
-	go s.pump(ctx, cursor, events)
-	return initial, events, cancel, nil
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.pump(ctx, cursor, events)
+	}()
+
+	// The returned cancel WAITS for the pump to exit.
+	//
+	// Cancelling only signalled the context and returned immediately, so the
+	// pump kept running — still holding the store — after its caller believed
+	// the subscription was over. In the daemon that means a subscription
+	// outliving shutdown; in tests it means a goroutine reading the store while
+	// cleanup closes it, which is the data race the race detector caught on
+	// main.
+	//
+	// Waiting here is cheap: the pump is blocked in Since, which returns as soon
+	// as the context is done.
+	return initial, events, func() {
+		cancel()
+		<-stopped
+	}, nil
 }
 
 // start resolves the opening position and any snapshot event.

@@ -53,7 +53,7 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 
 // SaveSweepCursor records the walk's position.
 func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
-	_, err := s.writer.ExecContext(ctx, `
+	_, err := s.writeDB().ExecContext(ctx, `
 		UPDATE sweep_cursor SET
 			root = ?, after_name = ?,
 			cycle_started_at = ?, last_cycle_completed_at = ?,
@@ -73,11 +73,26 @@ func (s *Store) ProjectionFloor(ctx context.Context) (time.Time, bool, error) {
 	var floor sql.NullString
 	err := s.readDB().QueryRowContext(ctx,
 		`SELECT projection_floor FROM projection_state WHERE id = 1`).Scan(&floor)
-	if errors.Is(err, sql.ErrNoRows) || !floor.Valid {
+	// The error is checked BEFORE floor.Valid, and the two are separate
+	// conditions rather than one `||`.
+	//
+	// They were combined, and the short-circuit swallowed every query failure as
+	// "no floor is set": on any error, floor stays invalid, `!floor.Valid` is
+	// true, and the caller is told there is no floor with a nil error. Repair
+	// would then re-admit every aged-out run, retention would delete them again,
+	// and the livelock the floor exists to prevent runs on a transient database
+	// error.
+	//
+	// Found by a test asserting reads fail after Close — the closed handle
+	// produced exactly this silent "no floor".
+	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("readmodel: read projection floor: %w", err)
+	}
+	if !floor.Valid {
+		return time.Time{}, false, nil
 	}
 	parsed, err := requiredTime(floor)
 	if err != nil {
@@ -92,7 +107,7 @@ func (s *Store) ProjectionFloor(ctx context.Context) (time.Time, bool, error) {
 // were deliberately aged out, which is the livelock the floor exists to prevent
 // — repair projects, retention deletes, and the cycle repeats forever.
 func (s *Store) SetProjectionFloor(ctx context.Context, floor time.Time) error {
-	_, err := s.writer.ExecContext(ctx, `
+	_, err := s.writeDB().ExecContext(ctx, `
 		UPDATE projection_state
 		SET projection_floor = ?
 		WHERE id = 1 AND (projection_floor IS NULL OR projection_floor < ?)`,
@@ -126,7 +141,7 @@ func (s *Store) IsUnpublished(ctx context.Context, runID string, mtime time.Time
 
 // MarkUnpublished remembers a directory as carrying no run.yaml.
 func (s *Store) MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error {
-	_, err := s.writer.ExecContext(ctx, `
+	_, err := s.writeDB().ExecContext(ctx, `
 		INSERT INTO unpublished (run_id, dir_mtime, seen_at) VALUES (?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET dir_mtime = excluded.dir_mtime, seen_at = excluded.seen_at`,
 		runID, formatTime(mtime), formatTime(s.now()))
@@ -138,7 +153,7 @@ func (s *Store) MarkUnpublished(ctx context.Context, runID string, mtime time.Ti
 
 // ClearUnpublished forgets a directory's unpublished memo.
 func (s *Store) ClearUnpublished(ctx context.Context, runID string) error {
-	if _, err := s.writer.ExecContext(ctx,
+	if _, err := s.writeDB().ExecContext(ctx,
 		`DELETE FROM unpublished WHERE run_id = ?`, runID); err != nil {
 		return fmt.Errorf("readmodel: clear unpublished %s: %w", runID, err)
 	}
@@ -165,7 +180,7 @@ func (s *Store) Tombstoned(ctx context.Context, runID string) (bool, error) {
 // answers to an operator's question, and a tombstone with no reason collapses
 // them again one level down.
 func (s *Store) Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error {
-	_, err := s.writer.ExecContext(ctx, `
+	_, err := s.writeDB().ExecContext(ctx, `
 		INSERT INTO tombstone (run_id, started_at, tombstoned_at, reason) VALUES (?, ?, ?, ?)
 		ON CONFLICT(run_id) DO NOTHING`,
 		runID, formatTime(startedAt), formatTime(s.now()), reason)
