@@ -777,6 +777,12 @@ func (s *EventStream) PublishDefinitionsChanged() {
 	s.publish(Invalidation{Models: []string{"instance", "workflow"}})
 }
 
+// WriteTimeout bounds one SSE frame write, satisfying eventSource.
+func (s *EventStream) WriteTimeout() time.Duration { return s.config.writeTimeout }
+
+// Heartbeat is the interval between keepalives, satisfying eventSource.
+func (s *EventStream) Heartbeat() time.Duration { return s.config.heartbeat }
+
 // Subscribe atomically captures either a full snapshot cursor or replay events
 // and registers for all later events, closing the snapshot-to-live race.
 func (s *EventStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan StreamEvent, func(), error) {
@@ -892,10 +898,18 @@ func (s *EventStream) Wait(ctx context.Context) error {
 	}
 }
 
-func registerEventRoute(router *Router, stream *EventStream) {
+func registerEventRoute(router *Router, stream eventSource) {
 	router.Handle(apicontract.RouteEvents, func(w http.ResponseWriter, request *http.Request) {
 		initial, events, cancel, err := stream.Subscribe(request.Header.Get("Last-Event-ID"))
 		if err != nil {
+			// A change-feed refusal names WHICH condition applies
+			// (epoch_changed / feed_truncated / schema_changed), because the
+			// client's correct response differs per condition. Checked before
+			// the generic arms so it is not flattened into stale_cursor.
+			if code, message, ok := cursorConditionStatus(err); ok {
+				writeError(w, http.StatusConflict, code, message)
+				return
+			}
 			switch {
 			case errors.Is(err, ErrInvalidEventCursor):
 				writeError(w, http.StatusBadRequest, "invalid_cursor", "Last-Event-ID is invalid")
@@ -930,12 +944,12 @@ func registerEventRoute(router *Router, stream *EventStream) {
 			if stopped(shutdown, request.Context()) {
 				return
 			}
-			if err := writeAndFlushSSE(controller, w, event, stream.config.writeTimeout); err != nil {
+			if err := writeAndFlushSSE(controller, w, event, stream.WriteTimeout()); err != nil {
 				return
 			}
 		}
 
-		heartbeat := time.NewTicker(stream.config.heartbeat)
+		heartbeat := time.NewTicker(stream.Heartbeat())
 		defer heartbeat.Stop()
 		for {
 			// Checked ahead of the select so a closed-but-buffered event
@@ -952,7 +966,7 @@ func registerEventRoute(router *Router, stream *EventStream) {
 				if !ok {
 					return
 				}
-				if err := writeAndFlushSSE(controller, w, event, stream.config.writeTimeout); err != nil {
+				if err := writeAndFlushSSE(controller, w, event, stream.WriteTimeout()); err != nil {
 					return
 				}
 			case <-heartbeat.C:
@@ -960,7 +974,7 @@ func registerEventRoute(router *Router, stream *EventStream) {
 					Type: "heartbeat",
 					Data: Invalidation{Cursor: stream.Cursor()},
 				}
-				if err := writeAndFlushSSE(controller, w, event, stream.config.writeTimeout); err != nil {
+				if err := writeAndFlushSSE(controller, w, event, stream.WriteTimeout()); err != nil {
 					return
 				}
 			}

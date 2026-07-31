@@ -15,6 +15,7 @@ import (
 	"strconv"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -173,12 +174,27 @@ type Router struct {
 }
 
 type handlerConfig struct {
-	events        *EventStream
+	events        eventSource
 	authenticator Authenticator
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
 type HandlerOption func(*handlerConfig) error
+
+// WithChangeFeedStream registers the SSE endpoint backed by the read model's
+// change feed (#1929).
+//
+// Preferred over WithEventStream wherever a read model exists. The two differ
+// in what they can promise: this one is ordered, durable, and bounded by active
+// work, because it tails rows the projector wrote in the same transaction as
+// the facts they describe. The filesystem poller remains for topologies with no
+// read model, which #1933 removes.
+func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
+	return func(h *handlerConfig) error {
+		h.events = newFeedStream(store)
+		return nil
+	}
+}
 
 // WithEventStream registers the resumable SSE invalidation endpoint.
 func WithEventStream(stream *EventStream) HandlerOption {
@@ -204,7 +220,7 @@ func WithAuthenticator(authenticator Authenticator) HandlerOption {
 
 type apiHandler struct {
 	http.Handler
-	events        *EventStream
+	events        eventSource
 	authenticated bool
 }
 
