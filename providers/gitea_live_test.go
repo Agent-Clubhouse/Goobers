@@ -1,19 +1,21 @@
 //go:build livegitea
 
 // Live smoke test for the Gitea provider against a real Gitea instance.
-// Not part of CI. Run explicitly:
+// Not part of CI. Run explicitly (see below for the required env vars).
 //
-//	GITEA_BASE_URL=http://192.168.0.182:3000 GITEA_TOKEN=... \
+// It exercises the read paths (backlog list/get/comments, PR list) against the
+// repo named by GITEA_LIVE_REPO and validates that real Gitea JSON decodes into
+// the provider's model structs.
+//
+//	GITEA_BASE_URL=https://gitea.example.com GITEA_TOKEN=... \
+//	GITEA_LIVE_REPO=owner/name \
 //	  go test ./providers/ -tags livegitea -run TestLiveGitea -v -count=1
-//
-// It exercises the read paths (backlog list/get/comments, PR list) against
-// gneitzke/HikeView3d and validates that real Gitea JSON decodes into the
-// provider's model structs.
 package providers
 
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,11 +24,12 @@ func liveGiteaProvider(t *testing.T) (*GiteaProvider, RepositoryRef) {
 	t.Helper()
 	base := os.Getenv("GITEA_BASE_URL")
 	token := os.Getenv("GITEA_TOKEN")
-	if base == "" || token == "" {
-		t.Skip("set GITEA_BASE_URL and GITEA_TOKEN to run the live Gitea smoke test")
+	owner, name, ok := strings.Cut(os.Getenv("GITEA_LIVE_REPO"), "/")
+	if base == "" || token == "" || !ok || owner == "" || name == "" {
+		t.Skip("set GITEA_BASE_URL, GITEA_TOKEN, and GITEA_LIVE_REPO=owner/name to run the live Gitea smoke test")
 	}
 	p := NewGiteaProvider(base, token)
-	repo := RepositoryRef{Provider: ProviderGitea, Owner: "gneitzke", Name: "HikeView3d"}
+	repo := RepositoryRef{Provider: ProviderGitea, Owner: owner, Name: name}
 	return p, repo
 }
 
@@ -40,9 +43,9 @@ func TestLiveGiteaListWorkItems(t *testing.T) {
 		t.Fatalf("ListWorkItems: %v", err)
 	}
 	if len(items) == 0 {
-		t.Fatalf("expected open issues on HikeView3d, got 0 — field mapping or pagination is wrong")
+		t.Fatalf("expected open issues on the target repo, got 0 — field mapping or pagination is wrong")
 	}
-	t.Logf("HikeView3d open backlog: %d items", len(items))
+	t.Logf("target repo open backlog: %d items", len(items))
 	for _, it := range items {
 		if it.ID == "" || it.Title == "" {
 			t.Errorf("item decoded with empty ID/Title: %+v", it)
@@ -93,5 +96,5 @@ func TestLiveGiteaListPullRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPullRequests: %v", err)
 	}
-	t.Logf("HikeView3d open PRs: %d (listed + decoded without error)", len(prs))
+	t.Logf("target repo open PRs: %d (listed + decoded without error)", len(prs))
 }

@@ -8,8 +8,8 @@
 // Prereq: a throwaway head branch (with a diff vs. base) must already exist —
 // created out-of-band by the caller. Run:
 //
-//	GITEA_BASE_URL=http://192.168.0.182:3000 GITEA_TOKEN=... \
-//	GITEA_LIVE_WRITE_REPO=gneitzke/HikeView3d \
+//	GITEA_BASE_URL=https://gitea.example.com GITEA_TOKEN=... \
+//	GITEA_LIVE_WRITE_REPO=owner/name \
 //	GITEA_LIVE_WRITE_HEAD=goobers-smoke/write-path-check \
 //	  go test ./providers/ -tags livegiteawrite -run TestLiveGiteaWrite -v -count=1
 package providers
