@@ -52,22 +52,14 @@ import (
 // surfaces 4.06s p50 / 11.26s p99. After #1741 the inventory surfaces serve from
 // a background sample in microseconds. The budgets below therefore sit far above
 // steady state and exist to bound pathology.
-const (
-	// defaultRouteBudget applies to every read route without a specific budget.
-	//
-	// Strictly below the portal's 10s client abort (§7.1: "every server budget is
-	// strictly below the client's 10s abort, which becomes a backstop rather than
-	// the only bound"), so the server is the thing that decides.
-	defaultRouteBudget = 8 * time.Second
-
-	// artifactBudget covers routes that stream bytes to the client, where wall
-	// time is dominated by link speed and payload size rather than server work.
-	//
-	// §7.1 (sixth pass) notes a body cannot be turned into a 503 after
-	// WriteHeader(200), so these are budgeted generously and the real protection
-	// is the write deadline, which resets as bytes flow.
-	artifactBudget = 60 * time.Second
-)
+// The budget VALUES now live on the route contract
+// (internal/apicontract.BoundedBudget / BlobBudget / MutationBudget), not here.
+//
+// They moved because a budget defined in the server is a property of one
+// implementation: the CLI, a future hosted tier, and any other transport would
+// each invent their own, and a route added to the contract would silently
+// inherit whatever default this file happened to hold. On the contract they are
+// part of the route's declaration, and a route without one fails a test.
 
 // routeBudget returns the wall-clock budget for a route, and whether the route
 // has one at all.
@@ -77,15 +69,23 @@ const (
 // budget for every route would force "a fictitious number that the enforcement
 // layer then has to special-case anyway". Declaring the exemption here is the
 // honest form of that.
+// routeBudget reads the budget off the CONTRACT rather than deciding it here.
+//
+// It used to be a switch in this file. That made the budget a property of the
+// server's implementation, so a route added to the contract got the default
+// silently — and "silently gets 8 seconds" is exactly the kind of unclassified
+// path §7.1 exists to eliminate. Now a route with no cost class and no budget
+// fails a contract test before it can reach this function at all.
+//
+// The bool distinguishes "no budget" from "zero budget", which is the Stream
+// class: a deadline on an SSE response cuts the stream mid-flight, and to a
+// client that is indistinguishable from the server dying.
 func routeBudget(id apicontract.RouteID) (time.Duration, bool) {
-	switch id {
-	case apicontract.RouteEvents:
+	route, ok := apicontract.V1Route(id)
+	if !ok || route.Budget <= 0 {
 		return 0, false
-	case apicontract.RouteRunArtifact, apicontract.RouteRunTranscript:
-		return artifactBudget, true
-	default:
-		return defaultRouteBudget, true
 	}
+	return route.Budget, true
 }
 
 // withBudget bounds one request's work and its socket writes.

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Versioned V1 route paths.
@@ -83,31 +84,91 @@ type Route struct {
 	Path        string
 	ActionClass ActionClass
 	Capability  CapabilityID
+	// Cost is what this route costs to serve, as a class rather than a guess
+	// (#1926, §7.1). Required on every route: a contract test rejects a route
+	// with no class, which is how "no path is unclassified" becomes enforced
+	// rather than documented.
+	Cost CostClass
+	// Budget bounds how long the server will spend on this route. Required and
+	// non-zero, except for Stream routes where a deadline would cut the stream.
+	//
+	// Every budget stays strictly below the client's 10s abort, so a request the
+	// server gives up on is reported as a 503 the client can act on rather than
+	// racing the client's own timeout.
+	Budget time.Duration
 }
 
-var v1Routes = []Route{
-	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation},
-	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation},
+// CostClass names what a route costs to serve.
+//
+// The classes are about the SHAPE of the work, not its measured duration —
+// duration is a consequence. A class tells you what the route touches, which is
+// what decides whether it can be pooled alongside another one.
+type CostClass string
 
-	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve"},
-	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override"},
-	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun"},
+const (
+	// CostBounded is a supported filter combination answered from the read
+	// model: indexed, page-limited, and zero journal opens (§5.7).
+	CostBounded CostClass = "bounded"
+	// CostSingleRun reads one run's journal, once per fingerprint. Bounded by a
+	// single run's size rather than by history.
+	CostSingleRun CostClass = "single-run"
+	// CostAggregate is answered from pre-aggregated buckets rather than by
+	// scanning the rows behind them (§6.4).
+	CostAggregate CostClass = "aggregate"
+	// CostBlob streams stored bytes — an artifact or a transcript. Separated
+	// from single-run because its budget is dominated by transfer size, not by
+	// query time, which is why it carries a much larger one.
+	CostBlob CostClass = "blob"
+	// CostStream is a long-lived subscription. The ONLY class permitted a zero
+	// budget: a deadline on an SSE response cuts the stream mid-flight, which is
+	// indistinguishable to a client from the server dying.
+	CostStream CostClass = "stream"
+	// CostMutation is a runtime write.
+	CostMutation CostClass = "mutation"
+)
+
+// Route budgets.
+//
+// These come from Wave 0's measured p99.9 against §14.12's absolute targets, not
+// from taste, and every one is strictly below the portal's 10s client abort.
+const (
+	// BoundedBudget covers indexed list and aggregate reads. Measured p50 for a
+	// read-model list page is single-digit milliseconds; 8s is three orders of
+	// magnitude of headroom, and is a backstop against pathology rather than a
+	// target.
+	BoundedBudget = 8 * time.Second
+	// BlobBudget covers artifact and transcript streaming, where the time is
+	// transfer rather than query. A large artifact over a slow link legitimately
+	// takes longer than any query should.
+	BlobBudget = 60 * time.Second
+	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
+	// a mutation that cannot be accepted in 8s is not going to be accepted.
+	MutationBudget = 8 * time.Second
+)
+
+var v1Routes = []Route{
+	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
+	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
+	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
+	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
+
+	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
