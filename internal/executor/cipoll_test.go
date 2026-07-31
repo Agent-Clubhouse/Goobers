@@ -198,7 +198,7 @@ func TestCIPollExecutor_FailureEvidenceRoundTrip(t *testing.T) {
 	if len(artifact.Checks) != 2 {
 		t.Fatalf("checks = %+v, want failing and pending checks only", artifact.Checks)
 	}
-	if artifact.Checks[0] != checks[1] || artifact.Checks[1] != checks[2] {
+	if artifact.Checks[0].CheckDetail != checks[1] || artifact.Checks[1].CheckDetail != checks[2] {
 		t.Fatalf("checks = %+v, want provider order and complete detail", artifact.Checks)
 	}
 	if artifact.Metadata.Truncated {
@@ -299,7 +299,7 @@ func TestMarshalCIChecksArtifactPrioritizesFailuresBeforePendingChecks(t *testin
 	}
 	checks[maxCIChecks] = failing
 
-	data, err := marshalCIChecksArtifact(checks)
+	data, err := marshalCIChecksArtifact(checks, nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}
@@ -310,10 +310,10 @@ func TestMarshalCIChecksArtifactPrioritizesFailuresBeforePendingChecks(t *testin
 	if len(artifact.Checks) != maxCIChecks {
 		t.Fatalf("retained checks = %d, want %d", len(artifact.Checks), maxCIChecks)
 	}
-	if artifact.Checks[0] != failing {
+	if artifact.Checks[0].CheckDetail != failing {
 		t.Fatalf("first retained check = %+v, want failing check %+v", artifact.Checks[0], failing)
 	}
-	if artifact.Checks[1] != checks[0] || artifact.Checks[maxCIChecks-1] != checks[maxCIChecks-2] {
+	if artifact.Checks[1].CheckDetail != checks[0] || artifact.Checks[maxCIChecks-1].CheckDetail != checks[maxCIChecks-2] {
 		t.Fatalf("pending checks did not retain provider order: %+v", artifact.Checks)
 	}
 	if !artifact.Metadata.Truncated || artifact.Metadata.ChecksDropped != 1 {
@@ -662,5 +662,242 @@ func TestCIPollConfigFromEnvelope_MalformedDurationFailsClosed(t *testing.T) {
 	}
 	if _, err := CIPollConfigFromEnvelope(env); err == nil {
 		t.Fatal("expected an error for a malformed pollIntervalSeconds value")
+	}
+}
+
+// annotatingPoller is a fakePoller that also implements CIFailureLister, the
+// optional provider capability that supplies per-check annotations.
+type annotatingPoller struct {
+	fakePoller
+	headSHA     string
+	annotations map[string][]providers.CheckAnnotation
+	err         error
+	calls       int
+}
+
+func (a *annotatingPoller) PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	result, err := a.fakePoller.PollPullRequest(ctx, req)
+	result.HeadSHA = a.headSHA
+	return result, err
+}
+
+func (a *annotatingPoller) CIFailures(_ context.Context, _ providers.RepositoryRef, ref string) ([]providers.CIFailureDetail, error) {
+	a.calls++
+	if a.err != nil {
+		return nil, a.err
+	}
+	var failures []providers.CIFailureDetail
+	for _, check := range a.fakePoller.checks {
+		if check.State != providers.CheckStateFailing {
+			continue
+		}
+		failures = append(failures, providers.CIFailureDetail{
+			CheckDetail: check,
+			Annotations: a.annotations[check.Name],
+		})
+	}
+	return failures, nil
+}
+
+func failingChecksFixture() []providers.CheckDetail {
+	return []providers.CheckDetail{
+		{Name: "already-passed", State: providers.CheckStatePassing, URL: "https://ci.example/pass", Summary: "ok"},
+		// Summary deliberately empty: this is the common shape for a CI job
+		// that writes no output.summary, which is exactly when annotations are
+		// the only machine-readable diagnosis.
+		{Name: "unit", State: providers.CheckStateFailing, URL: "https://ci.example/unit"},
+	}
+}
+
+func runFailureEvidence(t *testing.T, poller PRPoller) CIChecksArtifact {
+	t.Helper()
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+	if _, err := exec.Run(context.Background(), cfgFor("o", "r", "42")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var artifact CIChecksArtifact
+	if err := json.Unmarshal(recorder.recorded[CIChecksArtifactName], &artifact); err != nil {
+		t.Fatalf("decode %s: %v", CIChecksArtifactName, err)
+	}
+	return artifact
+}
+
+// The evidence a CI repass acts on must carry the provider's file/line
+// diagnostics; without them the agent has a check name and a URL it cannot
+// fetch, so it changes nothing and the run escalates on an identical diff.
+func TestCIPollExecutor_FailureEvidenceCarriesAnnotations(t *testing.T) {
+	poller := &annotatingPoller{
+		fakePoller: fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: failingChecksFixture()},
+		headSHA:    "cafe1234",
+		annotations: map[string][]providers.CheckAnnotation{
+			"unit": {{Path: "widget.go", StartLine: 42, Level: "failure", Title: "TestWidget", Message: "panic: nil map"}},
+		},
+	}
+
+	artifact := runFailureEvidence(t, poller)
+	if len(artifact.Checks) != 1 {
+		t.Fatalf("checks = %+v, want only the failing check", artifact.Checks)
+	}
+	got := artifact.Checks[0].Annotations
+	if len(got) != 1 {
+		t.Fatalf("annotations = %+v, want the provider's one annotation", got)
+	}
+	if got[0].Path != "widget.go" || got[0].StartLine != 42 || got[0].Message != "panic: nil map" {
+		t.Fatalf("annotation = %+v, want the provider's file/line/message intact", got[0])
+	}
+	if poller.calls != 1 {
+		t.Fatalf("CIFailures calls = %d, want exactly one — never on the polling path", poller.calls)
+	}
+}
+
+// Annotations enrich the evidence; they are not the outcome. A provider that
+// cannot supply them, or fails to, must not turn a determined CI verdict into
+// a stage failure.
+func TestCIPollExecutor_AnnotationsAreBestEffort(t *testing.T) {
+	t.Run("provider does not implement CIFailureLister", func(t *testing.T) {
+		poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: failingChecksFixture()}
+		artifact := runFailureEvidence(t, poller)
+		if len(artifact.Checks) != 1 || len(artifact.Checks[0].Annotations) != 0 {
+			t.Fatalf("checks = %+v, want the failing check with no annotations", artifact.Checks)
+		}
+	})
+
+	t.Run("annotation fetch fails", func(t *testing.T) {
+		poller := &annotatingPoller{
+			fakePoller: fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: failingChecksFixture()},
+			headSHA:    "cafe1234",
+			err:        errors.New("annotations unavailable"),
+		}
+		artifact := runFailureEvidence(t, poller)
+		if len(artifact.Checks) != 1 || len(artifact.Checks[0].Annotations) != 0 {
+			t.Fatalf("checks = %+v, want the failing check recorded despite the annotation error", artifact.Checks)
+		}
+	})
+
+	t.Run("head sha unknown", func(t *testing.T) {
+		poller := &annotatingPoller{
+			fakePoller:  fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: failingChecksFixture()},
+			annotations: map[string][]providers.CheckAnnotation{"unit": {{Message: "unreachable"}}},
+		}
+		artifact := runFailureEvidence(t, poller)
+		if poller.calls != 0 {
+			t.Fatalf("CIFailures calls = %d, want none without a head SHA to resolve against", poller.calls)
+		}
+		if len(artifact.Checks[0].Annotations) != 0 {
+			t.Fatalf("annotations = %+v, want none", artifact.Checks[0].Annotations)
+		}
+	})
+}
+
+// A failing matrix job can emit hundreds of annotations; unbounded they would
+// crowd out every sibling check under the artifact budget.
+func TestCIPollExecutor_AnnotationsAreBounded(t *testing.T) {
+	flood := make([]providers.CheckAnnotation, 40)
+	for i := range flood {
+		flood[i] = providers.CheckAnnotation{Path: "widget.go", StartLine: i + 1, Message: strings.Repeat("x", 4096)}
+	}
+	poller := &annotatingPoller{
+		fakePoller:  fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: failingChecksFixture()},
+		headSHA:     "cafe1234",
+		annotations: map[string][]providers.CheckAnnotation{"unit": flood},
+	}
+
+	artifact := runFailureEvidence(t, poller)
+	got := artifact.Checks[0].Annotations
+	if len(got) != maxCICheckAnnotations {
+		t.Fatalf("annotations = %d, want capped at %d", len(got), maxCICheckAnnotations)
+	}
+	for i, annotation := range got {
+		if len(annotation.Message) > maxCIAnnotationMessageBytes {
+			t.Fatalf("annotation %d message = %d bytes, want <= %d", i, len(annotation.Message), maxCIAnnotationMessageBytes)
+		}
+	}
+}
+
+// Under the artifact budget, summaries are shed before annotations: a
+// file/line/message is more actionable than prose, and for a job that writes no
+// output.summary it is the only diagnosis available. Asserted as an ordering
+// invariant rather than an exact outcome, so the test does not depend on the
+// arithmetic of the byte budget.
+func TestMarshalCIChecksArtifact_ShedsSummariesBeforeAnnotations(t *testing.T) {
+	var checks []providers.CheckDetail
+	annotations := map[string][]providers.CheckAnnotation{}
+	for i := range maxCIChecks {
+		name := fmt.Sprintf("check-%d", i)
+		checks = append(checks, providers.CheckDetail{
+			Name:    name,
+			State:   providers.CheckStateFailing,
+			Summary: strings.Repeat("s", maxCICheckSummaryBytes),
+		})
+		for range maxCICheckAnnotations {
+			annotations[name] = append(annotations[name], providers.CheckAnnotation{
+				Path: "a.go", StartLine: 1, Message: strings.Repeat("m", maxCIAnnotationMessageBytes),
+			})
+		}
+	}
+
+	data, err := marshalCIChecksArtifact(checks, annotations)
+	if err != nil {
+		t.Fatalf("marshalCIChecksArtifact: %v", err)
+	}
+	if len(data) > maxCIChecksArtifactBytes {
+		t.Fatalf("artifact = %d bytes, want <= %d", len(data), maxCIChecksArtifactBytes)
+	}
+	var artifact CIChecksArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !artifact.Metadata.Truncated || artifact.Metadata.SummariesDropped == 0 {
+		t.Fatalf("metadata = %+v, want an over-budget artifact that shed summaries", artifact.Metadata)
+	}
+	// The invariant: an annotation is never shed while a summary is still
+	// there to shed instead.
+	if artifact.Metadata.AnnotationsDropped > 0 {
+		for _, check := range artifact.Checks {
+			if check.Summary != "" {
+				t.Fatalf("check %q kept its summary while annotations were dropped (%+v)", check.Name, artifact.Metadata)
+			}
+		}
+	}
+}
+
+// A moderate overflow is absorbed by shedding summaries alone, leaving every
+// annotation intact.
+func TestMarshalCIChecksArtifact_ModerateOverflowKeepsEveryAnnotation(t *testing.T) {
+	var checks []providers.CheckDetail
+	annotations := map[string][]providers.CheckAnnotation{}
+	for i := range maxCIChecks {
+		name := fmt.Sprintf("check-%d", i)
+		checks = append(checks, providers.CheckDetail{
+			Name:    name,
+			State:   providers.CheckStateFailing,
+			Summary: strings.Repeat("s", maxCICheckSummaryBytes),
+		})
+		annotations[name] = []providers.CheckAnnotation{{Path: "a.go", StartLine: 1, Message: "boom"}}
+	}
+
+	data, err := marshalCIChecksArtifact(checks, annotations)
+	if err != nil {
+		t.Fatalf("marshalCIChecksArtifact: %v", err)
+	}
+	var artifact CIChecksArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if artifact.Metadata.AnnotationsDropped != 0 || artifact.Metadata.ChecksDropped != 0 {
+		t.Fatalf("metadata = %+v, want summaries alone to absorb the overflow", artifact.Metadata)
+	}
+	if len(artifact.Checks) != maxCIChecks {
+		t.Fatalf("checks = %d, want all %d retained", len(artifact.Checks), maxCIChecks)
+	}
+	for _, check := range artifact.Checks {
+		if len(check.Annotations) != 1 {
+			t.Fatalf("check %q annotations = %+v, want retained", check.Name, check.Annotations)
+		}
 	}
 }
