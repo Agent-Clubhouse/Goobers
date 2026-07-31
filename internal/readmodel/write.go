@@ -39,10 +39,23 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if err != nil {
 		return err
 	}
-	// An older projection is a no-op (see the last_seq guard below), and a no-op
-	// must not emit a change. Publishing one would wake every connected client
-	// to refetch a row that did not move.
-	if existed && p.Run.LastSeq < previous.LastSeq {
+	// A projection at or behind the stored source position is a no-op, and a
+	// no-op must not emit a change. Publishing one would wake every connected
+	// client to refetch a row that did not move.
+	//
+	// AT the stored position counts, not just behind it. The projection is a
+	// pure function of the journal prefix (§3.2), so the same last_seq yields
+	// byte-identical output — re-applying it cannot change the row, and the only
+	// effect of letting it through is a spurious change row. That is not a rare
+	// case: a resumed build, a repair sweep, and a rebuild all re-project runs
+	// they have already seen, so under `<` every resumed build would replay its
+	// entire completed prefix into the live feed.
+	//
+	// Found by the backend-neutral conformance contract (#1921) on its first
+	// run, which is the argument for having written it: nothing in the Wave 2
+	// tests exercised a same-position replay, and the failure is invisible until
+	// a client is connected to watch it.
+	if existed && p.Run.LastSeq <= previous.LastSeq {
 		return nil
 	}
 
