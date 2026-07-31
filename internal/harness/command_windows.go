@@ -38,3 +38,30 @@ func resolveHarnessCommand(command []string) []string {
 	}
 	return append(result, command[1:]...)
 }
+
+// resolveStdioHarnessCommand resolves a harness command for a stdio JSON-RPC
+// connection, and deliberately does NOT redirect to the PowerShell shim that
+// resolveHarnessCommand selects.
+//
+// npm's generated .ps1 shim forwards stdin as:
+//
+//	if ($MyInvocation.ExpectingInput) { $input | & node ... }
+//
+// A stdio connection always attaches a pipe, so ExpectingInput is true and the
+// stream is routed through PowerShell's $input enumerator — which is
+// line-oriented, re-encoded, and buffered. The JSON-RPC handshake therefore
+// never completes and the client blocks until its deadline. The .cmd shim
+// hands the raw stdio streams to node untouched.
+//
+// The multiline-argument truncation that motivates the PowerShell shim cannot
+// arise here: a stdio client carries its payload over the pipe, not in argv.
+func resolveStdioHarnessCommand(command []string) []string {
+	if len(command) == 0 {
+		return nil
+	}
+	resolved, err := exec.LookPath(command[0])
+	if err != nil {
+		return append([]string(nil), command...)
+	}
+	return append([]string{resolved}, command[1:]...)
+}

@@ -29,6 +29,39 @@ func TestResolveHarnessCommandUsesPowerShellShim(t *testing.T) {
 	}
 }
 
+func TestResolveStdioHarnessCommandKeepsTheNativeShim(t *testing.T) {
+	// Regression: a stdio JSON-RPC connection must NOT go through npm's .ps1
+	// shim. That shim forwards a piped stdin through PowerShell's $input
+	// enumerator, which is line-oriented and buffered, so the handshake never
+	// completes and the caller blocks until its deadline. Model discovery hung
+	// for its full timeout, once per goober, before this split existed.
+	directory := t.TempDir()
+	cmdPath := filepath.Join(directory, "copilot.cmd")
+	psPath := filepath.Join(directory, "copilot.ps1")
+	if err := os.WriteFile(cmdPath, []byte("@echo off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(psPath, []byte("exit 0\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+	got := resolveStdioHarnessCommand([]string{"copilot", "--stdio"})
+	if len(got) != 2 {
+		t.Fatalf("resolved command = %v, want the shim plus its argument", got)
+	}
+	if got[0] != cmdPath {
+		t.Errorf("resolved command[0] = %q, want the native shim %q", got[0], cmdPath)
+	}
+	if strings.EqualFold(filepath.Ext(got[0]), ".ps1") || strings.Contains(strings.ToLower(got[0]), "powershell") {
+		t.Errorf("resolved command = %v, want no PowerShell wrapper for a stdio connection", got)
+	}
+	if got[1] != "--stdio" {
+		t.Errorf("resolved command = %v, want preserved arguments", got)
+	}
+}
+
 func TestResolvedHarnessCommandPreservesMultilinePrompt(t *testing.T) {
 	directory := t.TempDir()
 	cmdPath := filepath.Join(directory, "claude.cmd")
