@@ -687,7 +687,7 @@ func (a *annotatingPoller) CIFailures(_ context.Context, _ providers.RepositoryR
 		return nil, a.err
 	}
 	var failures []providers.CIFailureDetail
-	for _, check := range a.fakePoller.checks {
+	for _, check := range a.checks {
 		if check.State != providers.CheckStateFailing {
 			continue
 		}
