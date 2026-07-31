@@ -13,6 +13,7 @@ import (
 	"path"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -171,6 +172,17 @@ type Router struct {
 	authenticator Authenticator
 	authorizer    Authorizer
 	routes        []apicontract.Route
+
+	// admission bounds concurrency per cost class (#1926). Lazily created so
+	// every existing Router construction keeps working without threading a
+	// constructor argument through each one.
+	admissionOnce sync.Once
+	admission     *admissionController
+}
+
+// ensureAdmission creates the controller on first use.
+func (r *Router) ensureAdmission() {
+	r.admissionOnce.Do(func() { r.admission = newAdmissionController() })
 }
 
 type handlerConfig struct {
@@ -252,6 +264,7 @@ func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, err
 // Handle registers a typed contract route. Other methods receive the structured
 // error envelope rather than net/http's plain-text method error.
 func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
+	r.ensureAdmission()
 	route, ok := apicontract.V1Route(routeID)
 	if !ok {
 		panic(fmt.Sprintf("unknown API route ID %q", routeID))
@@ -273,6 +286,20 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 		}
 		if err := r.authorizer.Authorize(request); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
+			return
+		}
+		// Admission control (#1926). Applied AFTER auth for the same reason the
+		// budget is — an unauthenticated request must not consume a slot — and
+		// BEFORE the budget, because a refused request should not have started
+		// its budget clock at all.
+		//
+		// Shed at admission rather than accept-and-timeout: queue wait counts
+		// against the budget, so a saturated class that accepts work it cannot
+		// finish burns the caller's whole budget and returns nothing anyway.
+		if release, admitted := r.admission.admit(route.Cost); admitted {
+			defer release()
+		} else {
+			writeAdmissionRefusal(w, route.Cost)
 			return
 		}
 		// Bound the request (#1917). Applied here rather than per handler so a

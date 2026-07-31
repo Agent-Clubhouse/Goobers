@@ -221,3 +221,4 @@ github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on t
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.idempotencyKey # Validates a durably-recorded key (#1934).
 github.com/goobers/goobers/internal/httpapi.requireIdempotencyKey # Idempotency precondition, wired when mutations become real (#1934); its test is _test.go, which this gate does not count.
+github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
