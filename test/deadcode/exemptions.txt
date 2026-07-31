@@ -203,3 +203,9 @@ github.com/goobers/goobers/internal/readmodel/repair.Sweeper.Stats # Sweep count
 # lands with the route wiring in the same wave. Expected to go stale then.
 github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-Applied header decoder (#1927 route wiring).
 
+# Projection retention (#1932). The window type and its constructors land with
+# the mechanism; the daemon's retention pass that calls them is the second PR of
+# this issue. Expected to go stale then.
+github.com/goobers/goobers/internal/readmodel.UnboundedRetention # Unbounded window constructor (#1932 daemon pass).
+github.com/goobers/goobers/internal/readmodel.RetentionDays # Bounded window constructor (#1932 daemon pass).
+

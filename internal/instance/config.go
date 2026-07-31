@@ -673,6 +673,25 @@ type RetentionConfig struct {
 	DryRun                   bool   `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
 	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
 	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
+	// LISTABLE in the portal read model (#1932, §11.4).
+	//
+	// Independent of journal retention above, and deliberately so: a journal is
+	// the source of truth and its retention is a decision about disk and audit;
+	// the projection is derived, and this is a decision about what stays
+	// listable. Aging a run out of the projection removes no evidence.
+	//
+	// Beyond the window a run stays answerable IN AGGREGATE but may not be
+	// individually listable. That is strictly less than the portal offers
+	// today, and was a product decision rather than an engineering one.
+	//
+	// **0, unset, or negative means UNBOUNDED** — no run is ever aged out. Not
+	// "a zero-day window": compared naively that would age out every run
+	// immediately, which is the most destructive possible reading of the value
+	// an operator would most reasonably expect to mean "off". See
+	// readmodel.RetentionDays, where the distinction is enforced rather than
+	// documented.
+	ProjectionFullFidelityDays int `json:"projectionFullFidelityDays,omitempty" yaml:"projectionFullFidelityDays,omitempty"`
 }
 
 // RetainedWorktreeMaxAgeDuration resolves the optional retention window.
