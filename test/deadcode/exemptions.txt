@@ -10,9 +10,7 @@ github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
-github.com/goobers/goobers/internal/readmodel.Cursor.String # SSE cursor wire form (<schemaVersion>:<epoch>:<seq>), tested and landing ahead of its consumer per the design's own sequencing; consumed by the change-cursor stream (#1929).
 github.com/goobers/goobers/internal/readmodel.ParseCursor # Counterpart to Cursor.String, exempted for the same reason (#1919/#1929).
-github.com/goobers/goobers/internal/readmodel.EvaluateCursor # Resolves a client cursor to one of the three named conditions (epoch_changed/feed_truncated/schema_changed); consumed by the stream in #1929.
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory retained for exporter and audit consumers.
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator retained for exporter and audit consumers.
