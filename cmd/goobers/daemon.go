@@ -302,7 +302,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector = startProjector(ctx, readStore, intakeStore, l)
+				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
