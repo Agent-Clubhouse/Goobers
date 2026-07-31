@@ -258,6 +258,17 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		// same reason Open's migration does: it is a startup smoke check, not
 		// request-scoped work, and a caller whose context is already done must
 		// not turn "the store is fine" into "the daemon cannot start".
+		// Discard any half-built epoch left by a rebuild that was killed
+		// mid-flight (#1925, §6.5). The change-retention pin must release on
+		// EVERY terminal outcome — success, abort, discard, and an orphan found
+		// at startup. Without this last case an interrupted rebuild blocks change
+		// pruning indefinitely and the feed grows without bound for a reason
+		// nobody is looking at.
+		if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
+		} else if discarded > 0 {
+			fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
+		}
 		if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
 		} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
