@@ -108,6 +108,33 @@ type Writer interface {
 	PruneChanges(ctx context.Context, keepFrom uint64) (int64, error)
 }
 
+// Intake is the source-watermark surface (#1922, §3.1).
+//
+// It is the THIRD capability, separate from both Reader and Writer, and the
+// separation is the design: intake is written by processes that are neither the
+// projector nor a read path — `goobers run`, the stalled-run terminalizer, and
+// retention — while holding no ability to touch projected facts.
+//
+// It is also a different DATABASE (intake.db), not merely a different interface.
+// That is forced rather than chosen: SQLite's WAL gives no atomic commit across
+// attached databases, so the acknowledgement cannot join the projection
+// transaction and must be a guarded post-commit write instead. See the intake
+// package for the protocol.
+//
+// Both methods are advisory. A failure here is logged and counted, never fatal
+// to the run — the run's discovery falls back to the repair sweep. Making
+// execution depend on a read-model hint would invert the dependency this whole
+// design exists to establish.
+type Intake interface {
+	// Observed records that a run's journal has advanced to journalSeq.
+	Observed(ctx context.Context, runID string, journalSeq uint64) error
+
+	// Removing records retention's intent to delete a run, BEFORE the journal
+	// is unlinked. Ordering is intent → unlink → project → confirm; recording
+	// intent first is what makes an interrupted retention pass recoverable.
+	Removing(ctx context.Context, runID string) error
+}
+
 // Backend is a complete read-model store.
 type Backend interface {
 	Reader
