@@ -1479,6 +1479,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 	}
 	var waited time.Duration
 	rateAttempt := 0
+	transientAttempt := 0
 	authRetried := false
 	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
@@ -1497,11 +1498,32 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		}
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
+			// A transport failure (connection reset, DNS blip, timeout) is only
+			// safe to retry automatically for an idempotent method (#2026): a
+			// POST/PATCH may have already committed server-side before its
+			// response was lost, and ADO has no transport-level dedup marker
+			// (unlike GitHub issue creation's footer check, #140) to make a
+			// blind retry safe for those.
+			if isIdempotentADOMethod(method) && transientAttempt < p.maxRetries {
+				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
+					return nil, serr
+				}
+				transientAttempt++
+				continue
+			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
 			_ = resp.Body.Close()
 			authRetried = true
+			continue
+		}
+		if resp.StatusCode >= 500 && isIdempotentADOMethod(method) && transientAttempt < p.maxRetries {
+			_ = resp.Body.Close()
+			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
+				return nil, err
+			}
+			transientAttempt++
 			continue
 		}
 		if resp.StatusCode != http.StatusTooManyRequests {
@@ -1524,6 +1546,22 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		p.observeRateLimit(ctx, ev)
 		waited += wait
 		rateAttempt++
+	}
+}
+
+// isIdempotentADOMethod reports whether method is safe to retry automatically
+// after a transport failure or 5xx without risking a duplicate side effect
+// (#2026). GET/HEAD/PUT/DELETE are idempotent by HTTP semantics; POST and
+// PATCH are excluded by default — ADO's write surface (branch/commit/PR/
+// work-item mutations) has no transport-level dedup marker to make a blind
+// retry of those safe, so a lost response is surfaced as an error rather than
+// silently risking a duplicate commit, comment, or state transition.
+func isIdempotentADOMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
 	}
 }
 
