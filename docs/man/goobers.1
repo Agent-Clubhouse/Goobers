@@ -11,21 +11,12 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
-rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
-and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
-stage's shell command, not
-typically run by hand. They read their run context (instance root, run id,
-workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
-environment variables the runner sets — see internal/executor/env.go —
-falling back to an optional trailing [path] argument (default ".") for
-standalone/manual invocation.
-gather-implement-context uses the same deterministic stage contract to supply
-first-pass review and hot-file evidence.
+goobers help stages lists the built-in workflow-stage and connector commands
+the runner invokes directly as a deterministic stage's shell command — not
+typically run by hand.
 .fi
 .SH COMMANDS
+.SS Core commands
 .TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
@@ -39,18 +30,6 @@ install the release-matched agent toolkit
 \fBgoobers agent-kit update\fR
 review or explicitly apply an agent toolkit update
 .TP
-\fBgoobers apply-verdict\fR
-publish a managed or advisory merge-review verdict (a workflow stage)
-.TP
-\fBgoobers backlog-dedupe\fR
-surface ranked duplicate candidates for curator judgment (a workflow stage)
-.TP
-\fBgoobers backlog-health\fR
-snapshot ready-pool depth and age (a workflow stage)
-.TP
-\fBgoobers backlog-query\fR
-query/claim one eligible backlog item (a workflow stage)
-.TP
 \fBgoobers blocked\fR
 inspect and clear the learned blocked-item ledger
 .TP
@@ -59,9 +38,6 @@ safely remove one blocked-item record, under claims.lock
 .TP
 \fBgoobers blocked list\fR
 print the learned blocked-item ledger (scheduler/blocked.json)
-.TP
-\fBgoobers check-fail-first\fR
-enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
@@ -102,14 +78,8 @@ render the effective instance config (secrets redacted)
 \fBgoobers dashboard\fR
 serve and open the local operations portal
 .TP
-\fBgoobers docs-churn\fR
-emit the docs-drift churn digest since the watermark (a connector stage)
-.TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
-.TP
-\fBgoobers elect-lander\fR
-elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
 \fBgoobers escalations\fR
 list escalated runs newest first
@@ -135,35 +105,8 @@ list the workflow-DSL features this build supports
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
-\fBgoobers gate-removal-guard\fR
-block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
-.TP
-\fBgoobers gather-ci-failures\fR
-add failing CI diagnostics to a remediation brief (a workflow stage)
-.TP
-\fBgoobers gather-implement-context\fR
-load first-pass implementation review and hot-file context (a workflow stage)
-.TP
-\fBgoobers gather-issue-context\fR
-add originating issue bodies to a remediation brief (a workflow stage)
-.TP
-\fBgoobers gather-pr-context\fR
-pr-remediation entrypoint: select and load a PR's context (a workflow stage)
-.TP
-\fBgoobers gather-review-threads\fR
-add native reviews and anchored inline threads to a remediation brief (a workflow stage)
-.TP
-\fBgoobers gather-sibling-context\fR
-load other open PRs as review evidence (a workflow stage)
-.TP
 \fBgoobers init\fR
 scaffold an instance root
-.TP
-\fBgoobers ios-simulator-test\fR
-run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
-.TP
-\fBgoobers issue-close-out\fR
-comment + close out the claimed issue (a workflow stage)
 .TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
@@ -174,12 +117,6 @@ remove a leaked secret from a stored blob (SEC-041)
 \fBgoobers lint\fR
 lint config via the single authoritative validation engine (alias for validate)
 .TP
-\fBgoobers merge-pr\fR
-conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
-.TP
-\fBgoobers merge-queue-poll\fR
-watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
-.TP
 \fBgoobers onboarding\fR
 run non-interactive onboarding actions
 .TP
@@ -189,47 +126,11 @@ install agent-instruction assets into a config source
 \fBgoobers onboarding stub-sample\fR
 materialize and optionally seed the disposable Getting Started target
 .TP
-\fBgoobers open-pr\fR
-open or update the run's PR (a workflow stage)
-.TP
-\fBgoobers post-merge\fR
-post-merge fan-out + close the referenced issue (a workflow stage)
-.TP
-\fBgoobers pr-select\fR
-select one managed or advisory open PR for merge-review (a workflow stage)
-.TP
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
 .TP
-\fBgoobers push-branch\fR
-push the worktree's checked-out branch to origin (a workflow stage)
-.TP
-\fBgoobers push-remediated\fR
-force-push the remediated branch and clear needs-remediation (a workflow stage)
-.TP
-\fBgoobers rebase-pr\fR
-rebase-first, finding-driven remediation routing (a workflow stage)
-.TP
-\fBgoobers reconcile-branches\fR
-report bounded stale goobers/* branch candidates (a workflow stage)
-.TP
-\fBgoobers reconcile-post-merge\fR
-reconcile late merge-queue merges (a workflow stage)
-.TP
-\fBgoobers record-merge-refusal\fR
-record a merge refusal and demote a persistently-stuck lander (a workflow stage)
-.TP
-\fBgoobers remediation-checkpoint\fR
-durable per-cause attempt budgets + same-diff escalation (a workflow stage)
-.TP
-\fBgoobers report-pr-status\fR
-publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
-.TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
-.TP
-\fBgoobers respond-to-findings\fR
-post a validated per-finding remediation response to the claimed PR (a workflow stage)
 .TP
 \fBgoobers run\fR
 trigger a run manually (still honors run conditions)
@@ -285,9 +186,6 @@ report whether the supervised daemon is installed and running
 \fBgoobers service uninstall\fR
 gracefully stop and remove the supervised daemon
 .TP
-\fBgoobers set-milestone\fR
-assign an existing milestone to an issue (a workflow stage)
-.TP
 \fBgoobers signal\fR
 fire an external signal to subscribed workflows
 .TP
@@ -327,17 +225,11 @@ report or delete old orphan and unfinished run directories
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
 .TP
-\fBgoobers telemetry-query\fR
-emit versioned candidate findings (a connector stage)
-.TP
 \fBgoobers trace\fR
 show a run's journal events, follow a live run, or show transcripts
 .TP
 \fBgoobers up\fR
 run the daemon (scheduler + runner + loopback HTTP API)
-.TP
-\fBgoobers update-behind-pr\fR
-API-update a clean behind-base PR, else route to remediation (a workflow stage)
 .TP
 \fBgoobers validate\fR
 validate an instance or checked-in config source tree
@@ -356,6 +248,106 @@ inspect workflows
 .TP
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
+.SS Workflow-stage and connector commands
+.TP
+\fBgoobers apply-verdict\fR
+publish a managed or advisory merge-review verdict (a workflow stage)
+.TP
+\fBgoobers backlog-dedupe\fR
+surface ranked duplicate candidates for curator judgment (a workflow stage)
+.TP
+\fBgoobers backlog-health\fR
+snapshot ready-pool depth and age (a workflow stage)
+.TP
+\fBgoobers backlog-query\fR
+query/claim one eligible backlog item (a workflow stage)
+.TP
+\fBgoobers check-fail-first\fR
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+.TP
+\fBgoobers docs-churn\fR
+emit the docs-drift churn digest since the watermark (a connector stage)
+.TP
+\fBgoobers elect-lander\fR
+elect the landing PR among a merge-review cohort (a workflow stage)
+.TP
+\fBgoobers gate-removal-guard\fR
+block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+.TP
+\fBgoobers gather-ci-failures\fR
+add failing CI diagnostics to a remediation brief (a workflow stage)
+.TP
+\fBgoobers gather-implement-context\fR
+load first-pass implementation review and hot-file context (a workflow stage)
+.TP
+\fBgoobers gather-issue-context\fR
+add originating issue bodies to a remediation brief (a workflow stage)
+.TP
+\fBgoobers gather-pr-context\fR
+pr-remediation entrypoint: select and load a PR's context (a workflow stage)
+.TP
+\fBgoobers gather-review-threads\fR
+add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+.TP
+\fBgoobers gather-sibling-context\fR
+load other open PRs as review evidence (a workflow stage)
+.TP
+\fBgoobers ios-simulator-test\fR
+run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
+.TP
+\fBgoobers issue-close-out\fR
+comment + close out the claimed issue (a workflow stage)
+.TP
+\fBgoobers merge-pr\fR
+conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
+.TP
+\fBgoobers merge-queue-poll\fR
+watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
+.TP
+\fBgoobers open-pr\fR
+open or update the run's PR (a workflow stage)
+.TP
+\fBgoobers post-merge\fR
+post-merge fan-out + close the referenced issue (a workflow stage)
+.TP
+\fBgoobers pr-select\fR
+select one managed or advisory open PR for merge-review (a workflow stage)
+.TP
+\fBgoobers push-branch\fR
+push the worktree's checked-out branch to origin (a workflow stage)
+.TP
+\fBgoobers push-remediated\fR
+force-push the remediated branch and clear needs-remediation (a workflow stage)
+.TP
+\fBgoobers rebase-pr\fR
+rebase-first, finding-driven remediation routing (a workflow stage)
+.TP
+\fBgoobers reconcile-branches\fR
+report bounded stale goobers/* branch candidates (a workflow stage)
+.TP
+\fBgoobers reconcile-post-merge\fR
+reconcile late merge-queue merges (a workflow stage)
+.TP
+\fBgoobers record-merge-refusal\fR
+record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+.TP
+\fBgoobers remediation-checkpoint\fR
+durable per-cause attempt budgets + same-diff escalation (a workflow stage)
+.TP
+\fBgoobers report-pr-status\fR
+publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+.TP
+\fBgoobers respond-to-findings\fR
+post a validated per-finding remediation response to the claimed PR (a workflow stage)
+.TP
+\fBgoobers set-milestone\fR
+assign an existing milestone to an issue (a workflow stage)
+.TP
+\fBgoobers telemetry-query\fR
+emit versioned candidate findings (a connector stage)
+.TP
+\fBgoobers update-behind-pr\fR
+API-update a clean behind-base PR, else route to remediation (a workflow stage)
 .SH SEE ALSO
 \fBgoobers-agent-kit\fR(1),
 \fBgoobers-agent-kit-check\fR(1),

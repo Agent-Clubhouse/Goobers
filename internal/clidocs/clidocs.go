@@ -58,6 +58,17 @@ func Sort(cmds []Command) {
 	sort.Slice(cmds, func(i, j int) bool { return cmds[i].Name() < cmds[j].Name() })
 }
 
+// IsWorkflowStage reports whether a command's Short description marks it as a
+// built-in workflow-stage or connector-stage command — runner-invoked
+// plumbing, not part of the operator-facing surface. Every such command's
+// help text already carries this exact marker by convention; this is the one
+// tiering signal cmd/goobers' usage()/usageStages() (#2012) and Reference()/
+// ManIndex() below share, so the CLI's default help and the generated
+// reference/man pages can never classify a command differently.
+func IsWorkflowStage(short string) bool {
+	return strings.Contains(short, "(a workflow stage)") || strings.Contains(short, "(a connector stage)")
+}
+
 // ManPage renders a roff man page (section 1) for a single command.
 func ManPage(c Command) string {
 	var b strings.Builder
@@ -116,7 +127,18 @@ func ManIndex(root Command, cmds []Command) string {
 		b.WriteString(roffPreformatted(root.Long))
 	}
 	b.WriteString(".SH COMMANDS\n")
+	b.WriteString(".SS Core commands\n")
 	for _, c := range cmds {
+		if IsWorkflowStage(c.Short) {
+			continue
+		}
+		fmt.Fprintf(&b, ".TP\n\\fB%s\\fR\n%s\n", roffEscapeInline(c.FullName()), roffEscapeInline(c.Short))
+	}
+	b.WriteString(".SS Workflow-stage and connector commands\n")
+	for _, c := range cmds {
+		if !IsWorkflowStage(c.Short) {
+			continue
+		}
 		fmt.Fprintf(&b, ".TP\n\\fB%s\\fR\n%s\n", roffEscapeInline(c.FullName()), roffEscapeInline(c.Short))
 	}
 	b.WriteString(".SH SEE ALSO\n")
@@ -144,6 +166,20 @@ func Reference(root Command, cmds []Command) string {
 	b.WriteString("## Commands\n\n")
 	b.WriteString("| Command | Description |\n| --- | --- |\n")
 	for _, c := range cmds {
+		if IsWorkflowStage(c.Short) {
+			continue
+		}
+		fmt.Fprintf(&b, "| [`%s`](#%s) | %s |\n", c.FullName(), anchor(c.Slug()), mdEscapeCell(c.Short))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Workflow-stage and connector commands\n\n")
+	b.WriteString("Built-in provider-chain and connector stage kinds the runner invokes directly as a deterministic stage's shell command — not typically run by hand. See each command's own reference section below for its `GOOBERS_*` run-context contract.\n\n")
+	b.WriteString("| Command | Description |\n| --- | --- |\n")
+	for _, c := range cmds {
+		if !IsWorkflowStage(c.Short) {
+			continue
+		}
 		fmt.Fprintf(&b, "| [`%s`](#%s) | %s |\n", c.FullName(), anchor(c.Slug()), mdEscapeCell(c.Short))
 	}
 	b.WriteString("\n")

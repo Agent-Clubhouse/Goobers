@@ -83,6 +83,75 @@ func TestReferenceMarkdown(t *testing.T) {
 	}
 }
 
+func TestIsWorkflowStage(t *testing.T) {
+	cases := []struct {
+		short string
+		want  bool
+	}{
+		{"open or update the run's PR (a workflow stage)", true},
+		{"emit the docs-drift churn digest since the watermark (a connector stage)", true},
+		{"trigger a run manually (still honors run conditions)", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsWorkflowStage(c.short); got != c.want {
+			t.Errorf("IsWorkflowStage(%q) = %v, want %v", c.short, got, c.want)
+		}
+	}
+}
+
+// TestReferenceSplitsCoreAndStageCommands is #2012's core tiering guard: a
+// command marked as a workflow/connector stage appears only under the
+// "Workflow-stage and connector commands" table, never the "Commands" table,
+// and vice versa.
+func TestReferenceSplitsCoreAndStageCommands(t *testing.T) {
+	cmds := []Command{
+		{Path: []string{"init"}, Short: "scaffold an instance root"},
+		{Path: []string{"open-pr"}, Short: "open or update the run's PR (a workflow stage)"},
+	}
+	md := Reference(Command{Short: "test CLI"}, cmds)
+
+	coreSection := md[strings.Index(md, "## Commands\n"):strings.Index(md, "## Workflow-stage and connector commands\n")]
+	stageSection := md[strings.Index(md, "## Workflow-stage and connector commands\n"):strings.Index(md, "## `goobers init`")]
+
+	if !strings.Contains(coreSection, "goobers-init") {
+		t.Errorf("core table missing init:\n%s", coreSection)
+	}
+	if strings.Contains(coreSection, "goobers-open-pr") {
+		t.Errorf("core table must not list the stage command open-pr:\n%s", coreSection)
+	}
+	if !strings.Contains(stageSection, "goobers-open-pr") {
+		t.Errorf("stage table missing open-pr:\n%s", stageSection)
+	}
+	if strings.Contains(stageSection, "goobers-init") {
+		t.Errorf("stage table must not list the core command init:\n%s", stageSection)
+	}
+}
+
+func TestManIndexSplitsCoreAndStageCommands(t *testing.T) {
+	cmds := []Command{
+		{Path: []string{"init"}, Short: "scaffold an instance root"},
+		{Path: []string{"open-pr"}, Short: "open or update the run's PR (a workflow stage)"},
+	}
+	man := ManIndex(Command{Short: "test CLI"}, cmds)
+
+	coreSection := man[strings.Index(man, ".SS Core commands\n"):strings.Index(man, ".SS Workflow-stage and connector commands\n")]
+	stageSection := man[strings.Index(man, ".SS Workflow-stage and connector commands\n"):]
+
+	if !strings.Contains(coreSection, "goobers init") {
+		t.Errorf("core section missing init:\n%s", coreSection)
+	}
+	if strings.Contains(coreSection, "goobers open-pr") {
+		t.Errorf("core section must not list the stage command open-pr:\n%s", coreSection)
+	}
+	if !strings.Contains(stageSection, "goobers open-pr") {
+		t.Errorf("stage section missing open-pr:\n%s", stageSection)
+	}
+	if strings.Contains(stageSection, "goobers init") {
+		t.Errorf("stage section must not list the core command init:\n%s", stageSection)
+	}
+}
+
 func TestRenderersAreDeterministic(t *testing.T) {
 	// Distinct input slices with the same commands in different orders must
 	// render identically — the renderers sort internally, so registry

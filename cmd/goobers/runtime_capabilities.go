@@ -577,7 +577,15 @@ func init() {
 			"help",
 			[]string{"-h", "--help", "help"},
 			apicontract.ActionReadOnlyNavigation,
-			func(_ []string, stdout, _ io.Writer) int {
+			func(args []string, stdout, _ io.Writer) int {
+				// #2012: `goobers help stages` is the documented escape hatch
+				// to the workflow-stage/connector surface usage() omits by
+				// default — only reachable through the "help"/"-h"/"--help"
+				// alias itself, e.g. `goobers -h stages` works identically.
+				if len(args) == 1 && args[0] == "stages" {
+					usageStages(stdout)
+					return 0
+				}
 				usage(stdout)
 				return 0
 			},
