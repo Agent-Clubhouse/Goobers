@@ -175,6 +175,11 @@
       "type": "string",
       "x-conformance": "normative"
     },
+    "dataSchema": {
+      "description": "Record shape identifier for schema-aware span content (span.recorded), e.g. a GenAI transcript schema URI. Excluded from conformance: harness/LLM transcript shape is not compared across runners (ARCHITECTURE.md §3.3), the same basis as the runner.* namespace.",
+      "type": "string",
+      "x-conformance": "excluded"
+    },
     "ref": {
       "description": "Pointer to in-journal content (artifact.recorded, input.snapshot).",
       "$ref": "#/$defs/ref"

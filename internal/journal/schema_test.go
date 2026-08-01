@@ -33,6 +33,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordArtifact: %v", err)
 	}
+	// A real span.recorded event with DataSchema populated (#2042): the
+	// harness executor defaults every span to telemetry.GenAIEventSchema
+	// ("goobers.dev/telemetry/genai-event/v1" — not imported here to avoid
+	// journal<->telemetry, which already imports journal) whenever the
+	// adapter leaves TranscriptSchema empty, so this is the common case,
+	// not an edge case — the schema must accept it.
+	if _, err := run.RecordSpanWithSchema("impl", "transcript", "goobers.dev/telemetry/genai-event/v1", []byte(`{"role":"assistant"}`)); err != nil {
+		t.Fatalf("RecordSpanWithSchema: %v", err)
+	}
 	// Exercise a representative spread of event shapes.
 	for _, ev := range []Event{
 		{Type: EventStageStarted, Stage: "impl", Attempt: 1},
