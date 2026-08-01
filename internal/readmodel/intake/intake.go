@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -317,12 +318,23 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 func PathFor(instanceDir string) string { return filepath.Join(instanceDir, FileName) }
 
 // fileURI renders a path as a file: URI so DSN parameters apply.
+//
+// The absolute path must be given a leading slash before it reaches url.URL.
+// On Windows filepath.ToSlash yields "C:/dir/intake.db", whose first segment
+// contains a colon; url.URL.String then prefixes "./" so the segment cannot be
+// mistaken for a scheme, producing "file:./C:/dir/intake.db" — a relative URI
+// SQLite cannot open (SQLITE_CANTOPEN). Rooting the path first yields
+// "file:///C:/dir/intake.db". POSIX paths are already rooted and unaffected.
 func fileURI(path string) string {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		absolute = path
 	}
-	return "file:" + (&url.URL{Path: filepath.ToSlash(absolute)}).String()
+	slashed := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return "file://" + (&url.URL{Path: slashed}).EscapedPath()
 }
 
 // Store satisfies readmodel.Intake. The assertion lives here rather than in
