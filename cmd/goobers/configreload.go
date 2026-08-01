@@ -86,6 +86,12 @@ type configReloader struct {
 	appliedDigest   string
 	observedDigest  string
 	lastDigestError string
+	// lastRejectionMessage is set by reject() during the most recent poll
+	// call and cleared at the start of each pollOnce (#459) — it lets an
+	// on-demand caller distinguish a validation rejection from "nothing to
+	// do," which poll's own plain error return cannot (reject reports success
+	// once the rejection is durably journaled).
+	lastRejectionMessage string
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -101,6 +107,22 @@ func (r *configReloader) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// pollOnce runs exactly one reload check — the same check the ticker in Run
+// performs every tick — and reports a structured outcome instead of just
+// success/failure, so an on-demand caller (goobers apply, #459) can
+// distinguish "nothing changed," "applied," and "rejected: <message>."
+func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	oldDigest = r.appliedDigest
+	r.lastRejectionMessage = ""
+	if pollErr := r.poll(now); pollErr != nil {
+		return false, oldDigest, oldDigest, "", pollErr
+	}
+	if r.appliedDigest != oldDigest {
+		return true, oldDigest, r.appliedDigest, "", nil
+	}
+	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
 }
 
 func (r *configReloader) poll(now time.Time) error {
@@ -196,6 +218,7 @@ func (r *configReloader) poll(now time.Time) error {
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
+	r.lastRejectionMessage = message
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
 		Error: &journal.ErrorDetail{

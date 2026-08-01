@@ -27,7 +27,7 @@ _goobers_completion()
             'config:inspect, materialize, and compare instance configuration'
             'speech:preflight and test local speech notifications'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
-            'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
+            'apply:reconcile a live daemon'\''s workflow definitions now'
             'self-update:stage and request a supervised binary update'
             'service:install and manage the platform-supervised daemon'
             'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
