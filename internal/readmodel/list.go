@@ -44,6 +44,55 @@ type ListOptions struct {
 	Until    time.Time
 	Limit    int
 	Cursor   ListCursor
+
+	// Stage, StageOutcome, and Population are the three filters that used to be
+	// residual predicates evaluated after a journal open (#1782). They are
+	// answered from run_stage now.
+	//
+	// StageOutcome is the STAGE's own last status, not the run-level outcome
+	// verdict. Both are called "outcome" in the URL, disambiguated by whether a
+	// stage is also present -- which is why they are separate fields here rather
+	// than one, so the ambiguity is resolved once at the boundary instead of at
+	// every use.
+	Stage        string
+	StageOutcome string
+	Population   Population
+}
+
+// Population is one of the four measurement filters.
+type Population string
+
+// The populations, matching the URL values the portal's router parses.
+const (
+	PopulationTokenMeasured   Population = "token-measured"
+	PopulationPremiumMeasured Population = "premium-measured"
+	PopulationCostMeasured    Population = "cost-measured"
+	PopulationRetryWaste      Population = "retry-waste"
+)
+
+// stageColumn returns the run_stage flag column for a population.
+func (p Population) stageColumn() (string, bool) {
+	switch p {
+	case PopulationTokenMeasured:
+		return "token_measured", true
+	case PopulationPremiumMeasured:
+		return "premium_measured", true
+	case PopulationCostMeasured:
+		return "cost_measured", true
+	case PopulationRetryWaste:
+		return "retry_waste", true
+	default:
+		return "", false
+	}
+}
+
+// runColumn returns the run-level rollup column for a population.
+func (p Population) runColumn() (string, bool) {
+	col, ok := p.stageColumn()
+	if !ok {
+		return "", false
+	}
+	return "any_" + col, true
 }
 
 // ListCursor is a keyset position: the ordering key of the last row returned.
@@ -82,6 +131,15 @@ func (o ListOptions) Dims() []Dim {
 	}
 	if !o.Until.IsZero() {
 		dims = append(dims, DimUntil)
+	}
+	if o.Stage != "" {
+		dims = append(dims, DimStage)
+	}
+	if o.StageOutcome != "" {
+		dims = append(dims, DimOutcome)
+	}
+	if o.Population != "" {
+		dims = append(dims, DimPopulation)
 	}
 	return dims
 }
@@ -153,7 +211,31 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 // A plan test that rebuilt the SQL independently would test its own copy, and
 // the covering indexes are worth nothing unless the planner picks them for the
 // real query.
+// listQuery builds the page query for a combination already known to be
+// supported.
+//
+// # Two drivers, chosen by whether a stage is named
+//
+// Without a stage, the query drives from `run` and every predicate is on a
+// leading column of a run index. With a stage, it drives from `run_stage` and
+// joins `run` by primary key for the row body — because the stage predicate,
+// the gaggle scope, and the ordering must all be served by ONE index, and only
+// run_stage has all three (§5.7). Joining the other way round would make the
+// stage a residual predicate on an unbounded candidate set, which is the bug
+// #1782 reports.
+//
+// The join costs one primary-key lookup per returned row: limit+1, never more.
+// That is the difference from the old candidate loop, which did one journal open
+// per row EXAMINED, with nothing bounding how many that was.
 func listQuery(options ListOptions, limit int) (string, []any) {
+	if options.Stage != "" {
+		return stageScopedListQuery(options, limit)
+	}
+	return runScopedListQuery(options, limit)
+}
+
+// runScopedListQuery answers a page with no stage filter, driving from run.
+func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 	var (
 		where []string
 		args  []any
@@ -172,6 +254,13 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 	if options.Phase != "" {
 		where = append(where, "phase = ?")
 		args = append(args, string(options.Phase))
+	}
+	if column, ok := options.Population.runColumn(); ok {
+		// Interpolated, not bound. The matching index is PARTIAL on this exact
+		// literal, and SQLite will not use a partial index whose predicate is
+		// expressed with a bound parameter. The value is not user input: it comes
+		// from runColumn's closed switch over four constants.
+		where = append(where, column+" = 1")
 	}
 	if !options.Since.IsZero() {
 		where = append(where, "started_at >= ?")
@@ -197,6 +286,54 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 	}
 	query += " ORDER BY started_at DESC, run_id ASC LIMIT ?"
 	// limit+1 so the lookahead row answers "is there more" without a COUNT.
+	args = append(args, limit+1)
+	return query, args
+}
+
+// stageScopedListQuery answers a page filtered by stage, driving from run_stage.
+//
+// Every predicate and the whole ORDER BY are on run_stage columns, so one index
+// serves the seek AND the order. The joined run row contributes no predicate —
+// if it did, that predicate would be residual and the page would stop being
+// bounded.
+func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
+	var (
+		where []string
+		args  []any
+	)
+	if options.Gaggle != "" {
+		where = append(where, "s.gaggle = ?")
+		args = append(args, options.Gaggle)
+	}
+	where = append(where, "s.stage = ?")
+	args = append(args, options.Stage)
+	if options.StageOutcome != "" {
+		where = append(where, "s.last_status = ?")
+		args = append(args, options.StageOutcome)
+	}
+	if column, ok := options.Population.stageColumn(); ok {
+		// Literal for the same partial-index reason as the run-scoped path.
+		where = append(where, "s."+column+" = 1")
+	}
+	if !options.Since.IsZero() {
+		where = append(where, "s.run_started_at >= ?")
+		args = append(args, formatTime(options.Since))
+	}
+	if !options.Until.IsZero() {
+		where = append(where, "s.run_started_at <= ?")
+		args = append(args, formatTime(options.Until))
+	}
+	if !options.Cursor.Zero() {
+		cursorAt := formatTime(options.Cursor.StartedAt)
+		where = append(where,
+			"(s.run_started_at < ? OR (s.run_started_at = ? AND s.run_id > ?))")
+		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
+	}
+
+	query := `SELECT ` + runColumns + `
+	FROM run_stage s JOIN run r ON r.run_id = s.run_id
+	WHERE ` + strings.Join(where, " AND ") +
+		" ORDER BY s.run_started_at DESC, s.run_id ASC LIMIT ?"
 	args = append(args, limit+1)
 	return query, args
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -281,6 +282,19 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		} else {
 			readModelEpoch = state.Epoch
 			readModel = readStore
+			// Measurement flags (#1782). The four population filters are derived
+			// from the telemetry rollup, which no journal event carries, so the
+			// read model needs a source for them or `population=` can only ever
+			// match nothing.
+			//
+			// Attached before the first projection rather than after: a run
+			// projected without a source has its flags cleared, and nothing later
+			// re-projects it. A nil rollupDB detaches, which is correct for a
+			// telemetry-disabled instance -- there, the population filters have no
+			// data to be right about.
+			if rollupDB != nil {
+				readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+			}
 			// §6.6 step 2: build it by rebuild-from-journals on first start.
 			// Only when EMPTY — a populated store is kept and updated
 			// incrementally by the writer seam, because rebuilding on every start

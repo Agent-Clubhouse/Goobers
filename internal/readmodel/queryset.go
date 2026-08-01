@@ -145,6 +145,60 @@ var supportedCombinations = []Combination{
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+since"},
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+until"},
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+window"},
+
+	// Stage-scoped (#1782). These drive from run_stage, where the stage
+	// predicate, the gaggle scope, and the run-recency ordering are all served by
+	// one index. They used to be refused, which meant the portal's Insight
+	// drill-throughs fell to the journal path and opened one journal per
+	// candidate EXAMINED -- unbounded, because nothing capped the candidate loop.
+	{Dims: []Dim{DimStage}, Index: "idx_run_stage_recency", Bench: "list/stage"},
+	{Dims: []Dim{DimStage, DimSince}, Index: "idx_run_stage_recency", Bench: "list/stage+since"},
+	{Dims: []Dim{DimStage, DimUntil}, Index: "idx_run_stage_recency", Bench: "list/stage+until"},
+	{Dims: []Dim{DimStage, DimSince, DimUntil}, Index: "idx_run_stage_recency", Bench: "list/stage+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage"},
+	{Dims: []Dim{DimGaggle, DimStage, DimSince}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+window"},
+
+	// Stage + stage-outcome. The outcome here is the STAGE's last status, a
+	// different axis from the run-level verdict -- the URL spells both `outcome`,
+	// and the presence of a stage is what disambiguates them.
+	{Dims: []Dim{DimStage, DimOutcome}, Index: "idx_run_stage_status_recency", Bench: "list/stage+outcome"},
+	{Dims: []Dim{DimStage, DimOutcome, DimSince}, Index: "idx_run_stage_status_recency", Bench: "list/stage+outcome+since"},
+	{Dims: []Dim{DimStage, DimOutcome, DimUntil}, Index: "idx_run_stage_status_recency", Bench: "list/stage+outcome+until"},
+	{Dims: []Dim{DimStage, DimOutcome, DimSince, DimUntil}, Index: "idx_run_stage_status_recency", Bench: "list/stage+outcome+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome}, Index: "idx_run_stage_gaggle_status_recency", Bench: "list/gaggle+stage+outcome"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimSince}, Index: "idx_run_stage_gaggle_status_recency", Bench: "list/gaggle+stage+outcome+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimUntil}, Index: "idx_run_stage_gaggle_status_recency", Bench: "list/gaggle+stage+outcome+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_status_recency", Bench: "list/gaggle+stage+outcome+window"},
+
+	// Population, stage-scoped. Index names the token-measured member of a
+	// four-index family; the plan test asserts that each population resolves to
+	// its own partial index rather than to this one.
+	{Dims: []Dim{DimStage, DimPopulation}, Index: "idx_run_stage_token", Bench: "list/stage+population"},
+	{Dims: []Dim{DimStage, DimPopulation, DimSince}, Index: "idx_run_stage_token", Bench: "list/stage+population+since"},
+	{Dims: []Dim{DimStage, DimPopulation, DimUntil}, Index: "idx_run_stage_token", Bench: "list/stage+population+until"},
+	{Dims: []Dim{DimStage, DimPopulation, DimSince, DimUntil}, Index: "idx_run_stage_token", Bench: "list/stage+population+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimSince}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimUntil}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+window"},
+
+	// Population WITHOUT a stage, answered from the run-level rollup. This must
+	// not be served by widening the stage-scoped form: a run with cost recorded in
+	// ANY stage matches here, which is a different question.
+	{Dims: []Dim{DimPopulation}, Index: "idx_run_any_token", Bench: "list/population"},
+	{Dims: []Dim{DimPopulation, DimSince}, Index: "idx_run_any_token", Bench: "list/population+since"},
+	{Dims: []Dim{DimPopulation, DimUntil}, Index: "idx_run_any_token", Bench: "list/population+until"},
+	{Dims: []Dim{DimPopulation, DimSince, DimUntil}, Index: "idx_run_any_token", Bench: "list/population+window"},
+
+	{Dims: []Dim{DimGaggle, DimPopulation}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimSince}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+since"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+until"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimSince, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+window"},
 }
 
 // Lookup returns the supported combination for a dimension set.

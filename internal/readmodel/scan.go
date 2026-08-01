@@ -24,7 +24,8 @@ const runColumns = `r.run_id, r.gaggle, r.workflow, r.workflow_version, r.workfl
 	r.goober_digest, r.trigger_kind, r.trigger_ref, r.phase, r.terminal, r.current_stage,
 	r.started_at, r.finished_at, r.last_activity_at, r.last_seq,
 	r.repass_count, r.retry_count, r.policy_retry_count, r.infra_retry_count,
-	r.outcome_verdict, r.outcome_target`
+	r.outcome_verdict, r.outcome_target,
+	r.any_token_measured, r.any_premium_measured, r.any_cost_measured, r.any_retry_waste`
 
 // nullables holds the columns SQL can return as NULL, between Scan and decode.
 //
@@ -37,6 +38,11 @@ type nullables struct {
 	startedAt, finishedAt, lastActivity           sql.NullString
 	phase                                         string
 	terminal                                      int
+
+	// The measurement rollups are stored NOT NULL DEFAULT 0, so they scan as
+	// plain ints -- but they are read through the same struct so that adding a
+	// column cannot desynchronise runColumns from runScanTargets.
+	anyToken, anyPremium, anyCost, anyRetryWaste int
 }
 
 // runScanTargets returns Scan destinations for runColumns, in the same order.
@@ -49,6 +55,7 @@ func runScanTargets(out *RunRow) []any {
 		&n.startedAt, &n.finishedAt, &n.lastActivity, &out.LastSeq,
 		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
 		&n.verdict, &n.target,
+		&n.anyToken, &n.anyPremium, &n.anyCost, &n.anyRetryWaste,
 	}
 }
 
@@ -69,6 +76,10 @@ func (r *RunRow) finishScan() error {
 	r.CurrentStage = n.currentStage.String
 	r.OutcomeVerdict = n.verdict.String
 	r.OutcomeTarget = n.target.String
+	r.AnyTokenMeasured = n.anyToken != 0
+	r.AnyPremiumMeasured = n.anyPremium != 0
+	r.AnyCostMeasured = n.anyCost != 0
+	r.AnyRetryWaste = n.anyRetryWaste != 0
 
 	var err error
 	if r.StartedAt, err = requiredTime(n.startedAt); err != nil {

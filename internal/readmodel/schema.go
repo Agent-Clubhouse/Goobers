@@ -332,4 +332,116 @@ CREATE TABLE IF NOT EXISTS dirty_day (
 	marked_at TEXT NOT NULL
 );
 `,
+
+	// v6: stage, stage-outcome, and population pushdown (#1782, §5.7).
+	//
+	// These three were the residual predicates the closed set refused. Serving
+	// them meant hydrating every candidate journal AFTER the index had picked it,
+	// with no cap on candidates — so a filter matching few runs walked the entire
+	// indexed history. On the live instance that is ~19,852 journal opens, ~143 MB
+	// read and ~1M unmarshals, in ONE request.
+	//
+	// # Why the columns land on run_stage, not only on run
+	//
+	// The filters are stage-SCOPED. `stage=build&population=cost-measured` asks
+	// whether the BUILD stage has cost recorded, not whether the run has cost
+	// anywhere. A run-level rollup answers the unscoped question only, so using it
+	// for the scoped one would silently WIDEN the filter — returning runs whose
+	// cost came from some other stage. Both grains are stored: run_stage answers
+	// the scoped question, and run carries the OR across stages so the unscoped
+	// question is a direct seek rather than a correlated subquery.
+	//
+	// # Why gaggle and the run's started_at are duplicated onto run_stage
+	//
+	// A stage-filtered list is still GAGGLE-scoped and still ordered by RUN
+	// recency. Without both columns here, a stage-scoped query drives from
+	// run_stage and then evaluates gaggle and the ordering against the joined run
+	// row — which is a residual predicate plus a sort, the exact shape §5.7
+	// exists to refuse. §5.5 additionally requires gaggle to be a query predicate
+	// rather than a post-filter, so a gaggle-scoped principal that could not
+	// combine gaggle with stage would simply lose stage filtering.
+	//
+	// run_stage.started_at is the STAGE's own start and is a different clock, so
+	// it cannot serve run-recency ordering. Hence run_started_at alongside it.
+	//
+	// The duplication cannot drift: run_stage rows are deleted and rewritten
+	// wholesale on every projection of their run (write.go), rather than
+	// incrementally maintained.
+	//
+	// # On the index count
+	//
+	// Sixteen indexes is the honest price of a closed set: §5.7 requires every
+	// supported combination to ship a covering index, and refusing to pay it
+	// would mean either fewer answers or a residual predicate pretending to be
+	// one. Twelve of the sixteen are PARTIAL — they contain only rows where a
+	// measurement flag is set, which is a minority of stage rows — so the write
+	// amplification is far below what the count suggests.
+	//
+	// The partial predicates are LITERAL (`= 1`). SQLite requires that; a bound
+	// parameter makes a partial index unusable, and it does not say so when it
+	// declines to use one.
+	`
+ALTER TABLE run_stage ADD COLUMN gaggle TEXT NOT NULL DEFAULT '';
+ALTER TABLE run_stage ADD COLUMN run_started_at TEXT;
+ALTER TABLE run_stage ADD COLUMN token_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN premium_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN cost_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN retry_waste INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE run ADD COLUMN any_token_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_premium_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_cost_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_retry_waste INTEGER NOT NULL DEFAULT 0;
+
+-- Stage-scoped ordering indexes. Each leads with its equality columns and then
+-- the run's recency, so a page is a seek plus limit+1 rows.
+CREATE INDEX IF NOT EXISTS idx_run_stage_recency
+	ON run_stage(stage, run_started_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_recency
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC);
+
+-- Stage + stage-outcome. last_status is the stage's own verdict, a different
+-- axis from the run-level outcome_verdict on run.
+CREATE INDEX IF NOT EXISTS idx_run_stage_status_recency
+	ON run_stage(stage, last_status, run_started_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_status_recency
+	ON run_stage(gaggle, stage, last_status, run_started_at DESC, run_id ASC);
+
+-- One partial index per population, at each grain. Partial rather than a
+-- four-column composite because the predicates are independent booleans: a
+-- composite would have to be probed with three wildcards, which is a scan of the
+-- whole stage range.
+CREATE INDEX IF NOT EXISTS idx_run_stage_token
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_token
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_premium
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_premium
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_cost
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_cost
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_retry_waste
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_retry_waste
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_token
+	ON run(started_at DESC, run_id ASC) WHERE any_token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_token
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_premium
+	ON run(started_at DESC, run_id ASC) WHERE any_premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_premium
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_cost
+	ON run(started_at DESC, run_id ASC) WHERE any_cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_cost
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_retry_waste
+	ON run(started_at DESC, run_id ASC) WHERE any_retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_retry_waste
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_retry_waste = 1;
+`,
 }
