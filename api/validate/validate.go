@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
+	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/api/schemas"
@@ -167,7 +168,35 @@ func (i Issue) String() string {
 	if i.Code != "" {
 		code = " " + string(i.Code)
 	}
-	return fmt.Sprintf("%-7s%s %s: %s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message)
+	return fmt.Sprintf("%-7s%s %s: %s%s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message, i.position())
+}
+
+// invalidYAMLMessagePrefix marks a message as errorInvalidYAML's own —
+// checked by content rather than Code since cliIssue() already strips Code
+// off a plain Error by the time String() runs via CLIString().
+const invalidYAMLMessagePrefix = "invalid YAML: "
+
+// position renders a resolved source line (and column, when known) as a
+// trailing suffix, e.g. " (line 15, col 3)" — appended after the message so
+// the established "SEVERITY[ CODE] Scope: Message" prefix an existing
+// consumer may match against never changes (#2025). Empty when Line is 0
+// (unresolved — e.g. a required-but-entirely-absent property has no node to
+// point at) or for an invalid-YAML message, which already embeds its own
+// "yaml: line N: ..." position from the underlying parser — a second,
+// differently-numbered suffix there would be redundant noise, not new
+// information.
+func (i Issue) position() string {
+	if strings.HasPrefix(i.Message, invalidYAMLMessagePrefix) {
+		return ""
+	}
+	switch {
+	case i.Line > 0 && i.Col > 0:
+		return fmt.Sprintf(" (line %d, col %d)", i.Line, i.Col)
+	case i.Line > 0:
+		return fmt.Sprintf(" (line %d)", i.Line)
+	default:
+		return ""
+	}
 }
 
 // CLIString preserves the validator's established text representation while
@@ -485,6 +514,16 @@ type loadedDoc struct {
 	name       string
 	dslVersion string
 	json       []byte
+	// node is the document's own YAML source, reparsed with gopkg.in/yaml.v3
+	// (which preserves node positions, unlike the sigs.k8s.io/yaml round-trip
+	// used to build json above). It resolves a schema violation's source line
+	// and column (#2025); nil only if this content somehow parses via
+	// yaml.YAMLToJSON but not yaml.v3 (not expected in practice). node's own
+	// Line/Column are relative to this document's own content (line 1 = the
+	// document's first line) — lineOffset converts that to the file's actual
+	// line, the same convention yamlErrorLine already uses for syntax errors.
+	node       *yamlv3.Node
+	lineOffset int
 }
 
 // ValidateDir validates every YAML object under root: schema-checks each, then
@@ -492,6 +531,7 @@ type loadedDoc struct {
 func (v *Validator) ValidateDir(root string) (*Report, error) {
 	r := &Report{}
 	var docs []loadedDoc
+	parseFailureCount := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -530,9 +570,10 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			}
 			jb, err := yaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
+				parseFailureCount++
 				r.addLocated(errorInvalidYAML, Error, rel,
 					yamlErrorLine(err.Error(), document.lineOffset), 1,
-					"", "", "invalid YAML: %s", err)
+					"", "", invalidYAMLMessagePrefix+"%s", err)
 				continue
 			}
 			var tm typeMeta
@@ -543,6 +584,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			docs = append(docs, loadedDoc{
 				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
 				dslVersion: tm.DSLVersion, json: jb,
+				node: parseYAMLNode(document.content), lineOffset: document.lineOffset,
 			})
 		}
 		return nil
@@ -552,6 +594,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	}
 
 	idx := newIndex()
+	idx.parseFailureCount = parseFailureCount
 	for _, doc := range docs {
 		r.Objects++
 		if doc.kind == "Manifest" {
@@ -563,8 +606,15 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			continue
 		}
 		if err := v.ValidateJSON(schemaFile, doc.json); err != nil {
-			for _, line := range flattenSchemaError(err) {
-				r.add(errorSchemaViolation, Error, doc.file, doc.kind, doc.name, "%s", line)
+			schema, _ := v.schema(schemaFile)
+			for _, finding := range schemaFindings(err, schema, doc.node) {
+				if finding.line > 0 {
+					r.addLocated(errorSchemaViolation, Error, doc.file,
+						finding.line+doc.lineOffset, finding.col,
+						doc.kind, doc.name, "%s", finding.message)
+					continue
+				}
+				r.add(errorSchemaViolation, Error, doc.file, doc.kind, doc.name, "%s", finding.message)
 			}
 		}
 		// Index the object even when it failed schema validation. Most schema
@@ -591,34 +641,6 @@ func sortIssues(r *Report) {
 		}
 		return r.Issues[a].Message < r.Issues[b].Message
 	})
-}
-
-// flattenSchemaError turns a jsonschema ValidationError tree into readable lines.
-func flattenSchemaError(err error) []string {
-	var ve *jsonschema.ValidationError
-	if !errors.As(err, &ve) {
-		return []string{err.Error()}
-	}
-	var lines []string
-	var walk func(e *jsonschema.ValidationError)
-	walk = func(e *jsonschema.ValidationError) {
-		if len(e.Causes) == 0 {
-			loc := e.InstanceLocation
-			if loc == "" {
-				loc = "(root)"
-			}
-			lines = append(lines, fmt.Sprintf("%s: %s", loc, friendlySchemaMessage(e.Message)))
-			return
-		}
-		for _, c := range e.Causes {
-			walk(c)
-		}
-	}
-	walk(ve)
-	if len(lines) == 0 {
-		lines = append(lines, ve.Message)
-	}
-	return lines
 }
 
 // friendlySchemaMessage rewrites a few terse JSON-Schema keyword messages into
@@ -663,6 +685,58 @@ type index struct {
 	// they passed schema validation, so we don't double-report "no Manifest" for
 	// a manifest that merely failed its schema.
 	manifestDocsSeen int
+
+	// parseFailureCount counts documents in this run that failed to parse as
+	// YAML at all (errorInvalidYAML). A cross-reference "no X/Y definition was
+	// found" error may just be that document's own missing definition rather
+	// than a second, independent problem — but only when there is exactly one
+	// parse failure and exactly one reference gap in the whole run: with
+	// multiple of either, correlating a specific gap to a specific failure
+	// isn't something we can actually know (we never learn the failed
+	// document's own kind/name), and guessing would mislabel a genuinely
+	// independent, unrelated bug as a probable side effect of the parse
+	// failure. referenceNotFound buffers into pendingReferenceIssues so this
+	// can be decided once, after every reference check in the run has run —
+	// not fired incrementally as each one is discovered (#2025, QA-2 finding
+	// 1).
+	parseFailureCount      int
+	pendingReferenceIssues []pendingReferenceIssue
+}
+
+// pendingReferenceIssue is a "no X/Y definition was found"-style
+// cross-reference error, held until crossCheck finishes so its subordination
+// note (see parseFailureCount) can be applied — or not — based on the full
+// run's outcome, not just what's known when the gap is first discovered.
+type pendingReferenceIssue struct {
+	code             WarningCode
+	file, kind, name string
+	message          string
+}
+
+// referenceNotFound records a cross-reference error for a name this config
+// doesn't define anywhere. See parseFailureCount and flushReferenceIssues.
+func (ix *index) referenceNotFound(r *Report, code WarningCode, file, kind, name, format string, args ...interface{}) {
+	ix.pendingReferenceIssues = append(ix.pendingReferenceIssues, pendingReferenceIssue{
+		code: code, file: file, kind: kind, name: name,
+		message: fmt.Sprintf(format, args...),
+	})
+}
+
+// flushReferenceIssues adds every buffered referenceNotFound call to r,
+// appending the parse-failure subordination note only when the run had
+// exactly one parse failure and exactly one reference gap — the one
+// situation where attributing the gap to the failure is actually
+// well-founded, not a guess (#2025, QA-2 finding 1). Must run once, after
+// every check in crossCheck that can call referenceNotFound has run.
+func (ix *index) flushReferenceIssues(r *Report) {
+	subordinate := ix.parseFailureCount == 1 && len(ix.pendingReferenceIssues) == 1
+	for _, issue := range ix.pendingReferenceIssues {
+		message := issue.message
+		if subordinate {
+			message += " (a document elsewhere failed to parse as YAML — see the invalid-YAML error above; this may be its own missing definition rather than a separate problem)"
+		}
+		r.add(issue.code, Error, issue.file, issue.kind, issue.name, "%s", message)
+	}
 }
 
 func newIndex() *index {
@@ -747,7 +821,7 @@ func (ix *index) crossCheck(r *Report) {
 	for _, m := range ix.manifests {
 		for _, gname := range m.Spec.Gaggles {
 			if _, ok := ix.gaggles[gname]; !ok {
-				r.add(errorManifestGaggleReference, Error, ix.manifestFile[m.Name], "Manifest", m.Name,
+				ix.referenceNotFound(r, errorManifestGaggleReference, ix.manifestFile[m.Name], "Manifest", m.Name,
 					"spec.gaggles references %q, but no Gaggle/%s definition was found", gname, gname)
 			}
 		}
@@ -781,13 +855,13 @@ func (ix *index) crossCheck(r *Report) {
 		r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 			wf.CheckGooberFeatureSupport(g.Spec, allowPreview))
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
-			r.add(errorGooberGaggleReference, Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+			ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 				g.Spec.Gaggle, g.Spec.Gaggle)
 		}
 		for _, wf := range g.Spec.Workflows {
 			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
 			if _, ok := ix.workflows[identity]; !ok {
-				r.add(errorGooberWorkflowReference, Error, file, "Goober", g.Name,
+				ix.referenceNotFound(r, errorGooberWorkflowReference, file, "Goober", g.Name,
 					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
 					wf, wf, g.Spec.Gaggle)
 			}
@@ -839,6 +913,11 @@ func (ix *index) crossCheck(r *Report) {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
 	}
+
+	// Every referenceNotFound call in this pass (including from checkWorkflow
+	// above) was buffered, not yet added to r — flush now that the run's full
+	// outcome (how many parse failures, how many reference gaps) is known.
+	ix.flushReferenceIssues(r)
 }
 
 // dslSupportMatrix resolves the current binary's DSL version support matrix.
@@ -1368,7 +1447,7 @@ func repoIdentity(ref apiv1.RepoRef) string {
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
-		r.add(errorWorkflowGaggleReference, Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
 	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
@@ -1431,7 +1510,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 				r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.target %q must not name this workflow itself", ts.Target)
 			default:
 				if _, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: ts.Target}]; !ok {
-					r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name,
+					ix.referenceNotFound(r, errorTutorScopeTarget, file, "Workflow", w.Name,
 						"spec.tutorScope.target names %q, but no Workflow/%s definition was found in gaggle %q",
 						ts.Target, ts.Target, w.Spec.Gaggle)
 				}
@@ -1452,7 +1531,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			goober, ok := ix.goobers[t.Goober]
 			switch {
 			case !ok:
-				r.add(errorTaskGooberReference, Error, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
+				ix.referenceNotFound(r, errorTaskGooberReference, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
 				r.add(errorTaskGooberGaggle, Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
@@ -1470,7 +1549,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			goober, ok := ix.goobers[g.Agentic.Goober]
 			switch {
 			case !ok:
-				r.add(errorGateGooberReference, Error, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
+				ix.referenceNotFound(r, errorGateGooberReference, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
 				r.add(errorGateGooberGaggle, Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
