@@ -357,6 +357,41 @@ a live arm64 Windows machine or a CI leg that executes (not just compiles) the
 arm64 binary. Until then the decision is *deferred, with evidence required to
 ship*.
 
+## linux/arm64 and darwin/amd64 (shipped, never executed)
+
+Unlike `windows/arm64` above, `linux/arm64` and `darwin/amd64` **are** published
+`DefaultTargets` — but no CI leg or release step ever *runs* either binary. CI
+executes tests only on `linux/amd64` (ubuntu runners), `darwin/arm64`
+(macos-latest, now Apple Silicon), and `windows/amd64` (windows-latest); the
+release workflow's own smoke test (`.github/workflows/release.yml`, "Verify
+release artifacts") extracts and exercises only the `linux_amd64` archive.
+That leaves two shipped arches with zero recorded runtime evidence, ever.
+
+**Recorded decision (2026-08-01, filed from the state-of-repo review,
+[#2039](https://github.com/Agent-Clubhouse/Goobers/issues/2039)): ship without
+adding execution coverage, for now.** Rationale:
+
+- The codebase is pure Go with no `cgo`, no architecture-conditional assembly,
+  and no OS/arch-specific syscalls outside the already-covered
+  `internal/platform/*` seam (which is exercised per-OS, not per-arch — the
+  Windows/amd64 and darwin/arm64 gates already prove the *OS* seams; nothing
+  in this repo branches on *arch* the way it branches on OS).
+- Adding real execution requires either GitHub-hosted arm64 Linux runners and
+  an Intel macOS runner (both available, at added job-minute cost) or
+  QEMU/Rosetta emulation (slower, and emulates rather than proves native
+  behavior) — a real cost for a risk this analysis judges low.
+- This is the honest counterpart to the `windows/arm64` decision above, not a
+  silent gap: unlike that deferred-and-unpublished target, these two **are**
+  shipped today: a real, if judged-low-probability, risk exists that a user
+  on one of these arches runs a binary this project has never once executed.
+
+**Promotion trigger:** add a real smoke execution (a CI leg or a release-workflow
+step, per-arch) if evidence emerges that arch-specific behavior actually matters
+here (an arch-dependent bug report, a new `cgo` dependency, inline assembly, or
+architecture-conditional code), or if the job-minute cost becomes justified
+regardless. Until then, this decision stands as reviewed and deliberate, not an
+accident of the release workflow's history.
+
 ## The Windows gate
 
 Publishing a Windows binary is gated on the Windows CI leg
