@@ -919,6 +919,38 @@ func (r ListWorkItemsRequest) MatchesFieldPredicate(fields fieldpredicate.Fields
 	return r.FieldPredicate.Matches(fields)
 }
 
+// candidateScanCeiling bounds a bounded/caller-paged ListWorkItems scan's
+// raw candidate fetch when NeedsOversizedCandidateScan reports a post-fetch
+// filter is active (#2067) — the provider-layer counterpart to
+// cmd/goobers/backlogquery.go's identical backlogScanCeiling, one layer up.
+const candidateScanCeiling = 250
+
+// NeedsOversizedCandidateScan reports whether r carries a filter that is
+// NEVER expressible in either provider's native bounded-scan query, so a
+// caller-paged fetch capped at exactly r.Limit raw candidates risks
+// under-matching (#2067): the candidate at the truncation boundary might be
+// one the filter rejects, even though a real match exists further into the
+// true result set — silently breaking the contract a caller reasonably
+// assumes ("Limit = up to N matches"). LabelPredicate (CEL-based label
+// logic beyond a simple AND-of-tags) and FieldPredicate are such filters on
+// BOTH providers — GitHub's own `labels`/`state` query params and ADO's
+// WIQL `CONTAINS`/state-equality clauses reliably pre-filter the simple
+// Labels/State fields server-side, so those two do NOT belong here; ADO's
+// state normalization and req.Labels/hasAllLabels DO still need an
+// oversized scan (WIQL CONTAINS is a substring match, and process-specific
+// state categories can't be WIQL-compared directly) — ADOProvider.
+// ListWorkItems adds those as its own extra, ADO-only conditions rather
+// than folding them into this shared check, which both providers' bounded
+// paths call identically.
+func (r ListWorkItemsRequest) NeedsOversizedCandidateScan() bool {
+	// IsZero, not a bare nil check: Compile("") / Compile("", nil, nil)
+	// return a non-nil Predicate that still matches unconditionally, so a
+	// caller (e.g. cmd/goobers/backlogquery.go) that always compiles a
+	// FieldPredicate from a possibly-empty input string must not be treated
+	// as "a real filter is active" just because the pointer is non-nil.
+	return !r.LabelPredicate.IsZero() || !r.FieldPredicate.IsZero()
+}
+
 // UpdateWorkItemRequest is a general backlog item edit: title/body edits, assignee
 // changes, label add/remove, open/close, milestone assignment, and an optional
 // comment. Nil pointer fields are unchanged; a non-nil empty Assignee clears the

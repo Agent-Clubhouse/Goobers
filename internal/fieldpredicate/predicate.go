@@ -79,6 +79,17 @@ func CompileConjunction(expressions ...string) (*Predicate, error) {
 	return combined, nil
 }
 
+// IsZero reports whether p represents no actual filter — a nil pointer, or
+// one Compile("") produced — matching every candidate unconditionally.
+// Callers deciding whether a filter could reject a candidate (e.g.
+// providers.ListWorkItemsRequest.NeedsOversizedCandidateScan, #2067) must
+// check this rather than p != nil: Compile("") returns a non-nil Predicate
+// that still always matches, so a bare nil check overcounts "a real filter
+// is active".
+func (p *Predicate) IsZero() bool {
+	return p == nil || len(p.programs) == 0
+}
+
 // Matches evaluates the predicate. Every referenced field must be available
 // and contain a supported scalar, even when CEL short-circuiting would skip it.
 func (p *Predicate) Matches(fields Fields) (bool, error) {
