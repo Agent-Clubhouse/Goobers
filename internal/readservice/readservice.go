@@ -128,6 +128,10 @@ type Local struct {
 	// intakeDepth reports how many source watermarks are waiting. Optional; see
 	// AttachIntakeDepth.
 	intakeDepth intakeDepth
+
+	// readMode records how this service answers bounded reads (#1933). Empty
+	// means projected, which keeps every existing construction unchanged.
+	readMode ReadMode
 }
 
 type definitionSnapshot struct {
