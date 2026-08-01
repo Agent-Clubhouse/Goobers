@@ -428,7 +428,7 @@ func (s *Store) reopen() error {
 	// different schema version than the handle that closed.
 	writer.SetMaxOpenConns(1)
 	s.writer = writer
-	if err := s.migrate(context.Background()); err != nil {
+	if err := s.migrateWithBusyRetry(context.Background()); err != nil {
 		return err
 	}
 	s.reader = openReaderPool(s.path)
