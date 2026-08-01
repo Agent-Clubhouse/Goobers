@@ -245,6 +245,30 @@ func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "provider: github\n    owner: your-org", "provider: ado\n    project: your-project\n    owner: your-org")
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "spec:\n  gaggle: example",
+		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.threads")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"requires provider capability",
+		"pr.review.threads",
+		`"ado"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })

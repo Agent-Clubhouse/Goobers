@@ -539,6 +539,20 @@ type WorkflowSpec struct {
 	// tutor.
 	// +optional
 	TutorScope *TutorScope `json:"tutorScope,omitempty" yaml:"tutorScope,omitempty"`
+	// Requires declares this workflow's provider-capability requirements
+	// (CONF-6, #2079, docs/design/provider-contract-conformance.md §6) —
+	// distinct from Task.RequiredCapabilities (runner/toolchain capabilities,
+	// RRQ-1/#1101) and Task.Capabilities (credential grants,
+	// internal/capability). Unset derives the requirement set from the
+	// stages this workflow actually uses (e.g. a merge-pr stage implies
+	// pr.merge); an explicit value here replaces that derivation entirely,
+	// letting an author narrow or widen it. Checked at config-load against
+	// the gaggle's connected provider's declared capabilities
+	// (providers.Provider.Capabilities()) — an unmet requirement fails load
+	// with a config-time message naming the workflow, the missing
+	// capability, and the provider, never a mid-run stage error.
+	// +optional
+	Requires *WorkflowRequirements `json:"requires,omitempty" yaml:"requires,omitempty"`
 	// Tasks are the work states of the machine.
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
@@ -657,6 +671,18 @@ type TutorScope struct {
 	// per-workflow; must be empty when Tier is per-gaggle.
 	// +optional
 	Target string `json:"target,omitempty" yaml:"target,omitempty"`
+}
+
+// WorkflowRequirements declares a workflow's non-runner requirements —
+// today, the provider capabilities it needs (WorkflowSpec.Requires, CONF-6
+// #2079).
+type WorkflowRequirements struct {
+	// Capabilities is the set of provider capability keys
+	// (docs/design/provider-contract-conformance.md §3.1, e.g. "pr.merge",
+	// "pr.landing.enqueue") this workflow requires. When set, it replaces
+	// the derived-from-stages default entirely.
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
 
 // +kubebuilder:object:root=true

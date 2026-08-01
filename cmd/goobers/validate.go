@@ -259,6 +259,18 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 
+	// CONF-6/#2079: a workflow's provider-capability requirements (declared or
+	// derived from the stages it uses) must be satisfiable by its gaggle's
+	// connected provider. Checked at validate time for the same reason as
+	// CheckCapabilityRequirements's daemon-startup check: an unmet
+	// requirement can never self-heal at runtime, so it should fail here
+	// rather than at the first mid-run ErrUnsupported.
+	if err := instance.CheckProviderCapabilityRequirements(set); err != nil {
+		pf(stdout, "\nINVALID workflow: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/spec/requires/capabilities", "PROV001", string(validate.Error), err.Error())
+		return 1
+	}
+
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)

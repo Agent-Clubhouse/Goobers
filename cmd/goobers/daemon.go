@@ -178,6 +178,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
 		return nil, err
 	}
+	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
+	// capability its gaggle's connected provider does not declare — a
+	// provider's declared capabilities can't change without a code deploy, so
+	// unlike a missing runner capability this can never self-heal at runtime;
+	// catch it here rather than at the first ErrUnsupported mid-run.
+	if err := instance.CheckProviderCapabilityRequirements(set); err != nil {
+		return nil, err
+	}
 	gaggles := configuredGaggleNames(set)
 	runtimeMigration, err := l.MigrateLegacyRuntimeWithReport(gaggles)
 	if err != nil {
