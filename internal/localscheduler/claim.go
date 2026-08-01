@@ -313,6 +313,27 @@ func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string) error {
 	}, runID)
 }
 
+// RenewEntry re-acquires entry's own claim via Claim/ClaimScoped's existing
+// idempotent same-runID path, extending ExpiresAt from now (issue #2014) —
+// mirroring ReleaseEntry's scoped-vs-legacy dispatch so a caller iterating
+// ForRunAll's results doesn't need to reconstruct which path an entry came
+// from. ok is false when the claim is no longer entry's to renew (already
+// released, reaped, or reassigned to a different run) rather than an error:
+// a renewal racing a legitimate ownership change is stale work for the
+// caller to stop retrying, not a failure.
+func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) (ok bool, err error) {
+	if entry.Gaggle == "" || entry.Provider == "" {
+		ok, _, err = l.Claim(entry.ItemID, entry.RunID, entry.Workflow, leaseDuration)
+		return ok, err
+	}
+	ok, _, err = l.ClaimScoped(ClaimKey{
+		Gaggle:     entry.Gaggle,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+	}, entry.RunID, entry.Workflow, leaseDuration)
+	return ok, err
+}
+
 func (l *ClaimLedger) release(storageKey, runID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -389,20 +410,23 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 //
 // Safety (WF-031): auto-releasing a lease whose owning run is still live but
 // simply ran long invites double-processing — the freed item can be claimed
-// by a second run while the first is still working it. This ledger's only
-// heartbeat mechanism is Claim's own idempotent re-claim-by-same-runID path
-// (see Claim's doc comment), which renews ExpiresAt; nothing currently drives
-// it periodically. Until a caller wires that renewal, leaseDuration passed to
-// Claim MUST be set well above the workflow's realistic max run duration, not
-// tuned tightly — RecoverExpired trusts the lease at face value and has no
-// way to distinguish "orphaned by a crash" from "still running, just slow."
+// by a second run while the first is still working it. RecoverExpired itself
+// still trusts the lease at face value; the liveness this comment used to
+// describe as undriven is now issue #2014's RenewEntry, called periodically
+// by cmd/goobers' claimTicker for every run its own daemonRunnerRegistry is
+// actively tracking (RenewEntry's doc). A run that keeps renewing never
+// reaches ExpiresAt here regardless of how long it takes; one that stops
+// (crashed, or its owning process died) does, which is what makes a short
+// DefaultClaimLease safe to reap on — RecoverExpired needs no code change of
+// its own for that, since a renewed lease's ExpiresAt is already in the
+// future by construction.
 //
-// Issue #235 (edge 2): a ci-poll-bearing implementation run can exceed the
-// OLD 2h DefaultClaimLease (cmd/goobers/backlogquery.go), which made this
-// hazard reachable in the shipped config, not just theoretical. The chosen
-// V0.2 mitigation is raising DefaultClaimLease comfortably above a realistic
-// run's duration — not the liveness-aware renewal this comment already
-// describes as the durable fix, which remains deferred to V1 hardening.
+// Issue #235 (edge 2): a ci-poll-bearing implementation run once exceeded the
+// OLD 2h DefaultClaimLease (cmd/goobers/backlogquery.go) with no renewal to
+// rely on, which made this hazard reachable in the shipped config, not just
+// theoretical — the V0.2 mitigation was raising DefaultClaimLease comfortably
+// above a realistic run's duration. #2014 is the durable fix this comment
+// used to describe as deferred to V1.
 func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -27,20 +27,27 @@ import (
 
 // DefaultClaimLease bounds how long a claimed item stays held before
 // localscheduler.ClaimLedger.RecoverExpired (wired into `goobers up`, #131)
-// releases it back to the pool. Raised from the original 2h to 6h (issue
-// #235, edge 2): a real implementation run is implement -> reviewer gate ->
-// make ci -> open-pr -> ci-poll, and ci-poll alone can legitimately run
-// close to its own DefaultPollTimeout (30m) *per attempt*, retried — the old
-// 2h default was reachable by a real run, not just a theoretical bound,
-// which meant RecoverExpired's known liveness-unaware hazard (see its own
-// doc comment) could fire on a still-live run in the shipped config, not
-// only on a genuinely abandoned one. 6h is comfortably above that realistic
-// ceiling while still bounding a genuinely abandoned claim (a crashed run
-// whose lease never gets explicitly released) to a reasonable stuck time.
+// releases it back to the pool.
+//
+// Shrunk from 6h to 30m by issue #2014, now that a live run's lease is
+// periodically renewed (renewLiveClaims, cmd/goobers' claimTicker) rather
+// than needing to outlast the run's entire realistic duration in one shot —
+// the 6h figure existed only because nothing renewed the lease (see #2014's
+// change to RecoverExpired's own doc for that history). 30m is sized off
+// claimRecoverInterval (5m): 6x that gives a wide margin for a missed tick or
+// slow lock acquisition under shared-host load before a still-renewing run's
+// claim could ever reach its own expiry, while still bounding a genuinely
+// abandoned claim (a crashed run, or a daemon restart slower than 30m) to a
+// reasonable stuck time — down from the old 6h ceiling, not eliminated: a
+// restart that takes longer than this can still reap a claim its own
+// resumeInterruptedRunsWithRunners would have renewed seconds later, exactly
+// as raising DefaultClaimLease to 6h never fully eliminated the analogous gap
+// for a slow run either.
+//
 // Overridable via the leaseDuration Task.Input (a time.ParseDuration
 // string) — must be positive; see the leaseDuration parsing below and
 // localscheduler.ClaimLedger.Claim's own fail-closed check.
-const DefaultClaimLease = 6 * time.Hour
+const DefaultClaimLease = 30 * time.Minute
 
 // backlogScanCeiling is the floor on how many candidates a backlog query
 // fetches from the provider, independent of maxItems (#532) — "how many to

@@ -67,6 +67,25 @@ func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() 
 	}
 }
 
+// RunIDs lists every run this process is currently tracking — the in-process
+// liveness signal issue #2014's claim-lease renewal uses instead of a
+// per-stage heartbeat crossing into the claim ledger: a runID appears here
+// exactly while this process is the one actively driving it (Track/untrack
+// bracket Start/Resume), so a process that crashes or a run that finishes
+// stops appearing without anything needing to notice and say so explicitly.
+func (r *daemonRunnerRegistry) RunIDs() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.owners))
+	for runID := range r.owners {
+		ids = append(ids, runID)
+	}
+	return ids
+}
+
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
 	if r == nil {
 		return fallback, false
