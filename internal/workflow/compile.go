@@ -23,6 +23,7 @@ type versionedInterpreter struct {
 	checkStageContracts         func(Definition) []string
 	checkStageContractWarnings  func(Definition) []string
 	checkStageTimeoutCoherence  func(Definition) []string
+	checkPathSimulation         func(Definition) []string
 	featuresForWorkflow         func(Definition) ([]Feature, error)
 	checkWorkflowFeatureSupport func(Definition, bool) []FeatureDiagnostic
 	taskInvocationInputs        func(*Machine, apiv1.Task) map[string]string
@@ -43,6 +44,7 @@ var currentInterpreter = versionedInterpreter{
 	checkStageContracts:         vcurrent.CheckStageContracts,
 	checkStageContractWarnings:  vcurrent.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vcurrent.CheckStageTimeoutCoherence,
+	checkPathSimulation:         vcurrent.CheckPathSimulation,
 	featuresForWorkflow:         vcurrent.FeaturesForWorkflow,
 	checkWorkflowFeatureSupport: vcurrent.CheckWorkflowFeatureSupport,
 	taskInvocationInputs:        vcurrent.TaskInvocationInputs,
@@ -63,6 +65,7 @@ var nextInterpreter = versionedInterpreter{
 	checkStageContracts:         vnext.CheckStageContracts,
 	checkStageContractWarnings:  vnext.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vnext.CheckStageTimeoutCoherence,
+	checkPathSimulation:         vnext.CheckPathSimulation,
 	featuresForWorkflow:         featuresForNextWorkflow,
 	checkWorkflowFeatureSupport: checkNextWorkflowFeatureSupport,
 	taskInvocationInputs:        vnext.TaskInvocationInputs,
