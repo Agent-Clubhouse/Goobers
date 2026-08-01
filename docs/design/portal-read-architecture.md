@@ -197,6 +197,81 @@ model entirely. Treat head-of-line blocking as **the leading measured
 hypothesis**, to be validated or refuted by §16's mixed-load harness before it is
 asserted as the cause.
 
+**Resolution: confirmed as a mechanism, not as the sole cause (#1913).** The
+arbiter experiment is `TestReaderPoolAllowsConcurrentReads`
+(`internal/telemetry/rollup/readerpool_test.go`), and it settles the mechanism
+directly rather than by inference. Against one shared connection, eight
+concurrent aggregate queries took **48.62 ms versus 48.37 ms serial — a 0.99×
+"speedup"**, which is not slow concurrency but *perfect serialization*: the eight
+readers gained nothing whatsoever from running together. With a read-only pool,
+the same eight took **13.48 ms (3.54×)** on the reference host.
+
+So `SetMaxOpenConns(1)` did exactly what §2.3 inferred it did, and the inference
+is now a measurement. What the experiment does **not** establish is that
+head-of-line blocking explains every 10-second timeout. The production evidence
+of proxy cancellations against healthy direct endpoints is untouched by it, and
+that failure sits outside the read model. The §18.0 downgrade therefore stands as
+written: this is a confirmed contributing mechanism whose removal is worth the
+change, not a single universal cause.
+
+One methodological note, because it cost three CI failures to learn. The test
+asserts the STRUCTURAL property — a read-only pool exists and opens more than one
+connection — and merely *logs* the ratio. An earlier version asserted a speedup
+above 1.3× and flaked at 1.25× on a three-core runner under `-race`. A wall-clock
+ratio cannot be defended on shared hardware; loosening the threshold moves the
+flake rather than removing it. The measurement that justifies the change stands
+on its own on the reference host, which is where a measurement belongs.
+
+### 2.3a Reproduced in-tree at 3x (#1913)
+
+§17's Wave 0 exit requires "every measured number in design §2 is reproducible
+in-tree". `go run ./test/scale -scale 3 -seed 1 -measure` generates 89,277 runs
+and 470,295 scheduler events and reports both latency and **work counters**.
+
+The work counters are the load-bearing half. They assert journal opens, active-
+scan directory reads, and active-scan opens — quantities that are identical on
+every machine — rather than wall time, which is not. That choice is not
+fastidiousness: a wall-clock assertion has now self-refuted four separate times
+in this wave, most memorably when a small corpus measured *slower* than a large
+one on the same runner.
+
+| Path | Journal opens |
+|---|---:|
+| `status_full_scan` | **121,995** |
+| `overview_fanout` | 255 |
+| `listruns_latest_per_workflow` | 137 |
+| `listruns_page` / `_gaggle_filtered` / `_deep_page` | 51 each |
+| `run_detail_summary_events_attempts` | 3 |
+| `instance`, `gaggles`, `workflows`, `workflow_detail` | **0** |
+
+The zeros are the paths already cut over to the read model. The 51 is the
+pre-cutover journal path — one open per returned row plus the lookahead, which is
+§2.1's "lists open and parse a journal per returned row" measured rather than
+asserted. The 3 is `GetRun` + `RunEvents` + `StageAttempts` each parsing the same
+file, which is what §8.2's `useSingleRun` collapses on the client and the read
+model removes on the server.
+
+`status_full_scan` is retained deliberately as the control. It is the unbounded
+shape, and a harness that only measured bounded paths could not show that they
+are bounded *relative to* anything.
+
+**The blob-mount rebuild figure (§16.9, §13.2).** The same pass reports:
+
+| | 3x (89,277 runs) |
+|---|---|
+| `rollup_rebuild`, local disk | **3m22.8s** (89,277 journal opens) |
+| `rebuild_on_blob`, simulated at 2 ms/open | **6m21.4s** |
+
+Labelled SIMULATED in the harness output itself, not only here, because §17's
+exit permits a simulated figure and permits it *only* when labelled — an
+unlabelled projection would be indistinguishable from a measurement on real
+remote storage, and §13.2's tier decision rests on which of the two it is.
+
+The shape is what matters: rebuild cost is dominated by per-open latency, so a
+mount with 2 ms opens nearly doubles a three-minute rebuild, and one with 20 ms
+opens would make it half an hour. That is the §2.6 argument — "29,759 file opens
+over a network or blob mount" — with a number attached.
+
 ### 2.4 Physical evidence that reads perform maintenance
 
 Every one of the 40,665 run directories contains a `.lock` file — including all
@@ -1609,8 +1684,10 @@ Semantics stay with #1429; UX and denominators with #1439.
 
 **15.8 The diagnostic surface's cost ceiling?** Measured (§2.3): largest event log
 131 KB, p99 40 KB. Pagination is not the answer. The remaining question — whether
-every run-detail timeout is head-of-line blocking — is a hypothesis for §16, not
-a conclusion.
+every run-detail timeout is head-of-line blocking — is **answered in §2.3**:
+head-of-line blocking is confirmed as a mechanism (0.99× → 3.54× on eight
+concurrent aggregates), and rejected as the sole cause. Both halves matter; a
+confirmed mechanism is a reason to fix it, not a licence to stop looking.
 
 **15.9 Which existing behaviors are requirements, which are accidents?**
 
@@ -1641,6 +1718,9 @@ here:
 3. **Sustained mixed load**, not a burst: concurrent reads, scheduler journal
    writes, projection, SSE, rebuild, restart, and retention simultaneously. This
    is the experiment that validates or refutes head-of-line blocking (§2.3).
+   **Settled**: the concurrency half is answered by
+   `TestReaderPoolAllowsConcurrentReads` — 0.99× before, 3.54× after — and the
+   answer is recorded in §2.3 rather than left as a hypothesis.
 4. **Adverse states**: slow disk, low-core hardware, disk-full, read-only volume,
    corrupt store, daemon↔standalone transitions.
 5. **Pathologies from the live instance**: 27% unpublished directories with stray
