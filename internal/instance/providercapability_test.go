@@ -126,10 +126,11 @@ func TestCheckProviderCapabilityRequirementsChecksBacklogProviderSeparately(t *t
 		Tasks:  []apiv1.Task{deterministicStage("query", "backlog-query")},
 	}}
 	wf.Name = "implementation"
-	// Project on GitHub (has pr.* landing surfaces), Backlog on ADO — a mixed
-	// gaggle. backlog.blockers is declared by ADO too, so this must still pass.
+	// Project on GitHub (has pr.* landing surfaces), Backlog on Gitea — a
+	// mixed gaggle. Gitea declares backlog.blockers (a real check, unlike
+	// ADO's fail-open stub CONF-5/#2078 deleted), so this must still pass.
 	g := githubGaggle("web")
-	g.Spec.Backlog = apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "acme/web"}
+	g.Spec.Backlog = apiv1.BacklogRef{Provider: apiv1.ProviderGitea, Project: "acme/web"}
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{g}, Workflows: []apiv1.Workflow{wf}}
 
 	if err := CheckProviderCapabilityRequirements(set); err != nil {

@@ -58,13 +58,13 @@ const (
 )
 
 // backlog: work-item surfaces. CapBacklogBlockers is declared per-provider
-// rather than folded into mandatoryCapabilities(): today every provider
-// implements HasOpenWorkItemBlocker (cmd/goobers/backlogquery.go's
-// backlogIssueProvider already requires it structurally), but ADO's
-// implementation is a known fail-open stub, not a real native-dependency
-// read (#2059) — fixing that (deleting the stub, routing the call through
-// Dispatcher/WorkItemBlockerChecker so an honest gap fails closed instead)
-// is CONF-5 (#2078), not this issue.
+// rather than folded into mandatoryCapabilities(): GitHub and Gitea
+// implement a real native-dependency read; ADO does not (dependency-link
+// modeling reaches parity in V1) and does not declare it either, so
+// cmd/goobers/backlogquery.go's call — routed through
+// Dispatcher/WorkItemBlockerChecker — fails closed with ErrUnsupported
+// instead of the fail-open stub #2059 used to return (fixed by CONF-5,
+// #2078).
 const (
 	CapBacklogList     Capability = "backlog.list"
 	CapBacklogGet      Capability = "backlog.get"

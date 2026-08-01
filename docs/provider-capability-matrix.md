@@ -34,5 +34,5 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `backlog.update` | yes | conformant | conformant | conformant |
 | `backlog.status` | yes | conformant | conformant | conformant |
 | `backlog.claim` | yes | conformant | conformant | conformant |
-| `backlog.blockers` | yes | conformant | declared (gap) (#2059) | conformant |
+| `backlog.blockers` | yes | conformant | gap (#2059) | conformant |
 | `trigger.subscribe` | yes | conformant | conformant | conformant |
