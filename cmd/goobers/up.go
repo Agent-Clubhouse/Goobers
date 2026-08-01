@@ -48,6 +48,14 @@ var claimRecoverInterval = 5 * time.Minute
 // crossed its configured journal-silence deadline.
 var stalledRunSweepInterval = time.Minute
 
+// worktreeRetentionSweepInterval bounds how often a running daemon re-sweeps
+// crash-orphaned worktrees (Manager.Reap) and configured retention
+// (pruneConfiguredRetention). Both previously ran only once at startup
+// (#2052): a daemon that stayed up for weeks accumulated kept failure
+// worktrees and never reclaimed the disk until its next restart. Var, not
+// const, so tests can shrink it rather than waiting out a real 6 hours.
+var worktreeRetentionSweepInterval = 6 * time.Hour
+
 // delegationSweepInterval bounds how often runUpContext checks for delegated
 // trigger requests (#343, rundelegate.go) from a `goobers run` invocation
 // that found this daemon already holding up.lock. Deliberately much shorter
@@ -697,6 +705,29 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
+	// #2052's fix: Manager.Reap and pruneConfiguredRetention previously ran
+	// only in the synchronous startup block above, so a crash orphan or a
+	// kept failure worktree that appeared after startup sat until the next
+	// restart. This ticker re-runs both on the same never-write-to-stdout
+	// footing as the tickers above (writers are io.Discard here since a
+	// periodic sweep has no interactive caller to report progress to;
+	// failures still reach the instance journal via the error reporter).
+	worktreeRetentionTicker := time.NewTicker(worktreeRetentionSweepInterval)
+	worktreeRetentionTickerDone := make(chan struct{})
+	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
+	go func() {
+		defer close(worktreeRetentionTickerDone)
+		defer worktreeRetentionTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-worktreeRetentionTicker.C:
+				worktreeRetentionErrors.report(sweepWorktreeRetention(ctx, l, setup))
+			}
+		}
+	}()
+
 	// #343's daemon-side half: periodically sweep for delegated trigger
 	// requests a short-lived `goobers run` invocation dropped after finding
 	// this daemon already holding up.lock (rundelegate.go), and dispatch
@@ -902,6 +933,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	<-claimTickerDone
 	<-stalledTickerDone
 	<-telemetryRetentionTickerDone
+	<-worktreeRetentionTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
 	<-supervisorStopDone

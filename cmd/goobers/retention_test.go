@@ -274,3 +274,52 @@ func retentionBranchExists(repoDir, branch string) bool {
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }
+
+// TestSweepWorktreeRetentionPrunesConfiguredRetention is #2052's ticker
+// acceptance: pruneConfiguredRetention previously ran only in
+// runUpContext's synchronous startup block, so a worktree kept for a
+// failure that happened after startup sat on disk until the daemon's next
+// restart. sweepWorktreeRetention is the exact function the new periodic
+// ticker (worktreeRetentionSweepInterval) invokes on every tick; this
+// proves a single call prunes a retention-eligible worktree, using the
+// daemon's own setup.LegacyWorktrees manager for both creation and
+// sweeping — a live, separately-timed ticker racing a second manager
+// instance pointed at the same directory would instead race Reap's
+// markerless-cleanup against an in-flight `git worktree add` (see git
+// history for this test), which calling the sweep function directly avoids
+// entirely.
+//
+// Manager.Reap's own crash-orphan behavior is exercised independently by
+// internal/worktree's and cmd/goobers/worktreelifecycle_test.go's existing
+// coverage; this test's job is only to prove the new periodic entry point
+// wires pruneConfiguredRetention correctly.
+func TestSweepWorktreeRetentionPrunesConfiguredRetention(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	ctx := context.Background()
+	manager, repo := commandWorktreeFixture(t, layout)
+	setup := &schedulerSetup{
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}},
+		LegacyWorktrees: manager,
+	}
+
+	const retainedRunID = "retained-failure"
+	createTerminalRun(t, layout, retainedRunID)
+	retained, err := manager.Create(ctx, worktree.CreateOptions{
+		RepoURL: repo, RunID: retainedRunID + "-stage", OwnerRunID: retainedRunID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("create retained worktree: %v", err)
+	}
+	if err := retained.Remove(ctx, worktree.RemoveOptions{Keep: true}); err != nil {
+		t.Fatalf("keep retained worktree: %v", err)
+	}
+
+	if err := sweepWorktreeRetention(ctx, layout, setup); err != nil {
+		t.Fatalf("sweepWorktreeRetention: %v", err)
+	}
+
+	if _, err := os.Stat(retained.Path); !os.IsNotExist(err) {
+		t.Fatalf("sweepWorktreeRetention did not prune the retained worktree: stat err = %v", err)
+	}
+}

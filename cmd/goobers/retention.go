@@ -28,6 +28,34 @@ import (
 // not const, so tests can shrink it rather than waiting out a real 24 hours.
 var journalGraceAge = 24 * time.Hour
 
+// sweepWorktreeRetention re-runs crash-orphan reaping (Manager.Reap) and
+// configured retention (pruneConfiguredRetention) for every gaggle plus the
+// legacy manager. It is the periodic counterpart to the synchronous startup
+// block in runUpContext: both previously ran once at daemon start only
+// (#2052), so a crash orphan or a kept failure worktree that appeared after
+// startup sat on disk until the daemon's next restart. Writers are
+// io.Discard, matching every other periodic sweep in runUpContext — a
+// background goroutine must never write to stdout/stderr, which are shared
+// with the main goroutine's own writes for the daemon's entire lifetime and
+// are not safe for concurrent use.
+func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup) error {
+	for gaggle, manager := range setup.WorktreesByGaggle {
+		if _, _, err := manager.Reap(ctx, worktree.ReapOptions{
+			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+		}); err != nil {
+			return fmt.Errorf("reap worktrees for gaggle %s: %w", gaggle, err)
+		}
+	}
+	if setup.LegacyWorktrees != nil {
+		if _, _, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
+			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+		}); err != nil {
+			return fmt.Errorf("reap legacy worktrees: %w", err)
+		}
+	}
+	return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
+}
+
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
 	cfg := setup.Config.Retention
 	if !cfg.Enabled && !cfg.DryRun {
