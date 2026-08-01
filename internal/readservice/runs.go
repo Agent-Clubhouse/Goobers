@@ -19,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
@@ -164,6 +165,46 @@ type RunDetail struct {
 	GraphStatus string           `json:"graphStatus"`
 	Escalation  *EscalationCause `json:"escalation,omitempty"`
 	Outcome     *RunOutcome      `json:"outcome,omitempty"`
+	// Transitions is the run's exact executed workflow-graph transition
+	// history (#1427) — never inferred from "both endpoint nodes were
+	// visited", which is what let the portal highlight an untaken repass
+	// edge (#1430). TransitionsStatus mirrors GraphStatus's own vocabulary:
+	// "projected" when Transitions is authoritative (even if empty — a
+	// freshly-started run has none yet), "unavailable" for a run predating a
+	// pinned graph snapshot.
+	Transitions       []RunTransition `json:"transitions,omitempty"`
+	TransitionsStatus string          `json:"transitionsStatus"`
+}
+
+// RunTransition is one executed transition in a run's workflow graph, the
+// API-facing projection of readmodel.TransitionRow (kept distinct from it
+// deliberately: RunDetail's JSON contract must not change shape just because
+// the internal projection's field set does).
+type RunTransition struct {
+	Branch     int    `json:"branch"`
+	Occurrence int    `json:"occurrence"`
+	Seq        uint64 `json:"seq"`
+	Source     string `json:"source"`
+	Target     string `json:"target,omitempty"`
+	Verdict    string `json:"verdict,omitempty"`
+	Terminal   bool   `json:"terminal,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Repass     bool   `json:"repass,omitempty"`
+}
+
+func runTransitionsFrom(rows []readmodel.TransitionRow) []RunTransition {
+	if rows == nil {
+		return nil
+	}
+	out := make([]RunTransition, len(rows))
+	for i, row := range rows {
+		out[i] = RunTransition{
+			Branch: row.Branch, Occurrence: row.Occurrence, Seq: row.Seq,
+			Source: row.Source, Target: row.Target, Verdict: row.Verdict,
+			Terminal: row.Terminal, Status: row.TerminalStatus, Repass: row.Repass,
+		}
+	}
+	return out
 }
 
 // RunOutcome projects the business decision a completed run reached — the
@@ -976,13 +1017,26 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
+	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
 	return RunDetail{
-		RunSummary:  summary,
-		Graph:       graph,
-		GraphStatus: status,
-		Escalation:  escalation,
-		Outcome:     runOutcome(summary, run.records),
+		RunSummary:        summary,
+		Graph:             graph,
+		GraphStatus:       status,
+		Escalation:        escalation,
+		Outcome:           runOutcome(summary, run.records),
+		Transitions:       runTransitionsFrom(transitions),
+		TransitionsStatus: transitionsStatus,
 	}, nil
+}
+
+// recordEvents unwraps a run's raw-preserving event records into the plain
+// events readmodel.ProjectTransitions folds over.
+func recordEvents(records []journal.EventRecord) []journal.Event {
+	events := make([]journal.Event, len(records))
+	for i, record := range records {
+		events[i] = record.Event
+	}
+	return events
 }
 
 // RunMetadata returns the exact recorded identity and optional checkpoint used
