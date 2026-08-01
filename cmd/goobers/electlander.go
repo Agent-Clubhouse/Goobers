@@ -299,6 +299,16 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	policy, resolvedPolicy, perr := resolveElectionPolicyForCluster(
 		ctx, provider, repo, policyName, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
+		if providers.IsNotFoundError(perr) {
+			// A cluster-data policy (#1028/#1029) scores every member named as a
+			// blocker; one of them has closed/merged since being recorded — the
+			// same "no longer open" business outcome the selected PR itself gets
+			// below, just for a cluster member instead. Never crown against stale
+			// cluster membership: park explicitly (routing to apply-verdict with
+			// the full pass-through envelope) rather than failing the stage.
+			pf(stdout, "election policy %q could not score cluster member(s) — a named PR is no longer found (closed/merged) — election moot this cycle, routing to apply-verdict\n", policyName)
+			return writeResult(false)
+		}
 		return failProviderStage(stderr, "resolve election policy "+policyName, perr, resultFile)
 	}
 	if resolvedPolicy != policyName {
