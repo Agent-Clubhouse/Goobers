@@ -640,7 +640,13 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
+    # integration, sandbox, and linux-validation joined this list in #2019:
+    # all three ran on every PR already (full runner cost) but a red result
+    # never blocked merge (zero enforcement) until now — the worst of both
+    # worlds the issue documented, and ten recent runs (40 job instances)
+    # showed no flakiness in any of the three that would argue against
+    # requiring them.
+    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -655,6 +661,9 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
           VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          SANDBOX_RESULT: ${{ needs.sandbox.result }}
+          LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
         run: |
           fail=0
           check() {
@@ -673,6 +682,9 @@ jobs:
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
           check "journal conformance"                "$CONFORMANCE_RESULT"
+          check "declared-dependency integration"    "$INTEGRATION_RESULT"
+          check "sandbox confinement"                "$SANDBOX_RESULT"
+          check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
           exit "$fail"
 
   sandbox:
@@ -711,7 +723,9 @@ jobs:
   # Linux node validation (#636): prove the shipped binary end to end on Linux —
   # an offline demo run to completion plus the full daemon start/status/stop
   # lifecycle under a real SIGTERM — and cross-compile the Windows supervision
-  # handler (#639). Deterministic and offline, so it is a reliable required gate.
+  # handler (#639). Deterministic and offline; required-ci's needs (#2019)
+  # actually makes it a required gate — this comment previously claimed that
+  # while the job was still excluded from required-ci's needs list.
   linux-validation:
     name: linux node validation (#636/#639)
     runs-on: ubuntu-latest
