@@ -907,7 +907,10 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 
 			available := copilotAvailableTools(RunRequest{Tools: curator.Spec.Tools})
 			for _, required := range []string{
+				"github-mcp-server-add_issue_comment",
 				"github-mcp-server-issue_read",
+				"github-mcp-server-issue_write",
+				"github-mcp-server-sub_issue_write",
 				"view",
 				"bash",
 			} {
@@ -939,7 +942,9 @@ func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testin
 
 			available := copilotAvailableTools(RunRequest{Tools: nominator.Spec.Tools})
 			for _, required := range []string{
+				"github-mcp-server-add_issue_comment",
 				"github-mcp-server-issue_write",
+				"github-mcp-server-sub_issue_write",
 				"view",
 				"bash",
 			} {
