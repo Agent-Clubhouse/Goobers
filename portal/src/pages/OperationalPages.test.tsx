@@ -159,6 +159,29 @@ describe("operational overview", () => {
 });
 
 describe("workflow and gaggle inventory", () => {
+  it("formats webhook triggers without introducing an empty label", async () => {
+    window.location.hash = "#/workflows";
+    const fixtures = populatedDaemonFixtures();
+    const coreWorkflow = fixtures.workflows?.core?.items[0];
+    const toolsWorkflow = fixtures.workflows?.tools?.items[0];
+    if (!coreWorkflow || !toolsWorkflow) {
+      throw new Error("Populated fixtures must include core and tools workflows.");
+    }
+    coreWorkflow.triggers = [
+      { type: "webhook", events: ["pull_request", "synchronize"] },
+      { type: "schedule", schedule: "* * * * *" },
+    ];
+    toolsWorkflow.triggers = [{ type: "webhook" }];
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("Webhook · pull_request/synchronize, Schedule · * * * * *"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Webhook")).toBeInTheDocument();
+    expect(screen.queryByText(/^, Schedule/)).not.toBeInTheDocument();
+  });
+
   it("renders multiple gaggles, duplicate names, roster contracts, and unique deep links", async () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

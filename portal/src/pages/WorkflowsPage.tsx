@@ -271,6 +271,8 @@ export function formatTriggers(workflow: WorkflowSummary): string {
           return trigger.schedule ? `Schedule · ${trigger.schedule}` : "Schedule";
         case "signal":
           return trigger.signal ? `Signal · ${trigger.signal}` : "Signal";
+        case "webhook":
+          return trigger.events?.length ? `Webhook · ${trigger.events.join("/")}` : "Webhook";
       }
     })
     .join(", ");
