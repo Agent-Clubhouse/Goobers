@@ -1433,10 +1433,17 @@ func listBacklogScanWindow(
 		if err != nil {
 			return nil, cursor, err
 		}
-		if pageInfo.CandidateCount < 0 || pageInfo.CandidateCount > pageLimit {
+		// CandidateCount may legitimately exceed pageLimit (#2067): a
+		// provider now scans more raw candidates than pageLimit in one
+		// call when a filter it can't fully push server-side (ADO's state
+		// normalization, its Labels/hasAllLabels substring-match recheck)
+		// could reject the candidate a naive pageLimit-sized fetch would
+		// have truncated on — the exact under-matching bug #2067 fixed.
+		// Only a negative count is still a real provider bug.
+		if pageInfo.CandidateCount < 0 {
 			return nil, cursor, fmt.Errorf(
-				"provider returned invalid work-item candidate count %d for limit %d",
-				pageInfo.CandidateCount, pageLimit,
+				"provider returned invalid work-item candidate count %d",
+				pageInfo.CandidateCount,
 			)
 		}
 		items = append(items, pageItems...)
@@ -1448,6 +1455,14 @@ func listBacklogScanWindow(
 		}
 		cursor.Cursor = pageInfo.NextCursor
 		if !exhaustive {
+			// limit is a raw-candidate scan budget, not a match target
+			// (scanLimit is floored to backlogScanCeiling by the caller
+			// specifically so a rejecting filter still gets a full window
+			// examined). Decrementing by the actual CandidateCount stays
+			// correct now that it can exceed pageLimit (#2067): the same
+			// total-candidate budget is still consumed, just via fewer,
+			// larger provider calls instead of many pageLimit-sized ones —
+			// not an under-scan, just fewer round trips to reach it.
 			limit -= pageInfo.CandidateCount
 			if limit <= 0 {
 				break

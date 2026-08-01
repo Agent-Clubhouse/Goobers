@@ -144,6 +144,15 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		}
 	}
 	if req.PageInfo != nil {
+		// CandidateCount is how many candidates were actually INSPECTED
+		// this round (lastScanned+1), not how many were fetched (len(refs))
+		// — an early break once Limit real matches are in hand can leave
+		// fetched-but-never-looked-at candidates behind, and counting those
+		// as "consumed" overstates the caller's own scan-budget spend
+		// (cmd/goobers/backlogquery.go's listBacklogScanWindow decrements
+		// its outer limit by CandidateCount), starving later pages of
+		// budget for work this round never actually did.
+		//
 		// HasNext/NextCursor track the MATCH stream, not the candidate
 		// stream (#2067's third acceptance criterion): stopping early
 		// because Limit matches are already in hand leaves fetched-but-
@@ -152,7 +161,7 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		// matches still leaves more to look at when the fetch itself hit
 		// candidateLimit (fetchWasCapped) — ADO may hold further
 		// candidates beyond what this round asked for.
-		req.PageInfo.CandidateCount = len(refs)
+		req.PageInfo.CandidateCount = lastScanned + 1
 		scannedEverything := lastScanned == len(refs)-1
 		fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
 		req.PageInfo.HasNext = boundedScan && req.Limit > 0 && (!scannedEverything || fetchWasCapped)
