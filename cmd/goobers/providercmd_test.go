@@ -131,6 +131,27 @@ type fakeGitHubServer struct {
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
+	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
+	// specific status/body instead of listing the PR's fixture files — used to
+	// distinguish "the PR is gone" (the default 404 an unregistered number
+	// already gets) from an unrelated transient failure on a PR that IS
+	// registered, for classifier false-positive guards (#1770).
+	filesFailureStatus map[int]int
+	filesFailureBody   map[int]string
+}
+
+// setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
+// status/body instead of the PR's normal fixture file list. number must
+// already be registered via addOpenPR (an unregistered number already 404s).
+func (s *fakeGitHubServer) setPullRequestFilesFailure(number, status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.filesFailureStatus == nil {
+		s.filesFailureStatus = map[int]int{}
+		s.filesFailureBody = map[int]string{}
+	}
+	s.filesFailureStatus[number] = status
+	s.filesFailureBody[number] = body
 }
 
 // resetRequestCounts zeroes the per-endpoint counters between gather runs so
@@ -821,6 +842,10 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
+		if status, injected := s.filesFailureStatus[num]; injected {
+			http.Error(w, s.filesFailureBody[num], status)
+			return
+		}
 		s.filesRequests++
 		out := make([]map[string]interface{}, 0, len(pr.files))
 		for _, f := range pr.files {
