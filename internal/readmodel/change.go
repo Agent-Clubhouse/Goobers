@@ -38,6 +38,15 @@ const (
 	ChangeRunProgressed ChangeKind = "run.progressed"
 	// ChangeRunFinished is a run reaching a terminal phase.
 	ChangeRunFinished ChangeKind = "run.finished"
+	// ChangeDefinitionsChanged is a config reload: the workflow definitions
+	// themselves changed, not any run.
+	//
+	// It carries no run id. Added when the filesystem poller was deleted
+	// (#1929): that detector had its own out-of-band PublishDefinitionsChanged,
+	// and dropping it without an equivalent here would have silently stopped the
+	// portal noticing config reloads. Routing it through the same ordered feed
+	// is the point — a second publish path is exactly the split §8.1 removes.
+	ChangeDefinitionsChanged ChangeKind = "definitions.changed"
 	// ChangeRunRemoved is a run whose journal has gone and whose rows were
 	// deleted. Emitted by the ordered removal protocol and by bidirectional
 	// repair (§4.3, §6.3), neither of which exists yet.
@@ -260,4 +269,26 @@ func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error
 		return 0, fmt.Errorf("readmodel: commit change prune: %w", err)
 	}
 	return removed, nil
+}
+
+// PublishDefinitionsChanged records a config reload in the change feed.
+//
+// Out-of-band relative to projection — no run moved — but it goes through the
+// SAME ordered feed so a client learns about it at a definite cursor position
+// rather than through a second channel with its own latency and failure modes.
+//
+// The row carries no run id or workflow scope: a definitions change can affect
+// any of them, so a scoped invalidation would under-report. Clients treat it as
+// an instance-and-workflow-wide refresh.
+func (s *Store) PublishDefinitionsChanged(ctx context.Context) error {
+	tx, err := s.writeDB().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("readmodel: begin definitions change: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := appendChange(ctx, tx, s.now(), ChangeDefinitionsChanged, RunRow{}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

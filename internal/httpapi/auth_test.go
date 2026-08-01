@@ -251,7 +251,10 @@ func TestDefaultLoopbackPostureUnchanged(t *testing.T) {
 // working when a real Authenticator + role authorizer gate the API, and that
 // it rejects unauthenticated subscribers like every other route.
 func TestEventStreamServesUnderAuthenticator(t *testing.T) {
-	_, _, stream := newEventStreamFixture(t)
+	// The change feed is the only SSE source now (#1929); this test is about
+	// the AUTH seam in front of it, which is unchanged by the source swap.
+	stream := newFeedStream(feedTestStoreAt(t, t.TempDir()))
+	t.Cleanup(stream.Close)
 	authenticator := &tokenAuthenticator{
 		token:     "stream-token",
 		principal: Principal{Subject: "viewer", Roles: []Role{RoleView}},
@@ -260,7 +263,7 @@ func TestEventStreamServesUnderAuthenticator(t *testing.T) {
 		&fakeReader{health: readservice.Health{Ready: true}},
 		RequireRoles(),
 		discardLogger(),
-		WithEventStream(stream),
+		func(h *handlerConfig) error { h.events = stream; return nil },
 		WithAuthenticator(authenticator),
 	)
 	if err != nil {

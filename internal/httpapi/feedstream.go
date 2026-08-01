@@ -94,6 +94,15 @@ func (s *feedStream) Cursor() string {
 	return head.String()
 }
 
+// PublishDefinitionsChanged records a config reload in the feed.
+//
+// Replaces the deleted poller's out-of-band publish. Errors are returned rather
+// than swallowed: unlike a projection, this has no repair sweep behind it — a
+// lost definitions change is simply never noticed by any client.
+func (s *feedStream) PublishDefinitionsChanged() error {
+	return s.store.PublishDefinitionsChanged(context.Background())
+}
+
 // Close stops the stream.
 func (s *feedStream) Close() {
 	s.mu.Lock()
@@ -230,12 +239,19 @@ func invalidationsFor(page readmodel.FeedPosition) []StreamEvent {
 		return nil
 	}
 	var (
-		runIDs    []string
-		workflows []apicontract.WorkflowRef
-		seenRun   = map[string]bool{}
-		seenFlow  = map[string]bool{}
+		runIDs      []string
+		workflows   []apicontract.WorkflowRef
+		seenRun     = map[string]bool{}
+		seenFlow    = map[string]bool{}
+		definitions bool
 	)
 	for _, change := range page.Changes {
+		if change.Kind == readmodel.ChangeDefinitionsChanged {
+			// A config reload can affect any workflow, so it widens the whole
+			// batch rather than naming entities. Scoping it would under-report.
+			definitions = true
+			continue
+		}
 		if change.RunID != "" && !seenRun[change.RunID] {
 			seenRun[change.RunID] = true
 			runIDs = append(runIDs, change.RunID)
@@ -250,12 +266,18 @@ func invalidationsFor(page readmodel.FeedPosition) []StreamEvent {
 		}
 	}
 	cursor := page.Cursor.String()
+	models := []string{"run", "workflow"}
+	if definitions {
+		// Instance too: a reload changes gaggle and workflow inventory, which
+		// the run and workflow models alone do not cover.
+		models = []string{"instance", "run", "workflow"}
+	}
 	return []StreamEvent{{
 		ID:   cursor,
 		Type: "update",
 		Data: apicontract.Invalidation{
 			Cursor:    cursor,
-			Models:    []string{"run", "workflow"},
+			Models:    models,
 			RunIDs:    runIDs,
 			Workflows: workflows,
 		},

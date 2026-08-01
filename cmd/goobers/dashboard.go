@@ -433,23 +433,29 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		},
 		loadedAt: time.Now().UTC(),
 	}
-	events, err := httpapi.NewEventStream(layout, errorLog)
-	if err != nil {
-		return dashboardAPI{}, err
+	// Standalone serves live updates from the change feed too (#1929), using
+	// the read model #1933 attaches. When none could be opened (a read-only
+	// volume with no writable cache directory) there is no SSE, and the
+	// freshness surface already renders that as degraded.
+	var streamOpts []httpapi.HandlerOption
+	if readStore != nil {
+		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
 	}
-	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, httpapi.WithEventStream(events))
+	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, streamOpts...)
 	if err != nil {
-		events.Close()
 		return dashboardAPI{}, err
 	}
 	return dashboardAPI{
 		handler: handler,
 		mode:    dashboardModeStandalone,
+		// The read model is the only thing to close now that the poller is gone
+		// (#1929); the change-feed stream holds no goroutine of its own beyond
+		// each subscription, which the handler cancels.
 		close: func() error {
-			events.Close()
-			waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			return events.Wait(waitCtx)
+			if readStore != nil {
+				return readStore.Close()
+			}
+			return nil
 		},
 	}, nil
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,10 +21,10 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/goobers/goobers/internal/gooberassets"
-	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -71,12 +72,16 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
-	layout          instance.Layout
-	setup           *schedulerSetup
-	scheduler       *localscheduler.Scheduler
-	openPRs         *openPRLoop
-	reads           *readservice.Local
-	events          *httpapi.EventStream
+	layout    instance.Layout
+	setup     *schedulerSetup
+	scheduler *localscheduler.Scheduler
+	openPRs   *openPRLoop
+	reads     *readservice.Local
+	// readModel publishes a definitions-changed row into the change feed
+	// (#1929). Replaces the deleted poller's out-of-band publish, so a config
+	// reload reaches clients through the SAME ordered feed as everything else
+	// rather than a second channel with its own latency.
+	readModel       *readmodel.Store
 	wg              *sync.WaitGroup
 	appliedDigest   string
 	observedDigest  string
@@ -176,8 +181,14 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
-	if r.events != nil {
-		r.events.PublishDefinitionsChanged()
+	if r.readModel != nil {
+		// Logged, not fatal: a reload that applied correctly must not be
+		// reported as failed because its invalidation could not be recorded.
+		// The cost is that connected clients notice the new definitions on
+		// their next ordinary refresh instead of immediately.
+		if err := r.readModel.PublishDefinitionsChanged(context.Background()); err != nil {
+			log.Printf("config reload: publish definitions change: %v", err)
+		}
 	}
 	r.appliedDigest = digest
 	return nil

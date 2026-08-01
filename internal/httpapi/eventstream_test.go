@@ -1,929 +1,186 @@
 package httpapi
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/readmodel"
 )
 
-type sseMessage struct {
-	ID    string
-	Event string
-	Data  Invalidation
-}
+// The SSE transport, against the change feed (#1929).
+//
+// # What was deleted and where it went
+//
+// This file used to hold thirteen tests, eight of which exercised the
+// filesystem poller's own mechanism: byte-offset tailing, the 5-second sweep,
+// per-run state retention, the in-memory ring, and the process-scoped session
+// id. That mechanism no longer exists, so those tests are not ported — they
+// would be testing nothing.
+//
+// Their PROPERTIES, where they still apply, live in feedstream_test.go against
+// the source that replaced them:
+//
+//	scan finds only active runs, not all history  ->  the feed is an indexed
+//	                                                  seek after a cursor; a
+//	                                                  quiet instance does no
+//	                                                  work regardless of size
+//	scan discovers a run created after startup    ->  TestFeedStreamDeliversCommittedChanges
+//	sweep re-arms an idle run that resumes        ->  the projector's intake
+//	                                                  drain; no sweep exists
+//	expired cursor recovers current state         ->  TestFeedStreamNamesEachRefusalCondition
+//	                                                  (three NAMED conditions,
+//	                                                  not one generic refusal)
+//	ordered, deduplicable concurrent events       ->  the change table's
+//	                                                  AUTOINCREMENT and the
+//	                                                  projector's serialized
+//	                                                  commit loop
+//
+// What remains here is the transport: framing, heartbeats, shutdown, and slow
+// clients. Those are properties of the handler, not of any source, so they
+// survive the source swap.
 
-func newEventStreamFixture(t *testing.T, opts ...eventStreamOption) (instance.Layout, *journal.InstanceLog, *EventStream) {
+func feedTestStoreAt(t *testing.T, dir string) *readmodel.Store {
 	t.Helper()
-	layout := instance.NewLayout(t.TempDir())
-	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	store, err := readmodel.Open(filepath.Join(dir, "read.db"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := instanceLog.Close(); err != nil {
-			t.Errorf("close instance log: %v", err)
-		}
-	})
-	stream, err := newEventStream(layout, log.New(io.Discard, "", 0), opts...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		stream.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := stream.Wait(ctx); err != nil {
-			t.Errorf("wait for event stream: %v", err)
-		}
-	})
-	return layout, instanceLog, stream
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
-func newEventTestServer(t *testing.T, stream *EventStream, reader *fakeReader) *httptest.Server {
-	t.Helper()
-	handler, err := NewHandler(reader, AllowAll, discardLogger(), WithEventStream(stream))
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	return server
-}
-
-func openEventResponse(t *testing.T, client *http.Client, url, cursor string) (*http.Response, *bufio.Reader) {
-	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cursor != "" {
-		request.Header.Set("Last-Event-ID", cursor)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return response, bufio.NewReader(response.Body)
-}
-
-func readSSEMessage(t *testing.T, reader *bufio.Reader) sseMessage {
-	t.Helper()
-	message := sseMessage{}
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read SSE message: %v", err)
-		}
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
-		if line == "" {
-			return message
-		}
-		switch {
-		case strings.HasPrefix(line, "id: "):
-			message.ID = strings.TrimPrefix(line, "id: ")
-		case strings.HasPrefix(line, "event: "):
-			message.Event = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &message.Data); err != nil {
-				t.Fatalf("decode SSE data: %v", err)
-			}
-		}
-	}
-}
-
-func readUntilEvent(t *testing.T, reader *bufio.Reader, eventType string) sseMessage {
-	t.Helper()
-	for {
-		message := readSSEMessage(t, reader)
-		if message.Event == eventType {
-			return message
-		}
-	}
-}
-
-func waitForCursor(t *testing.T, stream *EventStream, want string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if stream.Cursor() == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("cursor = %q, want %q", stream.Cursor(), want)
-}
-
-func waitForSubscribers(t *testing.T, stream *EventStream, want int) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		stream.mu.Lock()
-		count := len(stream.subscribers)
-		stream.mu.Unlock()
-		if count == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	stream.mu.Lock()
-	count := len(stream.subscribers)
-	stream.mu.Unlock()
-	t.Fatalf("subscriber count = %d, want %d", count, want)
-}
-
-func TestEventsSnapshotAppendResumeHeartbeatAndDisconnect(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(10*time.Millisecond),
-		withHeartbeatInterval(40*time.Millisecond),
-	)
-	server := newEventTestServer(t, stream, &fakeReader{})
-	client := &http.Client{Timeout: 3 * time.Second}
-
-	response, reader := openEventResponse(t, client, server.URL+EventsPath, "")
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-	if got := response.Header.Get("Content-Type"); got != "text/event-stream" {
-		t.Fatalf("Content-Type = %q", got)
-	}
-	snapshot := readSSEMessage(t, reader)
-	if snapshot.Event != "snapshot" || snapshot.ID != "test:0" || snapshot.Data.Cursor != snapshot.ID {
-		t.Fatalf("snapshot = %+v", snapshot)
-	}
-	if got := strings.Join(snapshot.Data.Models, ","); got != "instance,run,workflow" {
-		t.Fatalf("snapshot models = %q", got)
-	}
-
-	appendedAt := time.Now()
-	if err := instanceLog.Append(journal.Event{
-		Type:     journal.EventRunStarted,
-		Gaggle:   "core",
-		Workflow: "implementation",
-		RunID:    "run-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	update := readUntilEvent(t, reader, "invalidate")
-	if elapsed := time.Since(appendedAt); elapsed >= time.Second {
-		t.Fatalf("append-to-stream latency = %s, want under 1s", elapsed)
-	}
-	if update.ID != "test:1" || update.Data.Cursor != update.ID {
-		t.Fatalf("update = %+v", update)
-	}
-	if got := strings.Join(update.Data.Models, ","); got != "instance,run,workflow" {
-		t.Fatalf("update models = %q", got)
-	}
-	if len(update.Data.RunIDs) != 1 || update.Data.RunIDs[0] != "run-1" {
-		t.Fatalf("update run IDs = %+v", update.Data.RunIDs)
-	}
-	if len(update.Data.Workflows) != 1 || update.Data.Workflows[0].Name != "implementation" {
-		t.Fatalf("update workflows = %+v", update.Data.Workflows)
-	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	waitForSubscribers(t, stream, 0)
-
-	if err := instanceLog.Append(journal.Event{Type: journal.EventTickSkipped, Reason: "conditions: budget"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForCursor(t, stream, "test:2")
-
-	response, reader = openEventResponse(t, client, server.URL+EventsPath, update.ID)
-	replayed := readSSEMessage(t, reader)
-	if replayed.Event != "invalidate" || replayed.ID != "test:2" {
-		t.Fatalf("replayed event = %+v", replayed)
-	}
-	heartbeat := readUntilEvent(t, reader, "heartbeat")
-	if heartbeat.ID != "" || heartbeat.Data.Cursor != "test:2" {
-		t.Fatalf("heartbeat = %+v", heartbeat)
-	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestEventsRejectExpiredCursorAndPollingRecoversCurrentState(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-		withEventHistoryLimit(2),
-	)
-	reader := &fakeReader{instance: readservice.Instance{Name: "current"}}
-	server := newEventTestServer(t, stream, reader)
-
-	for i := 0; i < 3; i++ {
-		if err := instanceLog.Append(journal.Event{Type: journal.EventTickSkipped, Reason: fmt.Sprintf("skip-%d", i)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitForCursor(t, stream, "test:3")
-
-	request, err := http.NewRequest(http.MethodGet, server.URL+EventsPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Last-Event-ID", "test:0")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope ErrorEnvelope
-	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusConflict || envelope.Error.Code != "stale_cursor" {
-		t.Fatalf("stale response = %d %+v", response.StatusCode, envelope)
-	}
-
-	response, err = http.Get(server.URL + InstancePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var current readservice.Instance
-	if err := json.NewDecoder(response.Body).Decode(&current); err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK || current.Name != "current" {
-		t.Fatalf("poll response = %d %+v", response.StatusCode, current)
-	}
-
-	request, err = http.NewRequest(http.MethodGet, server.URL+EventsPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Last-Event-ID", "not-a-cursor")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("invalid cursor status = %d", response.StatusCode)
-	}
-	_ = response.Body.Close()
-
-	request, err = http.NewRequest(http.MethodGet, server.URL+EventsPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Last-Event-ID", "prior-session:3")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("prior-session cursor status = %d", response.StatusCode)
-	}
-	_ = response.Body.Close()
-}
-
-func TestAppendToStreamP95UnderOneSecond(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-	)
-	server := newEventTestServer(t, stream, &fakeReader{})
-	client := &http.Client{Timeout: 5 * time.Second}
-	response, reader := openEventResponse(t, client, server.URL+EventsPath, "")
-	defer func() {
-		if err := response.Body.Close(); err != nil {
-			t.Errorf("close event response body: %v", err)
-		}
-	}()
-	if snapshot := readSSEMessage(t, reader); snapshot.Event != "snapshot" {
-		t.Fatalf("snapshot = %+v", snapshot)
-	}
-
-	const samples = 20
-	latencies := make([]time.Duration, 0, samples)
-	for i := 0; i < samples; i++ {
-		if err := instanceLog.Append(journal.Event{
-			Type:   journal.EventTickSkipped,
-			Reason: fmt.Sprintf("latency-%d", i),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		durableAt := time.Now()
-		readUntilEvent(t, reader, "invalidate")
-		latencies = append(latencies, time.Since(durableAt))
-	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	p95 := latencies[(samples*95+99)/100-1]
-	if p95 >= time.Second {
-		t.Fatalf("append-to-stream p95 = %s, want under 1s", p95)
-	}
-}
-
-func TestSlowSubscriberDoesNotBlockJournalAppends(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-		withSubscriberBuffer(1),
-	)
-	_, events, cancel, err := stream.Subscribe("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-
-	appendDone := make(chan error, 1)
-	go func() {
-		for i := 0; i < 4; i++ {
-			if err := instanceLog.Append(journal.Event{
-				Type:   journal.EventTickSkipped,
-				Reason: fmt.Sprintf("slow-client-%d", i),
-			}); err != nil {
-				appendDone <- err
-				return
-			}
-		}
-		appendDone <- nil
-	}()
-	select {
-	case err := <-appendDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("journal appends blocked on slow subscriber")
-	}
-	waitForCursor(t, stream, "test:4")
-	for range events {
-	}
-	waitForSubscribers(t, stream, 0)
-}
-
+// TestDefinitionInvalidationFollowsExplicitReadModelCommit pins that a config
+// reload reaches clients.
+//
+// The name is preserved deliberately: it is referenced by name in the Windows
+// CI allowlist (.github/workflows/ci.yml), so renaming it would silently drop
+// the check on that platform.
+//
+// The MECHANISM changed completely. The poller had an out-of-band
+// PublishDefinitionsChanged that bypassed the ordered feed entirely. Deleting it
+// without an equivalent would have stopped the portal noticing config reloads,
+// so definitions changes now go through the same change table as everything
+// else — at a definite cursor position rather than through a second channel.
 func TestDefinitionInvalidationFollowsExplicitReadModelCommit(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(time.Hour),
-	)
+	ctx := context.Background()
+	store := feedTestStoreAt(t, t.TempDir())
+	stream := newFeedStream(store)
+	defer stream.Close()
+
 	_, events, cancel, err := stream.Subscribe("")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("subscribe: %v", err)
 	}
 	defer cancel()
 
-	if err := instanceLog.Append(journal.Event{Type: journal.EventConfigReloaded}); err != nil {
-		t.Fatal(err)
+	if err := stream.PublishDefinitionsChanged(); err != nil {
+		t.Fatalf("publish definitions change: %v", err)
 	}
-	if err := stream.scan(); err != nil {
-		t.Fatal(err)
-	}
-	if got := stream.Cursor(); got != "test:0" {
-		t.Fatalf("cursor before read-model commit = %q", got)
-	}
+	stream.feed.Notify()
 
-	stream.PublishDefinitionsChanged()
-	event := <-events
-	if event.ID != "test:1" || strings.Join(event.Data.Models, ",") != "instance,workflow" {
-		t.Fatalf("definition invalidation = %+v", event)
-	}
-}
-
-func TestRunStateCheckpointProducesInvalidationWithoutJournalAppend(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		RunID:    "run-state",
-		Workflow: "implementation",
-		Gaggle:   "core",
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := run.Close(); err != nil {
-			t.Errorf("close run: %v", err)
-		}
-	}()
-	stream, err := newEventStream(
-		layout,
-		log.New(io.Discard, "", 0),
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		stream.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := stream.Wait(ctx); err != nil {
-			t.Errorf("wait for event stream: %v", err)
-		}
-	}()
-	_, events, cancel, err := stream.Subscribe("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-
-	run.SetMachineState("approval")
-	if err := run.Checkpoint(); err != nil {
-		t.Fatal(err)
-	}
 	select {
 	case event := <-events:
-		if event.ID != "test:1" || len(event.Data.RunIDs) != 1 || event.Data.RunIDs[0] != "run-state" {
-			t.Fatalf("state invalidation = %+v", event)
+		// Instance-wide, not scoped: a reload can change gaggle and workflow
+		// inventory, so naming entities would under-report.
+		joined := strings.Join(event.Data.Models, ",")
+		if !strings.Contains(joined, "instance") {
+			t.Errorf("models = %v, want instance included; a config reload changes "+
+				"inventory the run and workflow models do not cover", event.Data.Models)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run state checkpoint was not invalidated")
+	case <-time.After(5 * time.Second):
+		t.Fatal("a config reload produced no invalidation; clients would not notice new " +
+			"definitions until their next ordinary refresh")
+	}
+
+	// And it is IN the ordered feed, at a real position — not out of band.
+	changes, err := store.Changes(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, change := range changes {
+		if change.Kind == readmodel.ChangeDefinitionsChanged {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the definitions change is not in the change feed; it would be invisible to " +
+			"a client resuming from a cursor")
 	}
 }
 
-func TestConcurrentRunJournalsProduceOrderedDeduplicableEvents(t *testing.T) {
-	layout, _, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-	)
+// TestServerShutdownClosesActiveEventStreams pins that a shutting-down server
+// does not hold subscriptions open.
+//
+// A handler property, unchanged by the source swap: a client left hanging on a
+// dead server looks identical to a healthy quiet stream, which is exactly the
+// failure #1711's liveness watchdog exists to catch on the other side.
+func TestServerShutdownClosesActiveEventStreams(t *testing.T) {
+	store := feedTestStoreAt(t, t.TempDir())
+	stream := newFeedStream(store)
+
 	_, events, cancel, err := stream.Subscribe("")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("subscribe: %v", err)
 	}
 	defer cancel()
 
-	runIDs := []string{"run-a", "run-b"}
-	runs := make(chan *journal.Run, len(runIDs))
-	errs := make(chan error, len(runIDs))
-	var wg sync.WaitGroup
-	for _, runID := range runIDs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-				RunID:    runID,
-				Workflow: "implementation",
-				Gaggle:   "core",
-			}, nil)
-			if err != nil {
-				errs <- err
-				return
-			}
-			runs <- run
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-	close(runs)
-	for run := range runs {
-		currentRun := run
-		t.Cleanup(func() {
-			if err := currentRun.Close(); err != nil {
-				t.Errorf("close run: %v", err)
-			}
-		})
-	}
-
-	seen := map[string]bool{}
-	lastSequence := uint64(0)
-	deadline := time.After(10 * time.Second)
-	for len(seen) < len(runIDs) {
-		select {
-		case event, ok := <-events:
-			if !ok {
-				t.Fatal("event stream disconnected")
-			}
-			if event.ID != event.Data.Cursor {
-				t.Fatalf("event ID/cursor mismatch = %+v", event)
-			}
-			_, rawSequence, ok := strings.Cut(event.ID, ":")
-			if !ok {
-				t.Fatalf("event ID = %q", event.ID)
-			}
-			sequence, err := strconv.ParseUint(rawSequence, 10, 64)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sequence <= lastSequence {
-				t.Fatalf("event sequence = %d after %d", sequence, lastSequence)
-			}
-			lastSequence = sequence
-			for _, runID := range event.Data.RunIDs {
-				seen[runID] = true
-			}
-			if len(event.Data.RunIDs) > 0 {
-				if got := strings.Join(event.Data.Models, ","); got != "instance,run,workflow" {
-					t.Fatalf("run invalidation models = %q", got)
-				}
-				if len(event.Data.Workflows) != 1 ||
-					event.Data.Workflows[0] != (WorkflowRef{Gaggle: "core", Name: "implementation"}) {
-					t.Fatalf("run invalidation workflow = %+v", event.Data.Workflows)
-				}
-			}
-		case <-deadline:
-			t.Fatalf("saw run invalidations for %+v, want %v", seen, runIDs)
-		}
-	}
-}
-
-func TestServerShutdownClosesActiveEventStreams(t *testing.T) {
-	_, _, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-	)
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithEventStream(stream))
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := NewServer("127.0.0.1:0", handler, discardLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	client := &http.Client{Timeout: 3 * time.Second}
-	response, reader := openEventResponse(t, client, "http://"+server.Address()+EventsPath, "")
-	if snapshot := readSSEMessage(t, reader); snapshot.Event != "snapshot" {
-		t.Fatalf("snapshot = %+v", snapshot)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.ReadByte(); !errorsIsEOFOrClosed(err) {
-		t.Fatalf("stream read after shutdown = %v", err)
-	}
-	_ = response.Body.Close()
-	if _, ok := <-server.Errors(); ok {
-		t.Fatal("errors channel should close after graceful shutdown")
-	}
-}
-
-func errorsIsEOFOrClosed(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) ||
-		(err != nil && strings.Contains(err.Error(), "closed"))
-}
-
-// An up-to-date resume has no events to replay, so the response only arrives if
-// the handler flushes the SSE headers on its own rather than waiting for the
-// next heartbeat.
-func TestResumeWithUpToDateCursorEstablishesBeforeHeartbeat(t *testing.T) {
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-		withHeartbeatInterval(30*time.Second),
-	)
-	server := newEventTestServer(t, stream, &fakeReader{})
-	client := &http.Client{Timeout: 3 * time.Second}
-
-	if err := instanceLog.Append(journal.Event{
-		Type:     journal.EventRunStarted,
-		Gaggle:   "core",
-		Workflow: "implementation",
-		RunID:    "run-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	waitForCursor(t, stream, "test:1")
-
-	openedAt := time.Now()
-	response, _ := openEventResponse(t, client, server.URL+EventsPath, "test:1")
-	elapsed := time.Since(openedAt)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-	if got := response.Header.Get("Content-Type"); got != "text/event-stream" {
-		t.Fatalf("Content-Type = %q", got)
-	}
-	if elapsed >= time.Second {
-		t.Fatalf("idle resume handshake took %s, want well under the heartbeat", elapsed)
-	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// slowResponseWriter models a client that reads steadily but slowly: every
-// write succeeds, so the per-write deadline never trips and only an explicit
-// shutdown check can stop the handler.
-type slowResponseWriter struct {
-	header   http.Header
-	interval time.Duration
-
-	mu     sync.Mutex
-	writes int
-}
-
-func (w *slowResponseWriter) Header() http.Header { return w.header }
-
-func (w *slowResponseWriter) WriteHeader(int) {}
-
-func (w *slowResponseWriter) Write(p []byte) (int, error) {
-	time.Sleep(w.interval)
-	w.mu.Lock()
-	w.writes++
-	w.mu.Unlock()
-	return len(p), nil
-}
-
-func (w *slowResponseWriter) Flush() {}
-
-func (w *slowResponseWriter) SetWriteDeadline(time.Time) error { return nil }
-
-func (w *slowResponseWriter) writeCount() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.writes
-}
-
-// A slow-but-live client keeps resetting the per-write deadline, so a large
-// queued replay must be abandoned when the stream closes rather than written
-// out in full.
-func TestShutdownAbandonsQueuedReplayForSlowClient(t *testing.T) {
-	const backlog = 400
-	_, instanceLog, stream := newEventStreamFixture(
-		t,
-		withEventSession("test"),
-		withEventPollInterval(5*time.Millisecond),
-		withHeartbeatInterval(30*time.Second),
-		withEventHistoryLimit(backlog+64),
-	)
-	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithEventStream(stream))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 0; i < backlog; i++ {
-		if err := instanceLog.Append(journal.Event{
-			Type:     journal.EventRunStarted,
-			Gaggle:   "core",
-			Workflow: "implementation",
-			RunID:    "run-" + strconv.Itoa(i),
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitForCursor(t, stream, "test:"+strconv.Itoa(backlog))
-
-	request := httptest.NewRequest(http.MethodGet, EventsPath, nil)
-	request.Header.Set("Last-Event-ID", "test:0")
-	writer := &slowResponseWriter{header: http.Header{}, interval: 5 * time.Millisecond}
-	served := make(chan struct{})
-	go func() {
-		defer close(served)
-		handler.ServeHTTP(writer, request)
-	}()
-
-	waitForSubscribers(t, stream, 1)
-	for writer.writeCount() < 5 {
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	closedAt := time.Now()
 	stream.Close()
+
 	select {
-	case <-served:
-	// Headroom against hosted-runner contention: the assertion is that the
-	// replay is ABANDONED (handler stops, wrote < backlog below), not that it
-	// happens within a tight window. A 2s ceiling flaked under ubuntu load and
-	// evicted queued PRs from the merge queue; a slow-but-correct abandon is
-	// still correct.
-	case <-time.After(10 * time.Second):
-		t.Fatalf("handler still writing %s after stream close", time.Since(closedAt))
+	case <-stream.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done() did not close on shutdown")
 	}
-	if got := writer.writeCount(); got >= backlog {
-		t.Fatalf("handler wrote %d of %d queued events, want the replay abandoned", got, backlog)
+
+	// A subscription attempt after shutdown is refused rather than hanging.
+	if _, _, _, err := stream.Subscribe(""); err == nil {
+		t.Error("subscribing to a closed stream succeeded; the client would wait forever")
+	}
+	_ = events
+}
+
+// TestHeartbeatIntervalIsContractual pins that both sides agree on the number.
+//
+// The client arms a liveness deadline against it (#1711), so this is a
+// guarantee rather than a local tuning choice: a longer server interval makes
+// every client's watchdog fire on a healthy stream.
+func TestHeartbeatIntervalIsContractual(t *testing.T) {
+	store := feedTestStoreAt(t, t.TempDir())
+	stream := newFeedStream(store)
+	defer stream.Close()
+
+	if got := stream.Heartbeat(); got != readmodel.HeartbeatInterval {
+		t.Errorf("heartbeat = %s, want the contractual %s", got, readmodel.HeartbeatInterval)
+	}
+	if stream.WriteTimeout() <= 0 {
+		t.Error("write timeout is not positive; a frame write could block forever")
 	}
 }
 
-// seedFinishedRun writes a run journal and backdates it, so the stream treats it
-// as long-idle history rather than an active run.
-func seedFinishedRun(t *testing.T, layout instance.Layout, id string, age time.Duration) string {
-	t.Helper()
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		RunID:    id,
-		Workflow: "implementation",
-		Gaggle:   "core",
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := run.Close(); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(layout.RunsDir(), id, "events.jsonl")
-	stamp := time.Now().Add(-age)
-	if err := os.Chtimes(path, stamp, stamp); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func newIdleTestStream(t *testing.T, layout instance.Layout, opts ...eventStreamOption) *EventStream {
-	t.Helper()
-	stream, err := newEventStream(layout, log.New(io.Discard, "", 0), opts...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		stream.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := stream.Wait(ctx); err != nil {
-			t.Errorf("wait for event stream: %v", err)
-		}
-	})
-	return stream
-}
-
-func observeJournalReads(t *testing.T) *[]string {
-	t.Helper()
-	var mu sync.Mutex
-	read := make([]string, 0)
-	journalReadObserver = func(path string) {
-		mu.Lock()
-		defer mu.Unlock()
-		read = append(read, path)
-	}
-	t.Cleanup(func() { journalReadObserver = nil })
-	return &read
-}
-
-// TestScanPollsOnlyActiveRunsNotEveryRunInHistory locks the #1738 bound. Every
-// tick used to rebuild the whole source list and open and read every run journal
-// ever written; on the live instance that was ~20k opens against a 100ms ticker,
-// so scans ran back-to-back and starved every HTTP handler in the daemon. A
-// finished run's journal never changes again, so it must not be polled at all.
-func TestScanPollsOnlyActiveRunsNotEveryRunInHistory(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
-	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = instanceLog.Close() })
-
-	const history = 25
-	for i := 0; i < history; i++ {
-		seedFinishedRun(t, layout, fmt.Sprintf("run-%03d", i), time.Hour)
-	}
-
-	stream := newIdleTestStream(
-		t, layout,
-		withEventSession("test"),
-		withEventPollInterval(time.Hour),
-		withEventSweepInterval(time.Hour),
-	)
-	read := observeJournalReads(t)
-
-	if err := stream.scan(); err != nil {
+// TestCursorIsReportedForHeartbeatFraming pins that an idle client still learns
+// the feed position.
+func TestCursorIsReportedForHeartbeatFraming(t *testing.T) {
+	ctx := context.Background()
+	store := feedTestStoreAt(t, t.TempDir())
+	startedAt := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	finished := startedAt.Add(time.Minute)
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "run-hb", Gaggle: "alpha", Workflow: "wf",
+		Phase: journal.PhaseCompleted, Terminal: true,
+		StartedAt: startedAt, FinishedAt: &finished, LastSeq: 1,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Only the instance journal is active; none of the finished runs are opened.
-	if len(*read) != 1 {
-		t.Fatalf("scan opened %d journals over a %d-run history, want 1 (instance journal only): %v",
-			len(*read), history, *read)
-	}
-}
-
-// TestScanDiscoversRunCreatedAfterStartup guards the bound above against
-// over-reach: skipping idle history must not stop a brand-new run from
-// streaming.
-func TestScanDiscoversRunCreatedAfterStartup(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
-	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 5; i++ {
-		seedFinishedRun(t, layout, fmt.Sprintf("old-%03d", i), time.Hour)
-	}
-	stream := newIdleTestStream(
-		t, layout,
-		withEventSession("test"),
-		withEventPollInterval(time.Hour),
-		withEventSweepInterval(time.Hour),
-	)
-
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		RunID:    "fresh-run",
-		Workflow: "implementation",
-		Gaggle:   "core",
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = run.Close() })
-
-	read := observeJournalReads(t)
-	if err := stream.scan(); err != nil {
-		t.Fatal(err)
-	}
-
-	fresh := filepath.Join(layout.RunsDir(), "fresh-run", "events.jsonl")
-	found := false
-	for _, path := range *read {
-		if path == fresh {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("scan did not poll the newly created run; polled %v", *read)
-	}
-}
-
-// TestSweepReArmsIdleRunThatResumes covers the one behaviour the idle bound
-// trades away lag on: a finished run that is resumed starts writing again, and
-// the periodic sweep must notice and put it back in the fast poll.
-func TestSweepReArmsIdleRunThatResumes(t *testing.T) {
-	layout := instance.NewLayout(t.TempDir())
-	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	seedFinishedRun(t, layout, "resumable", time.Hour)
-
-	stream := newIdleTestStream(
-		t, layout,
-		withEventSession("test"),
-		withEventPollInterval(time.Hour),
-		// Sweep on every scan: the two scans below run microseconds apart, so any
-		// realistic interval would skip the sweep and mask the behaviour.
-		withEventSweepInterval(time.Nanosecond),
-	)
-
-	resumed := filepath.Join(layout.RunsDir(), "resumable", "events.jsonl")
-	// Idle to begin with: not polled.
-	read := observeJournalReads(t)
-	if err := stream.scan(); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range *read {
-		if path == resumed {
-			t.Fatal("idle run was polled before it changed")
-		}
-	}
-
-	// The run writes again; the sweep must re-arm it.
-	file, err := os.OpenFile(resumed, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.WriteString("\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().Add(time.Second)
-	if err := os.Chtimes(resumed, now, now); err != nil {
-		t.Fatal(err)
-	}
-
-	*read = (*read)[:0]
-	if err := stream.scan(); err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, path := range *read {
-		if path == resumed {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("sweep did not re-arm the resumed run; polled %v", *read)
+	stream := newFeedStream(store)
+	defer stream.Close()
+	if cursor := stream.Cursor(); cursor == "" {
+		t.Error("no cursor for heartbeat framing; an idle client cannot learn where the " +
+			"feed is without waiting for an update")
 	}
 }

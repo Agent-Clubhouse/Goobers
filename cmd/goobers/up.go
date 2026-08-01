@@ -372,30 +372,26 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	stopActiveSampler := reads.StartActiveRunSampler(0)
 	defer stopActiveSampler()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
-	eventStream, err := httpapi.NewEventStream(l, apiLog)
-	if err != nil {
-		pf(stderr, "error: initialize HTTP event stream: %v\n", err)
-		return 1
-	}
-	defer eventStream.Close()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
 	// api.tls upgrades the transport (#640/#644).
 	apiAuthorizer := httpapi.AllowAll
-	// The change-feed stream when a read model exists, the filesystem poller
-	// otherwise (#1929). They are not equivalent: the feed is ordered, durable,
-	// and bounded by ACTIVE WORK, because it tails rows the projector wrote in
-	// the same transaction as the facts they describe. The poller stats every
-	// run that has ever existed and holds an in-memory ring keyed by a random
-	// per-process session id, so a client can only resume against the process
-	// that served it.
+	// Live updates come from the change feed, and ONLY from the change feed
+	// (#1929). The filesystem poller is deleted.
 	//
-	// The fallback exists for topologies with no read model; #1933 removes the
-	// divergence and with it the poller.
-	apiHandlerOpts := []httpapi.HandlerOption{httpapi.WithEventStream(eventStream)}
+	// A topology with no read model gets no SSE rather than a second detector.
+	// That is the deliberate trade: the poller discovered change independently
+	// of the projection, with different latency, completeness, and failure
+	// modes, which is why an in-flight run was visible to one and not the other.
+	// Keeping it as a fallback would preserve exactly the split section 8.1
+	// exists to remove.
+	//
+	// A degraded topology already renders as degraded (#1928/#1933), so the
+	// absence is reported rather than silent.
+	var apiHandlerOpts []httpapi.HandlerOption
 	if setup.ReadModel != nil {
-		apiHandlerOpts = []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
@@ -776,7 +772,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			scheduler:      sched,
 			openPRs:        openPRs,
 			reads:          reads,
-			events:         eventStream,
+			readModel:      setup.ReadModel,
 			wg:             &wg,
 			appliedDigest:  setup.ConfigDigest,
 			observedDigest: setup.ConfigDigest,
