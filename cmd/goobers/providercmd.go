@@ -79,6 +79,7 @@ const (
 	claimLockOperationRunLookup            = "run-claims.lookup"
 	claimLockOperationBlockedUpdate        = "blocked-records.update"
 	claimLockOperationRecovery             = "claim-recovery"
+	claimLockOperationRenewal              = "claim-renewal"
 	claimLockOperationRunRelease           = "run-claims.release"
 	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
 	claimLockOperationCloseOutRelease      = "issue-close-out.release"

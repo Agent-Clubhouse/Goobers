@@ -20,6 +20,56 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+// TestDaemonRunnerRegistryRunIDsReflectsTracking is issue #2014's liveness
+// signal at its source: RunIDs must list exactly the runs this process is
+// currently tracking, and drop one the moment its untrack func runs — the
+// same bracket Track/untrack already use around Start/Resume, so a run that
+// finishes or a process that dies stops appearing without renewLiveClaims
+// needing any separate notification of either.
+func TestDaemonRunnerRegistryRunIDsReflectsTracking(t *testing.T) {
+	r := newDaemonRunnerRegistry()
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() = %v, want none tracked yet", ids)
+	}
+
+	owner := &runner.Runner{}
+	untrackA := r.Track("run-a", owner)
+	untrackB := r.Track("run-b", owner)
+
+	ids := r.RunIDs()
+	if len(ids) != 2 {
+		t.Fatalf("RunIDs() = %v, want run-a and run-b", ids)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen["run-a"] || !seen["run-b"] {
+		t.Fatalf("RunIDs() = %v, want run-a and run-b", ids)
+	}
+
+	untrackA()
+	ids = r.RunIDs()
+	if len(ids) != 1 || ids[0] != "run-b" {
+		t.Fatalf("RunIDs() after untracking run-a = %v, want only run-b", ids)
+	}
+
+	untrackB()
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() after untracking both = %v, want none", ids)
+	}
+}
+
+// TestDaemonRunnerRegistryRunIDsNilSafe mirrors Resolve/Track's own nil
+// receiver tolerance (a *daemonRunnerRegistry is optional in several
+// construction paths) — RunIDs must not panic when called on one.
+func TestDaemonRunnerRegistryRunIDsNilSafe(t *testing.T) {
+	var r *daemonRunnerRegistry
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() on nil registry = %v, want none", ids)
+	}
+}
+
 type stalledRunStarter struct {
 	mu    sync.Mutex
 	count int

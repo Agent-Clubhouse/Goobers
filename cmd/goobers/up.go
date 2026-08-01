@@ -652,6 +652,17 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
+	// Renew resumed runs' claims immediately rather than waiting up to
+	// claimRecoverInterval for the first periodic tick (#2014): the startup
+	// recovery sweep above already ran BEFORE resume tracked anything, on the
+	// prior process's now possibly-stale leases, so a resumed run's claim
+	// could otherwise sit unrenewed — and so reapable — for most of a sweep
+	// interval right when a restart just made that most likely. Best-effort,
+	// same as the periodic sweep: a renewal failure here does not fail daemon
+	// start, since the claim ledger's own reap is what it would fail open to.
+	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+		pf(stdout, "warning: renew resumed claims: %v\n", err)
+	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
@@ -718,6 +729,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	claimTicker := time.NewTicker(claimRecoverInterval)
 	claimTickerDone := make(chan struct{})
 	claimSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_recovery_failed")
+	claimRenewErrors := newSweepErrorReporter(setup.InstanceLog, "claim_renewal_failed")
 	go func() {
 		defer close(claimTickerDone)
 		defer claimTicker.Stop()
@@ -726,6 +738,18 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
+				// Renew before reaping (#2014): both run in the same tick, and a
+				// still-tracked run's lease must be pushed back into the future
+				// before recoverExpiredClaims below checks it against now — doing
+				// it in the other order would let a run this process is still
+				// actively driving get reaped on the exact tick its lease was due
+				// to be renewed, on nothing worse than ordinary ticker jitter.
+				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				if isJournaledClaimsLockTimeout(renewErr) {
+					claimRenewErrors.report(nil)
+				} else {
+					claimRenewErrors.report(renewErr)
+				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)

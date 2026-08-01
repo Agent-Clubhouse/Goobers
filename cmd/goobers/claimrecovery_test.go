@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
@@ -255,44 +256,122 @@ func countInstanceErrors(t *testing.T, schedulerDir, code string) int {
 	return count
 }
 
-// TestDefaultClaimLeaseSurvivesARealisticLongRun is issue #235 edge 2's
-// acceptance test: the chosen fix is raising DefaultClaimLease comfortably
-// above a realistic ci-poll-bearing run's duration, not liveness-aware
-// RecoverExpired (deferred to V1 hardening, per ClaimLedger.RecoverExpired's
-// own doc). This proves that choice actually closes the reachable window —
-// a claim held for a duration well past the OLD 2h default (issue #235's
-// own example of a real run exceeding it) still survives a RecoverExpired
-// pass under the NEW default, so a still-live long run's item is never
-// silently freed and double-claimed in the shipped config.
-func TestDefaultClaimLeaseSurvivesARealisticLongRun(t *testing.T) {
+// TestRenewLiveClaimsExtendsLeaseBeyondOriginalWindow is issue #2014's AC1+AC2:
+// a run whose renewals keep landing (this test's stand-in for a daemon
+// process that keeps calling renewLiveClaims on claimRecoverInterval for
+// every runID its daemonRunnerRegistry is still tracking) survives arbitrarily
+// far past its ORIGINAL lease window, and stays refused to a second claimant,
+// even though DefaultClaimLease itself is now short (30m, not the old 6h)
+// specifically because renewal — not a large static constant — is what now
+// keeps a genuinely still-running claim alive.
+func TestRenewLiveClaimsExtendsLeaseBeyondOriginalWindow(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	start := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	fakeNow := start
-	ledger, err := localscheduler.OpenClaimLedger(
-		filepath.Join(t.TempDir(), "claims.json"),
+	seedLedger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
 		localscheduler.WithLedgerClock(func() time.Time { return fakeNow }),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, err := ledger.Claim("issue-3", "long-run", "implementation", DefaultClaimLease); err != nil || !ok {
+	if ok, _, err := seedLedger.Claim("issue-3", "long-run", "implementation", DefaultClaimLease); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
 
-	// Advance past the OLD 2h default (the realistic duration #235 itself
-	// cites as reachable: implement -> reviewer gate -> make ci -> open-pr ->
-	// a retried ci-poll) but still within the new, raised default.
-	fakeNow = start.Add(3 * time.Hour)
-	if released, err := ledger.RecoverExpired(fakeNow); err != nil || len(released) != 0 {
-		t.Fatalf("a claim 3h into a run must survive under the raised default: released=%v err=%v", released, err)
-	}
-	if entry, held := ledger.Lookup("issue-3"); !held || entry.RunID != "long-run" {
-		t.Fatalf("claim should still be held by long-run: %+v held=%v", entry, held)
+	// Three renewal cycles, each past the PRIOR cycle's expiry — well beyond
+	// DefaultClaimLease's own 30m window in total — mirroring how a real
+	// implement->ci-poll run outlasts one lease many times over now that
+	// renewal, not lease size, is what keeps it alive.
+	for i := 1; i <= 3; i++ {
+		fakeNow = fakeNow.Add(DefaultClaimLease - time.Minute)
+		reopened, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithLedgerClock(func() time.Time { return fakeNow }),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if released, err := reopened.RecoverExpired(fakeNow); err != nil || len(released) != 0 {
+			t.Fatalf("cycle %d: claim must survive recovery before its renewal lands: released=%v err=%v", i, released, err)
+		}
+		renewed, err := renewLiveClaims(l, []string{"long-run"}, DefaultClaimLease)
+		if err != nil {
+			t.Fatalf("cycle %d: renewLiveClaims: %v", i, err)
+		}
+		if len(renewed) != 1 || renewed[0].ItemID != "issue-3" {
+			t.Fatalf("cycle %d: renewed = %+v, want issue-3 renewed exactly once", i, renewed)
+		}
 	}
 
-	// Sanity: the raised default is genuinely "comfortably above" — not a
-	// fluke of this test's specific 3h probe point — pinned so a future
-	// retune can't silently shrink it back toward the old, reachable value.
-	if DefaultClaimLease < 4*time.Hour {
-		t.Fatalf("DefaultClaimLease = %s, want comfortably above a realistic ci-poll-bearing run (>= 4h)", DefaultClaimLease)
+	// Now well past 3x DefaultClaimLease from the original claim — the claim
+	// must still be held, and still refuse a second claimant.
+	final, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithLedgerClock(func() time.Time { return fakeNow }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := final.Lookup("issue-3"); !held || entry.RunID != "long-run" {
+		t.Fatalf("claim should still be held by long-run: %+v held=%v", entry, held)
+	}
+	if ok, holder, err := final.Claim("issue-3", "second-run", "implementation", DefaultClaimLease); err != nil || ok || holder != "long-run" {
+		t.Fatalf("a second claimant must be refused while long-run keeps renewing: ok=%v holder=%s err=%v", ok, holder, err)
+	}
+}
+
+// TestClaimNotRenewedIsReapedAfterShrunkLease is #2014's AC3 flip side: a
+// claim NOT passed to renewLiveClaims — this test's stand-in for a run whose
+// owning process crashed, so nothing is calling renewLiveClaims with its
+// runID anymore — is still correctly reaped once past the new, much shorter
+// DefaultClaimLease. Proves shrinking the lease from 6h to 30m didn't just
+// move the goalposts: RecoverExpired's crash-detection actually got faster,
+// not weaker, once a live run no longer needs a large static lease to
+// survive on its own.
+func TestClaimNotRenewedIsReapedAfterShrunkLease(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	fakeNow := start
+	seedLedger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithLedgerClock(func() time.Time { return fakeNow }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := seedLedger.Claim("issue-4", "crashed-run", "implementation", DefaultClaimLease); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	// No renewLiveClaims call for "crashed-run" at all — just advance past
+	// its lease, well under the OLD 6h default this would never have caught.
+	fakeNow = start.Add(DefaultClaimLease + time.Minute)
+	reopened, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithLedgerClock(func() time.Time { return fakeNow }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := reopened.RecoverExpired(fakeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0].ItemID != "issue-4" {
+		t.Fatalf("released = %+v, want issue-4 reaped as unrenewed", released)
+	}
+	if _, held := reopened.Lookup("issue-4"); held {
+		t.Fatal("unrenewed claim should have been released")
 	}
 }
