@@ -15,16 +15,16 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.poll` | yes | conformant | conformant | conformant |
 | `pr.close` | yes | conformant | conformant | conformant |
 | `pr.files` | yes | conformant | conformant | conformant |
-| `pr.compare` | yes | conformant | gap (#2076) | conformant |
+| `pr.compare` | yes | conformant | conformant | conformant |
 | `pr.review.request` | yes | conformant | conformant | conformant |
 | `pr.review.submit` |  | conformant | not declared | conformant |
 | `pr.review.threads` |  | conformant | not declared | not declared |
-| `pr.merge` | yes | conformant | gap (#2076) | conformant |
-| `pr.landing.detect-policy` | yes | conformant | gap (#2076) | conformant |
-| `pr.landing.enqueue` | yes | conformant | gap (#2076) | not declared |
-| `pr.landing.poll` | yes | conformant | gap (#2076) | not declared |
+| `pr.merge` | yes | conformant | conformant | conformant |
+| `pr.landing.detect-policy` | yes | conformant | conformant | conformant |
+| `pr.landing.enqueue` | yes | conformant | conformant | not declared |
+| `pr.landing.poll` | yes | conformant | conformant | not declared |
 | `pr.update-branch` |  | conformant | not declared | conformant |
-| `branch.delete` | yes | conformant | gap (#2076) | conformant |
+| `branch.delete` | yes | conformant | conformant | conformant |
 | `repo.policy.read` |  | conformant | not declared | not declared |
 | `pr.status.publish` |  | not declared | conformant | conformant |
 | `backlog.list` | yes | conformant | conformant | conformant |
