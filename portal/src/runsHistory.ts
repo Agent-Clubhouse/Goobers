@@ -3,6 +3,7 @@ import type { QueryState } from "./api/queryState";
 import type { DaemonClient, RunListOptions, RunPhase, RunSummary } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
+import { QueryFamily } from "./api/queryFamily";
 
 export type RunsFilter = "all" | "active" | "attention" | "complete";
 
@@ -62,6 +63,21 @@ export function useRunsHistory(
     return cached ? { status: "ready", data: cached.data } : { status: "loading" };
   });
   const request = useRef<AbortController | undefined>(undefined);
+  // The coalescing family (#1930). Held in a ref rather than recreated per
+  // render: its whole job is to remember what is in flight, and a family that
+  // was rebuilt on every render would remember nothing — which is how the
+  // pile-up got in.
+  //
+  // The loader is read from a ref at call time so the family never has to be
+  // rebuilt when `refreshWindow` changes identity, which happens on every scope
+  // change and would otherwise drop the in-flight request it is tracking.
+  const refreshLoader = useRef<() => Promise<unknown>>(() => Promise.resolve());
+  const family = useRef<QueryFamily | undefined>(undefined);
+  if (!family.current) {
+    family.current = new QueryFamily(async () => {
+      await refreshLoader.current();
+    });
+  }
   const streams = useRef<RunsStream[]>(
     initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
   );
@@ -167,11 +183,20 @@ export function useRunsHistory(
     if (streams.current.length === 0) {
       return reload();
     }
-    request.current?.abort();
+    // NOT `request.current?.abort()`. That is what this used to do, and it is
+    // the pile-up #1930 exists to end: an event arrived, the in-flight refresh
+    // was cancelled to start a newer one, another event arrived, and so on — so
+    // at a high enough event rate NO refresh ever completed and the list went
+    // permanently stale exactly when it was changing fastest.
+    //
+    // A request already in flight will return data at least as new as the event
+    // that would have cancelled it, because the response reflects server state
+    // at response time. Cancelling it discards work that was about to answer
+    // the question. Coalescing is handled by the QueryFamily wrapping this
+    // loader, which holds at most one in-flight and one queued pass.
     const dependencies = runsHistoryDependencies(scope);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
     const controller = new AbortController();
-    request.current = controller;
 
     // A throwaway stream set positioned at the top. streams.current is left
     // untouched, so "Load more" continues from where the user actually is.
@@ -228,6 +253,8 @@ export function useRunsHistory(
     );
   }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
 
+  refreshLoader.current = refreshWindow;
+
   useEffect(() => {
     const unsubscribe = subscribe(
       ["run"],
@@ -248,15 +275,27 @@ export function useRunsHistory(
         }
         // reason === "initial" with no cache is a genuine first load; anything
         // else is a live invalidation, which must not discard the window.
-        return reason === "initial" ? reload() : refreshWindow();
+        if (reason === "initial") {
+          return reload();
+        }
+        // Through the family, not straight to refreshWindow: an event arriving
+        // while a refresh is already running must queue one follow-up pass, not
+        // start a second request and not cancel the first.
+        family.current?.request("event");
+        return true;
       },
       { gaggle: scope.gaggle, workflow: scope.workflow },
     );
+    const owned = family.current;
     return () => {
       unsubscribe();
+      // Unmount IS a legitimate reason to abort: nobody is waiting for the
+      // answer. It is counted as a scope abort rather than an event abort, so
+      // the two cannot be confused when reading the stats.
+      owned?.close();
       request.current?.abort();
     };
-  }, [cache, cacheKey, isFresh, publish, refreshWindow, reload, subscribe]);
+  }, [cache, cacheKey, isFresh, publish, reload, subscribe]);
 
   useEffect(() => {
     setState((current) => {
