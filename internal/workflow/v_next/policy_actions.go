@@ -16,6 +16,7 @@ type policyActionContract struct {
 
 var policyActionContracts = map[string]policyActionContract{
 	"approve-issue":                 {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
+	"assign-milestone":              {requiredCapabilities: []capability.Capability{capability.GitHubMilestonesWrite}},
 	"claim-backlog-items":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"clear-healed-demotions":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"clear-healed-escalations":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
@@ -30,6 +31,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"edit-issue":                    {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"escalate-pr":                   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"fan-out-remediation":           {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"flag-foundation-coupling":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"flag-scope-drift":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
@@ -68,6 +70,7 @@ var commandPolicyActions = map[string][]string{
 	"open-pr":                {"open-or-update-pr"},
 	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
+	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},
 	"rebase-pr":              {"rebase-pr", "clear-remediation"},
@@ -75,6 +78,7 @@ var commandPolicyActions = map[string][]string{
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
+	"set-milestone":          {"assign-milestone"},
 	"update-behind-pr":       {"update-pr-branch", "clear-remediation"},
 }
 

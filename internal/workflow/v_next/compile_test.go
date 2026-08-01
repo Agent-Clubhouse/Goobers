@@ -963,6 +963,61 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	}
 }
 
+func TestCompileSetMilestoneRequiresRoadmapPolicy(t *testing.T) {
+	task := apiv1.Task{
+		Name:         "milestone",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "assign roadmap milestone",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "set-milestone"}},
+		Capabilities: []string{string(capability.GitHubMilestonesWrite)},
+	}
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `task "milestone" command "goobers set-milestone" prescribes policy action "assign-milestone" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"assign-milestone"}
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `task "milestone" policy action "assign-milestone" requires capability "github:milestones:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+}
+
+func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
+	task := apiv1.Task{
+		Name:         "select",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "select and classify the PR",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "pr-select"}},
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+	}
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `task "select" command "goobers pr-select" prescribes policy action "flag-foundation-coupling" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"flag-foundation-coupling"}
+	spec.Tasks[0].Capabilities = nil
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "github:pr:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared pr-select action and capability should compile: %v", err)
+	}
+}
+
 func TestCompileGatherSiblingContextRequiresPolicyActions(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "web",
