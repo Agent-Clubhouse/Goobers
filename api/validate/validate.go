@@ -135,6 +135,7 @@ const (
 	errorFieldPredicateTask       WarningCode = "FLD003"
 	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
+	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -1004,6 +1005,68 @@ func isBacklogQueryTask(task apiv1.Task) bool {
 		task.Run.Command[1] == "backlog-query"
 }
 
+// prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
+// resolves, at runtime, to the gaggle's own branch via providerBaseBranch()
+// (cmd/goobers/providercmd.go, #2087) rather than a hardcoded "main" — the
+// same 13 call sites providerInput("base", providerBaseBranch()) covers.
+var prLifecycleBaseCommands = map[string]bool{
+	"apply-verdict":            true,
+	"check-fail-first":         true,
+	"elect-lander":             true,
+	"gate-removal-guard":       true,
+	"gather-implement-context": true,
+	"gather-pr-context":        true,
+	"gather-sibling-context":   true,
+	"issue-close-out":          true,
+	"open-pr":                  true,
+	"pr-select":                true,
+	"rebase-pr":                true,
+	"remediation-checkpoint":   true,
+	"update-behind-pr":         true,
+}
+
+// checkPRLifecycleBaseBranch flags a PR-lifecycle task whose "base" input
+// disagrees with the gaggle's own resolved branch (GaggleSpec.Project.
+// Branch, "main" when unset, matching RepoRef's own default; #2088,
+// sequenced after #2087 so the runtime default this check compares against
+// is the derived branch, not the bare literal "main"). A dynamic base
+// (inputsFrom) is resolved at runtime from an upstream stage's output — not
+// statically checkable, so it is skipped rather than flagged. A task that
+// declares no base input at all is likewise not flagged: since #2087,
+// omitting it resolves correctly at runtime via providerBaseBranch() for any
+// gaggle branch, so silence is not a bug — only a literal value that
+// disagrees with the gaggle's real branch is.
+func (ix *index) checkPRLifecycleBaseBranch(r *Report, w apiv1.Workflow, file string) {
+	gaggle, ok := ix.gaggles[w.Spec.Gaggle]
+	if !ok {
+		return
+	}
+	resolvedBranch := gaggle.Spec.Project.Branch
+	if resolvedBranch == "" {
+		resolvedBranch = "main"
+	}
+	for _, t := range w.Spec.Tasks {
+		if t.Run == nil || len(t.Run.Command) < 2 || filepath.Base(t.Run.Command[0]) != "goobers" {
+			continue
+		}
+		if !prLifecycleBaseCommands[t.Run.Command[1]] {
+			continue
+		}
+		base, declared := t.Inputs["base"]
+		if !declared {
+			continue
+		}
+		if _, dynamic := t.InputsFrom["base"]; dynamic {
+			continue
+		}
+		if base != resolvedBranch {
+			r.add(warningPRLifecycleBaseDrift, Warning, file, "Workflow", w.Name,
+				"task %q declares base %q, but gaggle %q resolves to branch %q",
+				t.Name, base, w.Spec.Gaggle, resolvedBranch)
+		}
+	}
+}
+
 func splitLabelInput(value string) []string {
 	var labels []string
 	for _, label := range strings.Split(value, ",") {
@@ -1265,6 +1328,8 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.tier %q is not one of per-workflow, per-gaggle", ts.Tier)
 		}
 	}
+
+	ix.checkPRLifecycleBaseBranch(r, w, file)
 
 	for _, t := range w.Spec.Tasks {
 		if t.Type == apiv1.TaskAgentic && t.Goober != "" {
