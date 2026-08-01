@@ -110,6 +110,14 @@ func IsNotFoundError(err error) bool {
 	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound
 }
 
+// ErrMergeConflict is the provider-neutral sentinel a MergePullRequest
+// implementation wraps when the forge reports a confirmed merge conflict
+// through a channel other than GitHub's 405-with-wording response — e.g.
+// ADO's completion job reports mergeStatus="conflicts" in an ordinary 200
+// response body, not an HTTP error (CONF-3 #2076). IsMergeConflictError
+// recognizes either shape.
+var ErrMergeConflict = errors.New("provider reported a merge conflict")
+
 // IsMergeConflictError reports whether err is a typed provider response that
 // the forge returned specifically because the pull request has merge
 // conflicts (issue #1751). A conflicted PR is a normal business refusal —
@@ -123,8 +131,14 @@ func IsNotFoundError(err error) bool {
 // reclassified: an unrecognized 405 must keep the generic provider-error
 // behavior rather than be silently recorded as a conflict refusal. So the
 // status code alone is never sufficient — the response body must also name
-// the condition.
+// the condition. ADO has no such HTTP-status-coded refusal (its completion
+// job reports conflicts via mergeStatus in a 200 response, CONF-3 #2076),
+// so its MergePullRequest wraps ErrMergeConflict directly instead of
+// constructing a providerResponseError.
 func IsMergeConflictError(err error) bool {
+	if errors.Is(err, ErrMergeConflict) {
+		return true
+	}
 	var responseErr *providerResponseError
 	if !errors.As(err, &responseErr) {
 		return false
