@@ -1,0 +1,89 @@
+name: Goobers config validate
+description: >-
+  Validates a Goobers config-as-code source tree (goobers validate
+  --source-tree) as a required PR check, so branch protection on the config
+  repo can reject invalid config before it ever reaches main (#687,
+  docs/design/v2-cloud-scale.md §6 E1). Downloads and verifies a pinned
+  Goobers release; runs no daemon, mutates nothing.
+
+inputs:
+  version:
+    description: >-
+      Exact Goobers release tag to pin, e.g. v1.2.3. Required — there is no
+      "latest" default, so a config repo's gate never silently changes
+      behavior on an unpinned upstream release.
+    required: true
+  path:
+    description: Path to the config source tree (containing instance.yaml.example, manifest.yaml, gaggles/).
+    required: false
+    default: "."
+  strict:
+    description: Treat config warnings as validation errors (goobers validate --strict).
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned goobers
+      shell: bash
+      env:
+        GOOBERS_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -s)" in
+          Darwin) os=darwin ;;
+          Linux) os=linux ;;
+          *) echo "::error::unsupported runner OS for the goobers validate action: $(uname -s) (linux/darwin only)"; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64 | amd64) arch=amd64 ;;
+          arm64 | aarch64) arch=arm64 ;;
+          *) echo "::error::unsupported runner architecture for the goobers validate action: $(uname -m)"; exit 1 ;;
+        esac
+
+        archive="goobers_${GOOBERS_VERSION}_${os}_${arch}.tar.gz"
+        release_url="https://github.com/Agent-Clubhouse/Goobers/releases/download/${GOOBERS_VERSION}"
+        tmp_dir=$(mktemp -d)
+
+        echo "Downloading goobers ${GOOBERS_VERSION} for ${os}/${arch}..."
+        curl -fsSL "${release_url}/${archive}" -o "${tmp_dir}/${archive}"
+        curl -fsSL "${release_url}/SHA256SUMS" -o "${tmp_dir}/SHA256SUMS"
+
+        expected=$(awk -v name="$archive" '$2 == name { print $1 }' "${tmp_dir}/SHA256SUMS")
+        if [ -z "$expected" ]; then
+          echo "::error::SHA256SUMS for ${GOOBERS_VERSION} does not list ${archive}"
+          exit 1
+        fi
+        actual=$(sha256sum "${tmp_dir}/${archive}" | awk '{ print $1 }')
+        if [ "$actual" != "$expected" ]; then
+          echo "::error::checksum mismatch for ${archive}: got ${actual}, want ${expected}"
+          exit 1
+        fi
+
+        tar -xzf "${tmp_dir}/${archive}" -C "$tmp_dir" goobers
+        chmod +x "${tmp_dir}/goobers"
+        installed_version=$("${tmp_dir}/goobers" --version | awk '{ print $2 }')
+        if [ "$installed_version" != "$GOOBERS_VERSION" ]; then
+          echo "::error::downloaded archive reports version ${installed_version}, want ${GOOBERS_VERSION}"
+          exit 1
+        fi
+
+        install_dir="${RUNNER_TEMP}/goobers-validate-action"
+        mkdir -p "$install_dir"
+        mv "${tmp_dir}/goobers" "${install_dir}/goobers"
+        echo "$install_dir" >> "$GITHUB_PATH"
+
+    - name: goobers validate --source-tree
+      shell: bash
+      env:
+        GOOBERS_VALIDATE_PATH: ${{ inputs.path }}
+        GOOBERS_VALIDATE_STRICT: ${{ inputs.strict }}
+      run: |
+        set -euo pipefail
+        args=(validate --source-tree --github-annotations)
+        if [ "$GOOBERS_VALIDATE_STRICT" = "true" ]; then
+          args+=(--strict)
+        fi
+        args+=("$GOOBERS_VALIDATE_PATH")
+        goobers "${args[@]}"

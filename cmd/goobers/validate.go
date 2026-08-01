@@ -52,12 +52,16 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
-const validateHelp = "Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). --source-tree validates a checked-in config source tree\n" +
 	"using instance.yaml.example and the path itself as config/. " +
 	"--strict treats config warnings as validation errors. " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
+	"--github-annotations additionally writes each finding to stderr as a\n" +
+	"GitHub Actions ::error/::warning file annotation (#687), so a\n" +
+	"config-repo PR check surfaces failures directly on the PR diff; " +
+	"composes with --json since stdout stays untouched. " +
 	"--check-harness additionally preflights every agent harness\n" +
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
@@ -97,6 +101,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
+	githubAnnotations := fs.Bool("github-annotations", false, "also write each finding to stderr as a GitHub Actions file annotation (#687)")
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
@@ -120,6 +125,8 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		diagnostics = &diagnosticCollector{}
 		humanOut = io.Discard
 		humanErr = io.Discard
+	} else if *githubAnnotations {
+		diagnostics = &diagnosticCollector{}
 	}
 	code := runValidateConfig(validateOptions{
 		root:         root,
@@ -128,6 +135,9 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		checkRepos:   *checkRepos,
 		strict:       *strict,
 	}, humanOut, humanErr, diagnostics)
+	if *githubAnnotations {
+		emitGitHubAnnotations(stderr, diagnostics)
+	}
 	if !*asJSON {
 		return code
 	}

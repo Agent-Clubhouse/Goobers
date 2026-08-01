@@ -42,6 +42,13 @@ var checkedInTrees = []checkedInTree{
 	{path: "internal/instance/starter"},
 	{path: "internal/instance/demo"},
 	{path: "test/fixtures/e2e/walking-skeleton"},
+	// The #687 config-repo PR validation gate's passing self-test fixture
+	// (.github/actions/validate, docs/guides/config-pr-validation-gate.md):
+	// keeps it from silently rotting out of sync with the validator it
+	// exists to demonstrate. Its sibling "invalid" fixture is deliberately
+	// broken and is exercised by TestValidateGateInvalidFixtureFailsClosed
+	// instead, never here.
+	{path: "test/fixtures/validate-gate/valid", sourceTree: true},
 }
 
 type validatorCommand struct {

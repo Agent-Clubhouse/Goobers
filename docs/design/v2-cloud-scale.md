@@ -255,7 +255,11 @@ repo has **multiple individuals with merge access**, and the daemon (or operator
   `goobers validate` (plus feature-registry compat checks from milestone #12) against every
   PR. Branch protection on the config repo is the *authorization* mechanism for
   multi-writer — Goobers does not reinvent repo authz; it makes the merge gate able to
-  reject invalid config before it ever reaches `main`.
+  reject invalid config before it ever reaches `main`. Shipped (#687): the reusable action
+  (`.github/actions/validate`) and setup runbook are at
+  `docs/guides/config-pr-validation-gate.md`; the feature-compat check reuses
+  `internal/workflow.CheckWorkflowFeatureSupport`, already wired into `goobers validate` —
+  not gated on milestone #12's separate cross-instance registry.
 - **E2. Multi-writer reconcile semantics.** Reconcile is snapshot-consistent per commit:
   the daemon/operator always renders one committed tree (a single SHA), advances
   monotonically, never blends two HEADs, retains last-known-good on invalid HEAD (already
