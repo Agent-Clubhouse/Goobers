@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"strings"
 
@@ -49,7 +50,14 @@ type sidecarMutationRecorder struct {
 
 // RecordExternalRef appends fact best-effort: a malformed record or a failed
 // write must never fail the mutation the provider already made for real —
-// the sidecar is provenance, not the mutation itself.
+// the sidecar is provenance, not the mutation itself. A failure is still
+// surfaced via a log line (#2029): this subcommand runs as a short-lived
+// subprocess with no legal journal access (see mutationsSidecarFile's doc),
+// so stderr — captured by the parent runner process — is the only
+// observability channel available here. The runner's own read side
+// (internal/runner/run.go's readMutationSidecar) separately distinguishes a
+// present-but-corrupt sidecar from the overwhelmingly common no-mutations
+// case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
 	fact := mutationFact{
 		Provider:  string(ref.Provider),
@@ -60,14 +68,18 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 	}
 	data, err := json.Marshal(fact)
 	if err != nil {
+		log.Printf("mutation sidecar: marshal %s %s %s: %v", r.kind, fact.Provider, fact.ID, err)
 		return
 	}
 	f, err := os.OpenFile(mutationsSidecarFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
 		return
 	}
 	defer func() { _ = f.Close() }()
-	_, _ = f.Write(append(data, '\n'))
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	}
 }
 
 // externalRefID extracts the bare identifier from a providers.ExternalRef.Ref
