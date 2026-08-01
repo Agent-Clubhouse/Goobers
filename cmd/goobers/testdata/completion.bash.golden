@@ -57,7 +57,7 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs"
+            flags+=" --quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
         dashboard)
             flags+=" --port --no-open --dev-assets"
