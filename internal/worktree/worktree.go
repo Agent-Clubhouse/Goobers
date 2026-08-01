@@ -277,14 +277,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: inspect symlinks for run %s: %w", opts.RunID, err)
 	}
 
+	pid := os.Getpid()
+	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RunID:      opts.RunID,
-		OwnerRunID: opts.OwnerRunID,
-		Branch:     opts.Branch,
-		StartRef:   startRef,
-		PID:        os.Getpid(),
-		CreatedAt:  time.Now(),
-		Status:     statusActive,
+		RunID:        opts.RunID,
+		OwnerRunID:   opts.OwnerRunID,
+		Branch:       opts.Branch,
+		StartRef:     startRef,
+		PID:          pid,
+		PIDStartedAt: startedAt,
+		CreatedAt:    time.Now(),
+		Status:       statusActive,
 	}
 	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
 		// Without a marker, Reap can never distinguish this worktree from an

@@ -886,6 +886,117 @@ func TestManager_Reap_RemovesDeadProcessOrphan(t *testing.T) {
 	}
 }
 
+// TestManager_Reap_RemovesPIDReusedOrphan is #2052's fix for the PID-reuse
+// gap: a crash orphan whose recorded PID is later reused by a different,
+// long-lived process was never reaped while that new process lived, since
+// processAlive alone cannot tell the two apart. The marker's own PID (this
+// test process, always alive) stays untouched; only processStartTime is
+// overridden to report a start time far from what Create actually recorded,
+// simulating the real process having exited and its PID recycled onto
+// something else that happens to still be running.
+func TestManager_Reap_RemovesPIDReusedOrphan(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "pid-reused", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	if mk.PIDStartedAt.IsZero() {
+		t.Skip("proc.StartTime could not be determined on this platform/kernel; nothing to disambiguate")
+	}
+
+	prev := processStartTime
+	processStartTime = func(pid int) (time.Time, bool) { return time.Now().Add(-time.Hour), true }
+	t.Cleanup(func() { processStartTime = prev })
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected Reap warnings: %+v", warnings)
+	}
+	if len(results) != 1 || results[0].RunID != "pid-reused" || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("unexpected Reap results: %+v, want the PID-reused worktree reaped as orphaned", results)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected PID-reused worktree removed, stat err = %v", err)
+	}
+}
+
+// TestManager_Reap_PreservesActiveWorktreeWhenStartTimeMatches guards
+// against a false positive from the new check: an unchanged, genuinely live
+// marker (real PID, real matching start time) must survive Reap exactly as
+// before #2052.
+func TestManager_Reap_PreservesActiveWorktreeWhenStartTimeMatches(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "still-live", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("Reap touched a live worktree: results=%+v warnings=%+v", results, warnings)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("live worktree removed by Reap: %v", err)
+	}
+}
+
+// TestManager_Reap_ZeroPIDStartedAtDisablesReuseCheck covers a marker
+// written before #2052 (or on a platform/kernel where proc.StartTime
+// couldn't be read): PIDStartedAt is zero, and the reuse check must not
+// treat that as "definitely reused" just because a live re-query returns
+// something else — that would reap an indeterminate-but-possibly-live run's
+// worktree, the same destructive direction processAlive's own doc warns
+// against.
+func TestManager_Reap_ZeroPIDStartedAtDisablesReuseCheck(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "legacy-marker", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mk, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatalf("readMarker: %v", err)
+	}
+	mk.PIDStartedAt = time.Time{}
+	if err := writeMarker(m.markerPath(wt.key, wt.RunID), mk); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	prev := processStartTime
+	processStartTime = func(pid int) (time.Time, bool) { return time.Now().Add(-time.Hour), true }
+	t.Cleanup(func() { processStartTime = prev })
+
+	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("Reap treated a zero-PIDStartedAt marker as reused: results=%+v warnings=%+v", results, warnings)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("legacy-marker worktree removed by Reap: %v", err)
+	}
+}
+
 func TestManager_Reap_RestoresReservedPathBranchAfterCrash(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

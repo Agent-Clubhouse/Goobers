@@ -135,7 +135,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		var reason ReapReason
 		switch mk.Status {
 		case statusActive:
-			if processAlive(mk.PID) {
+			if processAlive(mk.PID) && !pidReused(mk) {
 				continue
 			}
 			reason = ReapReasonOrphaned
@@ -306,3 +306,45 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 // direction here: a false "dead" would reap a live run's worktree, while a
 // false "alive" only defers a reap.
 var processAlive = proc.Alive
+
+// processStartTime resolves a live pid's OS-reported start time. Indirected
+// through a var, like processAlive, so tests can inject a deterministic
+// answer instead of racing a real OS PID recycling.
+var processStartTime = proc.StartTime
+
+// pidReusedTolerance bounds how far a marker's recorded PIDStartedAt may
+// differ from a live re-query of the same PID before the mismatch is treated
+// as reuse rather than measurement imprecision — Linux's /proc stat encodes
+// starttime in clock ticks (10ms resolution at the universal 100Hz USER_HZ),
+// so exact equality is too strict for that platform.
+const pidReusedTolerance = 2 * time.Second
+
+// pidReused reports whether mk.PID, though currently alive, now names a
+// DIFFERENT process than the one that wrote this marker (#2052) — the OS
+// recycled the PID onto a new, unrelated long-lived process after the
+// original one exited without Reap ever getting a chance to notice, since
+// Alive alone cannot distinguish "still the same process" from "some other
+// process now has this number." A process's start time is immutable for its
+// entire lifetime, so comparing the marker's recorded value against a live
+// re-query is a reliable discriminator.
+//
+// A zero PIDStartedAt (an old marker written before #2052, or a platform/
+// kernel StartTime couldn't read) disables the check for that marker,
+// falling back to the pre-#2052 PID-only liveness answer — the same
+// fail-toward-"not reused" direction as processAlive's own fail-toward-alive,
+// since treating an indeterminate marker as reused would reap a possibly-live
+// run's worktree.
+func pidReused(mk marker) bool {
+	if mk.PIDStartedAt.IsZero() {
+		return false
+	}
+	live, ok := processStartTime(mk.PID)
+	if !ok {
+		return false
+	}
+	diff := live.Sub(mk.PIDStartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff > pidReusedTolerance
+}
