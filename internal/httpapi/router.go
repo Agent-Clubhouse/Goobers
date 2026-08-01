@@ -196,25 +196,15 @@ type HandlerOption func(*handlerConfig) error
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
 // change feed (#1929).
 //
-// Preferred over WithEventStream wherever a read model exists. The two differ
-// in what they can promise: this one is ordered, durable, and bounded by active
-// work, because it tails rows the projector wrote in the same transaction as
-// the facts they describe. The filesystem poller remains for topologies with no
-// read model, which #1933 removes.
+// The only SSE source (#1929). It tails rows the projector wrote in the same
+// transaction as the facts they describe, so it is ordered, durable, and
+// bounded by active work.
+//
+// A topology with no read model registers no stream at all rather than falling
+// back to a second detector; the freshness surface reports that as degraded.
 func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
 	return func(h *handlerConfig) error {
 		h.events = newFeedStream(store)
-		return nil
-	}
-}
-
-// WithEventStream registers the resumable SSE invalidation endpoint.
-func WithEventStream(stream *EventStream) HandlerOption {
-	return func(config *handlerConfig) error {
-		if stream == nil {
-			return errors.New("http API event stream is required")
-		}
-		config.events = stream
 		return nil
 	}
 }

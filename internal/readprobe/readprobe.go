@@ -47,7 +47,6 @@ var enabled atomic.Bool
 
 var (
 	journalOpens       atomic.Uint64
-	streamJournalReads atomic.Uint64
 	activeScanDirs     atomic.Uint64
 	activeScanOpens    atomic.Uint64
 	instanceLogAppends atomic.Uint64
@@ -59,9 +58,6 @@ type Snapshot struct {
 	// JournalOpens counts run journals opened and parsed by a read path. The
 	// §14.2 target for any bounded list page is zero.
 	JournalOpens uint64 `json:"journalOpens"`
-	// StreamJournalReads counts journals read by the change detector. Bounded by
-	// active work, never by history (#1738).
-	StreamJournalReads uint64 `json:"streamJournalReads"`
 	// ActiveScanDirs counts directory entries walked by the active-run scan, and
 	// ActiveScanOpens the journals it opens and replays to reconstruct phase.
 	//
@@ -103,7 +99,6 @@ func Disable() { enabled.Store(false) }
 // Reset zeroes every counter without changing the enabled state.
 func Reset() {
 	journalOpens.Store(0)
-	streamJournalReads.Store(0)
 	activeScanDirs.Store(0)
 	activeScanOpens.Store(0)
 	instanceLogAppends.Store(0)
@@ -114,7 +109,6 @@ func Reset() {
 func Take() Snapshot {
 	return Snapshot{
 		JournalOpens:       journalOpens.Load(),
-		StreamJournalReads: streamJournalReads.Load(),
 		ActiveScanDirs:     activeScanDirs.Load(),
 		ActiveScanOpens:    activeScanOpens.Load(),
 		InstanceLogAppends: instanceLogAppends.Load(),
@@ -128,7 +122,6 @@ func Take() Snapshot {
 func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 	return Snapshot{
 		JournalOpens:       s.JournalOpens - earlier.JournalOpens,
-		StreamJournalReads: s.StreamJournalReads - earlier.StreamJournalReads,
 		ActiveScanDirs:     s.ActiveScanDirs - earlier.ActiveScanDirs,
 		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
 		InstanceLogAppends: s.InstanceLogAppends - earlier.InstanceLogAppends,
@@ -144,13 +137,6 @@ func (s Snapshot) Zero() bool { return s == Snapshot{} }
 func RecordJournalOpen() {
 	if enabled.Load() {
 		journalOpens.Add(1)
-	}
-}
-
-// RecordStreamJournalRead records one journal read by the change detector.
-func RecordStreamJournalRead() {
-	if enabled.Load() {
-		streamJournalReads.Add(1)
 	}
 }
 

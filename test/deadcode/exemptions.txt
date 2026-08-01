@@ -84,12 +84,6 @@ github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capabilit
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContextAndFactory # Trace follow seam retained for cancellation tests.
 github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transcript-boundary option retained for executor tests.
-github.com/goobers/goobers/internal/httpapi.withEventPollInterval # Event-stream timing option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/httpapi.withHeartbeatInterval # Event-stream timing option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/httpapi.withEventSweepInterval # Event-stream idle-sweep option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/httpapi.withEventHistoryLimit # Event-stream history option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/httpapi.withSubscriberBuffer # Event-stream buffer option retained for deterministic handler tests.
-github.com/goobers/goobers/internal/httpapi.withEventSession # Event-stream session option retained for deterministic handler tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 
