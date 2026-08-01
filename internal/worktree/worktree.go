@@ -507,8 +507,10 @@ func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	}
-	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
-		if err := os.RemoveAll(path); err != nil {
+	if err := retryOnFileLock(ctx, func() error {
+		return runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+	}); err != nil {
+		if err := retryOnFileLock(ctx, func() error { return os.RemoveAll(path) }); err != nil {
 			return fmt.Errorf("remove stale worktree directory: %w", err)
 		}
 		if err := runGit(ctx, repoDir, "worktree", "prune"); err != nil {
@@ -571,7 +573,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return nil
 	}
 
-	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path); err != nil {
+	if err := retryOnFileLock(ctx, func() error {
+		return runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path)
+	}); err != nil {
 		if worktreeMeasured && markerErr == nil {
 			if usageErr := writeMarker(markerPath, mk); usageErr != nil {
 				measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))

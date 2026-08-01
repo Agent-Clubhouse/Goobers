@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxPerPage is the GitHub REST API's maximum page size; getAllPages requests
@@ -410,6 +411,55 @@ func withRunIDFooter(body, runID string) string {
 		return "---\n" + footer
 	}
 	return body + "\n\n---\n" + footer
+}
+
+// capDescriptionWithFooter appends the run-ID footer and, when the result would
+// exceed maxChars characters, trims the body so the whole description fits while
+// keeping the footer intact. Some providers (notably Azure DevOps, which caps a
+// PR description at 4000 characters and rejects anything longer with HTTP 400)
+// enforce a hard limit that the structured PR body (which has no overall cap of
+// its own) can exceed. The footer carries the run-id that open-pr relies on for
+// idempotency and traceability, so it is always preserved; only the body is
+// trimmed, preferring a line boundary so a markdown/HTML block is not sliced
+// mid-line. maxChars <= 0 disables the cap. Length is counted in runes (Unicode
+// code points), matching how ADO counts "characters".
+func capDescriptionWithFooter(body, runID string, maxChars int) string {
+	full := withRunIDFooter(body, runID)
+	if maxChars <= 0 || utf8.RuneCountInString(full) <= maxChars {
+		return full
+	}
+	const marker = "\n\n_… description truncated to fit the provider's length limit …_"
+	footer := ""
+	if runID != "" {
+		if body == "" {
+			footer = "---\n" + runFooter(runID)
+		} else {
+			footer = "\n\n---\n" + runFooter(runID)
+		}
+	}
+	budget := maxChars - utf8.RuneCountInString(marker) - utf8.RuneCountInString(footer)
+	if budget <= 0 {
+		// Degenerate: the footer plus marker alone already exceed the limit.
+		// Hard-truncate the fully rendered description on a rune boundary.
+		return truncateRunes(full, maxChars)
+	}
+	trimmed := truncateRunes(body, budget)
+	if idx := strings.LastIndexByte(trimmed, '\n'); idx > 0 {
+		trimmed = trimmed[:idx]
+	}
+	return strings.TrimRight(trimmed, " \n") + marker + footer
+}
+
+// truncateRunes returns s limited to at most max runes, cutting on a rune
+// boundary so multi-byte characters are never split.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
 }
 
 func shouldEmitWorkItem(seen map[string]time.Time, item WorkItem) bool {
