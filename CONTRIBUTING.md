@@ -35,7 +35,7 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 | Tier | Composition | Use |
 |---|---|---|
 | `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
-| `make ci` | The portable merge gate: fast-tier checks plus module tidiness, shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
+| `make ci` | The portable merge gate: fast-tier checks plus module tidiness, flake-policy enforcement, shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
 | `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, journal conformance, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 
 `make vulncheck` is a separate, network-backed static-analysis gate. It runs the
@@ -52,6 +52,9 @@ recipes, so extra or missing commands fail the contract check. Each validation
 tier prints the elapsed time for every gate it runs; CI also publishes
 structured unit-test timing and soft-budget comparisons — see
 [`docs/guides/test-timing.md`](docs/guides/test-timing.md).
+The stress tier's fingerprint ledger, expiring quarantine helper, and
+no-anonymous-retry rule are documented in
+[`docs/guides/flake-management.md`](docs/guides/flake-management.md).
 
 Tests that intentionally execute tools outside the Go test process belong in
 `//go:build integration` files and must declare each executable with

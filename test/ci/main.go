@@ -295,6 +295,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
+		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 	}
 
 	portalPrepared := false
