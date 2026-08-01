@@ -5,21 +5,18 @@
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
-github.com/goobers/goobers/internal/configdiff.OperationalFields # Public config-drift inventory retained for audit and tooling consumers.
+github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
-github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper retained for config tooling consumers.
+github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
-github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory retained for cross-surface parity checks.
-github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory retained for exporter and audit consumers.
-github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator retained for exporter and audit consumers.
-github.com/goobers/goobers/internal/telemetry/query.HasCapability # Query capability helper retained for external query integrations.
-github.com/goobers/goobers/internal/telemetry/query.MaterializeArtifact # Query artifact helper retained for external query integrations.
-github.com/goobers/goobers/internal/telemetry/query.NotConfiguredSource.Query # Explicit unconfigured project-query implementation retained for optional integrations.
-github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper retained for provider webhook integrations.
-github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy helper retained for validation and tooling consumers.
-github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature lookup retained for validation and tooling consumers.
-github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory API retained for validation tooling.
+github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
+github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory, exercised by telemetry_test.go and otlp_test.go's attribute-coverage checks (#2044 audit).
+github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
+github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
+github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy facade, exercised by api/validate/validate_test.go and both interpreters' features_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
