@@ -134,6 +134,7 @@ describe("portal foundation", () => {
 
   it.each([
     { hash: "#/overview", heading: "2 runs need attention." },
+    { hash: "#/factory", heading: "Factory" },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },

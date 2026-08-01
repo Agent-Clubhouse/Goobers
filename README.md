@@ -40,6 +40,17 @@ Quarantined paths stay in-tree, compiling, and status-bannered — they are the
 documented tier-3 drop-in points (`docs/ARCHITECTURE.md §10`), not dead code.
 See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
+## Factory Floor
+
+Factory Floor is the portal's operations view. It is under active development. It maps
+configured workflows, stages, active runs, and goobers into a live plant without
+simulated work.
+
+![Factory Floor showing synthetic workflow activity](docs/images/factory-floor.png)
+
+See the [Factory Floor read-model design](docs/design/factory-floor.md) for data
+sources, safe fields, failure behavior, and the proposed future read endpoint.
+
 ## Go module
 
 - Module path: `github.com/goobers/goobers`

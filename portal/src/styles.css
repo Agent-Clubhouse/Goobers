@@ -4918,3 +4918,1367 @@ a.telemetry-error-row:hover {
     border-color: var(--accent);
   }
 }
+
+/* ====================================================================
+   Factory Floor (#/factory)
+   --------------------------------------------------------------------
+   A working plant, not a dashboard: bays, machines, conveyors, crates
+   and staff, all positioned from model coordinates that are a pure
+   function of the daemon snapshot. Nothing here animates on its own.
+   the only motion is a carrier moving because its run changed stage,
+   and the blocked-stage alarm.
+   ==================================================================== */
+
+.factory-page {
+  display: grid;
+  gap: 14px;
+}
+
+.factory-heading {
+  align-items: end;
+}
+
+.factory-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.factory-control {
+  display: grid;
+  gap: 4px;
+}
+
+.factory-control span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.factory-control select {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 11px;
+  min-width: 150px;
+  padding: 6px 8px;
+}
+
+.factory-lens {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.factory-lens-button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+  padding: 6px 11px;
+}
+
+.factory-lens-button.is-active {
+  background: var(--panel-raised);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  color: var(--ink);
+}
+
+.factory-scope-notice {
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 9px;
+  color: var(--warning-ink);
+  font-size: 11px;
+  margin: 0;
+  padding: 9px 12px;
+}
+
+.factory-status-strip {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(210px, 1.35fr) repeat(3, minmax(138px, 0.8fr));
+}
+
+.factory-status-card {
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--panel-raised) 94%, var(--accent) 6%),
+      var(--panel)
+    );
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
+  display: grid;
+  gap: 2px;
+  min-height: 70px;
+  padding: 10px 12px;
+}
+
+.factory-status-card > span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 740;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.factory-status-card strong {
+  color: var(--ink);
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.factory-status-card small {
+  color: var(--muted-strong);
+  font-size: 9.5px;
+}
+
+.factory-status-card-primary {
+  border-left: 4px solid var(--success);
+}
+
+.factory-status-card-primary[data-alert="on"] {
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--line));
+  border-left-color: var(--danger);
+}
+
+.factory-status-card-primary[data-state="held"],
+.factory-status-card-primary[data-state="partial"] {
+  border-left-color: var(--warning);
+}
+
+.factory-layout {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 326px;
+}
+
+.factory-stage-area {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.factory-idle-note {
+  background: color-mix(in srgb, var(--success) 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--success) 36%, var(--line));
+  border-radius: 9px;
+  color: var(--muted-strong);
+  font-size: 11px;
+  margin: 0;
+  padding: 8px 11px;
+}
+
+/* --- The plant ----------------------------------------------------- */
+
+.factory-floor {
+  background:
+    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+    var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 55%, transparent), inset 0 -18px 34px -26px rgb(0 0 0 / 55%);
+  max-height: min(74vh, 780px);
+  overflow: auto;
+  padding: 0;
+  position: relative;
+}
+
+.factory-canvas {
+  position: relative;
+  transform-origin: 0 0;
+}
+
+.factory-ground {
+  display: block;
+  inset: 0;
+  position: absolute;
+}
+
+.factory-slab {
+  fill: color-mix(in srgb, var(--bg) 82%, var(--panel));
+}
+
+.factory-tile-line {
+  stroke: color-mix(in srgb, var(--line) 55%, transparent);
+  stroke-width: 1;
+}
+
+.factory-bay {
+  fill: color-mix(in srgb, var(--panel) 72%, transparent);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.factory-bay-header {
+  fill: color-mix(in srgb, var(--accent) 9%, var(--panel-raised));
+  stroke: color-mix(in srgb, var(--accent) 22%, var(--line));
+  stroke-width: 1;
+}
+
+.factory-hazard-base {
+  fill: color-mix(in srgb, var(--warning) 26%, var(--panel));
+}
+
+.factory-hazard-stripe {
+  fill: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.factory-yard-pad,
+.factory-commons-pad {
+  fill: color-mix(in srgb, var(--ink) 5%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+/* The apron is floor marking, not another building: no fill, just a bay line. */
+.factory-apron {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 55%, transparent);
+  stroke-dasharray: 3 5;
+  stroke-width: 1;
+}
+
+.factory-yard-slot {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 60%, transparent);
+  stroke-dasharray: 2 4;
+  stroke-width: 1;
+}
+
+.factory-floor-decal {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 55%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.factory-pad-label,
+.factory-dock-label,
+.factory-conveyor-label {
+  fill: var(--muted);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.factory-conveyor-bed {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 85%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 9;
+}
+
+.factory-conveyor-line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 65%, transparent);
+  stroke-dasharray: 7 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.factory-conveyor-line[data-kind="repass"] {
+  stroke: color-mix(in srgb, var(--warning) 60%, transparent);
+}
+
+.factory-conveyor-line[data-kind="terminal"] {
+  stroke: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.factory-conveyor-head {
+  fill: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+/* A belt only runs when a run actually moved along it, and only briefly. */
+.factory-conveyor-line[data-active="true"] {
+  animation: factory-belt 620ms linear 2;
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+
+@keyframes factory-belt {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+.factory-dock {
+  fill: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.factory-dock[data-terminal="complete"] {
+  stroke: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+
+.factory-dock[data-terminal="escalate"] {
+  stroke: color-mix(in srgb, var(--danger) 60%, var(--line));
+}
+
+/* --- Line plaque ---------------------------------------------------- */
+
+.factory-lane-plaque-row {
+  height: 26px;
+  left: 8px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 8;
+}
+
+.factory-lane-plaque {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px -8px rgb(0 0 0 / 75%);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  height: 26px;
+  left: 12px;
+  max-width: min(680px, calc(100vw - 86px));
+  padding: 0 10px;
+  pointer-events: auto;
+  position: sticky;
+  text-align: left;
+  width: max-content;
+}
+
+.factory-lane-plaque:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.factory-lane-plaque[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.factory-lane-plaque[data-blocked="true"] {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.factory-lane-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.factory-lane-gaggle {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 640;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.factory-lane-metrics {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.factory-lane-metric {
+  color: var(--muted-strong);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-lane-capacity {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.factory-lane-gauge {
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  width: 56px;
+}
+
+.factory-lane-gauge > span {
+  background: var(--active);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+}
+
+.factory-lane-badge {
+  background: var(--warning-soft);
+  border-radius: 999px;
+  color: var(--warning-ink);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  text-transform: uppercase;
+}
+
+/* --- Machines ------------------------------------------------------- */
+
+.factory-station {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-raised) 94%, var(--accent) 6%) 0%, var(--panel) 62%,
+      color-mix(in srgb, var(--panel) 82%, var(--line)) 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 60%, transparent),
+    0 8px 0 -4px color-mix(in srgb, var(--line-strong) 55%, transparent),
+    0 16px 24px -18px rgb(0 0 0 / 60%);
+  cursor: pointer;
+  display: grid;
+  gap: 0;
+  grid-template-rows: 14px minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  text-align: left;
+}
+
+.factory-station:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+}
+
+.factory-station[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 8px 0 -4px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 18px 26px -18px rgb(0 0 0 / 62%);
+}
+
+.factory-station-roof {
+  align-items: center;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 26%, var(--panel)) 0%,
+    color-mix(in srgb, var(--ink) 12%, var(--panel)) 100%);
+  border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 80%, transparent);
+  display: flex;
+  gap: 3px;
+  height: 15px;
+  justify-content: flex-end;
+  padding: 0 8px;
+  position: relative;
+}
+
+/* Each machine kind reads as different hardware, not just different text. */
+.factory-station[data-kind="agentic"] .factory-station-roof {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 46%, var(--panel)) 0%,
+    color-mix(in srgb, var(--accent) 18%, var(--panel)) 100%);
+}
+
+.factory-station[data-kind="gate"] .factory-station-roof {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 52%, var(--panel)) 0%,
+    color-mix(in srgb, var(--warning) 20%, var(--panel)) 100%);
+}
+
+.factory-station-vent {
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  border-radius: 1px;
+  height: 5px;
+  width: 9px;
+}
+
+.factory-station-body {
+  display: grid;
+  gap: 3px;
+  padding: 7px 10px 8px;
+}
+
+.factory-station-kind {
+  color: var(--muted);
+  font-size: 7.5px;
+  font-weight: 760;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.factory-station-name {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-station-gauge {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  margin-top: 2px;
+}
+
+.factory-gauge-track {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 999px;
+  flex: 1 1 auto;
+  height: 6px;
+  overflow: hidden;
+}
+
+.factory-gauge-fill {
+  background: var(--active);
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+}
+
+.factory-gauge-readout {
+  color: var(--muted-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-machine-status {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-left: auto;
+}
+
+.factory-station[data-status="held"] .factory-machine-status {
+  color: var(--warning-ink);
+}
+
+.factory-station[data-status="blocked"] .factory-machine-status {
+  color: var(--danger);
+}
+
+.factory-status-light {
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent);
+  height: 7px;
+  position: absolute;
+  right: 9px;
+  top: 20px;
+  width: 7px;
+}
+
+.factory-station[data-status="idle"] .factory-status-light {
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+}
+
+.factory-station[data-status="running"] .factory-status-light {
+  background: var(--success);
+}
+
+.factory-station[data-status="impeded"] .factory-status-light {
+  background: var(--warning);
+}
+
+.factory-station[data-status="held"] .factory-status-light {
+  background: var(--warning);
+}
+
+.factory-station[data-status="blocked"] .factory-status-light {
+  background: var(--danger);
+}
+
+.factory-station[data-status="unknown"] .factory-status-light {
+  background: var(--warning);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--warning) 25%, transparent);
+}
+
+.factory-station[data-status="idle"] .factory-gauge-fill {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.factory-station[data-status="impeded"] .factory-gauge-fill {
+  background: var(--warning);
+}
+
+.factory-station[data-status="held"] .factory-gauge-fill {
+  background: var(--warning);
+}
+
+.factory-station[data-status="blocked"] .factory-gauge-fill {
+  background: var(--danger);
+}
+
+.factory-station[data-status="unknown"] .factory-gauge-fill {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--warning) 0 5px,
+    color-mix(in srgb, var(--warning) 28%, transparent) 5px 9px
+  );
+}
+
+.factory-station[data-status="running"] {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--line-strong));
+}
+
+.factory-station[data-status="impeded"] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--line-strong));
+}
+
+.factory-station[data-status="held"] {
+  border-color: var(--warning);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent),
+    0 8px 0 -4px color-mix(in srgb, var(--warning) 38%, transparent),
+    0 16px 24px -18px rgb(0 0 0 / 60%);
+}
+
+.factory-station[data-status="unknown"] {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--line-strong));
+  border-style: dotted;
+}
+
+.factory-station[data-kind="gate"] {
+  border-style: dashed;
+}
+
+.factory-station[data-source="observed"] .factory-station-kind::after {
+  content: " · observed";
+}
+
+/* --- Stage alarms ---------------------------------------------------
+   Only the compact physical beacon blinks. The machine border and wash
+   stay bright and static so large warning surfaces never flash together. */
+
+@keyframes factory-alarm-blink {
+  0%,
+  49.999% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.factory-station[data-alarm="blocked"] {
+  border-color: var(--danger);
+}
+
+.factory-station[data-alarm="hold"] {
+  border-color: var(--warning);
+}
+
+.factory-station[data-alarm="blocked"]::after,
+.factory-station[data-alarm="hold"]::after {
+  border: 2px solid var(--danger);
+  border-radius: 11px;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.factory-station[data-alarm="hold"]::after {
+  border-color: var(--warning);
+}
+
+.factory-alarm-beacon {
+  animation: factory-alarm-blink 880ms steps(1, end) infinite;
+  display: block;
+  left: 8px;
+  position: absolute;
+  top: 3px;
+}
+
+.factory-alarm-lamp {
+  background: var(--danger);
+  border-radius: 999px 999px 2px 2px;
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--danger) 70%, transparent);
+  display: block;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-alarm-beacon[data-alarm="hold"] .factory-alarm-lamp {
+  background: var(--warning);
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--warning) 70%, transparent);
+}
+
+.factory-alarm-wash {
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--danger) 52%, transparent), transparent 76%);
+  border-radius: 18px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.factory-alarm-wash[data-alarm="hold"] {
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--warning) 42%, transparent), transparent 76%);
+}
+
+/* --- Work carriers --------------------------------------------------- */
+
+.factory-carrier {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--panel-raised)),
+    color-mix(in srgb, var(--accent) 8%, var(--panel)));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  border-radius: 5px;
+  box-shadow: 0 4px 8px -5px rgb(0 0 0 / 70%);
+  cursor: pointer;
+  display: grid;
+  height: 22px;
+  left: 0;
+  padding: 0;
+  place-items: center;
+  position: absolute;
+  top: 0;
+  width: 28px;
+}
+
+.factory-carrier.is-transitioning {
+  transition: transform 620ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+
+.factory-carrier-lid {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  height: 1.5px;
+  left: 4px;
+  position: absolute;
+  right: 4px;
+  top: 6px;
+}
+
+.factory-carrier-code {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 4px;
+}
+
+.factory-carrier[data-state="paused"] {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 34%, var(--panel-raised)),
+    color-mix(in srgb, var(--warning) 12%, var(--panel)));
+  border-color: var(--warning);
+}
+
+.factory-carrier[data-state="blocked"] {
+  background:
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--danger) 30%, var(--panel)) 0 4px,
+      color-mix(in srgb, var(--danger) 14%, var(--panel)) 4px 8px);
+  border-color: var(--danger);
+}
+
+.factory-carrier[data-state="starting"] {
+  background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+  border-color: var(--line-strong);
+  border-style: dashed;
+}
+
+.factory-carrier[data-state="unknown"] {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warning) 25%, var(--panel)) 0 4px,
+    color-mix(in srgb, var(--muted) 15%, var(--panel)) 4px 8px
+  );
+  border-color: var(--warning);
+  border-style: dotted;
+}
+
+.factory-carrier[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 8px -5px rgb(0 0 0 / 70%);
+}
+
+/* One-shot transition flash: it fires because the run changed stage, and it
+   ends. There is no idle loop anywhere on this floor. */
+.factory-carrier[data-moved="true"] {
+  animation: factory-carrier-arrive 900ms ease-out 1;
+}
+
+@keyframes factory-carrier-arrive {
+  0% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* --- Staff ----------------------------------------------------------- */
+
+.factory-worker {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  height: 34px;
+  padding: 0;
+  position: absolute;
+  width: 30px;
+  z-index: 1;
+}
+
+.factory-worker-head {
+  background: color-mix(in srgb, var(--accent) 55%, var(--panel-raised));
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 60%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 11px;
+  left: 50%;
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+  width: 11px;
+}
+
+.factory-worker-body {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 40%, var(--panel-raised)),
+    color-mix(in srgb, var(--accent) 16%, var(--panel)));
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 45%, transparent);
+  border-radius: 7px 7px 5px 5px;
+  bottom: 11px;
+  display: block;
+  left: 50%;
+  position: absolute;
+  top: 11px;
+  transform: translateX(-50%);
+  width: 18px;
+}
+
+.factory-worker-tag {
+  bottom: 0;
+  color: var(--muted-strong);
+  font-size: 7.5px;
+  font-weight: 700;
+  left: 0;
+  letter-spacing: 0.04em;
+  position: absolute;
+  right: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.factory-worker[data-active="false"] .factory-worker-head,
+.factory-worker[data-active="false"] .factory-worker-body {
+  background: color-mix(in srgb, var(--muted) 26%, var(--panel));
+  border-color: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.factory-worker[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.factory-overflow {
+  background: color-mix(in srgb, var(--panel-raised) 92%, var(--accent) 8%);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  border-radius: 999px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 760;
+  height: 20px;
+  padding: 0 7px;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.factory-overflow:hover,
+.factory-overflow:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.factory-carrier-overflow {
+  min-width: 96px;
+}
+
+.factory-yard-overflow {
+  min-width: 68px;
+}
+
+.factory-worker-overflow {
+  min-width: 38px;
+  padding-inline: 4px;
+}
+
+.factory-commons-overflow {
+  min-width: 88px;
+}
+
+/* --- Lenses ----------------------------------------------------------
+   World is the full plant. Flow emphasises the belts and mutes the
+   scenery. Risk mutes everything that is not held, so blocked work is
+   the only thing with colour. */
+
+.factory-floor[data-lens="flow"] .factory-conveyor-line {
+  stroke-width: 3;
+}
+
+.factory-floor[data-lens="flow"] .factory-conveyor-bed {
+  stroke-width: 11;
+}
+
+.factory-floor[data-lens="flow"] .factory-station-roof,
+.factory-floor[data-lens="flow"] .factory-worker {
+  opacity: 0.55;
+}
+
+.factory-floor[data-lens="flow"] .factory-alarm-beacon,
+.factory-floor[data-lens="flow"] .factory-alarm-wash,
+.factory-floor[data-lens="flow"] .factory-station[data-alarm="blocked"]::after,
+.factory-floor[data-lens="flow"] .factory-station[data-alarm="hold"]::after {
+  animation: none;
+  opacity: 1;
+}
+
+.factory-floor[data-lens="risk"] .factory-station[data-status="idle"],
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="running"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="starting"],
+.factory-floor[data-lens="risk"] .factory-worker,
+.factory-floor[data-lens="risk"] .factory-conveyor-line {
+  filter: saturate(0.25);
+  opacity: 0.62;
+}
+
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="blocked"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="paused"] {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+/* --- Legend ----------------------------------------------------------- */
+
+.factory-legend {
+  color: var(--muted-strong);
+  display: grid;
+  font-size: 10px;
+  gap: 7px;
+}
+
+.factory-legend-group {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.factory-legend-group > strong {
+  color: var(--ink);
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  min-width: 58px;
+  text-transform: uppercase;
+}
+
+.factory-legend-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.factory-legend-item::before {
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  content: "";
+  height: 9px;
+  width: 12px;
+}
+
+.factory-legend-item[data-legend="running"]::before {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-raised));
+  border-color: var(--accent);
+}
+
+.factory-legend-item[data-legend="paused"]::before {
+  background: color-mix(in srgb, var(--warning) 34%, var(--panel-raised));
+  border-color: var(--warning);
+}
+
+.factory-legend-item[data-legend="blocked"]::before {
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--danger) 30%, var(--panel)) 0 3px,
+    color-mix(in srgb, var(--danger) 12%, var(--panel)) 3px 6px);
+  border-color: var(--danger);
+}
+
+.factory-legend-item[data-legend="unknown"]::before {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warning) 25%, var(--panel)) 0 3px,
+    var(--panel) 3px 6px
+  );
+  border-color: var(--warning);
+  border-style: dotted;
+}
+
+.factory-legend-item[data-legend="idle"]::before {
+  background: var(--panel);
+}
+
+.factory-legend-item[data-legend="inbound"]::before {
+  background: var(--panel);
+  border-style: dashed;
+}
+
+.factory-legend-item[data-legend="machine-running"]::before {
+  background: var(--success);
+  border-radius: 999px;
+  height: 7px;
+  width: 7px;
+}
+
+.factory-legend-item[data-legend="machine-held"]::before {
+  background: var(--warning);
+  border-color: var(--warning);
+}
+
+.factory-legend-item[data-legend="machine-blocked"]::before {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.factory-legend-item[data-legend="gate"]::before {
+  background: color-mix(in srgb, var(--warning) 18%, var(--panel));
+  border-color: var(--warning);
+  border-style: dashed;
+}
+
+.factory-legend-item[data-legend="observed"]::before {
+  background: var(--panel);
+  border-color: var(--warning);
+  border-style: dotted;
+}
+
+.factory-legend-readout {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding-left: 68px;
+}
+
+/* --- Inspector rail ---------------------------------------------------- */
+
+.factory-inspector {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 4%, var(--panel-raised)),
+      var(--panel) 150px
+    );
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: 0 18px 40px -34px rgb(0 0 0 / 75%);
+  display: grid;
+  gap: 12px;
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  padding: 16px;
+  position: sticky;
+  top: 16px;
+}
+
+.factory-inspector-status {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.factory-freshness {
+  align-items: center;
+  color: var(--muted-strong);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 640;
+  gap: 6px;
+}
+
+.factory-freshness-mark {
+  background: var(--success);
+  border-radius: 999px;
+  height: 7px;
+  width: 7px;
+}
+
+.factory-freshness[data-state="refreshing"] .factory-freshness-mark {
+  background: var(--warning);
+}
+
+.factory-freshness[data-state="degraded"] .factory-freshness-mark {
+  background: var(--danger);
+}
+
+.factory-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.factory-metrics > div {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 9px;
+}
+
+.factory-metrics dt {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.factory-metrics dd {
+  display: grid;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin: 2px 0 0;
+}
+
+.factory-metrics dd small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.factory-state-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  gap: 8px;
+}
+
+.factory-state-chip {
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  text-transform: uppercase;
+}
+
+.factory-state-line[data-state="blocked"] .factory-state-chip {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.factory-state-line[data-state="impeded"] .factory-state-chip,
+.factory-state-line[data-state="held"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="unknown"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="paused"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="idle"] .factory-state-chip {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.factory-state-note,
+.factory-attention-note {
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.factory-alarm-text {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.factory-hold-text {
+  color: var(--warning-ink);
+  font-weight: 650;
+}
+
+.factory-attention h4 {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin: 0 0 7px;
+  text-transform: uppercase;
+}
+
+.factory-attention ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.factory-attention-row {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 7px 9px;
+}
+
+.factory-attention-row[data-kind="blocked-run"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.factory-attention-run {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 660;
+}
+
+.factory-attention-row small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.factory-attention-meta {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.factory-hold-chip {
+  background: var(--danger-soft);
+  border-radius: 999px;
+  color: var(--danger);
+  font-size: 8.5px;
+  font-weight: 660;
+  padding: 2px 7px;
+}
+
+.factory-links {
+  display: grid;
+  gap: 6px;
+}
+
+.factory-link {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  display: flex;
+  font-size: 11px;
+  font-weight: 620;
+  justify-content: space-between;
+  padding: 8px 10px;
+  text-decoration: none;
+}
+
+.factory-link:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.factory-inspector-note {
+  color: var(--muted-strong);
+  font-size: 10.5px;
+  margin: 0;
+}
+
+.factory-empty-counts {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Responsive -------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .factory-status-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .factory-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .factory-inspector {
+    max-height: none;
+    position: static;
+  }
+
+  .factory-floor {
+    max-height: min(64vh, 620px);
+  }
+}
+
+@media (max-width: 720px) {
+  .factory-controls {
+    width: 100%;
+  }
+
+  .factory-control select {
+    min-width: 120px;
+  }
+
+  .factory-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .factory-status-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- Reduced motion ----------------------------------------------------
+   The alarm must still read as an alarm when motion is off, so it freezes
+   in its BRIGHT state rather than wherever the blink happened to stop, and
+   carriers jump to their new stage instead of sliding. Declared after the
+   global reduced-motion block on purpose: it has to win. */
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-alarm-beacon {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  .factory-carrier,
+  .factory-carrier.is-transitioning {
+    transition: none !important;
+  }
+
+  .factory-carrier[data-moved="true"] {
+    animation: none !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  .factory-conveyor-line[data-active="true"] {
+    animation: none !important;
+  }
+}

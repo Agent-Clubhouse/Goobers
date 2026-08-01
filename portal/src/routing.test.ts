@@ -17,6 +17,31 @@ describe("definition routing", () => {
   });
 });
 
+describe("Factory routing", () => {
+  it("round-trips the factory scope and lens", () => {
+    const route = {
+      page: "factory" as const,
+      scope: { gaggle: "core tools", workflow: "implementation/v2", lens: "risk" as const },
+    };
+
+    expect(routeHash(route)).toBe(
+      "#/factory?gaggle=core+tools&workflow=implementation%2Fv2&lens=risk",
+    );
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(activeArea(route)).toBe("factory");
+  });
+
+  it("defaults to the whole floor and drops an unknown lens", () => {
+    expect(parseRoute("#/factory")).toEqual({ page: "factory" });
+    expect(routeHash({ page: "factory" })).toBe("#/factory");
+    expect(parseRoute("#/factory?lens=sabotage")).toEqual({ page: "factory" });
+    expect(parseRoute("#/factory?gaggle=core&lens=flow")).toEqual({
+      page: "factory",
+      scope: { gaggle: "core", workflow: undefined, lens: "flow" },
+    });
+  });
+});
+
 describe("Insight routing", () => {
   it("round-trips scoped run drill-through filters", () => {
     const route = {
