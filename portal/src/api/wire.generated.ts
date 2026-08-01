@@ -477,7 +477,26 @@ export const goWireFixtures = {
       "retryCount": 2,
       "terminalReason": "review budget exhausted",
       "causalEventSeq": 9
-    }
+    },
+    "transitions": [
+      {
+        "branch": 0,
+        "occurrence": 0,
+        "seq": 3,
+        "source": "implement",
+        "target": "review"
+      },
+      {
+        "branch": 0,
+        "occurrence": 0,
+        "seq": 9,
+        "source": "review",
+        "verdict": "fail",
+        "terminal": true,
+        "status": "escalated"
+      }
+    ],
+    "transitionsStatus": "projected"
   },
   "runEvents": {
     "runId": "run-123",

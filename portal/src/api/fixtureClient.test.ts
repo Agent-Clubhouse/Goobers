@@ -65,6 +65,7 @@ function fixtures(): DaemonFixtures {
         policyRetryCount: 0,
         infraRetryCount: 0,
         graphStatus: "unavailable",
+        transitionsStatus: "unavailable",
       },
     },
     artifacts: {

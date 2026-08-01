@@ -366,6 +366,22 @@ export interface RunDetail extends RunSummary {
   escalation?: EscalationCause;
   /** The business decision a completed run reached, distinct from phase (the execution axis). */
   outcome?: RunOutcome;
+  /** The run's exact executed workflow-graph transition history — never inferred from "both endpoint nodes were visited". */
+  transitions?: RunTransition[];
+  transitionsStatus: "projected" | "unavailable";
+}
+
+/** One executed transition in a run's workflow graph (source -> target), including terminal and repass edges. */
+export interface RunTransition {
+  branch: number;
+  occurrence: number;
+  seq: number;
+  source: string;
+  target?: string;
+  verdict?: string;
+  terminal?: boolean;
+  status?: string;
+  repass?: boolean;
 }
 
 /** Present only when phase is "completed"; all-empty when no gate decided the completion. */
