@@ -28,6 +28,7 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
@@ -165,6 +166,7 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
@@ -429,6 +431,15 @@ re-sweep uses only leftover capacity, no more often than resweepInterval
 already in implementation/review are emitted as read-only context and are
 never claimed.
 
+respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the
+assignee field is ignored entirely, exactly as today). Once true,
+assignedTo selects the mode: a real identity (either a literal login, or
+left undeclared so the runner's configured self identity fills it in at
+run time) makes only items assigned to that identity eligible — assigned
+to anyone else, or unassigned, is excluded. assignedTo declared with no
+value is the null/unassigned-only mode: only items with no assignee at
+all are eligible.
+
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
 trustLabel with --claim, config/credential/provider error), 2 =
@@ -647,6 +658,18 @@ prints a human-readable table (--k8s) or per-repo findings (--repo).
 
 Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
 failed or drift was found, 2 = usage/IO error.
+
+### down
+Usage: goobers down [path]
+
+Request a live `goobers up` daemon for this instance to perform the
+same graceful drain-shutdown SIGINT/SIGTERM already trigger, from a
+separate terminal or from automation. No daemon HTTP API, port, or
+auth surface is required or added. Exits 0 once the shutdown request
+has been delivered — the daemon picks it up and begins draining on its
+next sweep. With no live daemon for this instance, fails fast with a
+clear message rather than hanging. Exit codes: 0 = shutdown requested,
+1 = no live daemon found, 2 = usage/IO error.
 
 ### elect-lander
 Usage: goobers elect-lander [--gate name] [path]
