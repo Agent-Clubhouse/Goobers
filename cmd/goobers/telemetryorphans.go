@@ -21,6 +21,22 @@ func runTelemetryPruneOrphans(args []string, stdout, stderr io.Writer) int {
 	return runTelemetryPruneOrphansAt(args, stdout, stderr, time.Now())
 }
 
+// pruneOrphansAtStartup runs PruneOrphans once at daemon startup (#2035) so a
+// crash-abandoned orphan run or run-creation staging directory left before
+// this process started doesn't sit until an operator happens to run `goobers
+// telemetry prune-orphans` — mirroring the same startup-housekeeping
+// precedent already established for worktree.Reap and telemetry retention
+// (up.go). MinimumOrphanAge (24h) and PruneOrphans' own lock-awareness are
+// what keep a directory belonging to an in-flight creation from ever being
+// swept; this wrapper doesn't add or relax either guard.
+func pruneOrphansAtStartup(layout instance.Layout, now time.Time) ([]retention.OrphanResult, error) {
+	return retention.PruneOrphans(layout, retention.OrphanOptions{
+		Now:    now,
+		MinAge: retention.MinimumOrphanAge,
+		Delete: true,
+	})
+}
+
 func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now time.Time) int {
 	fs := flag.NewFlagSet("telemetry prune-orphans", flag.ContinueOnError)
 	fs.SetOutput(stderr)
