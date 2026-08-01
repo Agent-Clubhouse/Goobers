@@ -63,6 +63,11 @@ type State struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// KnownSchema reports whether this checkpoint uses the state.json schema
+// version this build owns — the same check Event.KnownSchema applies per
+// event, applied here to the single-document state.json (#2054).
+func (st State) KnownSchema() bool { return st.Schema == StateSchema }
+
 // BranchCursor is one parallel branch's resume position.
 type BranchCursor struct {
 	// Branch is the numeric branch id (from 1; 0 is the run's root branch, and
