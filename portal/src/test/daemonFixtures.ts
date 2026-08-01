@@ -202,6 +202,7 @@ function detail(summary: RunSummary): RunDetail {
     ...summary,
     graph: graph(summary.gaggle),
     graphStatus: "pinned",
+    transitionsStatus: "projected",
   };
 }
 

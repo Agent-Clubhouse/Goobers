@@ -817,6 +817,61 @@ func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	}
 }
 
+// TestRunDetailProjectsExecutedTransitions proves RunDetail wires
+// readmodel.ProjectTransitions correctly end to end (issue #1427):
+// implement's implicit edge to review, and review's gate-evaluated edge to
+// its escalate branch, both appear with the right causal sequence — the
+// projector's own edge-classification correctness (repass, cyclic prefixes,
+// parallel branches) is unit-tested directly in internal/readmodel; this
+// proves the read-service plumbing (pinned graph -> events -> API shape)
+// itself is correct.
+func TestRunDetailProjectsExecutedTransitions(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-transitions", machine.Def.Name, "goobers",
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	appendEvent(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)})
+	appendEvent(journal.Event{Type: journal.EventGateStarted, Gate: "review"})
+	appendEvent(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate})
+	appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-transitions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.TransitionsStatus != "projected" {
+		t.Fatalf("transitionsStatus = %q, want projected", detail.TransitionsStatus)
+	}
+	if len(detail.Transitions) != 2 {
+		t.Fatalf("transitions = %+v, want 2 rows", detail.Transitions)
+	}
+	arrival := detail.Transitions[0]
+	if arrival.Source != "implement" || arrival.Target != "review" || arrival.Terminal {
+		t.Fatalf("transitions[0] = %+v, want implement->review", arrival)
+	}
+	escalate := detail.Transitions[1]
+	if escalate.Source != "review" || escalate.Target != workflow.TargetEscalate ||
+		escalate.Verdict != "fail" || !escalate.Terminal || escalate.Status != string(journal.PhaseEscalated) {
+		t.Fatalf("transitions[1] = %+v, want review->@escalate", escalate)
+	}
+	if escalate.Seq <= arrival.Seq {
+		t.Fatalf("transitions = %+v, want ascending causal sequence", detail.Transitions)
+	}
+}
+
 func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, _ := createFixtureRun(
@@ -853,6 +908,9 @@ func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 	}
 	if detail.Phase != journal.PhaseRunning || detail.Graph != nil || detail.GraphStatus != "unavailable" {
 		t.Fatalf("future run detail = %+v", detail)
+	}
+	if detail.TransitionsStatus != "unavailable" || detail.Transitions != nil {
+		t.Fatalf("transitions = %+v (%s), want unavailable/nil without a pinned graph", detail.Transitions, detail.TransitionsStatus)
 	}
 	events, err := service.RunEvents(context.Background(), "run-future")
 	if err != nil {

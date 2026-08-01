@@ -353,6 +353,11 @@ func newWireFixtures() wireFixtures {
 				TerminalReason: "review budget exhausted",
 				CausalEventSeq: 9,
 			},
+			Transitions: []readservice.RunTransition{
+				{Branch: 0, Seq: 3, Source: "implement", Target: "review"},
+				{Branch: 0, Seq: 9, Source: "review", Verdict: "fail", Terminal: true, Status: "escalated"},
+			},
+			TransitionsStatus: "projected",
 		},
 		RunEvents: readservice.EventList{
 			RunID: "run-123",
