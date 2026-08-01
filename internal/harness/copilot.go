@@ -33,7 +33,15 @@ const defaultPromptFlag = "-p"
 // blocks on an interactive permission prompt instead of exiting, which would
 // hang until Timeout fires. Run separately restricts the tools visible to the
 // model when the goober declares a non-empty allowlist.
-var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "error"}
+//
+// --log-level MUST be "all" (not "error"): Copilot CLI 1.0.76-2 regressed so
+// that any --log-level value except "all" makes the process exit 1 even on a
+// fully successful prompt (hasError=false, clean shutdown). Passing "error"
+// here made every agentic Run() exit 1, failing the implement/review stages
+// while the untouched auth probe (no --log-level) kept passing. Reproduced:
+// `copilot -p "…" --allow-all-tools --available-tools= --log-level error` -> 1,
+// same with --log-level all (or omitted) -> 0.
+var defaultExtraArgs = []string{"--allow-all-tools", "--log-level", "all"}
 
 const fallbackToDefaultOption = "fallback-to-default"
 
@@ -809,6 +817,7 @@ func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, erro
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("%w: Copilot returned an empty final response", ErrNoCompletion)
 	}
+	payload = extractCompletionJSON(payload)
 	if !json.Valid(payload) {
 		return nil, fmt.Errorf("%w: Copilot final response is not valid JSON", ErrNoCompletion)
 	}
@@ -816,6 +825,107 @@ func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, erro
 		return nil, fmt.Errorf("%w: Copilot final response failed validation: %w", ErrNoCompletion, err)
 	}
 	return payload, nil
+}
+
+// extractCompletionJSON tolerates the two most common ways a tool-constrained
+// model deviates from the "entire final response is bare JSON" contract despite
+// the explicit instruction: wrapping the JSON in a Markdown code fence, and
+// surrounding it with a short prose preamble or trailer. It returns the isolated
+// JSON payload when it can confidently find one, otherwise the trimmed input
+// unchanged so the caller's json.Valid check still reports the original failure.
+func extractCompletionJSON(payload []byte) []byte {
+	trimmed := bytes.TrimSpace(payload)
+	if json.Valid(trimmed) {
+		return trimmed
+	}
+	if unfenced, ok := stripCodeFence(trimmed); ok {
+		unfenced = bytes.TrimSpace(unfenced)
+		if json.Valid(unfenced) {
+			return unfenced
+		}
+		trimmed = unfenced
+	}
+	if inner, ok := firstJSONValue(trimmed); ok {
+		return inner
+	}
+	return trimmed
+}
+
+// stripCodeFence removes a single leading ``` (optionally with a one-word
+// language tag such as ```json) and its matching trailing ``` when the payload
+// is wrapped in one Markdown fenced block. It returns (unwrapped, true) only
+// when both the opening and closing fences are present.
+func stripCodeFence(payload []byte) ([]byte, bool) {
+	s := bytes.TrimSpace(payload)
+	if !bytes.HasPrefix(s, []byte("```")) {
+		return payload, false
+	}
+	nl := bytes.IndexByte(s, '\n')
+	if nl < 0 {
+		return payload, false
+	}
+	// The opening fence line is ``` plus an optional single-token language tag
+	// (e.g. "json"). Reject anything with interior whitespace so a stray "```"
+	// that opens a prose sentence is not mistaken for a real fence.
+	fenceInfo := bytes.TrimSpace(s[3:nl])
+	if bytes.ContainsAny(fenceInfo, " \t") {
+		return payload, false
+	}
+	body := s[nl+1:]
+	end := bytes.LastIndex(body, []byte("```"))
+	if end < 0 {
+		return payload, false
+	}
+	return body[:end], true
+}
+
+// firstJSONValue scans for the first balanced JSON object or array in payload,
+// honoring string literals and escapes so braces or brackets inside strings do
+// not corrupt the depth count. It returns (value, true) only when the extracted
+// span parses as valid JSON.
+func firstJSONValue(payload []byte) ([]byte, bool) {
+	start := bytes.IndexAny(payload, "{[")
+	if start < 0 {
+		return nil, false
+	}
+	opener := payload[start]
+	closer := byte('}')
+	if opener == '[' {
+		closer = ']'
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(payload); i++ {
+		ch := payload[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case ch == '\\':
+				escaped = true
+			case ch == '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case opener:
+			depth++
+		case closer:
+			depth--
+			if depth == 0 {
+				candidate := payload[start : i+1]
+				if json.Valid(candidate) {
+					return candidate, true
+				}
+				return nil, false
+			}
+		}
+	}
+	return nil, false
 }
 
 func validateCopilotCompletion(mode Mode, payload []byte) error {

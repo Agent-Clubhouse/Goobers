@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
 )
@@ -706,6 +707,70 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 		return &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
 	}
 	return nil
+}
+
+// fileLockRetryAttempts and fileLockRetryBackoff bound the teardown retry loop
+// that absorbs transient OS-level file locks during worktree removal. On
+// Windows a background process — the Search Indexer, Defender real-time scan,
+// or a lingering build server — routinely holds a momentary handle on a
+// just-written worktree file, so a single `git worktree remove` / os.RemoveAll
+// hits a sharing violation and, without a retry, aborts the whole run even
+// though the work is sound (observed: run failed at "clear stale worktree ...
+// used by another process"). Kept small: such locks clear in well under a
+// second in practice, and teardown must not stall the run.
+const (
+	fileLockRetryAttempts = 6
+	fileLockRetryBackoff  = 250 * time.Millisecond
+)
+
+// isTransientFileLockError reports whether err looks like a momentary OS-level
+// file lock during worktree teardown rather than a permanent fault. The same
+// underlying Windows errors (ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED)
+// surface both from git's own stderr ("Permission denied", "unable to unlink")
+// and from os.RemoveAll's *PathError ("The process cannot access the file
+// because it is being used by another process"), so it classifies on the
+// error text, which covers both sources. A genuinely permanent permission
+// fault still matches, but is contained by retryOnFileLock's bounded budget —
+// at worst it delays an inevitable failure by ~1s.
+func isTransientFileLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"used by another process",
+		"the process cannot access the file",
+		"permission denied",
+		"access is denied",
+		"sharing violation",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryOnFileLock runs op, retrying on a transient file-lock error (see
+// isTransientFileLockError) with a short backoff up to fileLockRetryAttempts
+// times. It returns nil on the first success and the last error otherwise,
+// and aborts early if ctx is cancelled. Non-lock errors are returned
+// immediately without retry, so deterministic failures are not masked.
+func retryOnFileLock(ctx context.Context, op func() error) error {
+	var err error
+	for attempt := 0; attempt < fileLockRetryAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(fileLockRetryBackoff):
+			}
+		}
+		if err = op(); err == nil || !isTransientFileLockError(err) {
+			return err
+		}
+	}
+	return err
 }
 
 // mirrorIsPartial reports whether the mirror at dir was created as a

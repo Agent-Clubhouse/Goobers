@@ -291,6 +291,13 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }
 
+// adoMaxPRDescriptionChars is Azure DevOps' hard limit on a pull request
+// description. ADO rejects a POST/PATCH with a longer description with HTTP 400
+// (InvalidArgumentValueException: "A description for a pull request must not be
+// longer than 4000 characters."). The structured PR body has no overall cap of
+// its own, so OpenPullRequest trims it to fit while preserving the run-id footer.
+const adoMaxPRDescriptionChars = 4000
+
 // OpenPullRequest opens an Azure DevOps pull request.
 func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
@@ -317,7 +324,7 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 		"sourceRefName": "refs/heads/" + head,
 		"targetRefName": "refs/heads/" + base,
 		"title":         req.Title,
-		"description":   withRunIDFooter(req.Body, req.RunID),
+		"description":   capDescriptionWithFooter(req.Body, req.RunID, adoMaxPRDescriptionChars),
 		"isDraft":       req.Draft,
 	}
 	var out adoPullRequest
