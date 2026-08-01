@@ -80,6 +80,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		TriggerRef:          "github:issue:1704",
 		Gaggle:              "goobers",
 		BranchNamespace:     "goobers/",
+		BaseBranch:          "main",
 		Goal:                "implement the claimed issue",
 		InstructionAddendum: "Preserve the public contract.",
 		Workspace:           "/workspace",
