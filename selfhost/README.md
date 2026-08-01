@@ -1,10 +1,16 @@
 # The Goobers self-hosting instance (`selfhost/`)
 
 "Begins to build itself" (`docs/ARCHITECTURE.md` §12, the V0 definition of
-done): this is the config-as-code that makes a Goobers instance target the
-Goobers repo itself (`Agent-Clubhouse/Goobers`) — feed issues into the
-backlog and watch them get curated, scoped, and implemented into PRs by the
-instance running on your own machine.
+done): this is the **blessed reference config** — a canonical, proven-to-work
+example of the config-as-code that lets a Goobers instance target the
+Goobers repo itself (`Agent-Clubhouse/Goobers`). Copy it into your own
+instance root and feed issues into the backlog to watch them get curated,
+scoped, and implemented into PRs by the instance running on your own
+machine. This directory describes a real, working pattern — it is **not**
+itself a live instance, and it is not guaranteed to be byte-identical to any
+specific deployment's actual running config (including whichever instance is
+presently dogfooding this repo), which is maintained separately and can
+drift from what's checked in here.
 
 This directory is the **config repo content** (`manifest.yaml` +
 `gaggles/goobers/`) plus a template `instance.yaml.example` and this guide.
