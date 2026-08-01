@@ -66,6 +66,18 @@
             "target": { "type": "string", "minLength": 1, "description": "Workflow name a per-workflow tutor is confined to. Omit for a per-gaggle tutor." }
           }
         },
+        "requires": {
+          "type": "object",
+          "description": "Provider-capability requirements this workflow needs from its gaggle's connected provider (CONF-6, #2079). Distinct from a task's requiredCapabilities (runner/toolchain) and capabilities (credential grants). Omit to derive the requirement set from the stages this workflow uses; an explicit value here replaces that derivation entirely.",
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "type": "array",
+              "description": "Provider capability keys this workflow requires (e.g. \"pr.merge\", \"pr.landing.enqueue\") — see docs/design/provider-contract-conformance.md §3.1.",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "tasks": { "type": "array", "description": "Work states in the workflow state machine.", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "description": "Validation and branching states in the workflow state machine.", "items": { "$ref": "#/$defs/gate" } },
         "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } }

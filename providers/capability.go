@@ -98,6 +98,26 @@ func mandatoryCapabilities() CapabilitySet {
 	)
 }
 
+// CapabilitiesFor returns the given provider kind's statically declared
+// CapabilitySet without constructing an authenticated provider instance —
+// every Capabilities() method today is field-independent (no receiver state
+// is read), so a zero-value provider returns the same declaration a live,
+// credentialed instance would. This is what lets config-load/schedule-time
+// preflight (CONF-6, #2079) check a workflow's provider-capability
+// requirements before any credential is resolved.
+func CapabilitiesFor(kind ProviderKind) (CapabilitySet, bool) {
+	switch kind {
+	case ProviderGitHub:
+		return (&GitHubProvider{}).Capabilities(), true
+	case ProviderADO:
+		return (&ADOProvider{}).Capabilities(), true
+	case ProviderGitea:
+		return (&GiteaProvider{}).Capabilities(), true
+	default:
+		return nil, false
+	}
+}
+
 // CapabilitySet is the closed set of capabilities one provider declares.
 // Presence is the only signal: a capability's absence means the dispatch
 // shim refuses calls into it before the provider is ever reached (§3.3).

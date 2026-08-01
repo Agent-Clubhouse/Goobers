@@ -383,6 +383,31 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              requires:
+                description: |-
+                  Requires declares this workflow's provider-capability requirements
+                  (CONF-6, #2079, docs/design/provider-contract-conformance.md §6) —
+                  distinct from Task.RequiredCapabilities (runner/toolchain capabilities,
+                  RRQ-1/#1101) and Task.Capabilities (credential grants,
+                  internal/capability). Unset derives the requirement set from the
+                  stages this workflow actually uses (e.g. a merge-pr stage implies
+                  pr.merge); an explicit value here replaces that derivation entirely,
+                  letting an author narrow or widen it. Checked at config-load against
+                  the gaggle's connected provider's declared capabilities
+                  (providers.Provider.Capabilities()) — an unmet requirement fails load
+                  with a config-time message naming the workflow, the missing
+                  capability, and the provider, never a mid-run stage error.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities is the set of provider capability keys
+                      (docs/design/provider-contract-conformance.md §3.1, e.g. "pr.merge",
+                      "pr.landing.enqueue") this workflow requires. When set, it replaces
+                      the derived-from-stages default entirely.
+                    items:
+                      type: string
+                    type: array
+                type: object
               runControls:
                 description: |-
                   RunControls overrides this workflow's gaggle and instance run-control
