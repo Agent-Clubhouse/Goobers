@@ -98,7 +98,7 @@ manifests-check: manifests
 ## from this, so run it after any CLI help or DSL-feature change.
 .PHONY: docs
 docs:
-	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate'
+	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate|TestCapabilityMatrixDocUpToDate'
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration
