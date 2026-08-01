@@ -443,7 +443,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: headPrefix,

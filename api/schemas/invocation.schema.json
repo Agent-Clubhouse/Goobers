@@ -20,6 +20,10 @@
       "type": "string",
       "description": "The gaggle's run-branch namespace root (GaggleSpec.BranchNamespace); empty means the default 'goobers/'. Injected as GOOBERS_BRANCH_NAMESPACE (#965/#1010)."
     },
+    "baseBranch": {
+      "type": "string",
+      "description": "The gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.Branch); empty means the default 'main'. Injected as GOOBERS_BASE_BRANCH (#2087)."
+    },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
     "instructionAddendum": {
       "type": "string",

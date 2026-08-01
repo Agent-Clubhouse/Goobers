@@ -239,6 +239,20 @@ func providerBranchNamespace() string {
 	return providers.NormalizeBranchNamespace(os.Getenv(executor.BranchNamespaceEnvVar))
 }
 
+// providerBaseBranch resolves the gaggle's configured default branch the
+// runner injects for this stage (GOOBERS_BASE_BRANCH, set from
+// GaggleSpec.Project.Branch/RepoRef.Branch), falling back to "main" when
+// unset — standalone invocation, or a gaggle that keeps the default. It is
+// the seam every PR-lifecycle stage's "base" input default builds on, so a
+// gaggle pinned to a non-"main" branch stops silently comparing/gating
+// against "main" (#2087).
+func providerBaseBranch() string {
+	if b := os.Getenv(executor.BaseBranchEnvVar); b != "" {
+		return b
+	}
+	return "main"
+}
+
 const providerCommandMargin = time.Second
 
 // stageTimeout reports the wall-clock budget the shell executor is enforcing

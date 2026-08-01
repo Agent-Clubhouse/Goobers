@@ -50,7 +50,7 @@ func runCheckFailFirst(args []string, stdout, stderr io.Writer) int {
 		dir = fs.Arg(0)
 	}
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	evidenceFile := providerInput("evidenceFile", "fail-first-evidence.json")
 
 	newGates, err := detectNewGates(dir, base)

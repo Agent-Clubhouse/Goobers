@@ -93,7 +93,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	provider := newCachedGitHubProvider(root, token)
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
 	authorScope := providerInput("authorScope", authorScopeGoobers)
 	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {

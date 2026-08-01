@@ -80,7 +80,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", "rebase-result.json")
 	selectedNumber := providerInput("selectedNumber", "")
 	head := providerInput("head", "")
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"

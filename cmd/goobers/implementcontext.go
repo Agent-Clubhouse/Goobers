@@ -107,7 +107,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	provider := newGitHubProvider(token)
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	openTouches, err := openPRTouches(ctx, provider, repo, base)
 	if err != nil {
 		return failProviderStage(stderr, "gather implementation hot-file map", err, implementationContextResultFile)

@@ -267,7 +267,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
-		base := providerInput("base", "main")
+		base := providerInput("base", providerBaseBranch())
 		pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
 		if err != nil {
 			return failProviderStage(stderr, "find pull request", err, "")

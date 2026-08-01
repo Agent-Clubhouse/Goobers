@@ -108,7 +108,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	inputs := map[string]interface{}{"trustLabel": "goobers:approved"}
 
 	ctx := providersnapshot.WithID(context.Background(), "tick-1")
-	withCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil, nil)
+	withCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", true, inputs, map[string]string{"FEATURE_FLAG": "enabled"}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -117,6 +117,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		"GOOBERS_GAGGLE=alpha",
 		"GOOBERS_WORKFLOW=implementation",
 		"GOOBERS_BRANCH_NAMESPACE=goobers/",
+		"GOOBERS_BASE_BRANCH=release",
 		"GOOBERS_INSTANCE_ROOT=/instances/demo",
 		"GOOBERS_PROVIDER_SNAPSHOT=tick-1",
 		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
@@ -127,11 +128,11 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 		}
 	}
 
-	noCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "/instances/demo", false, inputs, nil, nil, nil)
+	noCtx, err := buildStageEnv(ctx, nil, nil, nil, "run-123", "alpha", "implementation", "goobers/", "release", "/instances/demo", false, inputs, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
-	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_BRANCH_NAMESPACE", "GOOBERS_INSTANCE_ROOT", providersnapshot.EnvVar} {
+	for _, prefix := range []string{"GOOBERS_RUN_ID", "GOOBERS_GAGGLE", "GOOBERS_WORKFLOW", "GOOBERS_BRANCH_NAMESPACE", "GOOBERS_BASE_BRANCH", "GOOBERS_INSTANCE_ROOT", providersnapshot.EnvVar} {
 		if hasEnvPrefix(noCtx, prefix) {
 			t.Errorf("injectRunContext=false: %s leaked into %v", prefix, noCtx)
 		}
@@ -143,7 +144,7 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 
 	// Even when requested, GOOBERS_INSTANCE_ROOT is omitted if unset (empty
 	// instanceRoot — see ShellExecutor.InstanceRoot), preserving prior behavior.
-	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", true, nil, nil, nil, nil)
+	emptyRoot, err := buildStageEnv(context.Background(), nil, nil, nil, "run-123", "alpha", "implementation", "", "", "", true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv(empty instanceRoot): %v", err)
 	}
@@ -157,6 +158,12 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	if hasEnvPrefix(emptyRoot, "GOOBERS_BRANCH_NAMESPACE") {
 		t.Errorf("empty branchNamespace should omit GOOBERS_BRANCH_NAMESPACE, got %v", emptyRoot)
 	}
+	// An empty baseBranch is likewise omitted rather than injected as a bare
+	// GOOBERS_BASE_BRANCH= — the goobers-CLI stage's own "main" default then
+	// applies (#2087).
+	if hasEnvPrefix(emptyRoot, "GOOBERS_BASE_BRANCH") {
+		t.Errorf("empty baseBranch should omit GOOBERS_BASE_BRANCH, got %v", emptyRoot)
+	}
 }
 
 // TestBuildStageEnvInjectsAdditionalRepoPaths is MGV-11 (#1286): a stage's
@@ -169,7 +176,7 @@ func TestBuildStageEnvInjectsAdditionalRepoPaths(t *testing.T) {
 		"goobers":   "/work/refs/goobers",
 		"clubhouse": "/work/refs/clubhouse",
 	}
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", true, nil, nil, nil, additional)
+	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", true, nil, nil, nil, additional)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
 	}
@@ -187,7 +194,7 @@ func TestBuildStageEnvInjectsAdditionalRepoPaths(t *testing.T) {
 	}
 
 	// A non-goobers-CLI stage (local-ci) never receives them.
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", false, nil, nil, nil, additional)
+	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", false, nil, nil, nil, additional)
 	if err != nil {
 		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
 	}
@@ -204,7 +211,7 @@ func TestBuildStageEnvPassesExtraAllowlist(t *testing.T) {
 	t.Setenv("MY_TOOLCHAIN_HOME", "/opt/toolchain")
 	t.Setenv("MY_UNDECLARED_SECRET", "should-not-pass")
 
-	env, err := buildStageEnv(context.Background(), nil, nil, nil, "", "", "", "", "", false, nil, nil, []string{"MY_TOOLCHAIN_HOME"}, nil)
+	env, err := buildStageEnv(context.Background(), nil, nil, nil, "", "", "", "", "", "", false, nil, nil, []string{"MY_TOOLCHAIN_HOME"}, nil)
 	if err != nil {
 		t.Fatalf("buildStageEnv: %v", err)
 	}
@@ -222,6 +229,7 @@ func TestBuildStageEnvIncludesDeclaredEnvironment(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		"",
 		"",
 		"",
 		"",

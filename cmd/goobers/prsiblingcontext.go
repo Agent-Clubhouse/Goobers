@@ -169,7 +169,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
 		return 1
 	}
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
 	authorScope := providerInput("authorScope", authorScopeGoobers)
 	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {

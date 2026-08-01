@@ -444,7 +444,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	provider := newCachedGitHubProvider(root, token)
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
