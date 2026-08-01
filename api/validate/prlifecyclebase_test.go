@@ -88,8 +88,8 @@ func TestPRLifecycleBaseMatchesGaggleBranchValidatesClean(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("a base matching the gaggle's own branch reported errors:\n%s", joinIssues(report))
 	}
-	if got := joinIssues(report); strings.Contains(got, "PRB001") || strings.Contains(got, "PRB002") {
-		t.Fatalf("expected no PRB warnings, got:\n%s", got)
+	if got := joinIssues(report); strings.Contains(got, "PRB001") {
+		t.Fatalf("expected no PRB001 warning, got:\n%s", got)
 	}
 }
 
@@ -109,32 +109,28 @@ func TestPRLifecycleBaseDriftFlagged(t *testing.T) {
 	}
 }
 
-func TestPRLifecycleBaseOmittedOnNonMainBranchFlagged(t *testing.T) {
+// TestPRLifecycleBaseOmittedNeverFlagged is #2088's key non-obvious case:
+// since #2087, omitting base entirely resolves correctly at runtime via
+// providerBaseBranch() for ANY gaggle branch, so a task that declares no
+// base input at all is never flagged — regardless of the gaggle's branch.
+// This is the case a canonical `goobers init --guided` config actually hits
+// (TestInitGuidedSelectedCanonicalWorkflows seeds a non-"main"-branch
+// gaggle whose generated implementation.yaml never sets base), so silence
+// here must stay silence, not a warning.
+func TestPRLifecycleBaseOmittedNeverFlagged(t *testing.T) {
 	task := `    - name: select
       type: deterministic
       goal: select the PR
       run:
         command: ["goobers", "pr-select"]
 `
-	report := validatePRLifecycleBase(t, "release", task)
-	got := joinIssues(report)
-	if !strings.Contains(got, `task "select" declares no base input; gaggle "web"'s branch is "release"`) {
-		t.Fatalf("missing base-omitted warning:\n%s", got)
-	}
-}
-
-func TestPRLifecycleBaseOmittedOnDefaultMainBranchValidatesClean(t *testing.T) {
-	task := `    - name: select
-      type: deterministic
-      goal: select the PR
-      run:
-        command: ["goobers", "pr-select"]
-`
-	// No branch set at all — resolves to "main" by RepoRef's own default, so
-	// omitting base is correct and unremarkable, not just "same as main".
-	report := validatePRLifecycleBase(t, "", task)
-	if got := joinIssues(report); strings.Contains(got, "PRB001") || strings.Contains(got, "PRB002") {
-		t.Fatalf("expected no PRB warnings for a default-branch gaggle omitting base, got:\n%s", got)
+	for _, branch := range []string{"release", "main", ""} {
+		t.Run("branch="+branch, func(t *testing.T) {
+			report := validatePRLifecycleBase(t, branch, task)
+			if got := joinIssues(report); strings.Contains(got, "PRB001") {
+				t.Fatalf("expected no PRB001 warning for an omitted base, got:\n%s", got)
+			}
+		})
 	}
 }
 
@@ -148,7 +144,7 @@ func TestPRLifecycleBaseDynamicInputsFromSkipped(t *testing.T) {
         base: upstream.base
 `
 	report := validatePRLifecycleBase(t, "release", task)
-	if got := joinIssues(report); strings.Contains(got, "PRB001") || strings.Contains(got, "PRB002") {
+	if got := joinIssues(report); strings.Contains(got, "PRB001") {
 		t.Fatalf("a dynamic (inputsFrom) base should never be statically flagged, got:\n%s", got)
 	}
 }
@@ -159,9 +155,11 @@ func TestPRLifecycleBaseIgnoresNonPRLifecycleCommand(t *testing.T) {
       goal: query the backlog
       run:
         command: ["goobers", "backlog-query"]
+      inputs:
+        base: whatever
 `
 	report := validatePRLifecycleBase(t, "release", task)
-	if got := joinIssues(report); strings.Contains(got, "PRB001") || strings.Contains(got, "PRB002") {
+	if got := joinIssues(report); strings.Contains(got, "PRB001") {
 		t.Fatalf("a non-PR-lifecycle command should never be flagged, got:\n%s", got)
 	}
 }

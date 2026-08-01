@@ -136,7 +136,6 @@ const (
 	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
-	warningPRLifecycleBaseOmitted WarningCode = "PRB002"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -1027,18 +1026,16 @@ var prLifecycleBaseCommands = map[string]bool{
 }
 
 // checkPRLifecycleBaseBranch flags a PR-lifecycle task whose "base" input
-// disagrees with — or silently omits, on a non-"main" gaggle — the gaggle's
-// own resolved branch (GaggleSpec.Project.Branch, "main" when unset,
-// matching RepoRef's own default; #2088, sequenced after #2087 so the
-// runtime default this check compares against is the derived branch, not
-// the bare literal "main"). Two failure modes, both silent before #2087:
-//  1. A literal base input that has drifted from the gaggle's real branch,
-//     with no inputsFrom lineage explaining the divergence (a dynamic value
-//     is not statically checkable, so it is skipped rather than flagged).
-//  2. No base input at all while the gaggle's branch isn't "main" — the task
-//     still resolves correctly at runtime via providerBaseBranch(), but the
-//     config itself stays silent about which branch it targets, so this is
-//     flagged as a lower-severity nudge toward making it explicit.
+// disagrees with the gaggle's own resolved branch (GaggleSpec.Project.
+// Branch, "main" when unset, matching RepoRef's own default; #2088,
+// sequenced after #2087 so the runtime default this check compares against
+// is the derived branch, not the bare literal "main"). A dynamic base
+// (inputsFrom) is resolved at runtime from an upstream stage's output — not
+// statically checkable, so it is skipped rather than flagged. A task that
+// declares no base input at all is likewise not flagged: since #2087,
+// omitting it resolves correctly at runtime via providerBaseBranch() for any
+// gaggle branch, so silence is not a bug — only a literal value that
+// disagrees with the gaggle's real branch is.
 func (ix *index) checkPRLifecycleBaseBranch(r *Report, w apiv1.Workflow, file string) {
 	gaggle, ok := ix.gaggles[w.Spec.Gaggle]
 	if !ok {
@@ -1056,19 +1053,16 @@ func (ix *index) checkPRLifecycleBaseBranch(r *Report, w apiv1.Workflow, file st
 			continue
 		}
 		base, declared := t.Inputs["base"]
-		_, dynamic := t.InputsFrom["base"]
-		switch {
-		case dynamic:
-			// A dynamic base (inputsFrom) is resolved at runtime from an
-			// upstream stage's output — not statically checkable.
-		case declared && base != resolvedBranch:
+		if !declared {
+			continue
+		}
+		if _, dynamic := t.InputsFrom["base"]; dynamic {
+			continue
+		}
+		if base != resolvedBranch {
 			r.add(warningPRLifecycleBaseDrift, Warning, file, "Workflow", w.Name,
 				"task %q declares base %q, but gaggle %q resolves to branch %q",
 				t.Name, base, w.Spec.Gaggle, resolvedBranch)
-		case !declared && resolvedBranch != "main":
-			r.add(warningPRLifecycleBaseOmitted, Warning, file, "Workflow", w.Name,
-				"task %q declares no base input; gaggle %q's branch is %q, not the \"main\" this command's literal default would suggest (it resolves correctly at runtime via GOOBERS_BASE_BRANCH, but the config does not say so)",
-				t.Name, w.Spec.Gaggle, resolvedBranch)
 		}
 	}
 }
