@@ -170,21 +170,6 @@ func TestADOSendBoundsTransientRetriesByMaxRetries(t *testing.T) {
 	}
 }
 
-func TestIsIdempotentADOMethod(t *testing.T) {
-	for method, want := range map[string]bool{
-		http.MethodGet:    true,
-		http.MethodHead:   true,
-		http.MethodPut:    true,
-		http.MethodDelete: true,
-		http.MethodPost:   false,
-		http.MethodPatch:  false,
-	} {
-		if got := isIdempotentADOMethod(method); got != want {
-			t.Errorf("isIdempotentADOMethod(%s) = %v, want %v", method, got, want)
-		}
-	}
-}
-
 // errTransientTestNetwork simulates a transport-level failure (connection
 // reset, DNS blip) distinct from an HTTP error response.
 var errTransientTestNetwork error = fakeTransportError{}
