@@ -43,7 +43,7 @@ See `docs/ARCHITECTURE.md §11` for the full disposition map.
 ## Go module
 
 - Module path: `github.com/goobers/goobers`
-- Minimum Go version: **1.23**
+- Minimum Go version: the toolchain declared in [`go.mod`](go.mod)
 
 Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 
@@ -65,31 +65,33 @@ New to declarative control systems? Read
 defines behavior while runs, workcopies, and scheduler records are runtime
 state.
 
-Install an exact tagged release on Linux or macOS and let its guided flow create
-and validate a release-pinned instance:
+No tagged release exists yet, so build from source with the Go toolchain
+declared in [`go.mod`](go.mod) and run the CLI from `bin/`:
 
 ```sh
-VERSION=v1.2.3 # replace with the exact release to install
-/bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
-  -- "$VERSION" ./my-instance
+make build   # or: go build -o bin/goobers ./cmd/goobers
+
+bin/goobers init ./my-instance
 
 # Or seed the onboarding-only backlog -> review -> PR path on a disposable instance:
-$HOME/.local/bin/goobers init --template=quickstart ./tutorial-instance
+bin/goobers init --template=quickstart ./tutorial-instance
 
-$HOME/.local/bin/goobers config show ./my-instance    # effective config (secrets redacted)
-$HOME/.local/bin/goobers run implementation ./my-instance # trigger a run manually
-$HOME/.local/bin/goobers status ./my-instance         # list runs + their phase
-$HOME/.local/bin/goobers claims list ./my-instance    # inspect current claim leases
-$HOME/.local/bin/goobers claims release --force <item-id> ./my-instance # override a live holder
+bin/goobers config show ./my-instance    # effective config (secrets redacted)
+bin/goobers run default-implement ./my-instance # trigger a run manually
+bin/goobers status ./my-instance         # list runs + their phase
+bin/goobers claims list ./my-instance    # inspect current claim leases
+bin/goobers claims release --force <item-id> ./my-instance # override a live holder
 # If an item ID is claimed in multiple namespaces, add:
 #   --gaggle=<name> --provider=<name>
-$HOME/.local/bin/goobers trace <run-id> ./my-instance # inspect one run's journal
-$HOME/.local/bin/goobers escalations ./my-instance    # list escalated runs
-$HOME/.local/bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifacts
+bin/goobers trace <run-id> ./my-instance # inspect one run's journal
+bin/goobers escalations ./my-instance    # list escalated runs
+bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifacts
 ```
 
-The checksummed installer and reproducibility details are documented in
-[Releases & packaging](docs/guides/releases.md#install-a-pinned-release).
+Once a tagged release exists, a checksummed installer script will let you
+install an exact release without a source checkout; see
+[Releases & packaging](docs/guides/releases.md#install-a-pinned-release) for
+that (currently unreleased) path and its reproducibility details.
 `goobers init --guided` is a first-run flow that separately selects the
 configuration source and target application repository. It creates or reuses a
 checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
