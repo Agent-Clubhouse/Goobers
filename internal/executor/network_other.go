@@ -8,6 +8,6 @@ import (
 	"runtime"
 )
 
-func configureNoNetwork(*exec.Cmd) error {
-	return fmt.Errorf("executor: network mode %q is unsupported on %s", "none", runtime.GOOS)
+func configureNoNetwork(*exec.Cmd) (marker string, err error) {
+	return "", fmt.Errorf("executor: network mode %q is unsupported on %s", "none", runtime.GOOS)
 }
