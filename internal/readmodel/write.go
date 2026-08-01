@@ -25,6 +25,10 @@ import (
 // a crash between committing the projection and acknowledging the watermark
 // simply reprocesses, harmlessly.
 func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
+	// Merged before the transaction opens, so an unrelated store's latency never
+	// lands on the read model's single writer (measurement.go).
+	s.applyMeasurement(ctx, &p)
+
 	tx, err := s.writeDB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin upsert: %w", err)
@@ -70,7 +74,7 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 		return fmt.Errorf("readmodel: clear stages for %s: %w", p.Run.RunID, err)
 	}
 	for _, stage := range p.Stages {
-		if err := insertStageRow(ctx, tx, stage); err != nil {
+		if err := insertStageRow(ctx, tx, stage, p.Run.Gaggle, p.Run.StartedAt); err != nil {
 			return err
 		}
 	}
@@ -127,8 +131,9 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			trigger_kind, trigger_ref, phase, terminal, current_stage,
 			started_at, finished_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
-			outcome_verdict, outcome_target
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			outcome_verdict, outcome_target,
+			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -149,7 +154,11 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			policy_retry_count = excluded.policy_retry_count,
 			infra_retry_count = excluded.infra_retry_count,
 			outcome_verdict = excluded.outcome_verdict,
-			outcome_target = excluded.outcome_target
+			outcome_target = excluded.outcome_target,
+			any_token_measured = excluded.any_token_measured,
+			any_premium_measured = excluded.any_premium_measured,
+			any_cost_measured = excluded.any_cost_measured,
+			any_retry_waste = excluded.any_retry_waste
 		-- Idempotence, and the guard that makes out-of-order delivery safe: an
 		-- older projection never overwrites a newer one. Without it, a repair
 		-- sweep racing live projection could rewind a run's phase.
@@ -162,6 +171,8 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		row.LastSeq,
 		row.RepassCount, row.RetryCount, row.PolicyRetryCount, row.InfraRetryCount,
 		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget),
+		boolInt(row.AnyTokenMeasured), boolInt(row.AnyPremiumMeasured),
+		boolInt(row.AnyCostMeasured), boolInt(row.AnyRetryWaste),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: upsert run %s: %w", row.RunID, err)
@@ -169,13 +180,29 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 	return nil
 }
 
-func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow) error {
+// insertStageRow writes one projected (run, stage) pair.
+//
+// gaggle and runStartedAt come from the RUN, not the stage, and are duplicated
+// onto every stage row on purpose (#1782). A stage-filtered list is still
+// gaggle-scoped and still ordered by run recency; without both here, the query
+// drives from run_stage and then evaluates them against the joined run row --
+// a residual predicate plus a sort, which is the shape §5.7 refuses.
+//
+// run_stage.started_at is the STAGE's own start, a different clock, so it cannot
+// stand in for run recency. The copies cannot drift because these rows are
+// deleted and rewritten wholesale on every projection of their run.
+func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow, gaggle string, runStartedAt time.Time) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO run_stage (run_id, stage, attempts, last_status, last_attempt_class, started_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO run_stage (
+			run_id, stage, attempts, last_status, last_attempt_class, started_at, finished_at,
+			gaggle, run_started_at, token_measured, premium_measured, cost_measured, retry_waste
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		stage.RunID, stage.Stage, stage.Attempts,
 		nullString(stage.LastStatus), nullString(stage.LastAttemptClass),
 		nullTime(stage.StartedAt), nullTime(stage.FinishedAt),
+		gaggle, formatTime(runStartedAt),
+		boolInt(stage.TokenMeasured), boolInt(stage.PremiumMeasured),
+		boolInt(stage.CostMeasured), boolInt(stage.RetryWaste),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)
@@ -183,62 +210,29 @@ func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow) error {
 	return nil
 }
 
-// GetRun reads a projected run row back.
+// GetRun reads a projected row back.
 //
-// Present so a projection can be verified without a query surface — the list
-// contract itself lands in a later slice (§5.7's enumerated combinations).
+// Scanned through runColumns/runScanTargets rather than its own column list.
+// It used to carry a hand-written duplicate of both, which is precisely the
+// shape that goes stale: adding any column to the run table meant remembering
+// to edit two places, and forgetting the second produced a row that was silently
+// missing a field rather than a compile error. #1782 added four columns and this
+// is where they would have been dropped.
 func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) {
-	row := s.readDB().QueryRowContext(ctx, `
-		SELECT run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
-		       trigger_kind, trigger_ref, phase, terminal, current_stage,
-		       started_at, finished_at, last_activity_at, last_seq,
-		       repass_count, retry_count, policy_retry_count, infra_retry_count,
-		       outcome_verdict, outcome_target
-		FROM run WHERE run_id = ?`, runID)
-
-	var (
-		out                                           RunRow
-		digest, gooberDigest, triggerKind, triggerRef sql.NullString
-		currentStage, verdict, target                 sql.NullString
-		startedAt, finishedAt, lastActivity           sql.NullString
-		phase                                         string
-		terminal                                      int
-	)
-	err := row.Scan(&out.RunID, &out.Gaggle, &out.Workflow, &out.WorkflowVersion,
-		&digest, &gooberDigest, &triggerKind, &triggerRef, &phase, &terminal, &currentStage,
-		&startedAt, &finishedAt, &lastActivity, &out.LastSeq,
-		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
-		&verdict, &target)
-	switch {
+	var out RunRow
+	row := s.readDB().QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM run r WHERE r.run_id = ?`, runID)
+	switch err := row.Scan(runScanTargets(&out)...); {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil
 	case err != nil:
 		return RunRow{}, false, fmt.Errorf("readmodel: read run %s: %w", runID, err)
 	}
-
-	out.WorkflowDigest = digest.String
-	out.GooberDigest = gooberDigest.String
-	out.TriggerKind = triggerKind.String
-	out.TriggerRef = triggerRef.String
-	out.Phase = journal.RunPhase(phase)
-	out.Terminal = terminal != 0
-	out.CurrentStage = currentStage.String
-	out.OutcomeVerdict = verdict.String
-	out.OutcomeTarget = target.String
-
-	var parseErr error
-	if out.StartedAt, parseErr = requiredTime(startedAt); parseErr != nil {
-		return RunRow{}, false, parseErr
-	}
-	if out.FinishedAt, parseErr = optionalTime(finishedAt); parseErr != nil {
-		return RunRow{}, false, parseErr
-	}
-	if lastActivity.Valid {
-		if out.LastActivity, parseErr = requiredTime(lastActivity); parseErr != nil {
-			return RunRow{}, false, parseErr
-		}
+	if err := out.finishScan(); err != nil {
+		return RunRow{}, false, err
 	}
 
+	var err error
 	if out.Stages, err = s.runStages(ctx, runID); err != nil {
 		return RunRow{}, false, err
 	}

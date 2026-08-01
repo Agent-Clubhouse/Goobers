@@ -64,6 +64,16 @@ type RunRow struct {
 	// stage filter without a join (§5.7's run-level rollup principle).
 	Stages []string
 
+	// Run-level measurement rollups: the OR across this run's stage rows
+	// (#1782). They exist so `population=Y` with no stage is a direct seek on a
+	// partial index over run recency, rather than a correlated EXISTS against
+	// run_stage -- which is a residual predicate, and residual predicates are
+	// exactly what §5.7's closed set refuses.
+	AnyTokenMeasured   bool
+	AnyPremiumMeasured bool
+	AnyCostMeasured    bool
+	AnyRetryWaste      bool
+
 	// scratch holds nullable columns between Scan and decode. Unexported and
 	// cleared by finishScan, so it never escapes into a returned row.
 	scratch *nullables
@@ -78,6 +88,96 @@ type StageRow struct {
 	LastAttemptClass string
 	StartedAt        *time.Time
 	FinishedAt       *time.Time
+
+	// The four measurement flags (#1782, §5.7).
+	//
+	// Not computed by ProjectRun: the journal does not carry token counts, cost,
+	// or premium-request figures at all -- those exist only in the telemetry
+	// rollup. They arrive via ApplyMeasurement and are carried across incremental
+	// projections by carryStages, so a tail projected while telemetry is
+	// unavailable preserves them rather than silently clearing them.
+	TokenMeasured   bool
+	PremiumMeasured bool
+	CostMeasured    bool
+	RetryWaste      bool
+}
+
+// StageMeasurement is what the telemetry rollup knows about one stage that the
+// journal does not.
+//
+// Each field is an EXISTENCE predicate over that stage's attempts, matching what
+// the list filter asks: "does this stage have any attempt with cost recorded",
+// not "what did it cost". Storing the predicate rather than the figure is what
+// keeps this a filter index instead of a second copy of telemetry.
+type StageMeasurement struct {
+	Stage           string
+	TokenMeasured   bool
+	PremiumMeasured bool
+	CostMeasured    bool
+	RetryWaste      bool
+}
+
+// ApplyMeasurement merges telemetry-derived measurement into a projection.
+//
+// Separate from ProjectRun rather than folded into it, because ProjectRun is a
+// pure function of (identity, prev, events) and §10 requires it to stay that
+// way. Measurement comes from a different store on a different clock; making
+// ProjectRun query it would make the fold impure and untestable in isolation.
+//
+// # Both grains are set here
+//
+// The per-stage flags answer `stage=X&population=Y`. The run-level rollups are
+// the OR across stages and answer `population=Y` alone. Deriving the rollup here
+// rather than in SQL is what guarantees the two cannot disagree -- a run flagged
+// at run level always has a stage that justifies it.
+//
+// Passing nil is meaningful and distinct from passing an empty slice: nil means
+// "telemetry had nothing to say", which leaves carried-forward flags intact. An
+// empty slice means "telemetry says this run has no measured stages", which
+// clears them.
+func (p *Projection) ApplyMeasurement(measurements []StageMeasurement) {
+	if measurements == nil {
+		// Still recompute the rollup from whatever the stage rows carry, so the
+		// two grains stay consistent even on a pass that learned nothing new.
+		p.rollUpMeasurement()
+		return
+	}
+	byStage := make(map[string]StageMeasurement, len(measurements))
+	for _, m := range measurements {
+		byStage[m.Stage] = m
+	}
+	for i := range p.Stages {
+		m, ok := byStage[p.Stages[i].Stage]
+		if !ok {
+			// A projected stage telemetry has no attempts for. Clearing rather
+			// than carrying: the measurement source spoke, and it did not name
+			// this stage.
+			p.Stages[i].TokenMeasured = false
+			p.Stages[i].PremiumMeasured = false
+			p.Stages[i].CostMeasured = false
+			p.Stages[i].RetryWaste = false
+			continue
+		}
+		p.Stages[i].TokenMeasured = m.TokenMeasured
+		p.Stages[i].PremiumMeasured = m.PremiumMeasured
+		p.Stages[i].CostMeasured = m.CostMeasured
+		p.Stages[i].RetryWaste = m.RetryWaste
+	}
+	p.rollUpMeasurement()
+}
+
+// rollUpMeasurement recomputes the run-level flags as the OR across stage rows.
+func (p *Projection) rollUpMeasurement() {
+	p.Run.AnyTokenMeasured = false
+	p.Run.AnyPremiumMeasured = false
+	p.Run.AnyCostMeasured = false
+	p.Run.AnyRetryWaste = false
+	for _, stage := range p.Stages {
+		p.Run.AnyTokenMeasured = p.Run.AnyTokenMeasured || stage.TokenMeasured
+		p.Run.AnyPremiumMeasured = p.Run.AnyPremiumMeasured || stage.PremiumMeasured
+		p.Run.AnyCostMeasured = p.Run.AnyCostMeasured || stage.CostMeasured
+		p.Run.AnyRetryWaste = p.Run.AnyRetryWaste || stage.RetryWaste
+	}
 }
 
 // Projection is the full result of projecting a run.

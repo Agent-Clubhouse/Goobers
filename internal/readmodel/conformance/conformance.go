@@ -563,12 +563,18 @@ func optionsForDims(dims []readmodel.Dim) readmodel.ListOptions {
 			options.Since = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		case readmodel.DimUntil:
 			options.Until = time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-		case readmodel.DimStage, readmodel.DimOutcome, readmodel.DimPopulation:
-			// Not representable on ListOptions, and not in the supported set.
-			// Reaching here means the set declared one, which is a contract
-			// change that must be noticed rather than skipped.
+		case readmodel.DimStage:
+			options.Stage = "build"
+		case readmodel.DimOutcome:
+			// Not in the supported set: run_stage keeps only the LAST attempt's
+			// status, and the reference matches on ANY attempt's -- so an equality
+			// test would silently under-match (see queryset.go). Reaching here
+			// means the set declared it, which is a contract change that must be
+			// noticed rather than skipped.
 			panic(fmt.Sprintf("conformance: supported set declares dimension %q, which the "+
 				"contract cannot construct a request for", dim))
+		case readmodel.DimPopulation:
+			options.Population = readmodel.PopulationCostMeasured
 		default:
 			panic(fmt.Sprintf("conformance: unknown dimension %q in the supported set", dim))
 		}

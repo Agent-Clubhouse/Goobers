@@ -323,3 +323,121 @@ func fmtHex(i int) string {
 	}
 	return string(out)
 }
+
+// TestStageScopedPlansUseTheirIndexes is the #1782 half of the plan contract.
+//
+// §5.7's whole argument is that a plan cannot PROVE a residual predicate is
+// absent — `EXPLAIN QUERY PLAN` reports access methods, not residual terms. So
+// this test does not try to prove boundedness from the plan. It checks the two
+// things a plan CAN show and that would each silently destroy the bound:
+//
+//   - the named index is used at all, rather than a full table scan; and
+//   - no temp B-tree is materialised for the ORDER BY, which is what would
+//     happen if run_started_at were missing and the sort fell back to the joined
+//     run row.
+//
+// The boundedness argument itself rests on the closed set: every listed
+// combination has an index whose leading columns are exactly its equality
+// predicates, followed by the ordering key.
+func TestStageScopedPlansUseTheirIndexes(t *testing.T) {
+	store := openTestStore(t)
+	seedProjectedStages(t, store, 400)
+
+	cases := []struct {
+		name    string
+		options ListOptions
+		want    string
+	}{
+		{"stage", ListOptions{Stage: "build", Limit: 50}, "idx_run_stage_recency"},
+		{"gaggle+stage", ListOptions{Gaggle: "gaggle-000", Stage: "build", Limit: 50},
+			"idx_run_stage_gaggle_recency"},
+		// Each population resolves to its OWN partial index. A composite over the
+		// four booleans would have to be probed with three wildcards, which is a
+		// scan of the stage's whole range.
+		{"stage+cost", ListOptions{Stage: "build", Population: PopulationCostMeasured, Limit: 50},
+			"idx_run_stage_cost"},
+		{"stage+token", ListOptions{Stage: "build", Population: PopulationTokenMeasured, Limit: 50},
+			"idx_run_stage_token"},
+		{"stage+premium", ListOptions{Stage: "build", Population: PopulationPremiumMeasured, Limit: 50},
+			"idx_run_stage_premium"},
+		{"stage+retry-waste", ListOptions{Stage: "build", Population: PopulationRetryWaste, Limit: 50},
+			"idx_run_stage_retry_waste"},
+		{"gaggle+stage+cost", ListOptions{
+			Gaggle: "gaggle-000", Stage: "build", Population: PopulationCostMeasured, Limit: 50,
+		}, "idx_run_stage_gaggle_cost"},
+
+		// Unscoped population comes off the run-level rollup instead.
+		{"population", ListOptions{Population: PopulationCostMeasured, Limit: 50}, "idx_run_any_cost"},
+		{"gaggle+population", ListOptions{
+			Gaggle: "gaggle-000", Population: PopulationCostMeasured, Limit: 50,
+		}, "idx_run_gaggle_any_cost"},
+
+		// A deep page must seek, not scan to position.
+		{"stage deep page", ListOptions{
+			Stage: "build", Limit: 50,
+			Cursor: ListCursor{StartedAt: time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC), RunID: "x"},
+		}, "idx_run_stage_recency"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args := listQuery(tc.options, tc.options.Limit)
+			plan := explainWithArgs(t, store, query, args)
+			t.Logf("plan: %s", plan)
+			if !strings.Contains(plan, tc.want) {
+				t.Errorf("plan does not use %s:\n%s", tc.want, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("plan materializes a sort; the page is no longer bounded by limit:\n%s", plan)
+			}
+			if strings.Contains(plan, "SCAN run_stage") {
+				t.Errorf("plan scans run_stage rather than seeking:\n%s", plan)
+			}
+		})
+	}
+}
+
+// seedProjectedStages writes runs that all carry a `build` stage, with
+// measurement spread across them so the partial indexes have both matching and
+// non-matching rows.
+func seedProjectedStages(t *testing.T, store *Store, n int) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		p := Projection{Run: RunRow{
+			RunID:        runIDFor(i),
+			Gaggle:       gaggleNameFor(i),
+			Workflow:     workflowNameFor(i),
+			Phase:        journal.PhaseCompleted,
+			Terminal:     true,
+			StartedAt:    startedAt,
+			LastActivity: startedAt,
+			LastSeq:      uint64(i + 1),
+			Stages:       []string{"build"},
+		}}
+		status := "succeeded"
+		if i%3 == 0 {
+			status = "failed"
+		}
+		p.Stages = []StageRow{{
+			RunID: p.Run.RunID, Stage: "build", Attempts: 1,
+			LastStatus: status, StartedAt: &startedAt,
+		}}
+		// A minority measured, which is what makes the partial indexes small and
+		// is the shape they are chosen for.
+		if i%5 == 0 {
+			p.ApplyMeasurement([]StageMeasurement{{
+				Stage: "build", CostMeasured: true, TokenMeasured: true,
+				PremiumMeasured: true, RetryWaste: true,
+			}})
+		}
+		if err := store.UpsertRun(ctx, p); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+}

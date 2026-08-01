@@ -61,6 +61,11 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		Since:    options.Since,
 		Until:    options.Until,
 		Limit:    limit,
+		Stage:    options.Stage,
+		// Population is validated by canonicalStagePopulation upstream, and the
+		// read model refuses any value its own switch does not recognise, so a
+		// bad value cannot reach the query as a column name.
+		Population: readmodel.Population(options.StagePopulation),
 	}
 	if cursor != nil {
 		request.Cursor = readmodel.ListCursor{StartedAt: cursor.StartedAt, RunID: cursor.RunID}
@@ -150,11 +155,18 @@ func (s *Local) readModelEligible(options RunListOptions) bool {
 // readModelDims maps a list request to the filter dimensions the closed set is
 // keyed on.
 //
-// Stage, outcome, and stage-population are deliberately mapped to dimensions
-// that are NOT in the supported set, so a request carrying them is judged
-// ineligible and takes the journal path. They are the residual predicates §5.7
-// refuses, and #1782 measures what serving them costs: ~143 MB read, ~1M
-// unmarshals, ~19,852 journal opens in one request.
+// Stage and stage-population are in the supported set as of #1782: they are
+// answered from run_stage, which carries the stage predicate, the gaggle scope,
+// and the run's own recency on one index. They used to be mapped deliberately
+// OUT of the set so a request carrying them took the journal path, because
+// serving them there cost ~143 MB read, ~1M unmarshals and ~19,852 journal opens
+// in a single request.
+//
+// Outcome -- in EITHER sense -- and trigger are still outside the set and still
+// resolve to a refusal here. Stage-scoped outcome looks servable from
+// run_stage.last_status and is not: the reference matches on ANY attempt's
+// status and last_status is only the final one, so an equality test silently
+// under-matches. queryset.go carries the full argument.
 func readModelDims(options RunListOptions) []readmodel.Dim {
 	var dims []readmodel.Dim
 	if options.Gaggle != "" {

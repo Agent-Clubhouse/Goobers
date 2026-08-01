@@ -240,6 +240,28 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 		return err
 	}
 	defer func() { _ = store.Close() }()
+
+	// A rebuild MUST carry a measurement source (#1782).
+	//
+	// The population flags come from the telemetry rollup, not from any journal
+	// event, so a rebuild without a source projects every run with all four
+	// flags at zero -- and nothing re-projects a finished run, so
+	// `population=cost-measured` would return nothing until each run happened to
+	// change again. That failure is silent: the runs still list, they just stop
+	// matching a filter they used to match.
+	//
+	// This is the one writer that does not inherit the daemon's configured
+	// store, which is exactly why it has to be attached here rather than assumed.
+	if rollupDB, rollupErr := rollup.Open(l.TelemetryDB()); rollupErr != nil {
+		// Not fatal. A rebuild that produced a complete projection without
+		// population flags beats refusing to rebuild at all -- the flags are one
+		// filter, the projection is every list.
+		fmt.Fprintf(os.Stderr, "warning: open telemetry for measurement flags: %v\n", rollupErr)
+	} else {
+		defer func() { _ = rollupDB.Close() }()
+		store.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+	}
+
 	result, err := store.BuildFromJournals(ctx, runDirs)
 	if err != nil {
 		return err

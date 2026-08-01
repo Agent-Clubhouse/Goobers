@@ -67,6 +67,11 @@ const readerDSNParams = "?_pragma=busy_timeout(5000)&mode=ro"
 
 // Store is an open handle to read.db.
 type Store struct {
+	// measurement supplies the telemetry-derived flags the journal cannot
+	// provide (#1782). Nil is a supported configuration: a topology with no
+	// telemetry projects everything except the population flags.
+	measurement MeasurementSource
+
 	// writer is the sole writable handle. §5.2/§6.1: the projector owns the only
 	// write path to projected facts, and one connection is what keeps the
 	// first-open WAL switch and migrations single-threaded.

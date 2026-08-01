@@ -403,6 +403,21 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 	readStore, readMode, _ := readservice.OpenReadModel(topology)
 	if readStore != nil {
+		// No measurement source here, and that is deliberate (#1782).
+		//
+		// The obvious move is to attach one -- the population flags come from the
+		// telemetry rollup, and without a source they project as zero. But
+		// standalone is contractually required to leave the instance
+		// BYTE-IDENTICAL, and opening a SQLite database creates its -wal and -shm
+		// alongside the file. TestStandaloneDashboardAPILeavesInstanceUnchanged
+		// caught exactly that.
+		//
+		// Attaching is also unnecessary. Standalone constructs its service with
+		// Telemetry nil, and listRunsUnannotated refuses a telemetry-backed
+		// population filter with ErrTelemetryUnavailable BEFORE it dispatches to
+		// the read model. So the zeroed flags are unreachable: the filter is
+		// refused with a typed error rather than answered wrongly with an empty
+		// page, which is the same behaviour standalone had before this change.
 		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
 			// A failed build degrades rather than fails: single-run routes still
 			// work, and saying so beats refusing to start.
