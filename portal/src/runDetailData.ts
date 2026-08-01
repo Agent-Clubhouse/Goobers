@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
   DaemonClient,
+  GraphTerminal,
   RunDetail,
   RunEvent,
+  RunTransition,
   WorkflowGraph,
+  WorkflowGraphEdge,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
@@ -458,6 +461,79 @@ export function deriveNodeStates(
   }
 
   return states;
+}
+
+function traversedEdgeKey(source: string, target: string): string {
+  return `${source}->${target}`;
+}
+
+function traversedTerminalKey(source: string, terminal: GraphTerminal): string {
+  return `${source}=>${terminal}`;
+}
+
+// A terminal transition's TerminalStatus is the run's/branch's actual outcome
+// (journal.RunPhase or journal.BranchStatus on the Go side); this maps it to
+// the declared graph's own terminal vocabulary. "failed" has no entry: a bare
+// stage failure with no declared gate route (#1427's task-sourced terminal
+// case) never corresponds to a declared edge, and #1427/#1430 both require
+// never fabricating one.
+const TERMINAL_STATUS_TO_GRAPH_TERMINAL: Partial<Record<string, GraphTerminal>> = {
+  completed: "complete",
+  aborted: "abort",
+  escalated: "escalate",
+};
+
+// deriveTraversedEdges is deriveNodeStates' edge-level counterpart: it answers
+// "which DECLARED edges has the run actually crossed, as of selectedSeq" from
+// the run's exact transition history (#1427) — never by inferring an edge was
+// taken merely because both endpoints were visited, which false-positives on
+// any cyclic workflow (#1430): a forward path visits both endpoints of an
+// untaken repass edge for unrelated reasons.
+export function deriveTraversedEdges(
+  transitions: RunTransition[] | undefined,
+  selectedSeq: number,
+): Set<string> {
+  const traversed = new Set<string>();
+  if (!transitions) {
+    return traversed;
+  }
+  // #1427's ProjectTransitions sorts rows by causal sequence before
+  // returning, so the same "break once past the playhead" idiom
+  // deriveNodeStates uses above applies here unchanged — and a repeatedly
+  // traversed edge is added to the same Set key on every occurrence, so
+  // repeated repasses never create phantom/duplicate edges.
+  for (const transition of transitions) {
+    if (transition.seq > selectedSeq) {
+      break;
+    }
+    if (transition.terminal) {
+      const terminal = transition.status
+        ? TERMINAL_STATUS_TO_GRAPH_TERMINAL[transition.status]
+        : undefined;
+      if (terminal) {
+        traversed.add(traversedTerminalKey(transition.source, terminal));
+      }
+      continue;
+    }
+    if (transition.target) {
+      traversed.add(traversedEdgeKey(transition.source, transition.target));
+    }
+  }
+  return traversed;
+}
+
+// edgeTraversed reports whether a declared graph edge is on the executed path,
+// per the Set deriveTraversedEdges produced.
+export function edgeTraversed(
+  traversedEdges: Set<string> | undefined,
+  edge: WorkflowGraphEdge,
+): boolean {
+  if (!traversedEdges) {
+    return false;
+  }
+  return edge.terminal
+    ? traversedEdges.has(traversedTerminalKey(edge.source, edge.terminal))
+    : traversedEdges.has(traversedEdgeKey(edge.source, edge.target));
 }
 
 export function eventHeading(event: RunEvent): string {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { RunEvent, WorkflowGraph } from "./api/types";
+import type { RunEvent, RunTransition, WorkflowGraph } from "./api/types";
 import {
   deriveNodeStates,
+  deriveTraversedEdges,
+  edgeTraversed,
   evidenceVisit,
   evidenceDecision,
   eventHeading,
@@ -474,6 +476,102 @@ describe("run detail projection", () => {
       implement: "completed",
       review: "skipped",
     });
+  });
+});
+
+function transition(
+  seq: number,
+  source: string,
+  fields: Partial<RunTransition> = {},
+): RunTransition {
+  return { branch: 0, occurrence: 0, seq, source, ...fields };
+}
+
+// The cyclic implement<->review graph from workflowGraph.test.ts's "cyclic"
+// fixture, reused here so an edge computed by deriveTraversedEdges matches a
+// real declared graph shape rather than an ad hoc one.
+const cyclicGraph: WorkflowGraph = {
+  name: "cyclic",
+  version: 1,
+  digest: "sha256:cyclic",
+  start: "implement",
+  nodes: [
+    { id: "implement", kind: "agentic", owner: "builder" },
+    { id: "review", kind: "gate", evaluator: "agentic", owner: "reviewer" },
+  ],
+  edges: [
+    { source: "implement", target: "review" },
+    { source: "review", target: "", outcome: "approve", terminal: "complete" },
+    { source: "review", target: "implement", outcome: "needs-changes" },
+  ],
+};
+
+describe("deriveTraversedEdges", () => {
+  it("emphasizes the taken forward edge and never the untaken repass edge (#1430 first-pass criterion)", () => {
+    const transitions = [
+      transition(3, "implement", { target: "review" }),
+      transition(4, "review", { target: "", terminal: true, status: "completed", verdict: "approve" }),
+    ];
+    const traversed = deriveTraversedEdges(transitions, 4);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[0])).toBe(true); // implement -> review
+    expect(edgeTraversed(traversed, cyclicGraph.edges[2])).toBe(false); // review -> implement (never crossed)
+    expect(edgeTraversed(traversed, cyclicGraph.edges[1])).toBe(true); // review -> complete
+  });
+
+  it("emphasizes the dotted repass edge only at and after its causal gate sequence (scrubbing)", () => {
+    const transitions = [
+      transition(3, "implement", { target: "review" }),
+      transition(4, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(7, "implement", { target: "review" }),
+      transition(8, "review", { target: "", terminal: true, status: "completed", verdict: "approve" }),
+    ];
+    const repassEdge = cyclicGraph.edges[2];
+
+    // Before the gate decision, the repass has not happened yet.
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 3), repassEdge)).toBe(false);
+    // At and after the causal gate.evaluated sequence, it has.
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 4), repassEdge)).toBe(true);
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 8), repassEdge)).toBe(true);
+  });
+
+  it("does not create phantom duplicate edges for a repeatedly traversed repass", () => {
+    const transitions = [
+      transition(4, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(8, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(12, "review", { target: "implement", verdict: "needs-changes" }),
+    ];
+    const traversed = deriveTraversedEdges(transitions, 12);
+    expect(traversed.size).toBe(1);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[2])).toBe(true);
+  });
+
+  it("reflects a terminal transition only under its actual outcome, from recorded data alone", () => {
+    const escalateEdge = { source: "review", target: "@escalate", terminal: "escalate" as const };
+    const abortEdge = { source: "review", target: "@abort", terminal: "abort" as const };
+
+    const escalated = deriveTraversedEdges(
+      [transition(9, "review", { terminal: true, status: "escalated", verdict: "fail" })],
+      9,
+    );
+    expect(edgeTraversed(escalated, escalateEdge)).toBe(true);
+    expect(edgeTraversed(escalated, abortEdge)).toBe(false);
+
+    // A bare task failure with no declared gate route has no matching
+    // terminal edge at all (#1427's task-sourced terminal case) — this must
+    // never be fabricated as a highlighted edge on some other terminal.
+    const failed = deriveTraversedEdges(
+      [transition(2, "implement", { terminal: true, status: "failed" })],
+      2,
+    );
+    expect(edgeTraversed(failed, escalateEdge)).toBe(false);
+    expect(edgeTraversed(failed, abortEdge)).toBe(false);
+  });
+
+  it("returns an empty, always-false set when transitions are unavailable (legacy runs)", () => {
+    const traversed = deriveTraversedEdges(undefined, 999);
+    expect(traversed.size).toBe(0);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[0])).toBe(false);
+    expect(edgeTraversed(undefined, cyclicGraph.edges[0])).toBe(false);
   });
 });
 
