@@ -669,6 +669,16 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	}
 	var out githubPullRequest
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		if IsPullRequestAlreadyExistsError(err) {
+			// #1767: lost a create race against a concurrent open-pr call for
+			// this same head/base between the check above and this POST.
+			// OpenPullRequest's own doc comment promises convergence on the
+			// PR that already exists rather than a duplicate — honor that
+			// here instead of surfacing the race as a stage failure.
+			if existing, ok, ferr := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); ferr == nil && ok {
+				return p.updatePullRequest(ctx, req, existing.Number)
+			}
+		}
 		return PullRequestResult{}, err
 	}
 	p.recordExternalRef(ctx, ExternalRef{

@@ -144,6 +144,33 @@ func mentionsMergeConflict(body string) bool {
 	return strings.Contains(lowered, "not mergeable") || strings.Contains(lowered, "merge conflict")
 }
 
+// IsPullRequestAlreadyExistsError reports whether err is a typed provider
+// response the forge returned because a pull request already exists for the
+// requested head/base (issue #1767). OpenPullRequest's own contract promises
+// idempotency by checking first and creating only when nothing is found, but
+// a second caller for the same stable run branch can still win a genuine
+// create race between that check and the POST — a normal, expected business
+// outcome (the PR OpenPullRequest was about to open already exists), not an
+// infrastructure failure. The caller re-resolves via FindPullRequestByBranch
+// on a classified error rather than this function returning the PR itself,
+// so classification and recovery stay separate the way IsMergeConflictError
+// and IsNotFoundError do.
+//
+// Deliberately narrow, mirroring IsMergeConflictError's discipline: GitHub's
+// pull-creation endpoint returns 422 for many unrelated validation failures
+// (empty diff, invalid base, etc.), so the status code alone is never
+// sufficient — the response body must also name the condition.
+func IsPullRequestAlreadyExistsError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(strings.ToLower(responseErr.body), "already exists")
+}
+
 // retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
 // `(Retry-After="1", X-RateLimit-Remaining="0", X-RateLimit-Reset="...")`
 // suffix shared by every error that surfaces a rate-limited response's
