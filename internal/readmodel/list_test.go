@@ -351,12 +351,6 @@ func TestStageScopedPlansUseTheirIndexes(t *testing.T) {
 		{"stage", ListOptions{Stage: "build", Limit: 50}, "idx_run_stage_recency"},
 		{"gaggle+stage", ListOptions{Gaggle: "gaggle-000", Stage: "build", Limit: 50},
 			"idx_run_stage_gaggle_recency"},
-		{"stage+outcome", ListOptions{Stage: "build", StageOutcome: "succeeded", Limit: 50},
-			"idx_run_stage_status_recency"},
-		{"gaggle+stage+outcome", ListOptions{
-			Gaggle: "gaggle-000", Stage: "build", StageOutcome: "succeeded", Limit: 50,
-		}, "idx_run_stage_gaggle_status_recency"},
-
 		// Each population resolves to its OWN partial index. A composite over the
 		// four booleans would have to be probed with three wildcards, which is a
 		// scan of the stage's whole range.

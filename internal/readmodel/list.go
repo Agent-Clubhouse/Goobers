@@ -49,14 +49,11 @@ type ListOptions struct {
 	// residual predicates evaluated after a journal open (#1782). They are
 	// answered from run_stage now.
 	//
-	// StageOutcome is the STAGE's own last status, not the run-level outcome
-	// verdict. Both are called "outcome" in the URL, disambiguated by whether a
-	// stage is also present -- which is why they are separate fields here rather
-	// than one, so the ambiguity is resolved once at the boundary instead of at
-	// every use.
-	Stage        string
-	StageOutcome string
-	Population   Population
+	// There is deliberately no stage-outcome field. run_stage carries
+	// last_status, but the reference matches on ANY attempt's status, so an
+	// equality test on the last one silently under-matches -- see queryset.go.
+	Stage      string
+	Population Population
 }
 
 // Population is one of the four measurement filters.
@@ -134,9 +131,6 @@ func (o ListOptions) Dims() []Dim {
 	}
 	if o.Stage != "" {
 		dims = append(dims, DimStage)
-	}
-	if o.StageOutcome != "" {
-		dims = append(dims, DimOutcome)
 	}
 	if o.Population != "" {
 		dims = append(dims, DimPopulation)
@@ -307,10 +301,6 @@ func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 	}
 	where = append(where, "s.stage = ?")
 	args = append(args, options.Stage)
-	if options.StageOutcome != "" {
-		where = append(where, "s.last_status = ?")
-		args = append(args, options.StageOutcome)
-	}
 	if column, ok := options.Population.stageColumn(); ok {
 		// Literal for the same partial-index reason as the run-scoped path.
 		where = append(where, "s."+column+" = 1")

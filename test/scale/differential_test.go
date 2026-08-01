@@ -135,10 +135,15 @@ func TestCutoverServesTheSameAnswersWithZeroJournalOpens(t *testing.T) {
 // TestCutoverFallsBackRatherThanRefusing pins that turning the flag on cannot
 // REMOVE an answer the portal can get today.
 //
-// A stage filter is outside the closed set, so the read model refuses it. The
+// Stage+outcome is outside the closed set, so the read model refuses it. The
 // service must fall through to the journal-derived path rather than surface the
 // refusal: the cutover is an optimization, and an optimization that makes a
 // working query stop working is a regression.
+//
+// This used to use a bare stage filter. #1782 made that servable, so the case
+// moved to one that is still refused rather than being deleted -- the property
+// is about the FALLBACK, and a fallback test that no longer exercises a
+// fallback proves nothing.
 func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
 	ctx := context.Background()
 	gen, service, store := differentialFixture(t, 40)
@@ -154,12 +159,16 @@ func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
 	}
 	cutover.EnableReadModelReads()
 
-	options := readservice.RunListOptions{Stage: instancefixture.StageName(0), Limit: 50}
+	options := readservice.RunListOptions{
+		Stage:   instancefixture.StageName(0),
+		Outcome: readservice.OutcomeSuccess,
+		Limit:   50,
+	}
 	want := referenceRunIDs(t, ctx, service, options)
 	got := referenceRunIDs(t, ctx, cutover, options)
 	compareIDs(t, want, got)
 	if len(got) == 0 {
-		t.Error("the stage-filtered query returned nothing on both paths; the fixture does not exercise the fallback")
+		t.Error("the refused query returned nothing on both paths; the fixture does not exercise the fallback")
 	}
 }
 
@@ -239,6 +248,19 @@ func differentialFixture(t *testing.T, runs int) (GenerateResult, *readservice.L
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
+	// Measurement, attached BEFORE the build (#1782). The population flags come
+	// from the telemetry rollup and from no journal event, so a store built
+	// without a source projects every run with all four flags at zero -- and the
+	// oracle then compares a reference that finds 90 runs against a read model
+	// that finds none.
+	//
+	// That is exactly what happened on the first run of this fixture, and it is
+	// the same omission the daemon, the rebuild command, and the standalone
+	// dashboard each had to be given a source to avoid. Four places, one
+	// requirement: whoever opens a store that will be projected into must attach
+	// one.
+	store.WithMeasurement(readservice.NewTelemetryMeasurement(db))
+
 	roots, err := gen.Layout.RunDirs()
 	if err != nil {
 		t.Fatalf("run roots: %v", err)
@@ -271,6 +293,10 @@ func optionsFor(dims []readmodel.Dim, gen GenerateResult) (readservice.RunListOp
 			options.Since = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		case readmodel.DimUntil:
 			options.Until = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+		case readmodel.DimStage:
+			options.Stage = instancefixture.StageName(0)
+		case readmodel.DimPopulation:
+			options.StagePopulation = readservice.StagePopulationRetryWaste
 		default:
 			return readservice.RunListOptions{}, false
 		}
@@ -305,12 +331,14 @@ func referenceRunIDs(t *testing.T, ctx context.Context, service *readservice.Loc
 func readModelRunIDs(t *testing.T, ctx context.Context, store *readmodel.Store, reference readservice.RunListOptions) []string {
 	t.Helper()
 	options := readmodel.ListOptions{
-		Gaggle:   reference.Gaggle,
-		Workflow: reference.Workflow,
-		Phase:    reference.Phase,
-		Since:    reference.Since,
-		Until:    reference.Until,
-		Limit:    200,
+		Gaggle:     reference.Gaggle,
+		Workflow:   reference.Workflow,
+		Phase:      reference.Phase,
+		Since:      reference.Since,
+		Until:      reference.Until,
+		Limit:      200,
+		Stage:      reference.Stage,
+		Population: readmodel.Population(reference.StagePopulation),
 	}
 	var out []string
 	for page := 0; ; page++ {

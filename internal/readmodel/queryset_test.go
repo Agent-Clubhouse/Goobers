@@ -104,7 +104,6 @@ func TestStageAndPopulationAreServedNotWalked(t *testing.T) {
 	for _, dims := range [][]Dim{
 		{DimStage},
 		{DimGaggle, DimStage},
-		{DimStage, DimOutcome},
 		{DimStage, DimPopulation},
 		{DimPopulation},
 		{DimGaggle, DimPopulation},
@@ -125,8 +124,10 @@ func TestCombinationsWithoutCoveringSupportAreStillRefused(t *testing.T) {
 	}{
 		{[]Dim{DimOutcome}, "run-level outcome has no recency index of its own"},
 		{[]Dim{DimGaggle, DimWorkflow, DimOutcome}, "same, and workflow is not on run_stage"},
-		{[]Dim{DimStage, DimPopulation, DimOutcome},
-			"no index leads with stage, last_status, AND a population predicate"},
+		{[]Dim{DimStage, DimOutcome},
+			"run_stage keeps only the LAST attempt's status; the reference matches ANY attempt's"},
+		{[]Dim{DimGaggle, DimStage, DimOutcome}, "same"},
+		{[]Dim{DimStage, DimPopulation, DimOutcome}, "same, and no index leads with all three"},
 		{[]Dim{DimWorkflow, DimStage}, "workflow is not denormalised onto run_stage"},
 		{[]Dim{DimPhase, DimStage}, "phase is not on run_stage either"},
 	} {

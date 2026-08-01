@@ -566,9 +566,13 @@ func optionsForDims(dims []readmodel.Dim) readmodel.ListOptions {
 		case readmodel.DimStage:
 			options.Stage = "build"
 		case readmodel.DimOutcome:
-			// The STAGE's last status, not the run-level verdict: DimOutcome only
-			// appears in the set alongside DimStage.
-			options.StageOutcome = "succeeded"
+			// Not in the supported set: run_stage keeps only the LAST attempt's
+			// status, and the reference matches on ANY attempt's -- so an equality
+			// test would silently under-match (see queryset.go). Reaching here
+			// means the set declared it, which is a contract change that must be
+			// noticed rather than skipped.
+			panic(fmt.Sprintf("conformance: supported set declares dimension %q, which the "+
+				"contract cannot construct a request for", dim))
 		case readmodel.DimPopulation:
 			options.Population = readmodel.PopulationCostMeasured
 		default:

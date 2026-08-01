@@ -29,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const (
@@ -403,6 +404,17 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 	readStore, readMode, _ := readservice.OpenReadModel(topology)
 	if readStore != nil {
+		// Measurement flags before the build, not after (#1782). The population
+		// filters come from the telemetry rollup rather than from any journal
+		// event, so a projection built without a source has all four flags at
+		// zero -- and since standalone builds once and nothing re-projects a
+		// finished run, `population=` would return nothing for the life of the
+		// cache. Read-only: standalone never writes to the instance, and opening
+		// telemetry for reading does not change that.
+		if rollupDB, rollupErr := rollup.Open(layout.TelemetryDB()); rollupErr == nil {
+			defer func() { _ = rollupDB.Close() }()
+			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+		}
 		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
 			// A failed build degrades rather than fails: single-run routes still
 			// work, and saying so beats refusing to start.

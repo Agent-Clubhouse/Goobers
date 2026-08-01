@@ -67,14 +67,6 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		// bad value cannot reach the query as a column name.
 		Population: readmodel.Population(options.StagePopulation),
 	}
-	// One `outcome` on the wire, two meanings, disambiguated by whether a stage
-	// is also named: with a stage it is that STAGE's last status, without one it
-	// is the run's terminal verdict. Resolving it here means the ambiguity is
-	// settled at the boundary rather than at every use -- and the run-level form
-	// is not in the closed set, so it is left for the path that can serve it.
-	if options.Stage != "" {
-		request.StageOutcome = string(options.Outcome)
-	}
 	if cursor != nil {
 		request.Cursor = readmodel.ListCursor{StartedAt: cursor.StartedAt, RunID: cursor.RunID}
 	}
@@ -170,8 +162,11 @@ func (s *Local) readModelEligible(options RunListOptions) bool {
 // serving them there cost ~143 MB read, ~1M unmarshals and ~19,852 journal opens
 // in a single request.
 //
-// Run-level outcome (an `outcome` with no `stage`) and trigger are still outside
-// the set and still resolve to a refusal here.
+// Outcome -- in EITHER sense -- and trigger are still outside the set and still
+// resolve to a refusal here. Stage-scoped outcome looks servable from
+// run_stage.last_status and is not: the reference matches on ANY attempt's
+// status and last_status is only the final one, so an equality test silently
+// under-matches. queryset.go carries the full argument.
 func readModelDims(options RunListOptions) []readmodel.Dim {
 	var dims []readmodel.Dim
 	if options.Gaggle != "" {

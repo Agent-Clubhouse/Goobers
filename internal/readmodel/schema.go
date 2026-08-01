@@ -400,13 +400,6 @@ CREATE INDEX IF NOT EXISTS idx_run_stage_recency
 CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_recency
 	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC);
 
--- Stage + stage-outcome. last_status is the stage's own verdict, a different
--- axis from the run-level outcome_verdict on run.
-CREATE INDEX IF NOT EXISTS idx_run_stage_status_recency
-	ON run_stage(stage, last_status, run_started_at DESC, run_id ASC);
-CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_status_recency
-	ON run_stage(gaggle, stage, last_status, run_started_at DESC, run_id ASC);
-
 -- One partial index per population, at each grain. Partial rather than a
 -- four-column composite because the predicates are independent booleans: a
 -- composite would have to be probed with three wildcards, which is a scan of the
