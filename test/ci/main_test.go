@@ -69,6 +69,8 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-contract-diff",
 		"portal-contract-typecheck",
 		"portal-contract-test",
+		"manifests-generate",
+		"manifests-diff",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("check order = %q, want %q", got, want)
@@ -288,7 +290,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -328,6 +330,58 @@ func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
 	}
 	if want := []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
 		t.Errorf("portal-dist-diff args = %q, want %q", guard.args, want)
+	}
+}
+
+// TestManifestsDriftGuardRunsGitDiff locks the #2013 guard: the CRD manifest
+// drift check runs immediately after its own regen step and is a
+// `git diff --exit-code -- config/crd/bases`, so a regenerated manifest that
+// differs from the committed one fails the gate — the same
+// generate-then-diff shape as portal-dist-diff/portal-contract-diff.
+func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	var diffIdx, generateIdx = -1, -1
+	for i, current := range got {
+		switch current.label {
+		case "manifests-diff":
+			diffIdx = i
+		case "manifests-generate":
+			generateIdx = i
+		}
+	}
+	if generateIdx == -1 {
+		t.Fatal("manifests-generate check is missing")
+	}
+	if diffIdx == -1 {
+		t.Fatal("manifests-diff check is missing")
+	}
+	if diffIdx != generateIdx+1 {
+		t.Fatalf("manifests-diff at %d, want immediately after manifests-generate at %d", diffIdx, generateIdx)
+	}
+	generate := got[generateIdx]
+	if generate.command != "go" {
+		t.Errorf("manifests-generate command = %q, want go", generate.command)
+	}
+	if want := []string{
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+		"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
+	}; !reflect.DeepEqual(generate.args, want) {
+		t.Errorf("manifests-generate args = %q, want %q", generate.args, want)
+	}
+	guard := got[diffIdx]
+	if guard.command != "git" {
+		t.Errorf("manifests-diff command = %q, want git", guard.command)
+	}
+	if want := []string{"diff", "--exit-code", "--", "config/crd/bases"}; !reflect.DeepEqual(guard.args, want) {
+		t.Errorf("manifests-diff args = %q, want %q", guard.args, want)
 	}
 }
 
