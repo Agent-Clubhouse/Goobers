@@ -185,6 +185,70 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
   return [...events].sort((left, right) => left.seq - right.seq || left.branch - right.branch);
 }
 
+/**
+ * The single authoritative "why" for a failed run, mirroring what EscalationPanel
+ * gives an escalated run and RunOutcome gives a completed one. A failed run's
+ * RunDetail carries no escalation/outcome cause (readservice only populates those
+ * for the escalated/completed phases), so — until the read model projects a
+ * FailureCause of its own — the portal derives it here from the durable journal:
+ * the failing stage attempt carries the coded ErrorDetail (the same field
+ * readservice reads in stageEscalationReason). This is what turns the run page
+ * from "it failed, go dig" into "failed: harness.crash — Harness exited before
+ * producing a result envelope" at a glance.
+ */
+export interface RunFailure {
+  /** Human-readable failure reason, always non-empty. */
+  message: string;
+  /** Coded error, when the failing event recorded one (e.g. "harness.crash"). */
+  code?: string;
+  /** Stage that failed, when the failure was attributable to one. */
+  stage?: string;
+  /** Attempt number of the failing stage visit, when recorded. */
+  attempt?: number;
+  /** Sequence of the durable event that carried the failure, for deep-linking. */
+  causalEventSeq?: number;
+}
+
+export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | undefined {
+  // Escalated runs get EscalationPanel and completed runs get RunOutcome; this is
+  // strictly the failed axis, so the two banners never fight over the same run.
+  if (run.phase !== "failed") {
+    return undefined;
+  }
+
+  let errored: RunEvent | undefined;
+  let failingStage: RunEvent | undefined;
+  let finished: RunEvent | undefined;
+  for (const event of orderRunEvents(events)) {
+    if (event.error && (event.error.code || event.error.message)) {
+      errored = event;
+    }
+    if (
+      event.type === "stage.finished" &&
+      (event.status === "failure" || event.status === "blocked")
+    ) {
+      failingStage = event;
+    }
+    if (event.type === "run.finished") {
+      finished = event;
+    }
+  }
+
+  const causal = errored ?? failingStage ?? finished;
+  const stage = errored?.stage ?? failingStage?.stage;
+  const attempt = errored?.attempt ?? failingStage?.attempt;
+  const code = errored?.error?.code?.trim() || undefined;
+  const errorText = errored?.error?.message?.trim() || errored?.error?.code?.trim();
+  const message =
+    errorText ||
+    finished?.reason?.trim() ||
+    (stage
+      ? `Stage ${humanize(stage)} failed without a recorded reason.`
+      : "The run failed without a recorded reason.");
+
+  return { message, code, stage, attempt, causalEventSeq: causal?.seq };
+}
+
 export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
   if (event.stage) {
     if (!isTranscriptEvent(event)) {

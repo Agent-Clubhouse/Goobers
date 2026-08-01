@@ -11,6 +11,7 @@ import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
+import { useFailureReasons, type FailureReasons } from "../overviewFailures";
 
 export function OverviewPage({
   client,
@@ -22,6 +23,13 @@ export function OverviewPage({
   standalone: boolean;
 }) {
   const query = useOperationalOverview(client);
+  const attentionFailedIds =
+    query.state.status === "ready" || query.state.status === "stale"
+      ? query.state.data.groups.attention
+          .filter((run) => run.phase === "failed")
+          .map((run) => run.id)
+      : [];
+  const failureReasons = useFailureReasons(client, attentionFailedIds);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -36,6 +44,7 @@ export function OverviewPage({
   return (
     <Overview
       configurationWarnings={configurationWarnings}
+      failureReasons={failureReasons}
       overview={query.state.data}
       standalone={standalone}
     />
@@ -44,10 +53,12 @@ export function OverviewPage({
 
 function Overview({
   configurationWarnings,
+  failureReasons,
   overview,
   standalone,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
+  failureReasons: FailureReasons;
   overview: OperationalOverview;
   standalone: boolean;
 }) {
@@ -104,33 +115,38 @@ function Overview({
             </span>
           </div>
           <div className="attention-list">
-            {groups.attention.map((run) => (
-              <a
-                aria-label={`Open run ${run.id}`}
-                className="attention-row"
-                href={routeHash({ page: "run", id: run.id })}
-                key={run.id}
-              >
-                <span className="attention-icon">
-                  <Icon name="alert" />
-                </span>
-                <span className="attention-copy">
-                  <strong>{runLabel(run)}</strong>
-                  <span>
-                    {run.phase === "escalated"
-                      ? "Run escalated and needs human review."
-                      : "Run failed and needs investigation."}
+            {groups.attention.map((run) => {
+              const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
+              return (
+                <a
+                  aria-label={`Open run ${run.id}`}
+                  className="attention-row"
+                  href={routeHash({ page: "run", id: run.id })}
+                  key={run.id}
+                >
+                  <span className="attention-icon">
+                    <Icon name="alert" />
                   </span>
-                </span>
-                <span className="attention-meta">
-                  <span>{workflowDisplayName(overview, run)}</span>
-                  <time dateTime={run.finishedAt ?? run.startedAt}>
-                    {formatTimestamp(run.finishedAt ?? run.startedAt)}
-                  </time>
-                </span>
-                <Icon name="arrow" />
-              </a>
-            ))}
+                  <span className="attention-copy">
+                    <strong>{runLabel(run)}</strong>
+                    <span>
+                      {run.phase === "escalated"
+                        ? "Run escalated and needs human review."
+                        : reason
+                          ? `${reason.code || "failed"} · ${reason.message}`
+                          : "Run failed and needs investigation."}
+                    </span>
+                  </span>
+                  <span className="attention-meta">
+                    <span>{workflowDisplayName(overview, run)}</span>
+                    <time dateTime={run.finishedAt ?? run.startedAt}>
+                      {formatTimestamp(run.finishedAt ?? run.startedAt)}
+                    </time>
+                  </span>
+                  <Icon name="arrow" />
+                </a>
+              );
+            })}
           </div>
         </section>
       )}

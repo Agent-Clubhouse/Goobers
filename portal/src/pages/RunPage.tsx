@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
+import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import {
@@ -22,6 +23,7 @@ import {
   eventStage,
   journalEntries,
   orderRunEvents,
+  runFailure,
   type JournalEntry,
   runEventStages,
   UNSCOPED_EVENT_STAGE,
@@ -29,7 +31,7 @@ import {
   type RunNodeState,
   useRunDetail,
 } from "../runDetailData";
-import type { Navigate } from "../routing";
+import { routeHash, type Navigate } from "../routing";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -215,6 +217,12 @@ function RunDetailWorkspace({
   const focusCausalEvent =
     causalEventSeq === undefined ? undefined : () => replaySeek(causalEventSeq);
 
+  const failure = runFailure(run, events);
+  const failureCausalEvent =
+    failure?.causalEventSeq === undefined
+      ? undefined
+      : events.find((event) => event.seq === failure.causalEventSeq);
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -279,6 +287,27 @@ function RunDetailWorkspace({
           causalEvent={causalEvent}
           escalation={run.escalation}
           onFocusCausalEvent={focusCausalEvent}
+        />
+      )}
+
+      {failure && (
+        <FailurePanel
+          causalEvent={failureCausalEvent}
+          errorsHref={routeHash({
+            page: "errors",
+            filters: {
+              gaggle: run.gaggle,
+              workflow: run.workflow,
+              stage: failure.stage,
+              code: failure.code,
+            },
+          })}
+          failure={failure}
+          onFocusCausalEvent={
+            failure.causalEventSeq === undefined
+              ? undefined
+              : () => replaySeek(failure.causalEventSeq!)
+          }
         />
       )}
 
