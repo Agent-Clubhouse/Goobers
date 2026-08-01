@@ -90,6 +90,7 @@ type executionJournal interface {
 	Dir() string
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)
+	ExportOutbox(stage string, attempt int, class journal.AttemptClass, files []journal.OutboxFile) ([]journal.Ref, error)
 	RepairAppendBoundary() error
 	SetMachineState(state string)
 }
@@ -3012,6 +3013,9 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 					Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
 				})
 			}
+			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
+				err = outboxErr
+			}
 		}
 		return result, mutations, err, nil
 	case apiv1.TaskAgentic:
@@ -3027,6 +3031,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
 		result, err = agentInvocation.Invoke(ctx, env)
+		if err == nil {
+			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
+				err = outboxErr
+			}
+		}
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -3035,6 +3044,9 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		if err != nil && t.OnTimeout == apiv1.TaskOnTimeoutSalvage && invoke.IsTimeout(err) {
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
 				salvaged = withSalvagedDiagnostics(salvaged, result)
+				if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
+					return apiv1.ResultEnvelope{}, nil, outboxErr, nil
+				}
 				return salvaged, nil, nil, nil
 			}
 		}

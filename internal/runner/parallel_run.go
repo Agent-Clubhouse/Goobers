@@ -55,6 +55,10 @@ func (j *branchJournal) RecordStageArtifactWithIntegrity(stage string, attempt i
 	return j.run.RecordBranchStageArtifactWithIntegrity(j.branch, stage, attempt, class, name, data, integrity)
 }
 
+func (j *branchJournal) ExportOutbox(stage string, attempt int, class journal.AttemptClass, files []journal.OutboxFile) ([]journal.Ref, error) {
+	return j.run.ExportBranchOutbox(j.branch, stage, attempt, class, files)
+}
+
 func (j *branchJournal) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchSpanWithSchema(j.branch, stage, name, dataSchema, data)
 }

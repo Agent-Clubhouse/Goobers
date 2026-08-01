@@ -225,6 +225,12 @@
           ]
         },
         "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
+        "outbox": {
+          "type": "array",
+          "description": "Workspace-relative paths (files or directories) this stage durably exports into the run journal's outbox namespace on completion, for output that isn't something that can PR against a repo. A declared path that is missing is skipped; one that escapes the workspace fails the stage closed.",
+          "maxItems": 32,
+          "items": { "type": "string" }
+        },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
         "capabilities": {

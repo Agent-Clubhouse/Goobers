@@ -18,6 +18,12 @@ const (
 	dirInputs    = "inputs"
 	dirArtifacts = "artifacts"
 	dirSpans     = "spans"
+	// dirOutbox is the path-preserving (not content-addressed) export
+	// namespace nested under artifacts/ (#1552): runs/<id>/artifacts/outbox/
+	// <stage>/attempt-<N>/<relative path>. Unlike the rest of artifacts/,
+	// paths under here are not digest-bucketed, so a declared export stays
+	// browsable by name.
+	dirOutbox = "outbox"
 )
 
 // Recorded reports whether dir holds a run journal's identity file, and so can

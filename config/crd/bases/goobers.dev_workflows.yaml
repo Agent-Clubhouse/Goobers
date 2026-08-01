@@ -562,6 +562,23 @@ spec:
                       - fail
                       - salvage
                       type: string
+                    outbox:
+                      description: |-
+                        Outbox declares workspace-relative paths (files or directories) this
+                        stage durably exports into the run journal's outbox namespace
+                        (runs/<id>/artifacts/outbox/**) on top of its ordinary result, for
+                        output that isn't something that can PR against a repo — reports, wiki
+                        content, JSON payloads, debugging artifacts (#1552). Opt-in and
+                        additive: a stage that declares none is unaffected. A declared path
+                        that does not exist when the stage completes is skipped, not an error;
+                        a declared path that resolves outside the workspace (lexically or via
+                        a symlink) fails the stage closed. Every attempt's export is bounded
+                        by a fixed per-attempt file-count and aggregate byte limit enforced by
+                        the journal, independent of how many paths are declared.
+                      items:
+                        type: string
+                      maxItems: 32
+                      type: array
                     policyActions:
                       description: |-
                         PolicyActions declares the closed vocabulary of externally mutating

@@ -271,6 +271,20 @@ type Task struct {
 	// +kubebuilder:validation:Enum=repo;scratch;repo-readonly
 	// +optional
 	Workspace WorkspaceMode `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// Outbox declares workspace-relative paths (files or directories) this
+	// stage durably exports into the run journal's outbox namespace
+	// (runs/<id>/artifacts/outbox/**) on top of its ordinary result, for
+	// output that isn't something that can PR against a repo — reports, wiki
+	// content, JSON payloads, debugging artifacts (#1552). Opt-in and
+	// additive: a stage that declares none is unaffected. A declared path
+	// that does not exist when the stage completes is skipped, not an error;
+	// a declared path that resolves outside the workspace (lexically or via
+	// a symlink) fails the stage closed. Every attempt's export is bounded
+	// by a fixed per-attempt file-count and aggregate byte limit enforced by
+	// the journal, independent of how many paths are declared.
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Outbox []string `json:"outbox,omitempty" yaml:"outbox,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
