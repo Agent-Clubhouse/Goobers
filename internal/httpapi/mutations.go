@@ -35,6 +35,18 @@ func registerMutationRoutes(router *Router) {
 // exist) and never a fake 200 (implying a mutation happened when none did).
 func stageMutationStub(capability string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
+		// The idempotency precondition is NOT enforced here, deliberately.
+		//
+		// `requireIdempotencyKey` exists and is tested (mutability.go, #1934),
+		// but wiring it into a stub that returns 501 would enforce a
+		// precondition on a route that does nothing — and it would break #469's
+		// acceptance criterion, which is that a tier-2 mutation REACHES its stub
+		// rather than 404ing or being refused before auth. Those tests encode a
+		// real property about the access-control seam, and a 400 in front of the
+		// 501 makes them assert something else.
+		//
+		// The check is wired when the mutation becomes real, which is where
+		// duplication can actually occur.
 		writeError(w, http.StatusNotImplemented, "not_implemented",
 			capability+" is not implemented yet (tracked separately from the access-control seam, HITL-7/#469)")
 	}
