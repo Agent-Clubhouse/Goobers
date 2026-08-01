@@ -53,15 +53,43 @@ describe("WorkflowGraphLegend (#1431)", () => {
     const nodeItems = within(screen.getByRole("list", { name: "Node state key" })).getAllByRole(
       "listitem",
     );
+    const branchItems = within(
+      screen.getByRole("list", { name: "Branch state key" }),
+    ).getAllByRole("listitem");
     expect(edgeItems).toHaveLength(3);
     expect(nodeItems).toHaveLength(8);
-    for (const item of [...edgeItems, ...nodeItems]) {
+    expect(branchItems).toHaveLength(6);
+    for (const item of [...edgeItems, ...nodeItems, ...branchItems]) {
       // Every sample is aria-hidden (a decorative shape/style cue) and is
       // always accompanied by real text content in the same list item.
       const sample = item.querySelector("[aria-hidden='true']");
       expect(sample).not.toBeNull();
       expect(item.textContent?.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it("explains every declared-branch state (#1567), distinguishing cancelled from failed by more than color", () => {
+    render(<WorkflowGraphLegend />);
+    const branchKey = screen.getByRole("list", { name: "Branch state key" });
+    for (const label of [
+      "Running",
+      "Succeeded",
+      "Failed",
+      "Timed out",
+      "Cancelled",
+      "No output",
+    ]) {
+      expect(within(branchKey).getByText(label)).toBeInTheDocument();
+    }
+    const failedSample = within(branchKey)
+      .getByText("Failed")
+      .closest("li")
+      ?.querySelector("path");
+    const cancelledSample = within(branchKey)
+      .getByText("Cancelled")
+      .closest("li")
+      ?.querySelector("path");
+    expect(failedSample?.getAttribute("class")).not.toBe(cancelledSample?.getAttribute("class"));
   });
 
   it("is keyboard reachable: the disclosure is a native, focusable summary", () => {

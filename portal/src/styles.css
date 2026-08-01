@@ -2422,6 +2422,11 @@ a.telemetry-error-row:hover {
   border-style: dashed;
 }
 
+.workflow-node-parallel {
+  border-style: double;
+  border-width: 4px;
+}
+
 .workflow-node-actor {
   color: var(--muted);
   font-size: 8px;
@@ -3870,6 +3875,24 @@ a.telemetry-error-row:hover {
   opacity: 1;
   stroke: var(--active);
   stroke-width: 2.5;
+}
+
+/* #1567: a parallel branch's terminal state on its fan-out edge. The label
+   text is the primary, always-present encoding (branchEdgeLabel appends the
+   state in words); these dash patterns are a secondary, non-color-dependent
+   reinforcement — each status gets its own cadence so e.g. cancelled and
+   failed remain distinguishable even without reading the label. */
+.workflow-graph-edge-branch-failed {
+  stroke-dasharray: 6 3;
+}
+.workflow-graph-edge-branch-timed-out {
+  stroke-dasharray: 2 3;
+}
+.workflow-graph-edge-branch-cancelled {
+  stroke-dasharray: 9 3 2 3;
+}
+.workflow-graph-edge-branch-no-output {
+  opacity: 0.5;
 }
 
 /* #1431: the accessible key for the encoding above — a collapsible details

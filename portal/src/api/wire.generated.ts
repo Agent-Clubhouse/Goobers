@@ -567,6 +567,23 @@ export const goWireFixtures = {
         "workflow": "implementation",
         "runId": "run-123",
         "reason": "fixture",
+        "parallel": "fanout",
+        "branchName": "security-lens",
+        "branchStatus": "succeeded",
+        "completeness": [
+          {
+            "branch": 1,
+            "name": "security-lens",
+            "status": "succeeded",
+            "artifacts": 1
+          },
+          {
+            "branch": 2,
+            "name": "perf-lens",
+            "status": "failed",
+            "artifacts": 0
+          }
+        ],
         "raw": {
           "futureField": "preserved"
         }

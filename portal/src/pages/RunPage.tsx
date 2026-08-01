@@ -9,6 +9,7 @@ import {
   type WorkflowGraphFullscreenMode,
 } from "../components/WorkflowTopologyGraph";
 import {
+  deriveBranchStates,
   deriveNodeStates,
   deriveTraversedEdges,
   evidenceVisit,
@@ -145,6 +146,7 @@ function RunDetailWorkspace({
     ? deriveNodeStates(run.graph, events, selectedSeq, runId)
     : {};
   const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
+  const branchStates = deriveBranchStates(events, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
@@ -344,6 +346,7 @@ function RunDetailWorkspace({
           >
             {run.graphStatus === "pinned" && run.graph ? (
               <WorkflowTopologyGraph
+                branchStates={branchStates}
                 causalNodeId={causalNodeId}
                 fullscreenTargetRef={fullscreenRootRef}
                 graph={run.graph}

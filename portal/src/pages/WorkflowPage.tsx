@@ -308,5 +308,7 @@ function stageKindLabel(stage: StageDefinition): string {
       return "Deterministic task";
     case "gate":
       return "Gate";
+    case "parallel":
+      return "Parallel";
   }
 }

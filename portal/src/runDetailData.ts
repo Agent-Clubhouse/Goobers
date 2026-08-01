@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
+  BranchStatus,
   DaemonClient,
   GraphTerminal,
   RunDetail,
@@ -262,6 +263,13 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
       ? event.stage.slice(runPrefix.length)
       : event.stage;
   }
+  if (event.type === "parallel.started" || event.type === "parallel.finished") {
+    // A parallel container is its own graph node (id === declared name);
+    // branch.* events have no single node of their own — a branch spans
+    // multiple stage nodes, so they are attributed via deriveBranchStates
+    // instead, keyed by branch name rather than a graph node id.
+    return event.parallel;
+  }
   return event.artifact?.stage || event.gate;
 }
 
@@ -436,6 +444,7 @@ export function deriveNodeStates(
     switch (event.type) {
       case "stage.started":
       case "gate.started":
+      case "parallel.started":
         states[nodeId] = "running";
         break;
       case "stage.finished":
@@ -443,6 +452,13 @@ export function deriveNodeStates(
         break;
       case "gate.evaluated":
         states[nodeId] = stateFromGate(event);
+        break;
+      case "parallel.finished":
+        // The container's own pending/running/completed axis tracks whether
+        // execution REACHED the join, not what the branches inside it did —
+        // per-branch outcome (succeeded/failed/cancelled/...) is a separate
+        // signal carried by deriveBranchStates, not smashed into this state.
+        states[nodeId] = "completed";
         break;
     }
   }
@@ -552,6 +568,61 @@ export function traversedEdgeSeq(
     : traversedEdges.get(traversedEdgeKey(edge.source, edge.target));
 }
 
+// BranchState is a declared branch's execution state as of the playhead:
+// "running" once its branch.started event has fired, or its terminal
+// BranchStatus once branch.finished has. Keyed by BranchName (what
+// WorkflowGraphEdge.branch carries on a parallel's fan-out edges), not by
+// the numeric branch id — the two graphs (declared vs. executed) only share
+// the name.
+export type BranchState = "running" | BranchStatus;
+
+export interface BranchStateEntry {
+  state: BranchState;
+  seq: number;
+}
+
+// deriveBranchStates is deriveNodeStates'/deriveTraversedEdges' per-branch
+// counterpart: a declared branch has no single graph node of its own (it
+// spans however many stage nodes it declares), so its state is read directly
+// off branch.started/branch.finished events rather than off any node id.
+export function deriveBranchStates(
+  events: RunEvent[],
+  selectedSeq: number,
+): Map<string, BranchStateEntry> {
+  const states = new Map<string, BranchStateEntry>();
+  for (const event of orderRunEvents(events)) {
+    if (event.seq > selectedSeq) {
+      break;
+    }
+    if (event.type === "branch.started" && event.branchName) {
+      states.set(event.branchName, { state: "running", seq: event.seq });
+    } else if (event.type === "branch.finished" && event.branchName && event.branchStatus) {
+      states.set(event.branchName, { state: event.branchStatus, seq: event.seq });
+    }
+  }
+  return states;
+}
+
+// branchStateLabel is the non-color-dependent text for a BranchState — the
+// primary way #1567 distinguishes e.g. a cancelled branch from a failed one:
+// by what the label literally says, not by hue.
+export function branchStateLabel(state: BranchState): string {
+  switch (state) {
+    case "running":
+      return "Running";
+    case "succeeded":
+      return "Succeeded";
+    case "failed":
+      return "Failed";
+    case "timed-out":
+      return "Timed out";
+    case "cancelled":
+      return "Cancelled";
+    case "no-output":
+      return "No output";
+  }
+}
+
 export function eventHeading(event: RunEvent): string {
   if (!event.knownSchema) {
     return "Unsupported event";
@@ -578,6 +649,10 @@ export function eventHeading(event: RunEvent): string {
     repaired: "Journal repaired",
     "runner.annotation": "Runner annotation",
     "span.recorded": "Span recorded",
+    "parallel.started": "Parallel started",
+    "parallel.finished": "Parallel finished",
+    "branch.started": "Branch started",
+    "branch.finished": "Branch finished",
   };
   return headings[event.type] ?? humanize(event.type);
 }
@@ -644,6 +719,28 @@ export function eventSummary(
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
+    case "parallel.started":
+      return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
+    case "branch.started":
+      return event.branchName ? `Branch ${event.branchName} started.` : "A branch started.";
+    case "branch.finished":
+      if (!event.branchName) {
+        return "A branch finished.";
+      }
+      return event.branchStatus
+        ? `Branch ${event.branchName} finished as ${event.branchStatus}.`
+        : `Branch ${event.branchName} finished.`;
+    case "parallel.finished": {
+      const label = event.parallel ? `Parallel ${event.parallel}` : "The parallel state";
+      if (!event.completeness || event.completeness.length === 0) {
+        return `${label} finished.`;
+      }
+      const succeeded = event.completeness.filter((branch) => branch.status === "succeeded").length;
+      const detail = event.completeness
+        .map((branch) => `${branch.name}: ${branch.status}`)
+        .join(", ");
+      return `${label} finished — ${succeeded}/${event.completeness.length} branches succeeded (${detail}).`;
+    }
     default:
       return event.reason || event.name || event.target || "Durable journal event.";
   }
