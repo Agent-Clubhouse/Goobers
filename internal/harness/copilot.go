@@ -274,7 +274,7 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.availableModels != nil {
 		return c.availableModels, nil
 	}
-	command := resolveHarnessCommand(c.Command)
+	command := resolveStdioHarnessCommand(c.Command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
 	}
