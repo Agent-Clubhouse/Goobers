@@ -54,6 +54,37 @@ type ListOptions struct {
 	// equality test on the last one silently under-matches -- see queryset.go.
 	Stage      string
 	Population Population
+
+	// OrderBy selects the recency axis (#1777).
+	//
+	// Two axes, not one, because they answer different operator questions. The
+	// default — when a run BEGAN — is what a history page wants. The other is
+	// when a run last DID something, which is what an attention list wants: a
+	// run that started days ago and escalated a minute ago is the most urgent
+	// thing on the instance and the least recent by started_at.
+	//
+	// Additive: the zero value is the existing behaviour, so no current caller
+	// changes meaning by this field existing.
+	OrderBy Order
+}
+
+// Order is the recency axis a list is filtered and sorted on.
+type Order string
+
+const (
+	// OrderStartedAt sorts by when the run began. The zero value, so existing
+	// callers keep their behaviour.
+	OrderStartedAt Order = ""
+	// OrderLastActivity sorts by the run's most recent journal event.
+	OrderLastActivity Order = "last-activity"
+)
+
+// column returns the ordering column for an axis.
+func (o Order) column() string {
+	if o == OrderLastActivity {
+		return "last_activity_at"
+	}
+	return "started_at"
 }
 
 // Population is one of the four measurement filters.
@@ -93,9 +124,15 @@ func (p Population) runColumn() (string, bool) {
 }
 
 // ListCursor is a keyset position: the ordering key of the last row returned.
+//
+// Key is the value of whichever column the query ordered by — started_at by
+// default, last_activity_at under OrderLastActivity (#1777). It is deliberately
+// NOT named for either: a cursor named StartedAt that sometimes held a
+// last-activity timestamp is how a paginating client silently skips or repeats
+// rows when the axis changes underneath it.
 type ListCursor struct {
-	StartedAt time.Time
-	RunID     string
+	Key   time.Time
+	RunID string
 }
 
 // Zero reports whether the cursor is unset — a first page.
@@ -134,6 +171,9 @@ func (o ListOptions) Dims() []Dim {
 	}
 	if o.Population != "" {
 		dims = append(dims, DimPopulation)
+	}
+	if o.OrderBy == OrderLastActivity {
+		dims = append(dims, DimActivity)
 	}
 	return dims
 }
@@ -194,7 +234,11 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 	}
 	if len(page.Runs) > 0 {
 		last := page.Runs[len(page.Runs)-1]
-		page.Next = ListCursor{StartedAt: last.StartedAt, RunID: last.RunID}
+		key := last.StartedAt
+		if options.OrderBy == OrderLastActivity {
+			key = last.LastActivity
+		}
+		page.Next = ListCursor{Key: key, RunID: last.RunID}
 	}
 	return page, nil
 }
@@ -256,20 +300,29 @@ func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 		// from runColumn's closed switch over four constants.
 		where = append(where, column+" = 1")
 	}
+	// The filter, the cursor, and the ORDER BY all use the SAME column (#1777).
+	//
+	// That is not a tidiness preference. Keyset pagination works by asking for
+	// "rows past this position in the sort order"; if since/until bounded
+	// started_at while the sort ran on last_activity_at, the predicate would
+	// exclude rows the cursor had not yet reached and admit rows it had already
+	// passed — so a client paging through would silently skip and repeat runs.
+	order := options.OrderBy.column()
 	if !options.Since.IsZero() {
-		where = append(where, "started_at >= ?")
+		where = append(where, order+" >= ?")
 		args = append(args, formatTime(options.Since))
 	}
 	if !options.Until.IsZero() {
-		where = append(where, "started_at <= ?")
+		where = append(where, order+" <= ?")
 		args = append(args, formatTime(options.Until))
 	}
 	if !options.Cursor.Zero() {
-		// The keyset predicate mirrors the ordering exactly — descending on
-		// started_at, ascending on run_id as the tiebreak — so the index can seek
-		// straight to the position instead of scanning to it.
-		cursorAt := formatTime(options.Cursor.StartedAt)
-		where = append(where, "(started_at < ? OR (started_at = ? AND run_id > ?))")
+		// The keyset predicate mirrors the ordering exactly — descending on the
+		// ordering column, ascending on run_id as the tiebreak — so the index can
+		// seek straight to the position instead of scanning to it.
+		cursorAt := formatTime(options.Cursor.Key)
+		where = append(where,
+			"("+order+" < ? OR ("+order+" = ? AND run_id > ?))")
 		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
 	}
 
@@ -278,7 +331,7 @@ func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY started_at DESC, run_id ASC LIMIT ?"
+	query += " ORDER BY " + order + " DESC, run_id ASC LIMIT ?"
 	// limit+1 so the lookahead row answers "is there more" without a COUNT.
 	args = append(args, limit+1)
 	return query, args
@@ -290,6 +343,12 @@ func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 // serves the seek AND the order. The joined run row contributes no predicate —
 // if it did, that predicate would be residual and the page would stop being
 // bounded.
+// Stage-scoped queries are started_at-ordered only. run_stage carries
+// run_started_at but not a run_last_activity copy, so ordering them by activity
+// would sort against the joined run row — a sort rather than a seek, which is
+// the unbounded shape §5.7 refuses. The closed set therefore does not pair
+// DimStage with the last-activity axis, and Require refuses the combination
+// rather than serving it slowly.
 func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 	var (
 		where []string
@@ -314,7 +373,7 @@ func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 		args = append(args, formatTime(options.Until))
 	}
 	if !options.Cursor.Zero() {
-		cursorAt := formatTime(options.Cursor.StartedAt)
+		cursorAt := formatTime(options.Cursor.Key)
 		where = append(where,
 			"(s.run_started_at < ? OR (s.run_started_at = ? AND s.run_id > ?))")
 		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
