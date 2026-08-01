@@ -10,7 +10,14 @@ import (
 	"time"
 )
 
-const adoPullRequestPageSize = 100
+const (
+	adoPullRequestPageSize = 100
+
+	// adoZeroObjectID is the all-zero SHA Azure DevOps' Git Refs API
+	// recognizes as "no object": oldObjectId when creating a ref from
+	// nothing (CreateBranch) and newObjectId to delete one (DeleteBranch).
+	adoZeroObjectID = "0000000000000000000000000000000000000000"
+)
 
 // ADOProvider implements repo, backlog, and trigger operations for Azure DevOps.
 type ADOProvider struct {
@@ -106,17 +113,22 @@ func (p *ADOProvider) Kind() ProviderKind {
 }
 
 // Capabilities declares ADO's current truth (design doc
-// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074): the
-// landing surfaces — pr.merge, pr.landing.*, pr.compare, branch.delete —
-// are honestly excluded pending CONF-3 (#2076), as is pr.review.submit/
-// threads and repo.policy.read. pr.status.publish is real
-// (PublishPullRequestStatus). backlog.blockers is excluded too (CONF-5
-// #2078, closing #2059): ADO dependency-link modeling reaches parity in
-// V1, so there is no real native-dependency read to declare — Dispatcher
-// now returns ErrUnsupported for this capability instead of the deleted
-// fail-open stub.
+// docs/design/provider-contract-conformance.md §3.2/§4, CONF-3 #2076): the
+// landing set — pr.merge, pr.landing.detect-policy, pr.landing.enqueue,
+// pr.landing.poll, pr.compare, branch.delete — is now conformant, mapped
+// onto the mergepolicy seam (#758) per §4's table. pr.review.submit/
+// threads and repo.policy.read remain excluded (no ADO implementation
+// exists). pr.status.publish is real (PublishPullRequestStatus).
+// backlog.blockers is excluded (CONF-5 #2078, closing #2059): ADO
+// dependency-link modeling reaches parity in V1, so there is no real
+// native-dependency read to declare — Dispatcher returns ErrUnsupported
+// for this capability instead of the deleted fail-open stub.
 func (p *ADOProvider) Capabilities() CapabilitySet {
-	return mandatoryCapabilities().With(CapPRStatusPublish)
+	return mandatoryCapabilities().With(
+		CapPRStatusPublish,
+		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
+		CapPRCompare, CapBranchDelete,
+	)
 }
 
 // CloneRepository clones an Azure DevOps repository to a local destination.
@@ -210,7 +222,7 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	}
 	body := []map[string]string{{
 		"name":        "refs/heads/" + req.Name,
-		"oldObjectId": "0000000000000000000000000000000000000000",
+		"oldObjectId": adoZeroObjectID,
 		"newObjectId": req.BaseSHA,
 	}}
 	var out adoRefsResponse
@@ -221,6 +233,61 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 		return BranchResult{}, fmt.Errorf("ado branch creation returned no refs")
 	}
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
+}
+
+// DeleteBranch removes an Azure DevOps branch ref (CONF-3 #2076, design doc
+// §4: branch.delete ≙ ref update to zeroed object id) via the same refs
+// batch-update endpoint CreateBranch uses, reversed: oldObjectId pins the
+// SHA being removed — an optimistic-concurrency guard exactly like GitHub's
+// ExpectedSHA lease — and newObjectId is adoZeroObjectID, which ADO's Git
+// Refs API treats as "delete this ref". When req.ExpectedSHA is empty, the
+// current tip is resolved first: ADO's ref-update rejects an update whose
+// oldObjectId doesn't match the ref's live value, so even an unconditional
+// delete needs a real one.
+func (p *ADOProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return DeleteBranchResult{}, err
+	}
+	if req.Name == "" {
+		return DeleteBranchResult{}, fmt.Errorf("branch name is required")
+	}
+	expected := req.ExpectedSHA
+	if expected == "" {
+		sha, found, err := p.lookupBranchSHA(ctx, req.Repository, req.Name)
+		if err != nil {
+			return DeleteBranchResult{}, err
+		}
+		if !found {
+			return DeleteBranchResult{Deleted: false}, nil
+		}
+		expected = sha
+	}
+	endpoint, err := p.repoURL(req.Repository, "refs")
+	if err != nil {
+		return DeleteBranchResult{}, err
+	}
+	body := []map[string]string{{
+		"name":        "refs/heads/" + req.Name,
+		"oldObjectId": expected,
+		"newObjectId": adoZeroObjectID,
+	}}
+	var out adoRefsResponse
+	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		return DeleteBranchResult{}, err
+	}
+	if len(out.Value) == 0 {
+		// The batch update reported no ref touched: with an explicit
+		// ExpectedSHA the caller cared about the lease, so treat an
+		// unconfirmed delete as a lost lease (BranchTipChangedError) rather
+		// than silently reporting success; without one, absence is
+		// ambiguous-but-benign (already gone), matching GitHub's 404-is-
+		// not-an-error DeleteBranch semantics.
+		if req.ExpectedSHA != "" {
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: req.ExpectedSHA}
+		}
+		return DeleteBranchResult{Deleted: false}, nil
+	}
+	return DeleteBranchResult{Deleted: true}, nil
 }
 
 // Commit writes file changes to an Azure DevOps branch.
@@ -315,22 +382,36 @@ func (p *ADOProvider) pathExists(ctx context.Context, repo RepositoryRef, branch
 }
 
 func (p *ADOProvider) branchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, error) {
-	endpoint, err := p.repoURL(repo, "refs")
+	sha, found, err := p.lookupBranchSHA(ctx, repo, branch)
 	if err != nil {
 		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("ado branch %q not found", branch)
+	}
+	return sha, nil
+}
+
+// lookupBranchSHA is branchSHA's found-or-not-found counterpart (CONF-3
+// #2076): DeleteBranch needs to tell "ref absent" apart from "lookup
+// failed" without branchSHA's caller-facing error-on-absent behavior.
+func (p *ADOProvider) lookupBranchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, bool, error) {
+	endpoint, err := p.repoURL(repo, "refs")
+	if err != nil {
+		return "", false, err
 	}
 	endpoint, err = addQuery(endpoint, url.Values{"filter": []string{"heads/" + strings.TrimPrefix(branch, "refs/heads/")}})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	var out adoRefsResponse
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(out.Value) == 0 || out.Value[0].ObjectID == "" {
-		return "", fmt.Errorf("ado branch %q not found", branch)
+		return "", false, nil
 	}
-	return out.Value[0].ObjectID, nil
+	return out.Value[0].ObjectID, true, nil
 }
 
 func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, error) {

@@ -483,6 +483,18 @@ type adoPullRequestDetail struct {
 	Description string        `json:"description"`
 	Reviewers   []adoReviewer `json:"reviewers"`
 	Repository  adoRepository `json:"repository"`
+	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
+	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
+	// doc §4): MergeStatus is the completion job's own outcome
+	// ("succeeded"/"conflicts"/"failure"/"rejectedByPolicy"/"queued"/
+	// "notSet"), LastMergeCommit is the landed commit once MergeStatus is
+	// "succeeded", and AutoCompleteSetBy is present iff auto-complete is
+	// currently armed (nil once ADO clears it — completion or eviction).
+	MergeStatus       string                `json:"mergeStatus,omitempty"`
+	MergeID           string                `json:"mergeId,omitempty"`
+	LastMergeCommit   adoCommitRef          `json:"lastMergeCommit"`
+	CompletionOptions *adoCompletionOptions `json:"completionOptions,omitempty"`
+	AutoCompleteSetBy *adoIdentity          `json:"autoCompleteSetBy,omitempty"`
 }
 
 type adoReviewer struct {

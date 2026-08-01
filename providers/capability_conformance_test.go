@@ -60,31 +60,13 @@ func TestBlessedTierCapabilitiesCrossCheckInterfaceSatisfaction(t *testing.T) {
 	}
 }
 
-// TestADODeclarationExcludesLandingSurfaces pins CONF-1's third acceptance
-// criterion literally: "GitHub + ADO declarations land with the truth as of
-// this issue (ADO: no pr.landing.*, no pr.merge, no branch.delete, no
-// pr.compare)".
-func TestADODeclarationExcludesLandingSurfaces(t *testing.T) {
-	ado := (&ADOProvider{}).Capabilities()
-	excluded := []Capability{
-		CapPRMerge,
-		CapPRLandingDetectPolicy,
-		CapPRLandingEnqueue,
-		CapPRLandingPoll,
-		CapBranchDelete,
-		CapPRCompare,
-	}
-	for _, cap := range excluded {
-		if ado.Has(cap) {
-			t.Errorf("ADO declares capability %q, want excluded (ADO's landing surfaces gap until CONF-3 #2076)", cap)
-		}
-	}
-}
-
-// TestGitHubDeclaresLandingSurfaces is the positive counterpart: GitHub is
-// the V0 workload and must declare the full landing set as conformant.
-func TestGitHubDeclaresLandingSurfaces(t *testing.T) {
-	gh := (&GitHubProvider{}).Capabilities()
+// TestBlessedTierDeclaresLandingSurfaces pins CONF-3's third acceptance
+// criterion literally (#2076, design doc §4): "ADO capability declaration
+// updated to include the landing set" — GitHub and ADO both declare the
+// full landing set as conformant, in lockstep per §2's blessed-tier goal.
+// (CONF-1 (#2074) pinned the inverse — ADO honestly excluding this set
+// pending this issue — which this test now supersedes.)
+func TestBlessedTierDeclaresLandingSurfaces(t *testing.T) {
 	required := []Capability{
 		CapPRMerge,
 		CapPRLandingDetectPolicy,
@@ -93,9 +75,32 @@ func TestGitHubDeclaresLandingSurfaces(t *testing.T) {
 		CapBranchDelete,
 		CapPRCompare,
 	}
-	for _, cap := range required {
-		if !gh.Has(cap) {
-			t.Errorf("GitHub does not declare capability %q, want declared", cap)
+	blessed := []Provider{&GitHubProvider{}, &ADOProvider{}}
+	for _, p := range blessed {
+		declared := p.Capabilities()
+		for _, cap := range required {
+			if !declared.Has(cap) {
+				t.Errorf("provider %q does not declare capability %q, want declared", p.Kind(), cap)
+			}
+		}
+	}
+}
+
+// TestADOStillExcludesUnimplementedSurfaces guards the capabilities CONF-3
+// did NOT touch — no ADO implementation exists for these, so a regression
+// here would silently resurrect the #2059 fail-open class for a different
+// capability.
+func TestADOStillExcludesUnimplementedSurfaces(t *testing.T) {
+	ado := (&ADOProvider{}).Capabilities()
+	excluded := []Capability{
+		CapPRReviewSubmit,
+		CapPRReviewThreads,
+		CapRepoPolicyRead,
+		CapPRUpdateBranch,
+	}
+	for _, cap := range excluded {
+		if ado.Has(cap) {
+			t.Errorf("ADO declares capability %q, want excluded (no ADO implementation exists)", cap)
 		}
 	}
 }
@@ -137,18 +142,20 @@ func TestEveryProviderDeclaresMandatoryCapabilities(t *testing.T) {
 // TestDispatcherRefusesUndeclaredCapability is CONF-1's second acceptance
 // criterion: "calling an undeclared capability returns ErrUnsupported from
 // the shim; provider code is never entered". ADOProvider's zero value has
-// no HTTP client configured, so if MergePullRequest reached the provider it
+// no HTTP client configured, so if GetRepoPolicy reached the provider it
 // would panic/error on a nil dependency rather than return this typed
-// ErrUnsupported — proving the shim refuses before dispatch.
+// ErrUnsupported — proving the shim refuses before dispatch. repo.policy.read
+// has no ADO implementation at all (unlike pr.merge, which CONF-3 (#2076)
+// made conformant), so it stays a reliable "undeclared" example.
 func TestDispatcherRefusesUndeclaredCapability(t *testing.T) {
 	d := NewDispatcher(&ADOProvider{})
-	_, err := d.MergePullRequest(context.Background(), MergePullRequestRequest{})
+	_, err := d.GetRepoPolicy(context.Background(), RepoPolicyRequest{})
 	var unsupported ErrUnsupported
 	if !errors.As(err, &unsupported) {
-		t.Fatalf("MergePullRequest error = %v, want ErrUnsupported", err)
+		t.Fatalf("GetRepoPolicy error = %v, want ErrUnsupported", err)
 	}
-	if unsupported.Provider != ProviderADO || unsupported.Capability != CapPRMerge {
-		t.Fatalf("ErrUnsupported = %+v, want Provider=%q Capability=%q", unsupported, ProviderADO, CapPRMerge)
+	if unsupported.Provider != ProviderADO || unsupported.Capability != CapRepoPolicyRead {
+		t.Fatalf("ErrUnsupported = %+v, want Provider=%q Capability=%q", unsupported, ProviderADO, CapRepoPolicyRead)
 	}
 }
 

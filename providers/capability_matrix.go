@@ -63,18 +63,12 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 // appear here with the issue tracking the fix, or
 // TestBlessedTierGapsAreTracked fails CI with an actionable message.
 // Remove an entry only once its provider's declaration and behavior have
-// actually caught up (CONF-3/#2076 removes the landing-group entries once
-// it implements them and flips ADO's declaration; the #2059 fix removes
+// actually caught up (CONF-3/#2076 removed the landing-group entries once
+// it implemented them and flipped ADO's declaration; the #2059 fix removes
 // the backlog.blockers entry once the fail-open stub is gone).
 var knownGaps = map[ProviderKind]map[Capability]string{
 	ProviderADO: {
-		CapPRMerge:               "#2076",
-		CapPRLandingDetectPolicy: "#2076",
-		CapPRLandingEnqueue:      "#2076",
-		CapPRLandingPoll:         "#2076",
-		CapBranchDelete:          "#2076",
-		CapPRCompare:             "#2076",
-		CapBacklogBlockers:       "#2059",
+		CapBacklogBlockers: "#2059",
 	},
 }
 
