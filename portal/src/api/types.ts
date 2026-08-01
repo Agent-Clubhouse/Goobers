@@ -10,7 +10,8 @@ export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
-export type GraphNodeKind = "deterministic" | "agentic" | "gate";
+export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -291,6 +292,8 @@ export interface WorkflowGraphEdge {
   target: string;
   outcome?: string;
   terminal?: GraphTerminal;
+  /** The declared parallel branch this edge belongs to; empty on ordinary sequential edges. */
+  branch?: string;
 }
 
 export interface StageDefinition {
@@ -439,7 +442,11 @@ export type KnownRunEventType =
   | "config.reload.rejected"
   | "daemon.started"
   | "daemon.clean_shutdown"
-  | "daemon.dirty_restart";
+  | "daemon.dirty_restart"
+  | "parallel.started"
+  | "parallel.finished"
+  | "branch.started"
+  | "branch.finished";
 
 export type RunEventType = KnownRunEventType | (string & Record<never, never>);
 
@@ -485,7 +492,23 @@ export interface RunEvent {
   workflow?: string;
   runId?: string;
   reason?: string;
+  /** The parallel state this event concerns; set on parallel.started/finished and branch.started/finished. */
+  parallel?: string;
+  /** The declared branch name; set on branch.started/branch.finished. */
+  branchName?: string;
+  /** The branch's terminal status; set on branch.finished. */
+  branchStatus?: BranchStatus;
+  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  completeness?: BranchOutcome[];
   raw?: JsonValue;
+}
+
+/** One entry in a parallel's completeness record (one per declared branch). */
+export interface BranchOutcome {
+  branch: number;
+  name: string;
+  status: BranchStatus;
+  artifacts: number;
 }
 
 export interface ExternalRef {

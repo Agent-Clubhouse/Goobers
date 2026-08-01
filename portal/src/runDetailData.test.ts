@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { RunEvent, RunTransition, WorkflowGraph } from "./api/types";
 import {
+  branchStateLabel,
+  deriveBranchStates,
   deriveNodeStates,
   deriveTraversedEdges,
   edgeTraversed,
@@ -384,6 +386,54 @@ describe("run detail projection", () => {
     expect(eventSummary(ref)).toBe("GitHub opened pull request #42.");
   });
 
+  it("classifies and describes parallel/branch lifecycle events readably (#1567)", () => {
+    const parallelGraph: WorkflowGraph = {
+      ...graph,
+      nodes: [...graph.nodes, { id: "fanout", kind: "parallel" }],
+    };
+    const started = event(3, "parallel.started", { parallel: "fanout" });
+    const branchStarted = event(4, "branch.started", {
+      branch: 1,
+      parallel: "fanout",
+      branchName: "security-lens",
+    });
+    const branchFinished = event(9, "branch.finished", {
+      branch: 1,
+      parallel: "fanout",
+      branchName: "security-lens",
+      branchStatus: "failed",
+    });
+    const finished = event(14, "parallel.finished", {
+      parallel: "fanout",
+      completeness: [
+        { branch: 1, name: "security-lens", status: "failed", artifacts: 0 },
+        { branch: 2, name: "perf-lens", status: "succeeded", artifacts: 1 },
+      ],
+    });
+
+    expect(eventHeading(started)).toBe("Parallel started");
+    expect(eventSummary(started)).toBe("Parallel fanout started.");
+    expect(eventHeading(branchStarted)).toBe("Branch started");
+    expect(eventSummary(branchStarted)).toBe("Branch security-lens started.");
+    expect(eventHeading(branchFinished)).toBe("Branch finished");
+    expect(eventSummary(branchFinished)).toBe("Branch security-lens finished as failed.");
+    expect(eventHeading(finished)).toBe("Parallel finished");
+    expect(eventSummary(finished)).toBe(
+      "Parallel fanout finished — 1/2 branches succeeded (security-lens: failed, perf-lens: succeeded).",
+    );
+
+    // eventNodeId: the parallel container is its own graph node; a branch
+    // event has no single node of its own.
+    expect(eventNodeId(started)).toBe("fanout");
+    expect(eventNodeId(finished)).toBe("fanout");
+    expect(eventNodeId(branchStarted)).toBeUndefined();
+
+    // deriveNodeStates: the container tracks "did execution reach the join",
+    // not what any individual branch did.
+    expect(deriveNodeStates(parallelGraph, [started], 3).fanout).toBe("running");
+    expect(deriveNodeStates(parallelGraph, [started, finished], 14).fanout).toBe("completed");
+  });
+
   it("correlates unscoped verdict evidence within its parallel branch", () => {
     const reviewSecurity = event(1, "gate.started", {
       branch: 1,
@@ -572,6 +622,51 @@ describe("deriveTraversedEdges", () => {
     expect(traversed.size).toBe(0);
     expect(edgeTraversed(traversed, cyclicGraph.edges[0])).toBe(false);
     expect(edgeTraversed(undefined, cyclicGraph.edges[0])).toBe(false);
+  });
+});
+
+describe("deriveBranchStates", () => {
+  it("tracks each declared branch independently, keyed by name (#1567)", () => {
+    const events = [
+      event(4, "branch.started", { branch: 1, parallel: "fanout", branchName: "security-lens" }),
+      event(5, "branch.started", { branch: 2, parallel: "fanout", branchName: "perf-lens" }),
+      event(9, "branch.finished", {
+        branch: 1,
+        parallel: "fanout",
+        branchName: "security-lens",
+        branchStatus: "failed",
+      }),
+      event(11, "branch.finished", {
+        branch: 2,
+        parallel: "fanout",
+        branchName: "perf-lens",
+        branchStatus: "succeeded",
+      }),
+    ];
+
+    // Before either branch starts, nothing is tracked yet.
+    expect(deriveBranchStates(events, 3).size).toBe(0);
+    // Both running once started, before either finishes.
+    expect(deriveBranchStates(events, 8).get("security-lens")?.state).toBe("running");
+    expect(deriveBranchStates(events, 8).get("perf-lens")?.state).toBe("running");
+    // Scrubbing to exactly the failure sequence reflects it; the sibling is
+    // unaffected — one branch's outcome never bleeds into another's.
+    expect(deriveBranchStates(events, 9).get("security-lens")?.state).toBe("failed");
+    expect(deriveBranchStates(events, 9).get("perf-lens")?.state).toBe("running");
+    // Both terminal once past the join.
+    const final = deriveBranchStates(events, 14);
+    expect(final.get("security-lens")).toEqual({ state: "failed", seq: 9 });
+    expect(final.get("perf-lens")).toEqual({ state: "succeeded", seq: 11 });
+  });
+
+  it("labels every BranchState in words, never relying on color to distinguish cancelled from failed", () => {
+    expect(branchStateLabel("running")).toBe("Running");
+    expect(branchStateLabel("succeeded")).toBe("Succeeded");
+    expect(branchStateLabel("failed")).toBe("Failed");
+    expect(branchStateLabel("timed-out")).toBe("Timed out");
+    expect(branchStateLabel("cancelled")).toBe("Cancelled");
+    expect(branchStateLabel("no-output")).toBe("No output");
+    expect(branchStateLabel("cancelled")).not.toBe(branchStateLabel("failed"));
   });
 });
 

@@ -10,8 +10,10 @@ import {
 import type { RefObject } from "react";
 import type { WorkflowGraph, WorkflowGraphEdge, WorkflowGraphNode } from "../api/types";
 import {
+  branchStateLabel,
   edgeTraversed,
   traversedEdgeSeq,
+  type BranchStateEntry,
   type RunNodeState,
   type TraversedEdges,
 } from "../runDetailData";
@@ -67,6 +69,7 @@ export function WorkflowTopologyGraph({
   nodeStates,
   stateSeq,
   traversedEdges,
+  branchStates,
   causalNodeId,
   fullscreenTargetRef,
   onFullscreenModeChange,
@@ -83,6 +86,11 @@ export function WorkflowTopologyGraph({
   // both endpoints being visited, which false-positives on a cyclic
   // workflow's untaken repass edges (#1430).
   traversedEdges?: TraversedEdges;
+  // Per-declared-branch execution state (#1567), keyed by WorkflowGraphEdge's
+  // branch name — the same key a parallel's fan-out edges carry. Read off
+  // branch.started/branch.finished events directly, since a branch has no
+  // single graph node of its own to hang a nodeStates entry off of.
+  branchStates?: Map<string, BranchStateEntry>;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
@@ -618,6 +626,12 @@ export function WorkflowTopologyGraph({
               </defs>
               {layout.edges.map((edge) => {
                 const traversed = edgeTraversed(traversedEdges, edge.edge);
+                const branchState = edge.edge.branch
+                  ? branchStates?.get(edge.edge.branch)
+                  : undefined;
+                const label = edge.edge.branch
+                  ? branchEdgeLabel(edge.edge.branch, branchState)
+                  : edge.edge.outcome;
                 return (
                 <g key={edge.id}>
                   <path
@@ -626,19 +640,21 @@ export function WorkflowTopologyGraph({
                       edge.repass ? "workflow-graph-edge-repass" : "",
                       nodeStates ? "workflow-graph-edge-declared" : "",
                       traversed ? "workflow-graph-edge-traversed" : "",
+                      branchState ? `workflow-graph-edge-branch-${branchState.state}` : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                     d={edge.path}
+                    data-branch-status={branchState?.state}
                     markerEnd={`url(#${markerId})`}
                   />
-                  {edge.edge.outcome && (
+                  {label && (
                     <text
                       className="workflow-graph-edge-label"
                       x={edge.labelX}
                       y={edge.labelY}
                     >
-                      {edge.edge.outcome}
+                      {label}
                     </text>
                   )}
                 </g>
@@ -727,6 +743,7 @@ export function WorkflowTopologyGraph({
           </div>
         </div>
         <TopologyList
+          branchStates={branchStates}
           graph={graph}
           layoutEdges={layout.edges}
           stageOrder={layout.stageOrder}
@@ -749,6 +766,14 @@ function distance(left: PointerPosition, right: PointerPosition): number {
   return Math.hypot(right.x - left.x, right.y - left.y);
 }
 
+// branchEdgeLabel is the non-color-dependent text for a parallel's fan-out
+// edge — naming the branch, and once it has a recorded state, appending it
+// ("security-lens — Failed") so a cancelled branch reads differently from a
+// failed one by the words alone, per #1567's acceptance criteria.
+function branchEdgeLabel(branchName: string, state: BranchStateEntry | undefined): string {
+  return state ? `${branchName} — ${branchStateLabel(state.state)}` : branchName;
+}
+
 // edgeDescription is the accessible, non-color-dependent explanation of one
 // edge's declared shape and (when a run overlay is active) execution state —
 // #1431's "Configured repass route; not traversed" / "Traversed at sequence
@@ -758,10 +783,13 @@ function distance(left: PointerPosition, right: PointerPosition): number {
 function edgeDescription(
   layoutEdge: WorkflowLayoutEdge,
   traversedEdges: TraversedEdges | undefined,
+  branchStates: Map<string, BranchStateEntry> | undefined,
 ): string {
   const { edge } = layoutEdge;
   const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
-  const route = `${edge.outcome || "next"} to ${target}`;
+  const route = edge.branch
+    ? `branch ${branchEdgeLabel(edge.branch, branchStates?.get(edge.branch))} to ${target}`
+    : `${edge.outcome || "next"} to ${target}`;
   const shape = layoutEdge.repass ? "repass route" : "forward route";
   if (traversedEdges === undefined) {
     // No run overlay active (the configured-topology page): only the
@@ -778,18 +806,20 @@ function TopologyList({
   layoutEdges,
   stageOrder,
   traversedEdges,
+  branchStates,
 }: {
   graph: WorkflowGraph;
   layoutEdges: WorkflowLayoutEdge[];
   stageOrder: WorkflowGraphNode[];
   traversedEdges?: TraversedEdges;
+  branchStates?: Map<string, BranchStateEntry>;
 }) {
   return (
     <ol aria-label={`${graph.name} accessible topology`} className="sr-only">
       {stageOrder.map((node) => {
         const outgoing = layoutEdges
           .filter((layoutEdge) => layoutEdge.edge.source === node.id)
-          .map((layoutEdge) => edgeDescription(layoutEdge, traversedEdges));
+          .map((layoutEdge) => edgeDescription(layoutEdge, traversedEdges, branchStates));
         return (
           <li key={`topology-${node.id}`}>
             {node.id === graph.start ? "Start stage. " : ""}
@@ -810,6 +840,8 @@ function nodeKindLabel(node: WorkflowGraphNode): string {
       return "Deterministic task";
     case "gate":
       return "Gate";
+    case "parallel":
+      return "Parallel";
   }
 }
 
@@ -820,6 +852,9 @@ function nodeActor(node: WorkflowGraphNode): string {
   }
   if (node.kind === "agentic") {
     return node.owner ? `Owned by ${node.owner}` : "Owner not declared";
+  }
+  if (node.kind === "parallel") {
+    return "Fans out into declared branches";
   }
   return "Runs deterministically";
 }

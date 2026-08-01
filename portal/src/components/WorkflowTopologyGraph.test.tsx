@@ -590,3 +590,100 @@ describe("workflow topology graph escalation cause (DASH-21)", () => {
     ).not.toHaveClass("run-node-causal");
   });
 });
+
+describe("workflow topology graph parallel/branch lanes (#1567)", () => {
+  const parallelGraph: WorkflowGraph = {
+    name: "fanout-review",
+    version: 1,
+    digest: "sha256:fanout",
+    start: "fanout",
+    nodes: [
+      { id: "fanout", kind: "parallel" },
+      { id: "security-review", kind: "agentic", owner: "security" },
+      { id: "perf-review", kind: "agentic", owner: "perf" },
+      { id: "join", kind: "gate", evaluator: "automated" },
+    ],
+    edges: [
+      { source: "fanout", target: "security-review", branch: "security-lens" },
+      { source: "fanout", target: "perf-review", branch: "perf-lens" },
+      { source: "security-review", target: "join", outcome: "join" },
+      { source: "perf-review", target: "join", outcome: "join" },
+    ],
+  };
+
+  it("renders a parallel node distinctly and its branches as independent lanes", () => {
+    render(
+      <WorkflowTopologyGraph
+        graph={parallelGraph}
+        onSelectStage={() => {}}
+      />,
+    );
+    const node = screen.getByRole("button", {
+      name: "fanout, Parallel, Fans out into declared branches, configured",
+    });
+    expect(node).toHaveAttribute("data-node-kind", "parallel");
+    expect(node).toHaveClass("workflow-node-parallel");
+    // Each declared branch is named on its own fan-out edge.
+    expect(screen.getByText("security-lens", { selector: "text" })).toBeInTheDocument();
+    expect(screen.getByText("perf-lens", { selector: "text" })).toBeInTheDocument();
+  });
+
+  it("names a branch's terminal state on its fan-out edge, distinct by label and dash pattern (not color alone)", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        branchStates={
+          new Map([
+            ["security-lens", { state: "failed", seq: 9 }],
+            ["perf-lens", { state: "cancelled", seq: 9 }],
+          ])
+        }
+        graph={parallelGraph}
+        nodeStates={{
+          fanout: "completed",
+          "security-review": "failed",
+          "perf-review": "aborted",
+          join: "pending",
+        }}
+        onSelectStage={() => {}}
+        stateSeq={9}
+      />,
+    );
+
+    expect(screen.getByText("security-lens — Failed", { selector: "text" })).toBeInTheDocument();
+    expect(screen.getByText("perf-lens — Cancelled", { selector: "text" })).toBeInTheDocument();
+
+    const edges = container.querySelectorAll<SVGPathElement>(
+      ".workflow-graph-edges path.workflow-graph-edge",
+    );
+    const failedEdge = [...edges].find(
+      (edge) => edge.getAttribute("data-branch-status") === "failed",
+    );
+    const cancelledEdge = [...edges].find(
+      (edge) => edge.getAttribute("data-branch-status") === "cancelled",
+    );
+    expect(failedEdge).toHaveClass("workflow-graph-edge-branch-failed");
+    expect(cancelledEdge).toHaveClass("workflow-graph-edge-branch-cancelled");
+    // The two are visually distinguishable from each other by class alone,
+    // independent of whatever color each resolves to.
+    expect(failedEdge?.className.baseVal).not.toBe(cancelledEdge?.className.baseVal);
+  });
+
+  it("names the branch and its state in the accessible topology list", () => {
+    render(
+      <WorkflowTopologyGraph
+        branchStates={new Map([["security-lens", { state: "succeeded", seq: 9 }]])}
+        graph={parallelGraph}
+        onSelectStage={() => {}}
+        stateSeq={9}
+        traversedEdges={new Map([["fanout->security-review", 9]])}
+      />,
+    );
+    const topology = screen.getByRole("list", { name: "fanout-review accessible topology" });
+    const fanoutItem = within(topology)
+      .getAllByRole("listitem")
+      .find((item) => item.textContent?.includes("fanout,"));
+    expect(fanoutItem?.textContent).toContain(
+      "branch security-lens — Succeeded to security-review, configured forward route, traversed at sequence 9",
+    );
+  });
+});
