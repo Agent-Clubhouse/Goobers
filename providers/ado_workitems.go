@@ -72,8 +72,32 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		return nil, err
 	}
 	boundedScan := req.Cursor != "" || req.PageInfo != nil
-	if boundedScan && req.Limit > 0 {
-		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(req.Limit)}})
+	// candidateLimit is what WIQL's $top actually requests — req.Limit,
+	// unless a post-WIQL filter could reject a candidate (#2067), in which
+	// case the raw fetch is given an oversized ceiling so "Limit = up to N
+	// matches" holds regardless of where in the true result set the
+	// matches land, not just "N raw records happened to be returned". Two
+	// ADO-specific conditions are added on top of the shared
+	// NeedsOversizedCandidateScan (LabelPredicate/FieldPredicate, safe for
+	// both providers): requestedState "open"/"closed" needs each
+	// candidate's process-specific state category read before it can be
+	// compared (not a raw WIQL-comparable value), and req.Labels'
+	// server-side WIQL CONTAINS is a substring match — hasAllLabels' exact
+	// client-side recheck can reject a CONTAINS false-positive. Neither
+	// condition is added to the shared check: GitHub's own `state`/`labels`
+	// query params filter both reliably server-side, so applying ADO's
+	// reasoning there would make cmd/goobers/backlogquery.go's strict
+	// per-page candidate-count invariant fail for a caller that never hits
+	// ADO at all.
+	candidateLimit := req.Limit
+	adoNeedsOversizedScan := req.NeedsOversizedCandidateScan() ||
+		requestedState == "open" || requestedState == "closed" ||
+		len(req.Labels) > 0
+	if boundedScan && req.Limit > 0 && adoNeedsOversizedScan {
+		candidateLimit = max(req.Limit, candidateScanCeiling)
+	}
+	if boundedScan && candidateLimit > 0 {
+		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(candidateLimit)}})
 		if err != nil {
 			return nil, err
 		}
@@ -83,19 +107,13 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		return nil, err
 	}
 	refs := wiql.WorkItems
-	if boundedScan && req.Limit > 0 {
-		refs = refs[:min(req.Limit, len(refs))]
-	}
-	if req.PageInfo != nil {
-		req.PageInfo.CandidateCount = len(refs)
-		req.PageInfo.HasNext = req.Limit > 0 && len(refs) == req.Limit
-		req.PageInfo.NextCursor = ""
-		if req.PageInfo.HasNext && len(refs) > 0 {
-			req.PageInfo.NextCursor = strconv.Itoa(refs[len(refs)-1].ID)
-		}
+	if boundedScan && candidateLimit > 0 {
+		refs = refs[:min(candidateLimit, len(refs))]
 	}
 	items := make([]WorkItem, 0, len(refs))
-	for _, ref := range refs {
+	lastScanned := -1
+	for i, ref := range refs {
+		lastScanned = i
 		item, err := p.GetWorkItem(ctx, req.Repository, strconv.Itoa(ref.ID))
 		if err != nil {
 			return nil, err
@@ -116,9 +134,40 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 		}
 		if hasAllLabels(item.Labels, req.Labels) && matched {
 			items = append(items, item)
-			if !boundedScan && req.Limit > 0 && len(items) >= req.Limit {
+			// Stop once Limit real matches are in hand, whether bounded or
+			// not (#2067): with an oversized candidate fetch, scanning the
+			// remaining candidates after the caller's Limit is already
+			// satisfied would only waste GetWorkItem round trips.
+			if req.Limit > 0 && len(items) >= req.Limit {
 				break
 			}
+		}
+	}
+	if req.PageInfo != nil {
+		// CandidateCount is how many candidates were actually INSPECTED
+		// this round (lastScanned+1), not how many were fetched (len(refs))
+		// — an early break once Limit real matches are in hand can leave
+		// fetched-but-never-looked-at candidates behind, and counting those
+		// as "consumed" overstates the caller's own scan-budget spend
+		// (cmd/goobers/backlogquery.go's listBacklogScanWindow decrements
+		// its outer limit by CandidateCount), starving later pages of
+		// budget for work this round never actually did.
+		//
+		// HasNext/NextCursor track the MATCH stream, not the candidate
+		// stream (#2067's third acceptance criterion): stopping early
+		// because Limit matches are already in hand leaves fetched-but-
+		// unscanned candidates behind (scannedEverything=false), and even
+		// having scanned every fetched candidate without reaching Limit
+		// matches still leaves more to look at when the fetch itself hit
+		// candidateLimit (fetchWasCapped) — ADO may hold further
+		// candidates beyond what this round asked for.
+		req.PageInfo.CandidateCount = lastScanned + 1
+		scannedEverything := lastScanned == len(refs)-1
+		fetchWasCapped := candidateLimit > 0 && len(refs) == candidateLimit
+		req.PageInfo.HasNext = boundedScan && req.Limit > 0 && (!scannedEverything || fetchWasCapped)
+		req.PageInfo.NextCursor = ""
+		if req.PageInfo.HasNext && lastScanned >= 0 {
+			req.PageInfo.NextCursor = strconv.Itoa(refs[lastScanned].ID)
 		}
 	}
 	return items, nil

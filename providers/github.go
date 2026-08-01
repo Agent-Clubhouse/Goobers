@@ -2140,6 +2140,16 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	pageSize := 30
 	if req.Limit > 0 {
 		pageSize = min(req.Limit, 100)
+		if req.NeedsOversizedCandidateScan() {
+			// #2067: a page capped at exactly Limit raw candidates can
+			// under-match when a post-fetch filter (FieldPredicate, label
+			// predicate) rejects the candidate at the truncation boundary
+			// — give the fetch GitHub's own per-page ceiling (100; the
+			// full candidateScanCeiling isn't reachable in one page here)
+			// instead so "Limit means matches" holds for realistic
+			// candidate distributions.
+			pageSize = 100
+		}
 		values.Set("per_page", strconv.Itoa(pageSize))
 	}
 	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
@@ -2173,15 +2183,29 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
 		}
+		items, scanned, err := issuesToWorkItems(issues, req)
+		if err != nil {
+			return nil, err
+		}
 		if req.PageInfo != nil {
+			// HasNext/NextCursor track the MATCH stream, not the candidate
+			// stream (#2067's third acceptance criterion): issuesToWorkItems
+			// can stop scanning before scanned reaches len(issues) once
+			// Limit real matches are in hand, leaving fetched-but-unscanned
+			// issues behind — and even scanning every fetched issue without
+			// reaching Limit matches still leaves more to look at when the
+			// fetch itself hit pageSize (GitHub may hold further candidates
+			// beyond what this round asked for).
+			scannedEverything := scanned == len(issues)
+			fetchWasCapped := len(issues) == pageSize
 			req.PageInfo.CandidateCount = len(issues)
-			req.PageInfo.HasNext = len(issues) == pageSize
+			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {
-				req.PageInfo.NextCursor = strconv.Itoa(offset + len(issues))
+				req.PageInfo.NextCursor = strconv.Itoa(offset + scanned)
 			}
 		}
-		return issuesToWorkItems(issues, req)
+		return items, nil
 	}
 
 	endpoint, err = addQuery(endpoint, values)
@@ -2230,24 +2254,30 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 }
 
 // issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
-// requests, and truncates to limit (0 = no cap).
-func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
+// requests, and truncates to limit (0 = no cap). scanned reports how many
+// raw issues were actually inspected before stopping — equal to len(issues)
+// unless Limit real matches were reached first (#2067), so a caller-paged
+// resume cursor can advance exactly past what was scanned rather than past
+// every raw candidate fetched.
+func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, int, error) {
 	items := make([]WorkItem, 0, len(issues))
+	scanned := 0
 	for _, issue := range issues {
+		scanned++
 		if issue.PullRequest != nil {
 			continue
 		}
 		item := mapGitHubIssue(issue)
 		matched, err := req.MatchesLabelPredicate(item.Labels)
 		if err != nil {
-			return nil, err
+			return nil, scanned, err
 		}
 		if !matched {
 			continue
 		}
 		matched, err = req.MatchesFieldPredicate(item.Fields)
 		if err != nil {
-			return nil, err
+			return nil, scanned, err
 		}
 		if !matched {
 			continue
@@ -2257,7 +2287,7 @@ func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkIt
 			break
 		}
 	}
-	return items, nil
+	return items, scanned, nil
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.

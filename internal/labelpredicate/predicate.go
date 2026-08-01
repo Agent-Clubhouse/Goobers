@@ -84,6 +84,17 @@ func (p *Predicate) ReferencesLabel(label string) bool {
 	return ok
 }
 
+// IsZero reports whether p represents no actual filter — a nil pointer, or
+// one Compile("", nil, nil) produced — matching every candidate
+// unconditionally. Callers deciding whether a filter could reject a
+// candidate (e.g. providers.ListWorkItemsRequest.NeedsOversizedCandidateScan,
+// #2067) must check this rather than p != nil: Compile("", nil, nil)
+// returns a non-nil Predicate that still always matches, so a bare nil
+// check overcounts "a real filter is active".
+func (p *Predicate) IsZero() bool {
+	return p == nil || (p.program == nil && len(p.required) == 0 && len(p.excluded) == 0)
+}
+
 // Matches evaluates the exact predicate against labels.
 func (p *Predicate) Matches(labels []string) (bool, error) {
 	if p == nil {
