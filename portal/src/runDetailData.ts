@@ -483,25 +483,32 @@ const TERMINAL_STATUS_TO_GRAPH_TERMINAL: Partial<Record<string, GraphTerminal>> 
   escalated: "escalate",
 };
 
+// TraversedEdges maps an edge key (see traversedEdgeKey/traversedTerminalKey)
+// to the causal sequence of its LAST crossing at or before the playhead — the
+// edge-level analogue of deriveNodeStates' state map. The value, not just
+// membership, is what lets a per-edge description read "Traversed at
+// sequence 23" (#1431) rather than a bare yes/no.
+export type TraversedEdges = Map<string, number>;
+
 // deriveTraversedEdges is deriveNodeStates' edge-level counterpart: it answers
-// "which DECLARED edges has the run actually crossed, as of selectedSeq" from
-// the run's exact transition history (#1427) — never by inferring an edge was
-// taken merely because both endpoints were visited, which false-positives on
-// any cyclic workflow (#1430): a forward path visits both endpoints of an
-// untaken repass edge for unrelated reasons.
+// "which DECLARED edges has the run actually crossed, as of selectedSeq, and
+// at what sequence" from the run's exact transition history (#1427) — never
+// by inferring an edge was taken merely because both endpoints were visited,
+// which false-positives on any cyclic workflow (#1430): a forward path
+// visits both endpoints of an untaken repass edge for unrelated reasons.
 export function deriveTraversedEdges(
   transitions: RunTransition[] | undefined,
   selectedSeq: number,
-): Set<string> {
-  const traversed = new Set<string>();
+): TraversedEdges {
+  const traversed: TraversedEdges = new Map();
   if (!transitions) {
     return traversed;
   }
   // #1427's ProjectTransitions sorts rows by causal sequence before
   // returning, so the same "break once past the playhead" idiom
   // deriveNodeStates uses above applies here unchanged — and a repeatedly
-  // traversed edge is added to the same Set key on every occurrence, so
-  // repeated repasses never create phantom/duplicate edges.
+  // traversed edge's key is overwritten with its LATEST occurrence's
+  // sequence, so repeated repasses never create phantom/duplicate edges.
   for (const transition of transitions) {
     if (transition.seq > selectedSeq) {
       break;
@@ -511,29 +518,38 @@ export function deriveTraversedEdges(
         ? TERMINAL_STATUS_TO_GRAPH_TERMINAL[transition.status]
         : undefined;
       if (terminal) {
-        traversed.add(traversedTerminalKey(transition.source, terminal));
+        traversed.set(traversedTerminalKey(transition.source, terminal), transition.seq);
       }
       continue;
     }
     if (transition.target) {
-      traversed.add(traversedEdgeKey(transition.source, transition.target));
+      traversed.set(traversedEdgeKey(transition.source, transition.target), transition.seq);
     }
   }
   return traversed;
 }
 
 // edgeTraversed reports whether a declared graph edge is on the executed path,
-// per the Set deriveTraversedEdges produced.
+// per the map deriveTraversedEdges produced.
 export function edgeTraversed(
-  traversedEdges: Set<string> | undefined,
+  traversedEdges: TraversedEdges | undefined,
   edge: WorkflowGraphEdge,
 ): boolean {
+  return traversedEdgeSeq(traversedEdges, edge) !== undefined;
+}
+
+// traversedEdgeSeq returns the causal sequence a declared graph edge was last
+// crossed at, or undefined when it was never crossed as of the playhead.
+export function traversedEdgeSeq(
+  traversedEdges: TraversedEdges | undefined,
+  edge: WorkflowGraphEdge,
+): number | undefined {
   if (!traversedEdges) {
-    return false;
+    return undefined;
   }
   return edge.terminal
-    ? traversedEdges.has(traversedTerminalKey(edge.source, edge.terminal))
-    : traversedEdges.has(traversedEdgeKey(edge.source, edge.target));
+    ? traversedEdges.get(traversedTerminalKey(edge.source, edge.terminal))
+    : traversedEdges.get(traversedEdgeKey(edge.source, edge.target));
 }
 
 export function eventHeading(event: RunEvent): string {

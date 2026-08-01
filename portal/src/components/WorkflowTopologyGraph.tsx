@@ -8,8 +8,14 @@ import {
   useState,
 } from "react";
 import type { RefObject } from "react";
-import type { WorkflowGraph, WorkflowGraphNode } from "../api/types";
-import { edgeTraversed, type RunNodeState } from "../runDetailData";
+import type { WorkflowGraph, WorkflowGraphEdge, WorkflowGraphNode } from "../api/types";
+import {
+  edgeTraversed,
+  traversedEdgeSeq,
+  type RunNodeState,
+  type TraversedEdges,
+} from "../runDetailData";
+import { WorkflowGraphLegend } from "./WorkflowGraphLegend";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -17,6 +23,7 @@ import {
   fitGraphZoom,
   layoutWorkflowGraph,
   terminalLabel,
+  type WorkflowLayoutEdge,
 } from "../workflowGraph";
 
 const FALLBACK_VIEWPORT_WIDTH = 720;
@@ -75,7 +82,7 @@ export function WorkflowTopologyGraph({
   // transition history (#1427) via deriveTraversedEdges — never inferred from
   // both endpoints being visited, which false-positives on a cyclic
   // workflow's untaken repass edges (#1430).
-  traversedEdges?: Set<string>;
+  traversedEdges?: TraversedEdges;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
@@ -721,9 +728,11 @@ export function WorkflowTopologyGraph({
         </div>
         <TopologyList
           graph={graph}
+          layoutEdges={layout.edges}
           stageOrder={layout.stageOrder}
           traversedEdges={traversedEdges}
         />
+        <WorkflowGraphLegend />
       </div>
     </div>
   );
@@ -740,26 +749,47 @@ function distance(left: PointerPosition, right: PointerPosition): number {
   return Math.hypot(right.x - left.x, right.y - left.y);
 }
 
+// edgeDescription is the accessible, non-color-dependent explanation of one
+// edge's declared shape and (when a run overlay is active) execution state —
+// #1431's "Configured repass route; not traversed" / "Traversed at sequence
+// 23" wording, so the topology list communicates the same two independent
+// dimensions the visual encoding does (repass vs. forward; traversed vs.
+// declared-only) rather than a bare boolean.
+function edgeDescription(
+  layoutEdge: WorkflowLayoutEdge,
+  traversedEdges: TraversedEdges | undefined,
+): string {
+  const { edge } = layoutEdge;
+  const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
+  const route = `${edge.outcome || "next"} to ${target}`;
+  const shape = layoutEdge.repass ? "repass route" : "forward route";
+  if (traversedEdges === undefined) {
+    // No run overlay active (the configured-topology page): only the
+    // declared shape is meaningful, execution state does not apply.
+    return `${route}, configured ${shape}`;
+  }
+  const seq = traversedEdgeSeq(traversedEdges, edge);
+  const state = seq === undefined ? "not traversed" : `traversed at sequence ${seq}`;
+  return `${route}, configured ${shape}, ${state}`;
+}
+
 function TopologyList({
   graph,
+  layoutEdges,
   stageOrder,
   traversedEdges,
 }: {
   graph: WorkflowGraph;
+  layoutEdges: WorkflowLayoutEdge[];
   stageOrder: WorkflowGraphNode[];
-  traversedEdges?: Set<string>;
+  traversedEdges?: TraversedEdges;
 }) {
   return (
     <ol aria-label={`${graph.name} accessible topology`} className="sr-only">
       {stageOrder.map((node) => {
-        const outgoing = graph.edges
-          .filter((edge) => edge.source === node.id)
-          .map((edge) => {
-            const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
-            const traversedSuffix =
-              traversedEdges && edgeTraversed(traversedEdges, edge) ? ", traversed" : "";
-            return `${edge.outcome || "next"} to ${target}${traversedSuffix}`;
-          });
+        const outgoing = layoutEdges
+          .filter((layoutEdge) => layoutEdge.edge.source === node.id)
+          .map((layoutEdge) => edgeDescription(layoutEdge, traversedEdges));
         return (
           <li key={`topology-${node.id}`}>
             {node.id === graph.start ? "Start stage. " : ""}
