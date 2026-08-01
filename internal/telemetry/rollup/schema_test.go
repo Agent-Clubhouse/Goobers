@@ -1,8 +1,10 @@
 package rollup
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,5 +68,45 @@ func TestMigrateOnceRefusesANewerSchema(t *testing.T) {
 		t.Fatal("opened a store whose schema is newer than this build supports")
 	} else if !strings.Contains(err.Error(), "newer than this build") {
 		t.Errorf("error = %v; want a clear newer-schema refusal", err)
+	}
+}
+
+// TestIngestRefusesUnknownRunSchema pins #2054 on the ingest side: a run.yaml
+// reshaped by a future build must be refused, not silently ingested with
+// zero-valued fields for whatever this build doesn't recognize. Mirrors
+// internal/journal.Reader.Identity's same refusal for the exact reason
+// mirror.go's package comment gives for keeping runIdentity un-imported: this
+// package decodes run.yaml itself and so must apply the same schema check
+// independently.
+func TestIngestRefusesUnknownRunSchema(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runDir := writeFixtureRun(t, runsDir, fixtureRunID, fixtureStart)
+
+	b, err := os.ReadFile(filepath.Join(runDir, fileRunYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(string(b), "schema: "+runSchema, "schema: goobers.dev/journal/run/v2", 1)
+	if tampered == string(b) {
+		t.Fatal("test setup: schema line not found in run.yaml")
+	}
+	if err := os.WriteFile(filepath.Join(runDir, fileRunYAML), []byte(tampered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), runDir); err == nil {
+		t.Fatal("IngestRun accepted a run.yaml with an unknown schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unknown schema") {
+		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	}
+
+	runs, err := db.Runs(context.Background())
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("ingest of a refused run left %d row(s) behind, want 0", len(runs))
 	}
 }

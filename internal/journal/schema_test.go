@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -141,6 +142,75 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
 			t.Errorf("case %d: schema accepted malformed event: %s", i, b)
 		}
+	}
+}
+
+// TestIdentityRefusesUnknownSchema pins #2054: run.yaml is written once at
+// Create and never migrated in place, so a reader has no way to safely
+// reinterpret a shape it does not own. Before this fix, Identity() bare-
+// unmarshaled any schema version — a future run/v2 reshape would silently
+// zero-value fields this build doesn't recognize rather than refusing, the
+// same class of bug the event stream and CLI envelope already guard against.
+func TestIdentityRefusesUnknownSchema(t *testing.T) {
+	run, root := newRun(t)
+	dir := filepath.Join(root, testIdentity().RunID)
+	_ = run.Close()
+
+	runYAMLPath := filepath.Join(dir, fileRunYAML)
+	b, err := os.ReadFile(runYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(b, []byte("schema: "+RunSchema), []byte("schema: goobers.dev/journal/run/v2"), 1)
+	if bytes.Equal(tampered, b) {
+		t.Fatal("test setup: schema line not found in run.yaml")
+	}
+	if err := os.WriteFile(runYAMLPath, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.Identity(); err == nil {
+		t.Fatal("Identity() accepted an unknown schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unknown schema") {
+		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	}
+}
+
+// TestStateRefusesUnknownSchema mirrors TestIdentityRefusesUnknownSchema for
+// state.json (#2054).
+func TestStateRefusesUnknownSchema(t *testing.T) {
+	run, root := newRun(t)
+	dir := filepath.Join(root, testIdentity().RunID)
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "impl", Attempt: 1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = run.Close()
+
+	statePath := filepath.Join(dir, fileState)
+	b, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(b, []byte(`"schema": "`+StateSchema+`"`), []byte(`"schema": "goobers.dev/journal/state/v2"`), 1)
+	if bytes.Equal(tampered, b) {
+		t.Fatal("test setup: schema field not found in state.json")
+	}
+	if err := os.WriteFile(statePath, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.State(); err == nil {
+		t.Fatal("State() accepted an unknown schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unknown schema") {
+		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
 	}
 }
 

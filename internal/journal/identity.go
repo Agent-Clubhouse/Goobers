@@ -74,3 +74,8 @@ type RunIdentity struct {
 	// StartedAt is when the run was created. Informational (not conformance).
 	StartedAt time.Time `json:"startedAt"`
 }
+
+// KnownSchema reports whether this identity uses the run.yaml schema version
+// this build owns — the same check Event.KnownSchema applies per event,
+// applied here to the single-document run.yaml (#2054).
+func (id RunIdentity) KnownSchema() bool { return id.Schema == RunSchema }

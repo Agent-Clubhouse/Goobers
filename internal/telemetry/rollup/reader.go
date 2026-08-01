@@ -36,6 +36,12 @@ func readRunIdentity(runDir string) (runIdentity, error) {
 	if id.RunID == "" {
 		return runIdentity{}, fmt.Errorf("rollup: %s has no runId", fileRunYAML)
 	}
+	// An unknown schema version is refused rather than ingested with fields
+	// silently zero-valued (#2054) — mirrors internal/journal.Reader.Identity's
+	// same refusal of a run.yaml this build does not own the shape of.
+	if id.Schema != runSchema {
+		return runIdentity{}, fmt.Errorf("rollup: %s has unknown schema %q (want %q)", fileRunYAML, id.Schema, runSchema)
+	}
 	return id, nil
 }
 
