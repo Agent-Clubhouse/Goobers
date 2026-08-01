@@ -120,6 +120,14 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"(default 24h), and rotates within selectionPriority tiers. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
+	"respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the\n" +
+	"assignee field is ignored entirely, exactly as today). Once true,\n" +
+	"assignedTo selects the mode: a real identity (either a literal login, or\n" +
+	"left undeclared so the runner's configured self identity fills it in at\n" +
+	"run time) makes only items assigned to that identity eligible — assigned\n" +
+	"to anyone else, or unassigned, is excluded. assignedTo declared with no\n" +
+	"value is the null/unassigned-only mode: only items with no assignee at\n" +
+	"all are eligible.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -240,6 +248,21 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// list, highest priority first. Empty (the default) preserves #350's
 	// plain FIFO claim order unchanged — priority is strictly additive.
 	selectionPriority := splitLabelList(providerInput("selectionPriority", ""))
+	// respectAssignee/assignedTo (#1820, COORD-2): opt-in claim-scoping
+	// filter, mirroring how trustLabel/requireLabels/excludeLabels already
+	// work. Unset (the default) is byte-identical to today — assignedTo is
+	// read but never consulted below unless respectAssignee is explicitly
+	// "true". Once opted in, assignedTo's resolved value selects the mode:
+	// a real identity — a literal login, or the runner's configured self
+	// identity when the task leaves assignedTo undeclared
+	// (defaultBacklogQueryAssignedTo, internal/runner/run.go) — requires an
+	// exact match; empty (declared with no value, or undeclared with no
+	// self identity configured) is the null/unassigned-only mode. Both
+	// modes are the same equality check (item.Assignee == assignedTo): "must
+	// equal <login>" and "must be empty" are the same comparison, so there
+	// is no separate null-mode branch to get wrong.
+	respectAssignee := providerInput("respectAssignee", "") == "true"
+	assignedTo := providerInput("assignedTo", "")
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
@@ -374,10 +397,19 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		labels = append(labels, trustLabel)
 	}
 	labels = append(labels, labelFilter.RequiredLabels()...)
+	// queryAssignee narrows the provider query server-side only for a real
+	// identity (fixed or runtime-derived) — providers' Assignee request
+	// field means "must equal this login", so it has no way to express
+	// "must be unassigned"; the null/unassigned-only mode (assignedTo=="")
+	// relies entirely on the client-side re-verify below instead.
+	queryAssignee := ""
+	if respectAssignee && assignedTo != "" {
+		queryAssignee = assignedTo
+	}
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	cursorPath := backlogScanCursorPath(
 		l.SchedulerDir(), backlogRepo, trustLabel, labelExpression, fieldExpression,
-		requireLabels, excludeLabels,
+		requireLabels, excludeLabels, queryAssignee,
 	)
 	exhaustiveScan := fieldOrder.Configured()
 	scanCursor := backlogScanCursor{}
@@ -389,7 +421,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 	}
 	items, nextScanCursor, err := listBacklogScanWindow(
-		ctx, issueProvider, backlogRepo, labels, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
+		ctx, issueProvider, backlogRepo, labels, queryAssignee, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
@@ -398,9 +430,15 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// Re-verify eligibility in code (SEC-047: backlog content is untrusted
 	// input on a public repo) rather than trusting the provider query's
 	// labels filter alone — a defense-in-depth check, not a redundant one.
+	// The assignee check follows the same discipline and is the sole
+	// enforcement for the null/unassigned-only mode (queryAssignee above
+	// narrows nothing when assignedTo is empty).
 	var eligible []providers.WorkItem
 	for _, item := range items {
 		if trustLabel != "" && !item.HasLabel(trustLabel) {
+			continue
+		}
+		if respectAssignee && item.Assignee != assignedTo {
 			continue
 		}
 		matched, matchErr := labelFilter.Matches(item.Labels)
@@ -533,6 +571,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				issueProvider,
 				repo,
 				compactLabels(trustLabel, resweepPolicy.readyLabel),
+				// Re-sweep is read-only visibility across already in-flight
+				// items regardless of assignee, not new claim eligibility —
+				// respectAssignee does not apply here.
+				"",
 				fieldFilter,
 				backlogScanCeiling,
 				backlogScanCursor{Cursor: resweepState.Cursor},
@@ -1269,6 +1311,7 @@ func backlogScanCursorPath(
 	repo providers.RepositoryRef,
 	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
+	queryAssignee string,
 ) string {
 	key, _ := json.Marshal(struct {
 		Repository      providers.RepositoryRef `json:"repository"`
@@ -1277,6 +1320,15 @@ func backlogScanCursorPath(
 		FieldExpression string                  `json:"fieldExpression,omitempty"`
 		RequireLabels   []string                `json:"requireLabels,omitempty"`
 		ExcludeLabels   []string                `json:"excludeLabels,omitempty"`
+		// Assignee (#1820): only ever non-empty when respectAssignee narrows
+		// the provider query server-side (a real-identity mode); omitempty
+		// keeps the cache key — and therefore the cursor file path — byte-
+		// identical to before this field existed for any gaggle that hasn't
+		// opted in, so an in-flight scan's cursor isn't invalidated by this
+		// change. Distinct assignee values get distinct cursors so a
+		// narrowed scan's pagination progress never cross-contaminates a
+		// differently-scoped one over the same labels/predicates.
+		Assignee string `json:"assignee,omitempty"`
 	}{
 		Repository:      repo,
 		TrustLabel:      trustLabel,
@@ -1284,6 +1336,7 @@ func backlogScanCursorPath(
 		FieldExpression: fieldExpression,
 		RequireLabels:   requireLabels,
 		ExcludeLabels:   excludeLabels,
+		Assignee:        queryAssignee,
 	})
 	sum := sha256.Sum256(key)
 	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
@@ -1342,6 +1395,7 @@ func listBacklogScanWindow(
 	provider providers.BacklogProvider,
 	repo providers.RepositoryRef,
 	labels []string,
+	assignee string,
 	fieldFilter *fieldpredicate.Predicate,
 	limit int,
 	cursor backlogScanCursor,
@@ -1361,6 +1415,7 @@ func listBacklogScanWindow(
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:     repo,
 			Labels:         labels,
+			Assignee:       assignee,
 			FieldPredicate: fieldFilter,
 			State:          "open",
 			Limit:          pageLimit,

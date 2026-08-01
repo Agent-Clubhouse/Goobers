@@ -352,6 +352,120 @@ func TestBacklogQueryLabelLists(t *testing.T) {
 	}
 }
 
+// TestBacklogQueryRespectAssignee is #1820's (COORD-2) core acceptance:
+// opted-out is byte-identical to today regardless of assignee, and each
+// opted-in mode — fixed identity, null/unassigned-only, and the exclusion
+// case that must not be conflated with null mode (assigned to someone else,
+// not merely unassigned) — enforces the right eligibility.
+func TestBacklogQueryRespectAssignee(t *testing.T) {
+	tests := []struct {
+		name            string
+		respectAssignee string
+		assignedTo      string
+		issueAssignees  []string // index 0 -> issue 7, index 1 -> issue 8, index 2 -> issue 9
+		wantIDs         string
+	}{
+		{
+			name:            "opted out ignores assignee entirely",
+			respectAssignee: "",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "7,8,9",
+		},
+		{
+			name:            "fixed identity only matches that login",
+			respectAssignee: "true",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "7",
+		},
+		{
+			name:            "null mode matches only unassigned items",
+			respectAssignee: "true",
+			assignedTo:      "",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "9",
+		},
+		{
+			name:            "assigned to someone else is excluded, not conflated with null mode",
+			respectAssignee: "true",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"someone-else"},
+			wantIDs:         "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			for i, assignee := range tt.issueAssignees {
+				number := 7 + i
+				server.addIssue(number, "Candidate", "trusted")
+				if assignee != "" {
+					server.issues[number].assignee = assignee
+				}
+			}
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+			t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", tt.respectAssignee)
+			t.Setenv("GOOBERS_INPUT_ASSIGNEDTO", tt.assignedTo)
+			t.Chdir(t.TempDir())
+
+			code, stdout, stderr := runArgs(t, "backlog-query", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			var gotIDs []string
+			for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+				if id, _, ok := strings.Cut(line, "\t"); ok {
+					gotIDs = append(gotIDs, id)
+				}
+			}
+			if got := strings.Join(gotIDs, ","); got != tt.wantIDs {
+				t.Fatalf("eligible IDs = %q, want %q; stdout = %q", got, tt.wantIDs, stdout)
+			}
+		})
+	}
+}
+
+// TestBacklogQueryRespectAssigneeClaimsOnlyMatchingIdentity verifies the
+// filter also governs --claim (the eligibility loop it shares with list),
+// and that a matching item is actually claimable end-to-end, not just
+// listed.
+func TestBacklogQueryRespectAssigneeClaimsOnlyMatchingIdentity(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Assigned to bot", "trusted")
+	server.issues[7].assignee = "gaggle-bot"
+	server.addIssue(8, "Assigned to someone else", "trusted")
+	server.issues[8].assignee = "someone-else"
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_ASSIGNEDTO", "gaggle-bot")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("stdout = %q, want a mention of claiming item 7 (assigned to gaggle-bot)", stdout)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, ok := ledger.Lookup("8"); ok {
+		t.Fatalf("item 8 (assigned to someone-else) must not be claimed under assignedTo=gaggle-bot")
+	}
+}
+
 func TestBacklogQueryAppliesExactLabelPredicate(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
