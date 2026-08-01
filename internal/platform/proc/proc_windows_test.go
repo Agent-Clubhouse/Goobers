@@ -39,7 +39,13 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	// 25s, not the child's full 30s budget: generous enough to absorb a cold
+	// powershell.exe start under real Windows CI contention (the observed
+	// merge_group flake, #2048 — a fixed 5s deadline for spawning and
+	// dispatching a real external process was too tight for a loaded shared
+	// runner, not evidence of a broken attach/resume path) while still
+	// leaving margin below the child's Start-Sleep window.
+	deadline := time.Now().Add(25 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
 			return
