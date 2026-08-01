@@ -519,6 +519,26 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stdout, "telemetry pruned run=%q reason=%s\n", result.RunID, result.Reason)
 	}
 
+	// Prune crash-abandoned orphan runs and run-creation staging directories
+	// before anything else touches the runs tree (#2035): a mid-Create crash's
+	// os.RemoveAll cleanup is in-process only, so a `.runs.creating` residue
+	// otherwise sits until an operator happens to run `goobers telemetry
+	// prune-orphans` — the same gap worktree Reap (above) and telemetry
+	// retention (immediately above) already close for their own trees.
+	orphansPruned, err := pruneOrphansAtStartup(l, time.Now())
+	if err != nil {
+		pf(stderr, "error: prune orphan run directories: %v\n", err)
+		return 1
+	}
+	for _, result := range orphansPruned {
+		source := "run"
+		if result.CreationStage {
+			source = "creation-stage"
+		}
+		pf(stdout, "pruned orphan run directory name=%q source=%s path=%q lastModified=%s\n",
+			result.Name, source, result.RunDir, result.LastModified.UTC().Format(time.RFC3339))
+	}
+
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
