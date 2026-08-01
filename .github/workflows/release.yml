@@ -94,6 +94,13 @@ jobs:
             -feature-notes dist/RELEASE_NOTES.md \
             -output dist/RELEASE_NOTES.md
 
+      # Runs and exercises the linux/amd64 archive only — checksum-verified
+      # and executed. windows/amd64 gets its own runtime smoke on a real
+      # Windows runner (windows-smoke, ci.yml). linux/arm64 and darwin/amd64
+      # ship in DefaultTargets (release/pack.go) but are never executed
+      # anywhere, by a recorded decision, not an oversight — see
+      # docs/guides/releases.md "linux/arm64 and darwin/amd64 (shipped, never
+      # executed)" (#2039) for the rationale and promotion trigger.
       - name: Verify release artifacts
         env:
           TAG: ${{ github.ref_name }}
