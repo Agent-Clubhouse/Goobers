@@ -1088,14 +1088,21 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 // loop runs against either backend once the provider is resolved from the routed
 // repo. GitHub-only extras (curation, the open-PR backstop) keep the concrete
 // *providers.GitHubProvider and are skipped for ADO.
+//
+// It embeds the full providers.Provider (not just BacklogProvider) so
+// filterDeclaredDependencyEligibility can wrap it in a providers.Dispatcher
+// (CONF-5, #2078): the native-dependency check goes through
+// backlog.blockers instead of calling HasOpenWorkItemBlocker directly, so a
+// provider that doesn't declare the capability fails closed with
+// ErrUnsupported instead of risking a silent fail-open answer (#2059).
 type backlogIssueProvider interface {
-	providers.BacklogProvider
+	providers.Provider
 	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
-	HasOpenWorkItemBlocker(context.Context, providers.RepositoryRef, string) (bool, error)
 }
 
 func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIssueProvider, repo providers.RepositoryRef, eligible []providers.WorkItem) ([]providers.WorkItem, []string) {
+	dispatcher := providers.NewDispatcher(provider)
 	filtered := eligible[:0]
 	var warnings []string
 	for _, item := range eligible {
@@ -1103,7 +1110,7 @@ func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIs
 			filtered = append(filtered, item)
 			continue
 		}
-		blocked, err := provider.HasOpenWorkItemBlocker(ctx, repo, item.ID)
+		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, item.ID)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
 			continue

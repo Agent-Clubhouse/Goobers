@@ -612,14 +612,6 @@ func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(context.Context, Repos
 	return nil, fmt.Errorf("ADO work-item label transitions reach parity in V1")
 }
 
-// HasOpenWorkItemBlocker reports whether an item has an unresolved native
-// dependency. ADO dependency-link modeling reaches parity in V1; until then the
-// unified WorkItem carries no native blocked-by count for ADO, so this is only
-// reached defensively and answers "no known blocker".
-func (p *ADOProvider) HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error) {
-	return false, nil
-}
-
 // Subscribe emits Azure Boards backlog item availability events.
 func (p *ADOProvider) Subscribe(ctx context.Context, sub TriggerSubscription) (<-chan WorkItemEvent, error) {
 	if sub.Kind != TriggerPolling {

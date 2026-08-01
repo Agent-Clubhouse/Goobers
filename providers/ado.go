@@ -110,13 +110,13 @@ func (p *ADOProvider) Kind() ProviderKind {
 // landing surfaces — pr.merge, pr.landing.*, pr.compare, branch.delete —
 // are honestly excluded pending CONF-3 (#2076), as is pr.review.submit/
 // threads and repo.policy.read. pr.status.publish is real
-// (PublishPullRequestStatus). backlog.blockers is declared true to match
-// today's Go-level reality (HasOpenWorkItemBlocker exists and compiles
-// against cmd/goobers/backlogquery.go's backlogIssueProvider) even though
-// its answer is a fail-open stub, not a real native-dependency read — that
-// semantic gap is #2059/CONF-5 (#2078), a separate, later fix.
+// (PublishPullRequestStatus). backlog.blockers is excluded too (CONF-5
+// #2078, closing #2059): ADO dependency-link modeling reaches parity in
+// V1, so there is no real native-dependency read to declare — Dispatcher
+// now returns ErrUnsupported for this capability instead of the deleted
+// fail-open stub.
 func (p *ADOProvider) Capabilities() CapabilitySet {
-	return mandatoryCapabilities().With(CapPRStatusPublish, CapBacklogBlockers)
+	return mandatoryCapabilities().With(CapPRStatusPublish)
 }
 
 // CloneRepository clones an Azure DevOps repository to a local destination.
