@@ -42,7 +42,6 @@ func TestWorkflowRequiredProviderCapabilitiesDerivesFromStages(t *testing.T) {
 
 	got := WorkflowRequiredProviderCapabilities(wf)
 	want := []providers.Capability{
-		providers.CapBacklogBlockers,
 		providers.CapBranchDelete,
 		providers.CapPRCompare,
 		providers.CapPRLandingDetectPolicy,
@@ -56,6 +55,33 @@ func TestWorkflowRequiredProviderCapabilitiesDerivesFromStages(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("required = %v, want %v", got, want)
 		}
+	}
+}
+
+// TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement pins the fix
+// for CONF-6's original over-broad requirement: backlog-query's
+// HasOpenWorkItemBlocker call only fires when a work item's BlockedByCount
+// != 0, and only GitHub's ListWorkItems ever sets that field, so requiring
+// CapBacklogBlockers for every backlog-query-using workflow refused
+// backlog providers (e.g. ADO) over a codepath they can never reach. A
+// backlog-query-only workflow must derive zero provider-capability
+// requirements and never be refused at config-load regardless of backlog
+// provider.
+func TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement(t *testing.T) {
+	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks:  []apiv1.Task{deterministicStage("query", "backlog-query")},
+	}}
+	wf.Name = "implementation"
+
+	if got := WorkflowRequiredProviderCapabilities(wf); len(got) != 0 {
+		t.Fatalf("required = %v, want none", got)
+	}
+
+	g := adoGaggle("web")
+	set := &ConfigSet{Gaggles: []apiv1.Gaggle{g}, Workflows: []apiv1.Workflow{wf}}
+	if err := CheckProviderCapabilityRequirements(set); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

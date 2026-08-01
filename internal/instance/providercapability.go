@@ -30,12 +30,21 @@ var stageProviderCapabilities = map[string][]providers.Capability{
 	"update-behind-pr":      {providers.CapPRUpdateBranch, providers.CapPRCompare},
 	"apply-verdict":         {providers.CapPRReviewSubmit},
 	"gather-review-threads": {providers.CapPRReviewThreads},
-	// backlog-query's HasOpenWorkItemBlocker call is not yet Dispatcher-gated
-	// (that migration is CONF-5, #2078) so every current provider already
-	// declares CapBacklogBlockers regardless — requiring it here is forward
-	// honesty, not a behavior change, and it starts refusing correctly the
-	// moment CONF-5 lands.
-	"backlog-query": {providers.CapBacklogBlockers},
+	// backlog-query deliberately does NOT list CapBacklogBlockers here. Its
+	// HasOpenWorkItemBlocker call (cmd/goobers/backlogquery.go,
+	// filterDeclaredDependencyEligibility) only fires when a work item's
+	// BlockedByCount != 0, and BlockedByCount is only ever populated by
+	// GitHub's ListWorkItems today — no other provider's ListWorkItems sets
+	// it. So the call is structurally unreachable for a backlog provider
+	// that never sets BlockedByCount, and requiring the capability
+	// unconditionally would refuse a config over a codepath it can never
+	// actually exercise. (An earlier version of this table required it
+	// unconditionally, reasoning it would "start refusing correctly" once
+	// the call became Dispatcher-gated — that was wrong: gating belongs on
+	// whether BlockedByCount is ever non-zero for a provider, not on
+	// running backlog-query at all.) A gaggle that genuinely needs the hard
+	// guarantee can still opt in explicitly via the workflow's own
+	// `requires.capabilities`.
 }
 
 // WorkflowRequiredProviderCapabilities returns the provider capabilities a
