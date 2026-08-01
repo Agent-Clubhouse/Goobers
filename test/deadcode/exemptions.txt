@@ -208,3 +208,17 @@ github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-App
 # this issue. Expected to go stale then.
 
 github.com/goobers/goobers/internal/readmodel.RetentionLoop.Stats # Retention counters for the freshness envelope (#1927 surface).
+
+# Mutability seam (#1934). The seam is deliberately SHIPPED AHEAD OF ITS
+# CALLERS: the portal is read-only today (three mutation routes return 501), and
+# the point of the issue is to settle the read-model requirements that light
+# mutability imposes BEFORE the read model sets, rather than reopening it
+# immediately afterwards. Each helper is directly tested. These go stale when
+# the mutation routes become real.
+github.com/goobers/goobers/internal/httpapi.requireSourceApplied # If-Source-Applied enforcement, wired when reads take the header (#1934).
+github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit detection for definition edits (#1934).
+github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
+github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
+github.com/goobers/goobers/internal/httpapi.idempotencyKey # Validates a durably-recorded key (#1934).
+github.com/goobers/goobers/internal/httpapi.requireIdempotencyKey # Idempotency precondition, wired when mutations become real (#1934); its test is _test.go, which this gate does not count.
+github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
