@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { RefObject } from "react";
 import type { WorkflowGraph, WorkflowGraphNode } from "../api/types";
-import type { RunNodeState } from "../runDetailData";
+import { edgeTraversed, type RunNodeState } from "../runDetailData";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -49,12 +49,6 @@ interface PendingScroll {
   zoom: number;
 }
 
-// A node counts as traversed — its incoming edge is on the executed path — once
-// it has been entered (any state other than the two the run never visited).
-function nodeTraversed(state: RunNodeState | undefined): boolean {
-  return state !== undefined && state !== "pending" && state !== "skipped";
-}
-
 function runStateLabel(state: RunNodeState): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
@@ -65,6 +59,7 @@ export function WorkflowTopologyGraph({
   selectedStageId,
   nodeStates,
   stateSeq,
+  traversedEdges,
   causalNodeId,
   fullscreenTargetRef,
   onFullscreenModeChange,
@@ -76,6 +71,11 @@ export function WorkflowTopologyGraph({
   // as-of-sequence run state and the executed path is emphasized (DASH-19).
   nodeStates?: Record<string, RunNodeState>;
   stateSeq?: number;
+  // The declared edges actually crossed as of stateSeq, from the run's exact
+  // transition history (#1427) via deriveTraversedEdges — never inferred from
+  // both endpoints being visited, which false-positives on a cyclic
+  // workflow's untaken repass edges (#1430).
+  traversedEdges?: Set<string>;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
@@ -610,10 +610,7 @@ export function WorkflowTopologyGraph({
                 </marker>
               </defs>
               {layout.edges.map((edge) => {
-                const traversed =
-                  nodeStates !== undefined &&
-                  nodeTraversed(nodeStates[edge.edge.source]) &&
-                  nodeTraversed(nodeStates[edge.edge.target]);
+                const traversed = edgeTraversed(traversedEdges, edge.edge);
                 return (
                 <g key={edge.id}>
                   <path
@@ -722,7 +719,11 @@ export function WorkflowTopologyGraph({
             })}
           </div>
         </div>
-        <TopologyList graph={graph} stageOrder={layout.stageOrder} />
+        <TopologyList
+          graph={graph}
+          stageOrder={layout.stageOrder}
+          traversedEdges={traversedEdges}
+        />
       </div>
     </div>
   );
@@ -742,9 +743,11 @@ function distance(left: PointerPosition, right: PointerPosition): number {
 function TopologyList({
   graph,
   stageOrder,
+  traversedEdges,
 }: {
   graph: WorkflowGraph;
   stageOrder: WorkflowGraphNode[];
+  traversedEdges?: Set<string>;
 }) {
   return (
     <ol aria-label={`${graph.name} accessible topology`} className="sr-only">
@@ -753,7 +756,9 @@ function TopologyList({
           .filter((edge) => edge.source === node.id)
           .map((edge) => {
             const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
-            return `${edge.outcome || "next"} to ${target}`;
+            const traversedSuffix =
+              traversedEdges && edgeTraversed(traversedEdges, edge) ? ", traversed" : "";
+            return `${edge.outcome || "next"} to ${target}${traversedSuffix}`;
           });
         return (
           <li key={`topology-${node.id}`}>

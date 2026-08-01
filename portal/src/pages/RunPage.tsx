@@ -10,6 +10,7 @@ import {
 } from "../components/WorkflowTopologyGraph";
 import {
   deriveNodeStates,
+  deriveTraversedEdges,
   evidenceVisit,
   evidenceDecision,
   eventHeading,
@@ -143,6 +144,7 @@ function RunDetailWorkspace({
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq, runId)
     : {};
+  const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
@@ -350,6 +352,7 @@ function RunDetailWorkspace({
                 onSelectStage={selectNode}
                 selectedStageId={selectedNodeId}
                 stateSeq={selectedSeq}
+                traversedEdges={traversedEdges}
               />
             ) : (
               <div className="empty-detail" role="status">

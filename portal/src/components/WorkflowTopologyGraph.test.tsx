@@ -465,6 +465,84 @@ function terminalGraph(): WorkflowGraph {
   };
 }
 
+describe("workflow topology graph traversed edges (#1430)", () => {
+  it("emphasizes only the edges actually crossed, not every edge whose endpoints were visited", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={new Set(["query->implement", "implement->review", "review=>complete"])}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    // query -> implement -> review -> complete: the taken path.
+    expect(edges[0]).toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[1]).toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[2]).toHaveClass("workflow-graph-edge-traversed");
+    // review -> implement (needs-changes, a repass): never crossed this run,
+    // even though both review and implement show non-pending states above —
+    // the exact false positive #1430 exists to eliminate. Still dashed
+    // (repass is a declared-graph property, independent of execution).
+    expect(edges[3]).not.toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[3]).toHaveClass("workflow-graph-edge-repass");
+    // review -> @escalate: declared but not taken.
+    expect(edges[4]).not.toHaveClass("workflow-graph-edge-traversed");
+  });
+
+  it("emphasizes an actually-taken repass as both dashed and traversed", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={new Set(["query->implement", "implement->review", "review->implement"])}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    const repass = edges[3]; // review -> implement (needs-changes)
+    expect(repass).toHaveClass("workflow-graph-edge-repass");
+    expect(repass).toHaveClass("workflow-graph-edge-traversed");
+  });
+
+  it("reflects traversal in the accessible topology list, not color alone", () => {
+    render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={new Set(["query->implement", "implement->review", "review=>complete"])}
+      />,
+    );
+    const topology = screen.getByRole("list", { name: "implementation accessible topology" });
+    const reviewItem = within(topology)
+      .getAllByRole("listitem")
+      .find((item) => item.textContent?.startsWith("review,"));
+    expect(reviewItem?.textContent).toContain("approve to Complete terminal, traversed");
+    // The untaken repass gets no traversed qualifier.
+    expect(reviewItem?.textContent).toContain("needs-changes to implement;");
+    expect(reviewItem?.textContent).not.toContain("needs-changes to implement, traversed");
+  });
+
+  it("never emphasizes an edge when transitions are unavailable, even with matching node states", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    for (const edge of edges) {
+      expect(edge).not.toHaveClass("workflow-graph-edge-traversed");
+    }
+  });
+});
+
 describe("workflow topology graph escalation cause (DASH-21)", () => {
   const graph: WorkflowGraph = {
     name: "impl",
