@@ -60,7 +60,7 @@ func linuxBootTime() (time.Time, bool) {
 	if err != nil {
 		return time.Time{}, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
