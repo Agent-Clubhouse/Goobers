@@ -255,6 +255,23 @@ model removes on the server.
 shape, and a harness that only measured bounded paths could not show that they
 are bounded *relative to* anything.
 
+**The blob-mount rebuild figure (§16.9, §13.2).** The same pass reports:
+
+| | 3x (89,277 runs) |
+|---|---|
+| `rollup_rebuild`, local disk | **3m22.8s** (89,277 journal opens) |
+| `rebuild_on_blob`, simulated at 2 ms/open | **6m21.4s** |
+
+Labelled SIMULATED in the harness output itself, not only here, because §17's
+exit permits a simulated figure and permits it *only* when labelled — an
+unlabelled projection would be indistinguishable from a measurement on real
+remote storage, and §13.2's tier decision rests on which of the two it is.
+
+The shape is what matters: rebuild cost is dominated by per-open latency, so a
+mount with 2 ms opens nearly doubles a three-minute rebuild, and one with 20 ms
+opens would make it half an hour. That is the §2.6 argument — "29,759 file opens
+over a network or blob mount" — with a number attached.
+
 ### 2.4 Physical evidence that reads perform maintenance
 
 Every one of the 40,665 run directories contains a `.lock` file — including all
