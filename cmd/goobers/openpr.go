@@ -96,7 +96,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell

@@ -3238,6 +3238,10 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		return gate.Result{}, err, nil
 	}
 	if g.Evaluator == apiv1.EvaluatorAutomated {
+		gateBaseBranch := in.RepoRef.Branch
+		if gateBaseBranch == "" {
+			gateBaseBranch = "main"
+		}
 		env = apiv1.InvocationEnvelope{
 			TaskID:          in.RunID + ":" + g.Name,
 			WorkflowID:      in.Machine.Def.Name,
@@ -3245,6 +3249,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			TriggerRef:      in.Trigger.Ref,
 			Gaggle:          in.Gaggle,
 			BranchNamespace: r.branchNamespaceFor(in.Gaggle),
+			BaseBranch:      gateBaseBranch,
 			Goal:            "gate: " + g.Name,
 			RepoRef:         in.RepoRef.EnvelopeRef(),
 			Item:            in.Item,
@@ -3559,6 +3564,10 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	for k, v := range taskInputs {
 		inputs[k] = v
 	}
+	baseBranch := in.RepoRef.Branch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
 	env := apiv1.InvocationEnvelope{
 		TaskID:               in.RunID + ":" + stageName,
 		WorkflowID:           in.Machine.Def.Name,
@@ -3566,6 +3575,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		TriggerRef:           in.Trigger.Ref,
 		Gaggle:               in.Gaggle,
 		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
+		BaseBranch:           baseBranch,
 		Goal:                 goal,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),

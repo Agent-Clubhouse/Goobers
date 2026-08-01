@@ -1443,6 +1443,100 @@ func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
 	}
 }
 
+// TestRunnerSetsBaseBranchFromRepoRef is #2087's core: every invocation
+// envelope (task and automated gate) carries BaseBranch from the run's own
+// RepoRef.Branch — the branch the worktree was actually forked from — not a
+// hardcoded "main", so a PR-lifecycle stage's GOOBERS_BASE_BRANCH agrees with
+// a gaggle pinned to a non-default branch. An empty RepoRef.Branch falls back
+// to "main", matching RepoRef's own kubebuilder default.
+func TestRunnerSetsBaseBranchFromRepoRef(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "base-branch-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	// The fixture repo's default branch is "main" (newFixtureRepo); add a
+	// second branch pointing at the same commit so the "non-default branch"
+	// case has a real ref for the worktree Manager to check out.
+	fixtureRepo := newFixtureRepo(t)
+	runGit(t, fixtureRepo, "branch", "release", "main")
+
+	for _, tc := range []struct {
+		name       string
+		repoBranch string
+		want       string
+	}{
+		{name: "non-default branch propagates", repoBranch: "release", want: "release"},
+		{name: "empty branch falls back to main", repoBranch: "", want: "main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+				"run-base-branch:build": {status: apiv1.ResultSuccess},
+			}}
+			auto := &envelopeCapturingAutomated{}
+			instanceRoot := t.TempDir()
+			wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+			if err != nil {
+				t.Fatalf("new worktree manager: %v", err)
+			}
+			r, err := New(Config{
+				NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+					det.rec = rec
+					return det, nil
+				},
+				Automated: auto,
+				Worktrees: wtMgr,
+				RunsDir:   filepath.Join(instanceRoot, "runs"),
+				RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+					return fixtureRepo, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			_, err = r.Start(context.Background(), StartInput{
+				RunID:   "run-base-branch",
+				Machine: machine,
+				Gaggle:  "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				RepoRef: apiv1.RepoRef{
+					Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: tc.repoBranch,
+				},
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			taskEnv, ok := det.received["run-base-branch:build"]
+			if !ok {
+				t.Fatal("build never dispatched")
+			}
+			if taskEnv.BaseBranch != tc.want {
+				t.Errorf("task envelope BaseBranch = %q, want %q", taskEnv.BaseBranch, tc.want)
+			}
+			if auto.env.BaseBranch != tc.want {
+				t.Errorf("gate envelope BaseBranch = %q, want %q", auto.env.BaseBranch, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",

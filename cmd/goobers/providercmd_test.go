@@ -1150,3 +1150,22 @@ func TestProviderBranchNamespace(t *testing.T) {
 		}
 	})
 }
+
+// TestProviderBaseBranch covers #2087's seam: the gaggle's configured default
+// branch the runner injects (GOOBERS_BASE_BRANCH) becomes the default every
+// PR-lifecycle stage's "base" input resolves to, defaulting to "main" when
+// unset (standalone use, or a gaggle whose branch is already "main").
+func TestProviderBaseBranch(t *testing.T) {
+	t.Run("defaults to main when unset", func(t *testing.T) {
+		t.Setenv(executor.BaseBranchEnvVar, "")
+		if got := providerBaseBranch(); got != "main" {
+			t.Errorf("providerBaseBranch() = %q, want %q", got, "main")
+		}
+	})
+	t.Run("reads the injected base branch", func(t *testing.T) {
+		t.Setenv(executor.BaseBranchEnvVar, "release")
+		if got, want := providerBaseBranch(), "release"; got != want {
+			t.Errorf("providerBaseBranch() = %q, want %q", got, want)
+		}
+	})
+}

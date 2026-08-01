@@ -60,6 +60,13 @@ type InvocationEnvelope struct {
 	// stay aligned with the branch namespace the mirror-fetch exclusion
 	// preserves (#965/#1010). Empty means the default namespace.
 	BranchNamespace string `json:"branchNamespace,omitempty"`
+	// BaseBranch is the gaggle's configured default branch (GaggleSpec.Project.
+	// Branch/RepoRef.Branch, "main" when unset). The runner sets it from the
+	// same branch every worktree is forked from, and the executor injects it
+	// as GOOBERS_BASE_BRANCH so a goobers-CLI PR-lifecycle stage's "base"
+	// default agrees with the gaggle's actual branch instead of assuming
+	// "main" (#2087). Empty means the default branch.
+	BaseBranch string `json:"baseBranch,omitempty"`
 	// Goal is the intended outcome of this stage (from the stage definition).
 	Goal string `json:"goal"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the

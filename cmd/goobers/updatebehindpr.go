@@ -72,7 +72,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo,
-		Base:       providerInput("base", "main"),
+		Base:       providerInput("base", providerBaseBranch()),
 		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
 	})
 	if err != nil {
