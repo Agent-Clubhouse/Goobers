@@ -49,7 +49,6 @@ github.com/goobers/goobers/providers.AllCapabilities # Capability-matrix row sou
 github.com/goobers/goobers/providers.AllProviderKinds # Capability-matrix column source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/providers.WorkflowRequiredCapabilities # Blessed-tier CI gate's required-capability set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.declarationsFor # Capability-matrix declaration source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
 github.com/goobers/goobers/providers.classify # Capability-matrix cell classifier invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
 github.com/goobers/goobers/providers.gapIssueFor # Capability-matrix gap-registry lookup invoked through classify (CONF-2, #2075).
 github.com/goobers/goobers/providers.BuildMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
