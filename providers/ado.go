@@ -120,6 +120,20 @@ func (p *ADOProvider) Kind() ProviderKind {
 	return ProviderADO
 }
 
+// Capabilities declares ADO's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074): the
+// landing surfaces — pr.merge, pr.landing.*, pr.compare, branch.delete —
+// are honestly excluded pending CONF-3 (#2076), as is pr.review.submit/
+// threads and repo.policy.read. pr.status.publish is real
+// (PublishPullRequestStatus). backlog.blockers is declared true to match
+// today's Go-level reality (HasOpenWorkItemBlocker exists and compiles
+// against cmd/goobers/backlogquery.go's backlogIssueProvider) even though
+// its answer is a fail-open stub, not a real native-dependency read — that
+// semantic gap is #2059/CONF-5 (#2078), a separate, later fix.
+func (p *ADOProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(CapPRStatusPublish, CapBacklogBlockers)
+}
+
 // CloneRepository clones an Azure DevOps repository to a local destination.
 func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (CloneResult, error) {
 	if err := requireRepo(req.Repository); err != nil {
@@ -222,11 +236,6 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 		return BranchResult{}, fmt.Errorf("ado branch creation returned no refs")
 	}
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
-}
-
-// DeleteBranch is part of the provider contract; ADO parity lands in V1.
-func (p *ADOProvider) DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error) {
-	return DeleteBranchResult{}, fmt.Errorf("ado: branch deletion lands in V1 parity (BL-033)")
 }
 
 // Commit writes file changes to an Azure DevOps branch.
@@ -591,29 +600,6 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 	return PullRequestStatusResult{ID: out.ID}, nil
 }
 
-// MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
-func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
-	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
-}
-
-// DetectMergePolicy is not yet implemented for Azure DevOps (issue #758):
-// merge-policy abstraction parity is scoped to V1 (BL-033) alongside the
-// rest of ADO's pull-request surface; the GitHub provider is the V0
-// workload (#13).
-func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
-	return RepoMergePolicyResult{}, fmt.Errorf("ado: merge policy detection lands in V1 parity (BL-033)")
-}
-
-// EnqueuePullRequest is not yet implemented for Azure DevOps: see DetectMergePolicy.
-func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
-	return EnqueuePullRequestResult{}, fmt.Errorf("ado: pull request enqueue lands in V1 parity (BL-033)")
-}
-
-// PollMergeQueueEntry is not yet implemented for Azure DevOps: see DetectMergePolicy.
-func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
-	return PollMergeQueueEntryResult{}, fmt.Errorf("ado: merge queue entry polling lands in V1 parity (BL-033)")
-}
-
 // ListPullRequests lists active Azure DevOps pull requests matching the
 // provider-neutral base and head-prefix filters.
 func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
@@ -750,11 +736,6 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 		}
 	}
 	return files, nil
-}
-
-// CompareCommits is not yet implemented for Azure DevOps: see PullRequestFiles.
-func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error) {
-	return CompareResult{}, fmt.Errorf("ado: commit comparison lands in V1 parity (BL-033)")
 }
 
 // ListWorkItems lists Azure Boards work items as unified work items.

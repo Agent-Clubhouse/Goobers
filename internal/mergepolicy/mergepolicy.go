@@ -53,14 +53,14 @@ type Result struct {
 // poll->decide->merge closure) is responsible for verifying every merge
 // conjunct (verdict=pass, CI green, not draft, SHA-pin) before calling Land.
 type Lander interface {
-	Land(ctx context.Context, provider providers.RepoProvider, req Request) (Result, error)
+	Land(ctx context.Context, provider *providers.Dispatcher, req Request) (Result, error)
 }
 
 // directLander lands by calling the provider's direct merge API — today's
 // only behavior, unchanged for a repo whose detected policy is direct.
 type directLander struct{}
 
-func (directLander) Land(ctx context.Context, provider providers.RepoProvider, req Request) (Result, error) {
+func (directLander) Land(ctx context.Context, provider *providers.Dispatcher, req Request) (Result, error) {
 	res, err := provider.MergePullRequest(ctx, providers.MergePullRequestRequest{
 		Repository:      req.Repository,
 		PullID:          req.PullID,
@@ -78,7 +78,7 @@ func (directLander) Land(ctx context.Context, provider providers.RepoProvider, r
 // enqueueLander lands by adding the pull request to its repo's merge queue.
 type enqueueLander struct{}
 
-func (enqueueLander) Land(ctx context.Context, provider providers.RepoProvider, req Request) (Result, error) {
+func (enqueueLander) Land(ctx context.Context, provider *providers.Dispatcher, req Request) (Result, error) {
 	res, err := provider.EnqueuePullRequest(ctx, providers.EnqueuePullRequestRequest{
 		Repository:      req.Repository,
 		PullID:          req.PullID,

@@ -112,6 +112,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	provider := newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	// dispatcher is the capability-checked seam (CONF-1 #2074) for the
+	// landing-surface calls below (CompareCommits/DetectMergePolicy/
+	// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
+	dispatcher := providers.NewDispatcher(provider)
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -208,7 +212,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			// — the dominant false-invalidation case (any OTHER PR merging
 			// advances base for everyone). Only a movement that actually
 			// intersects this PR's own files still voids it.
-			intersects, cerr := baseMovementIntersectsPR(ctx, provider, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
+			intersects, cerr := baseMovementIntersectsPR(ctx, dispatcher, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
 			switch {
 			case cerr != nil:
 				// Can't determine whether the movement is disjoint — fail
@@ -278,7 +282,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// serializes on, matching #528's structuredMergeCommitMessage
 		// rationale just above.
 		var policy providers.MergePolicy
-		policy, policyErr = detectMergePolicy(ctx, provider, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
+		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
 		if policyErr != nil {
 			return nil
 		}
@@ -289,7 +293,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 
 		mergeAttempted = true
-		landResult, mergeErr = lander.Land(ctx, provider, mergepolicy.Request{
+		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
 		})
@@ -485,7 +489,7 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 // everyone — must not void an otherwise-valid verdict, but a movement that
 // genuinely intersects this PR's own files still must (a valid review
 // against the old base says nothing about a file it never saw change).
-func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvider, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
+func baseMovementIntersectsPR(ctx context.Context, provider *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
 	prFiles, err := provider.PullRequestFiles(ctx, repo, pullNumber)
 	if err != nil {
 		return false, fmt.Errorf("list PR's own files: %w", err)

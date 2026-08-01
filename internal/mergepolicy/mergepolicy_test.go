@@ -8,20 +8,33 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// fakeRepoProvider implements providers.RepoProvider via an embedded nil
+// fakeRepoProvider implements providers.Provider via an embedded nil
 // interface (every method not overridden below panics if called, which is
 // exactly what a misrouted Land dispatch should do in a test) — the same
 // narrow-fake-over-full-mock philosophy internal/executor's PRPoller
 // interface exists for, applied here since RepoProvider itself has no
-// narrower carve-out for just the two methods Land calls.
+// narrower carve-out for just the two methods Land calls. It embeds the
+// full Provider (not just RepoProvider) because Land now receives a
+// *providers.Dispatcher (CONF-1 #2074), which requires Capabilities() to
+// decide whether to reach MergePullRequest/EnqueuePullRequest at all.
 type fakeRepoProvider struct {
-	providers.RepoProvider
+	providers.Provider
+	caps          providers.CapabilitySet
 	mergeCalls    []providers.MergePullRequestRequest
 	mergeResult   providers.MergePullRequestResult
 	mergeErr      error
 	enqueueCalls  []providers.EnqueuePullRequestRequest
 	enqueueResult providers.EnqueuePullRequestResult
 	enqueueErr    error
+}
+
+func (f *fakeRepoProvider) Kind() providers.ProviderKind { return providers.ProviderGitHub }
+
+func (f *fakeRepoProvider) Capabilities() providers.CapabilitySet {
+	if f.caps != nil {
+		return f.caps
+	}
+	return providers.NewCapabilitySet(providers.CapPRMerge, providers.CapPRLandingEnqueue)
 }
 
 func (f *fakeRepoProvider) MergePullRequest(ctx context.Context, req providers.MergePullRequestRequest) (providers.MergePullRequestResult, error) {
@@ -72,7 +85,7 @@ func TestDirectLanderCallsMergePullRequest(t *testing.T) {
 		CommitMessage:   "message",
 		MergeMethod:     providers.MergeMethodSquash,
 	}
-	result, err := directLander{}.Land(context.Background(), fake, req)
+	result, err := directLander{}.Land(context.Background(), providers.NewDispatcher(fake), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +108,7 @@ func TestDirectLanderCallsMergePullRequest(t *testing.T) {
 func TestDirectLanderPropagatesError(t *testing.T) {
 	wantErr := errors.New("boom")
 	fake := &fakeRepoProvider{mergeErr: wantErr}
-	_, err := directLander{}.Land(context.Background(), fake, Request{PullID: "1"})
+	_, err := directLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "1"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Land error = %v, want %v", err, wantErr)
 	}
@@ -104,7 +117,7 @@ func TestDirectLanderPropagatesError(t *testing.T) {
 func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 	fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Merged: false}}
 	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", ExpectedHeadSHA: "cafef00d", MergeMethod: providers.MergeMethodSquash}
-	result, err := enqueueLander{}.Land(context.Background(), fake, req)
+	result, err := enqueueLander{}.Land(context.Background(), providers.NewDispatcher(fake), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +150,7 @@ func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 // would wrongly go on to watch a merge-queue entry that no longer exists.
 func TestEnqueueLanderReportsMergedWhenQueueLandedImmediately(t *testing.T) {
 	fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Merged: true, MergeSHA: "f00dcafe"}}
-	result, err := enqueueLander{}.Land(context.Background(), fake, Request{PullID: "7"})
+	result, err := enqueueLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "7"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +162,7 @@ func TestEnqueueLanderReportsMergedWhenQueueLandedImmediately(t *testing.T) {
 func TestEnqueueLanderPropagatesError(t *testing.T) {
 	wantErr := errors.New("queue unavailable")
 	fake := &fakeRepoProvider{enqueueErr: wantErr}
-	_, err := enqueueLander{}.Land(context.Background(), fake, Request{PullID: "1"})
+	_, err := enqueueLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "1"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Land error = %v, want %v", err, wantErr)
 	}

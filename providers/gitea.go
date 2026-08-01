@@ -171,6 +171,23 @@ func (p *GiteaProvider) Kind() ProviderKind {
 	return ProviderGitea
 }
 
+// Capabilities declares Gitea's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074). Gitea
+// is a community adapter (§2), not the blessed tier — it declares only
+// what it genuinely implements: no native merge queue (EnqueuePullRequest/
+// PollMergeQueueEntry return ErrGiteaMergeQueueUnsupported), no review
+// threads or repo-policy read.
+func (p *GiteaProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(
+		CapPRCompare,
+		CapPRReviewSubmit,
+		CapPRMerge, CapPRLandingDetectPolicy,
+		CapPRUpdateBranch, CapBranchDelete,
+		CapPRStatusPublish,
+		CapBacklogBlockers,
+	)
+}
+
 // ready surfaces the deferred constructor error (empty baseURL).
 func (p *GiteaProvider) ready() error {
 	return p.initErr

@@ -56,7 +56,7 @@ func mergePolicyCacheKey(repo providers.RepositoryRef, branch string) string {
 // subsequent callers. A cache miss/expiry/corruption never fails the
 // caller differently than a genuine detection failure would — it just
 // means a live call happens now instead of being skipped.
-func detectMergePolicy(ctx context.Context, provider providers.RepoProvider, schedulerDir string, repo providers.RepositoryRef, branch string, stderr io.Writer) (providers.MergePolicy, error) {
+func detectMergePolicy(ctx context.Context, provider *providers.Dispatcher, schedulerDir string, repo providers.RepositoryRef, branch string, stderr io.Writer) (providers.MergePolicy, error) {
 	key := mergePolicyCacheKey(repo, branch)
 	if entry, ok := loadMergePolicyCacheEntry(schedulerDir, key, stderr); ok {
 		return entry.Policy, nil

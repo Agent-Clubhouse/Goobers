@@ -13,13 +13,28 @@ type Provider interface {
 	BacklogProvider
 	TriggerProvider
 	Kind() ProviderKind
+	// Capabilities reports the surfaces this provider supports (design doc
+	// docs/design/provider-contract-conformance.md §3.2). A capability
+	// listed here MUST pass the conformance corpus for that capability;
+	// one absent here MUST NOT be reachable at runtime — Dispatcher
+	// refuses before the provider is called. This is the authority over
+	// the optional interfaces below (BranchDeleter, PolicyProvider, …):
+	// declaration and interface satisfaction are cross-checked by a
+	// conformance test, so a provider cannot declare what it does not
+	// implement, nor implement what it does not declare.
+	Capabilities() CapabilitySet
 }
 
-// RepoProvider abstracts repository operations needed by Goobers runs.
+// RepoProvider abstracts repository operations needed by Goobers runs. The
+// landing surfaces (merge, enqueue/poll, compare, branch-delete) are NOT
+// here: they gap on ADO today, so they live behind the optional interfaces
+// below (PullRequestMerger, CommitComparer, MergePolicyDetector,
+// PullRequestEnqueuer, MergeQueuePoller, BranchDeleter) and are reached only
+// through Dispatcher, which refuses an undeclared capability before a
+// provider ever sees the call (§3.2/§3.3 of the provider-contract design).
 type RepoProvider interface {
 	CloneRepository(context.Context, CloneRequest) (CloneResult, error)
 	CreateBranch(context.Context, BranchRequest) (BranchResult, error)
-	DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	OpenPullRequest(context.Context, PullRequestRequest) (PullRequestResult, error)
 	RequestReview(context.Context, ReviewRequest) error
@@ -28,10 +43,6 @@ type RepoProvider interface {
 	PollPullRequest(context.Context, PullRequestPollRequest) (PullRequestPollResult, error)
 	// ClosePullRequest closes a pull request, detecting merged-vs-closed (BL-031).
 	ClosePullRequest(context.Context, ClosePullRequestRequest) (ClosePullRequestResult, error)
-	// MergePullRequest merges a pull request (issue #360) — the provider-level
-	// primitive a conjunctive auto-merge action calls only after independently
-	// verifying every merge conjunct; see MergePullRequestRequest's doc.
-	MergePullRequest(context.Context, MergePullRequestRequest) (MergePullRequestResult, error)
 	// ListPullRequests lists open pull requests matching req — merge-review's
 	// selection stage and sibling-set context gathering (issue #359), and
 	// #361's post-merge fan-out (find every other open PR targeting the
@@ -41,28 +52,60 @@ type RepoProvider interface {
 	// sibling-set context gathering (issue #359): what does the OTHER open PR
 	// change, for cross-PR conflict/drift detection.
 	PullRequestFiles(context.Context, RepositoryRef, string) ([]ChangedFile, error)
-	// CompareCommits reports the common ancestor and file-level diff between
-	// base and head (issue #718): merge-review's verdict-cache re-keying
-	// uses this for the selected PR's own patch content (base=its baseSHA,
-	// head=its headSHA) and for "what changed on base since this PR's
-	// merge-base" (base=that merge-base, head=base's current tip) — both
-	// needed to make the cache key and merge-pr's SHA-pin check delta-aware
-	// instead of raw-SHA-equality.
+}
+
+// PullRequestMerger merges a pull request (issue #360) — the provider-level
+// primitive a conjunctive auto-merge action calls only after independently
+// verifying every merge conjunct; see MergePullRequestRequest's doc. It is
+// optional (pr.merge) because ADO's landing surfaces gap today (#2061).
+type PullRequestMerger interface {
+	MergePullRequest(context.Context, MergePullRequestRequest) (MergePullRequestResult, error)
+}
+
+// CommitComparer reports the common ancestor and file-level diff between
+// base and head (issue #718): merge-review's verdict-cache re-keying uses
+// this for the selected PR's own patch content (base=its baseSHA,
+// head=its headSHA) and for "what changed on base since this PR's
+// merge-base" (base=that merge-base, head=base's current tip) — both needed
+// to make the cache key and merge-pr's SHA-pin check delta-aware instead of
+// raw-SHA-equality. Optional (pr.compare); ADO gaps it today (#2061).
+type CommitComparer interface {
 	CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error)
-	// DetectMergePolicy reports a repo's active merge policy for a branch
-	// (issue #758), read from its live branch protection/ruleset state —
-	// the detection half of the merge-policy abstraction internal/
-	// mergepolicy's Land dispatches on.
+}
+
+// MergePolicyDetector reports a repo's active merge policy for a branch
+// (issue #758), read from its live branch protection/ruleset state — the
+// detection half of the merge-policy abstraction internal/mergepolicy's
+// Land dispatches on. Optional (pr.landing.detect-policy); ADO gaps it
+// today (#2061).
+type MergePolicyDetector interface {
 	DetectMergePolicy(context.Context, RepoMergePolicyRequest) (RepoMergePolicyResult, error)
-	// EnqueuePullRequest adds a pull request to its repo's merge queue
-	// (issue #758) — the enqueue-policy counterpart to MergePullRequest;
-	// see EnqueuePullRequestRequest's doc.
+}
+
+// PullRequestEnqueuer adds a pull request to its repo's merge queue (issue
+// #758) — the enqueue-policy counterpart to PullRequestMerger; see
+// EnqueuePullRequestRequest's doc. Optional (pr.landing.enqueue); ADO gaps
+// it today (#2061).
+type PullRequestEnqueuer interface {
 	EnqueuePullRequest(context.Context, EnqueuePullRequestRequest) (EnqueuePullRequestResult, error)
-	// PollMergeQueueEntry reports whether the merge queue has since merged
-	// or evicted a pull request previously enqueued via EnqueuePullRequest
-	// (issue #758) — the eviction-as-first-class-outcome half of the
-	// merge-policy abstraction.
+}
+
+// MergeQueuePoller reports whether the merge queue has since merged or
+// evicted a pull request previously enqueued via PullRequestEnqueuer (issue
+// #758) — the eviction-as-first-class-outcome half of the merge-policy
+// abstraction. Optional (pr.landing.poll); ADO gaps it today (#2061).
+type MergeQueuePoller interface {
 	PollMergeQueueEntry(context.Context, PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error)
+}
+
+// WorkItemBlockerChecker reports whether a work item has an unresolved
+// native blocker. Optional (backlog.blockers). Every current provider
+// implements it, but ADO's is a known fail-open stub rather than a real
+// native-dependency read — the #2059 class. Migrating the call site
+// (cmd/goobers/backlogquery.go) onto Dispatcher so an honest gap fails
+// closed instead is CONF-5 (#2078), a separate, later issue.
+type WorkItemBlockerChecker interface {
+	HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error)
 }
 
 // BranchDeleter removes remote branch refs. It is separate from RepoProvider
