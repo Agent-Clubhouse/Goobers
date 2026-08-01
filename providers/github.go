@@ -149,6 +149,22 @@ func (p *GitHubProvider) Kind() ProviderKind {
 	return ProviderGitHub
 }
 
+// Capabilities declares GitHub's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074): GitHub
+// is the V0 workload and reaches every optional surface except
+// pr.status.publish, which is an Azure DevOps / Gitea policy-evidence
+// surface (#772) GitHub has no equivalent for.
+func (p *GitHubProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(
+		CapPRCompare,
+		CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
+		CapPRUpdateBranch, CapBranchDelete,
+		CapRepoPolicyRead,
+		CapBacklogBlockers,
+	)
+}
+
 // CreateRepository creates an empty GitHub repository under a user or
 // organization owner. It never initializes, commits, or pushes content.
 func (p *GitHubProvider) CreateRepository(ctx context.Context, req CreateRepositoryRequest) (CreateRepositoryResult, error) {
