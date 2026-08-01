@@ -836,9 +836,12 @@ func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cu
 // every run's journal (DASH-18). The index chooses WHICH runs to open — bounded
 // by page size, filters, and the keyset cursor — and each returned run's
 // summary is hydrated from its journal so displayed data is always
-// authoritative. Completeness is guaranteed by reconcileIndex, so a run present
-// on disk but absent from the index (migrated/imported/still in flight) is
-// never silently hidden.
+// authoritative. Completeness is guaranteed by the repair sweep
+// (internal/readmodel/repair), not by this function — see the deleted-
+// reconcileIndex note below for why an inline reconcile on the request path
+// was the wrong place to put that guarantee — so a run present on disk but
+// absent from the index (migrated/imported/still in flight) is never silently
+// hidden.
 func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	// No reconcile here — see listLatestWorkflowOutcomesIndexed. A read does not
 	// write.

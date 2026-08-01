@@ -195,7 +195,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -211,7 +211,12 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
-	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n"
+	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
+	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
+	"forces every list request onto the journal-derived paths for this run,\n" +
+	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of\n" +
+	"serving wrong or incomplete results.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -252,6 +257,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -371,6 +377,14 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
+	}
+	if *disableReadModelReads {
+		// The design §6.6 rollback, made operator-reachable (#2036):
+		// DisableReadModelReads previously had no caller anywhere, so the
+		// documented "a flag flip, never a deploy" rollback did not exist in
+		// practice. read.db itself is untouched — this only forces every list
+		// request back onto the journal-derived paths for this run.
+		reads.DisableReadModelReads()
 	}
 	// Move the active-run count off the request path (#1741). Six read routes
 	// used to walk every run directory in history and open every journal, per

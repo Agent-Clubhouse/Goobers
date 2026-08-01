@@ -2591,7 +2591,7 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
@@ -2612,6 +2612,12 @@ deterministic stage still running past a couple of minutes gets a
 periodic native process sample + process tree + open-fd (lsof)
 snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
+
+--disable-read-model-reads is the design's §6.6 read-model rollback: it
+forces every list request onto the journal-derived paths for this run,
+leaving read.db itself untouched. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of
+serving wrong or incomplete results.
 ~~~
 
 **Examples**
