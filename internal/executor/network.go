@@ -13,7 +13,7 @@ import (
 // network:none setup used by deterministic stages.
 func ProbeNoNetwork(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "/bin/true")
-	if err := configureCommandNetwork(cmd, apiv1.NetworkNone); err != nil {
+	if _, err := configureCommandNetwork(cmd, apiv1.NetworkNone); err != nil {
 		return err
 	}
 	output, err := cmd.CombinedOutput()
@@ -26,13 +26,21 @@ func ProbeNoNetwork(ctx context.Context) error {
 	return fmt.Errorf("executor: network isolation probe: %w", err)
 }
 
-func configureCommandNetwork(cmd *exec.Cmd, mode apiv1.NetworkMode) error {
+// configureCommandNetwork applies mode's platform-specific isolation to cmd.
+// The returned marker is non-empty only when isolation was NOT actually
+// applied (the Windows escape hatch fired, #2034) — every platform that
+// genuinely isolates the command returns an empty marker. Callers that
+// journal a stage's result must surface a non-empty marker somewhere visible
+// beyond the child process's own env (see ShellExecutor.Run's
+// Outputs["networkIsolation"]), so a host-global opt-out doesn't silently and
+// invisibly de-isolate every later "isolated" stage.
+func configureCommandNetwork(cmd *exec.Cmd, mode apiv1.NetworkMode) (marker string, err error) {
 	switch mode {
 	case "":
-		return nil
+		return "", nil
 	case apiv1.NetworkNone:
 		return configureNoNetwork(cmd)
 	default:
-		return fmt.Errorf("executor: unknown network mode %q", mode)
+		return "", fmt.Errorf("executor: unknown network mode %q", mode)
 	}
 }

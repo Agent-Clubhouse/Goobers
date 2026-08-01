@@ -358,7 +358,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// hang", #846) and the whole tree can be killed as a unit on timeout. See
 	// internal/platform/proc for the full rationale.
 	proc.Configure(cmd)
-	if err := configureCommandNetwork(cmd, run.Network); err != nil {
+	networkIsolationMarker, err := configureCommandNetwork(cmd, run.Network)
+	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 
@@ -465,6 +466,16 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	errBytes := scrubber.Scrub(stderr.Bytes())
 
 	result := apiv1.ResultEnvelope{Outputs: map[string]interface{}{}, Metrics: map[string]float64{}}
+	if networkIsolationMarker != "" {
+		// #2034: a non-empty marker means this network:none stage did NOT
+		// actually run isolated (the Windows escape hatch fired) — visible
+		// here in the journaled stage.finished Outputs (and from there the
+		// portal's run/stage inspector), not only in the child process's own
+		// GOOBERS_NETWORK_ISOLATION env var, so a host-global opt-out can't
+		// silently de-isolate every later "isolated" stage with nothing in
+		// the run record to show for it.
+		result.Outputs["networkIsolation"] = networkIsolationMarker
+	}
 
 	// --diagnostics: record whatever the watchdog sampled from a long-running
 	// stage. Best-effort — a record failure here must never fail the stage.

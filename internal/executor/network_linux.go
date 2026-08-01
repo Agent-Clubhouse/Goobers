@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func configureNoNetwork(cmd *exec.Cmd) error {
+func configureNoNetwork(cmd *exec.Cmd) (marker string, err error) {
 	uid := os.Getuid()
 	gid := os.Getgid()
 	// The one-ID user namespace lets a non-root daemon create the network
@@ -25,5 +25,7 @@ func configureNoNetwork(cmd *exec.Cmd) error {
 		Size:        1,
 	}}
 	cmd.SysProcAttr.GidMappingsEnableSetgroups = false
-	return nil
+	// Real isolation, always applied — no unsupported-isolation marker (#2034
+	// is Windows-only; linux never needs one).
+	return "", nil
 }
