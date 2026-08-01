@@ -386,6 +386,13 @@ type Config struct {
 	// assignedTo default to backlog-query tasks. An explicit task input wins;
 	// empty leaves assignment-aware selection opted out.
 	BacklogQueryAssignedTo string
+	// BacklogQueryRequireLabels is this gaggle's GaggleSpec.RequireLabels
+	// (MIRC-2, #1901), comma-joined, supplied as the requireLabels default to
+	// backlog-query tasks — the same gaggle-default/per-task-override shape
+	// BranchNamespace/headPrefix already has. An explicit task input fully
+	// replaces it (never merged); empty leaves every task's own requireLabels
+	// (or its absence) untouched.
+	BacklogQueryRequireLabels string
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -2812,6 +2819,33 @@ func defaultBacklogQueryAssignedTo(task apiv1.Task, inputs map[string]string, as
 	return resolved
 }
 
+// defaultBacklogQueryRequireLabels injects a gaggle's RequireLabels default
+// (MIRC-2, #1901) into a backlog-query task's requireLabels input, mirroring
+// defaultBacklogQueryAssignedTo exactly: a task that already declares its own
+// requireLabels wins untouched (full replace, never merged — the same
+// override shape BranchNamespace/headPrefix already has), an empty default
+// is a no-op, and only goobers backlog-query tasks are affected.
+func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string, requireLabels string) map[string]string {
+	const requireLabelsInput = "requireLabels"
+	if requireLabels == "" {
+		return inputs
+	}
+	if _, overridden := inputs[requireLabelsInput]; overridden {
+		return inputs
+	}
+	if task.Run == nil || len(task.Run.Command) < 2 ||
+		filepath.Base(task.Run.Command[0]) != "goobers" ||
+		task.Run.Command[1] != "backlog-query" {
+		return inputs
+	}
+	resolved := make(map[string]string, len(inputs)+1)
+	for key, value := range inputs {
+		resolved[key] = value
+	}
+	resolved[requireLabelsInput] = requireLabels
+	return resolved
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -2850,6 +2884,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
 	}
 	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
+	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil

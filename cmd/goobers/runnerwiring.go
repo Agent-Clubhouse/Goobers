@@ -2455,3 +2455,18 @@ func selfIdentitiesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[s
 	}
 	return out
 }
+
+// requireLabelsByGaggle maps each configured gaggle to its comma-joined
+// GaggleSpec.RequireLabels default (MIRC-2, #1901) — the same
+// gaggle-default shape branchNamespacesByGaggle/selfIdentitiesByGaggle
+// resolve, feeding Runner.Config.BacklogQueryRequireLabels so a gaggle
+// omitting RequireLabels behaves exactly as before (empty string, a no-op
+// in defaultBacklogQueryRequireLabels).
+func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = strings.Join(g.Spec.RequireLabels, ",")
+	}
+	return out
+}

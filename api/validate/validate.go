@@ -76,6 +76,14 @@ const (
 	// this binary either does not recognize or has marked unsupported — fails
 	// load like a schema violation.
 	ErrorUnsupportedDSLVersion WarningCode = "DVL030"
+	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
+	// (MIRC-2, #1901) targets the same repo and has an effective
+	// requireLabels scope that is not disjoint from this gaggle's own — the
+	// likely-dominant misconfiguration case for independently-configured
+	// teams sharing one repo. Non-fatal: it does not change any two
+	// instances' actual runtime behavior by itself, it only surfaces the
+	// misconfiguration risk before it produces a live claim collision.
+	WarningSiblingLabelOverlap WarningCode = "SIB001"
 )
 
 const (
@@ -760,6 +768,8 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleCICommand(r)
 	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
 	ix.checkGaggleBranchNamespace(r)
+	// Sibling-scope overlap warning (MIRC-2, #1901).
+	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
@@ -1156,6 +1166,111 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 				"spec.branchNamespace %q %s, which would produce an invalid git run-branch name at runtime", ns, bad)
 		}
 	}
+}
+
+// checkGaggleSiblingLabelOverlap implements MIRC-2's (#1901) sibling-overlap
+// validation warning: for each gaggle that declares Siblings, compare this
+// gaggle's own effective requireLabels (a workflow's own task-level override
+// when declared, else the gaggle's RequireLabels default — mirroring
+// defaultBacklogQueryRequireLabels's runtime resolution exactly) against
+// each declared sibling's given RequireLabels, but only when the sibling
+// targets the SAME repo as this gaggle's own Project — repo identity is the
+// sole match key (provider/baseUrl/owner/project/name), never gaggle name,
+// per the design's explicit rejection of name-based matching (amended by
+// #1908). A sibling targeting a different repo never triggers a warning,
+// regardless of label similarity. Warn-only: this never fails validation,
+// since the sibling's declared scope is this instance's own trusted
+// assertion about another instance it cannot directly observe.
+func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
+	for name, g := range ix.gaggles {
+		if len(g.Spec.Siblings) == 0 {
+			continue
+		}
+		file := ix.gaggleFile[name]
+
+		type scope struct {
+			workflow string
+			labels   []string
+		}
+		var scopes []scope
+		for identity, indexed := range ix.workflows {
+			if identity.gaggle != name {
+				continue
+			}
+			for _, task := range indexed.definition.Spec.Tasks {
+				if !isBacklogQueryTask(task) {
+					continue
+				}
+				labels := g.Spec.RequireLabels
+				if v, overridden := task.Inputs["requireLabels"]; overridden {
+					labels = splitLabelInput(v)
+				}
+				scopes = append(scopes, scope{workflow: identity.name, labels: labels})
+			}
+		}
+		if len(scopes) == 0 {
+			// No backlog-query task anywhere in this gaggle yet — still check
+			// the bare gaggle-level default so a sibling misconfiguration
+			// surfaces before any workflow adopts it.
+			scopes = append(scopes, scope{labels: g.Spec.RequireLabels})
+		}
+
+		for _, sib := range g.Spec.Siblings {
+			if !sameRepo(sib.Project, g.Spec.Project) {
+				continue
+			}
+			for _, sc := range scopes {
+				overlap := intersectLabels(sc.labels, sib.RequireLabels)
+				if len(overlap) == 0 {
+					continue
+				}
+				siblingDesc := sib.Label
+				if siblingDesc == "" {
+					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+				}
+				where := "spec.requireLabels"
+				if sc.workflow != "" {
+					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+				}
+				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
+					where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+			}
+		}
+	}
+}
+
+// sameRepo reports whether a and b identify the same target repository —
+// the sole sibling match key (MIRC-2, #1901, amended by #1908): gaggle/
+// instance name carries zero cross-instance meaning, so it is never part of
+// this comparison. BaseURL is included alongside provider/owner/project/name
+// so two distinct self-hosted Gitea instances that happen to share an
+// owner/name never collide.
+func sameRepo(a, b apiv1.RepoRef) bool {
+	return a.Provider == b.Provider &&
+		a.BaseURL == b.BaseURL &&
+		a.Owner == b.Owner &&
+		a.Project == b.Project &&
+		a.Name == b.Name
+}
+
+// intersectLabels returns the labels present in both a and b, sorted for a
+// deterministic diagnostic message.
+func intersectLabels(a, b []string) []string {
+	inA := make(map[string]bool, len(a))
+	for _, label := range a {
+		inA[label] = true
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, label := range b {
+		if inA[label] && !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (ix *index) checkGaggleRunControls(r *Report) {

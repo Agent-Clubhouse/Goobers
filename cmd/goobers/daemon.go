@@ -539,6 +539,7 @@ func buildSchedulerDefinitions(
 	}
 	branchNamespaces := branchNamespacesByGaggle(set)
 	selfIdentities := selfIdentitiesByGaggle(cfg, set)
+	requireLabelsDefaults := requireLabelsByGaggle(set)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
@@ -556,7 +557,7 @@ func buildSchedulerDefinitions(
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle],
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
 			return nil, err
@@ -733,6 +734,8 @@ func buildRetainedLegacyRunner(
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
 		instance.EffectiveSelfIdentity(cfg, nil),
+		// Same reasoning: no gaggle to consult for a RequireLabels default.
+		"",
 	)
 }
 
@@ -770,6 +773,7 @@ func buildRuntimeRunner(
 	stores credentials.StoreResolver,
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
+	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
 		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture,
@@ -778,6 +782,7 @@ func buildRuntimeRunner(
 		return nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err

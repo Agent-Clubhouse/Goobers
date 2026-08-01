@@ -63,6 +63,16 @@
           "properties": {
             "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
           }
+        },
+        "requireLabels": {
+          "description": "Default requireLabels value every workflow's backlog-query task in this gaggle inherits unless the task declares its own requireLabels input (full replace, not merge — same shape as branchNamespace/headPrefix) (MIRC-2, #1901).",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "siblings": {
+          "description": "Other gaggles/instances known to independently work the same target repo, for the sibling-overlap validation warning (MIRC-2, #1901).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/gaggleSibling" }
         }
       }
     }
@@ -106,6 +116,21 @@
               "items": { "type": "string", "minLength": 1 }
             }
           }
+        }
+      }
+    },
+    "gaggleSibling": {
+      "type": "object",
+      "description": "Another gaggle/instance known to independently work the same target repo — identified by target repo, never by gaggle name (MIRC-2, #1901).",
+      "additionalProperties": false,
+      "required": ["project"],
+      "properties": {
+        "project": { "$ref": "#/$defs/repoRef", "description": "Repo the sibling gaggle targets — the sole match key (provider/owner/name)." },
+        "label": { "type": "string", "description": "Human-readable name for the sibling, used only in warning messages." },
+        "requireLabels": {
+          "description": "This gaggle's own trusted declaration of the sibling's effective required-label scope.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },
