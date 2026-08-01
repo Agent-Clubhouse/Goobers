@@ -217,6 +217,10 @@ func init() {
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
 			withExamples("goobers up", "goobers up --quiet --notify=all"),
+		command("down", apicontract.ActionDaemonLifecycle, runDown).
+			withSynopsis(synopsisByID["down"]).
+			withHelp("request a live daemon's graceful drain-shutdown from a separate terminal", downHelp).
+			withExamples("goobers down", "goobers down ./instance"),
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).

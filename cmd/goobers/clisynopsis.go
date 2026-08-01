@@ -26,6 +26,7 @@ var synopsisByID = map[string]string{
 	"config":                 "  goobers config show|materialize|diff [flags] [path]\n                                inspect, materialize, or compare instance configuration\n",
 	"speech":                 "  goobers speech preflight|test [--json] [path]\n                                preflight or test local speech notifications\n",
 	"up":                     "  goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]\n                                run the daemon (scheduler + runner + loopback HTTP API)\n",
+	"down":                   "  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal\n",
 	"self-update":            "  goobers self-update [--policy manual|on-release|on-main] [path]\n                                stage and request a supervised binary update\n",
 	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",

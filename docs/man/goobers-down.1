@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS DOWN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers down \- request a live daemon's graceful drain-shutdown from a separate terminal
+.SH SYNOPSIS
+\fBgoobers down\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers down [path]
+
+Request a live `goobers up` daemon for this instance to perform the
+same graceful drain-shutdown SIGINT/SIGTERM already trigger, from a
+separate terminal or from automation. No daemon HTTP API, port, or
+auth surface is required or added. Exits 0 once the shutdown request
+has been delivered — the daemon picks it up and begins draining on its
+next sweep. With no live daemon for this instance, fails fast with a
+clear message rather than hanging. Exit codes: 0 = shutdown requested,
+1 = no live daemon found, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers down
+goobers down ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
