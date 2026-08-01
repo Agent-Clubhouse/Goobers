@@ -34,9 +34,12 @@ var (
 	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
 	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
+	goTestRun       = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
+	goTestPause     = regexp.MustCompile(`^=== PAUSE\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
 	goTestFailure   = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
 	goPackageFail   = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
 	goPackageDone   = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
+	goTestTimeout   = regexp.MustCompile(`^panic: test timed out(?: after .*)?$`)
 	actionTimestamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
 )
 
@@ -470,12 +473,13 @@ func (c *githubClient) jobLog(ctx context.Context, jobID int64) (string, error) 
 
 func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 	var result []failure
-	var packageLines []string
-	var tests []string
-	seenTests := make(map[string]bool)
+	var failedTests []string
+	var timeoutLines []string
+	testOutput := make(map[string][]string)
+	activeTest := ""
 	flush := func(pkg string) {
-		text := strings.TrimSpace(strings.Join(packageLines, "\n"))
-		for _, test := range tests {
+		for _, test := range failedTests {
+			text := strings.TrimSpace(strings.Join(testOutput[test], "\n"))
 			signature := flake.NormalizeSignature(text)
 			fingerprint := flake.Fingerprint(pkg, test, signature)
 			result = append(result, failure{
@@ -489,9 +493,24 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 				Occurrences:      1,
 			})
 		}
-		packageLines = nil
-		tests = nil
-		clear(seenTests)
+		if len(failedTests) == 0 && len(timeoutLines) > 0 {
+			text := strings.TrimSpace(strings.Join(timeoutLines, "\n"))
+			signature := flake.NormalizeSignature(text)
+			result = append(result, failure{
+				Fingerprint:      flake.Fingerprint(pkg, "(package)", signature),
+				Package:          pkg,
+				Test:             "(package)",
+				FailureSignature: signature,
+				FailureText:      text,
+				LastSeenRun:      sourceURL,
+				LastSeenAt:       observed,
+				Occurrences:      1,
+			})
+		}
+		failedTests = nil
+		timeoutLines = nil
+		clear(testOutput)
+		activeTest = ""
 	}
 	for _, rawLine := range strings.Split(log, "\n") {
 		line := actionTimestamp.ReplaceAllString(strings.TrimSpace(rawLine), "")
@@ -504,15 +523,44 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 			continue
 		}
 		if goPackageDone.MatchString(trimmed) {
-			packageLines = nil
-			tests = nil
-			clear(seenTests)
+			failedTests = nil
+			timeoutLines = nil
+			clear(testOutput)
+			activeTest = ""
 			continue
 		}
-		packageLines = append(packageLines, line)
-		if match := goTestFailure.FindStringSubmatch(trimmed); len(match) == 2 && !seenTests[match[1]] {
-			tests = append(tests, match[1])
-			seenTests[match[1]] = true
+		if match := goTestRun.FindStringSubmatch(trimmed); len(match) == 2 {
+			activeTest = match[1]
+			if _, exists := testOutput[activeTest]; !exists {
+				testOutput[activeTest] = nil
+			}
+			continue
+		}
+		if match := goTestPause.FindStringSubmatch(trimmed); len(match) == 2 {
+			if activeTest == match[1] {
+				activeTest = ""
+			}
+			continue
+		}
+		if match := goTestFailure.FindStringSubmatch(trimmed); len(match) == 2 {
+			if _, exists := testOutput[match[1]]; !exists {
+				testOutput[match[1]] = nil
+			}
+			failedTests = append(failedTests, match[1])
+			if activeTest == match[1] {
+				activeTest = ""
+			}
+			continue
+		}
+		if goTestTimeout.MatchString(trimmed) {
+			timeoutLines = append(timeoutLines, line)
+			activeTest = ""
+			continue
+		}
+		if len(timeoutLines) > 0 {
+			timeoutLines = append(timeoutLines, line)
+		} else if activeTest != "" {
+			testOutput[activeTest] = append(testOutput[activeTest], line)
 		}
 	}
 	return result

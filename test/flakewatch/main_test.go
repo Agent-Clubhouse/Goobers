@@ -194,18 +194,92 @@ func TestFailuresParsesGoTestJobLogWithoutAnnotations(t *testing.T) {
 		t.Fatalf("failure identity = %s %s", got[0].Package, got[0].Test)
 	}
 	wantSignature := flake.NormalizeSignature(strings.Join([]string{
-		"=== RUN   TestResume",
 		"WARNING: DATA RACE",
 		"Read at 0x00c000000000 by goroutine 19:",
-		"  github.com/goobers/goobers/internal/runner.resume()",
-		"      /home/runner/work/Goobers/internal/runner/run.go:42 +0x12",
-		"--- FAIL: TestResume (0.02s)",
+		"github.com/goobers/goobers/internal/runner.resume()",
+		"/home/runner/work/Goobers/internal/runner/run.go:42 +0x12",
 	}, "\n"))
 	if got[0].FailureSignature != wantSignature {
 		t.Fatalf("signature = %q, want %q", got[0].FailureSignature, wantSignature)
 	}
 	if got[0].Occurrence == "" {
 		t.Fatal("log failure has no occurrence identity")
+	}
+}
+
+func TestParseGoTestFailuresSegmentsEachTest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	log := `setup output that must not affect either fingerprint
+=== RUN   TestFirst
+first assertion failed
+--- FAIL: TestFirst (0.01s)
+between-test output that must not affect either fingerprint
+=== RUN   TestSecond
+second assertion failed
+--- FAIL: TestSecond (0.02s)
+FAIL	github.com/goobers/goobers/internal/runner	0.03s
+`
+
+	got := parseGoTestFailures(log, "run-99", now)
+	if len(got) != 2 {
+		t.Fatalf("failures = %+v, want two", got)
+	}
+	for index, want := range []struct {
+		test string
+		text string
+	}{
+		{test: "TestFirst", text: "first assertion failed"},
+		{test: "TestSecond", text: "second assertion failed"},
+	} {
+		if got[index].Test != want.test || got[index].FailureText != want.text {
+			t.Fatalf("failure %d = %+v, want %s with isolated output %q", index, got[index], want.test, want.text)
+		}
+		signature := flake.NormalizeSignature(want.text)
+		wantFingerprint := flake.Fingerprint("./internal/runner", want.test, signature)
+		if got[index].Fingerprint != wantFingerprint {
+			t.Fatalf("fingerprint %d = %q, want ledger fingerprint %q", index, got[index].Fingerprint, wantFingerprint)
+		}
+	}
+}
+
+func TestParseGoTestFailuresExtractsPackageTimeout(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	log := `=== RUN   TestBlocked
+panic: test timed out after 10m0s
+	running tests:
+		TestBlocked (10m0s)
+
+goroutine 1 [running]:
+testing.(*M).startAlarm.func1()
+	/usr/local/go/src/testing/testing.go:2484 +0x12
+FAIL	github.com/goobers/goobers/internal/runner	600.005s
+`
+
+	got := parseGoTestFailures(log, "run-99", now)
+	if len(got) != 1 {
+		t.Fatalf("failures = %+v, want one package timeout", got)
+	}
+	if got[0].Package != "./internal/runner" || got[0].Test != "(package)" {
+		t.Fatalf("failure identity = %s %s, want package timeout", got[0].Package, got[0].Test)
+	}
+	wantText := strings.Join([]string{
+		"panic: test timed out after 10m0s",
+		"running tests:",
+		"TestBlocked (10m0s)",
+		"",
+		"goroutine 1 [running]:",
+		"testing.(*M).startAlarm.func1()",
+		"/usr/local/go/src/testing/testing.go:2484 +0x12",
+	}, "\n")
+	wantSignature := flake.NormalizeSignature(wantText)
+	if got[0].FailureText != wantText || got[0].FailureSignature != wantSignature {
+		t.Fatalf("timeout failure = %+v, want text %q and signature %q", got[0], wantText, wantSignature)
+	}
+	wantFingerprint := flake.Fingerprint("./internal/runner", "(package)", wantSignature)
+	if got[0].Fingerprint != wantFingerprint {
+		t.Fatalf("fingerprint = %q, want ledger fingerprint %q", got[0].Fingerprint, wantFingerprint)
 	}
 }
 
