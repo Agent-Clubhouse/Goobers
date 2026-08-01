@@ -406,10 +406,15 @@ func environmentValue(name string) string {
 	return value
 }
 
+// firstLine returns value's first line, trimmed. It splits BEFORE trimming —
+// trimming the whole string first (the original, buggy order) strips a
+// leading blank line's own newline along with it, so a genuinely blank first
+// line (e.g. a command that printed a banner blank line before its real
+// output) silently fell through to returning the *second* line instead of
+// "" (#2105/#2031, caught by CI on the real Windows runner, not a flake).
 func firstLine(value string) string {
-	value = strings.TrimSpace(value)
 	if index := strings.IndexByte(value, '\n'); index >= 0 {
 		return strings.TrimSpace(value[:index])
 	}
-	return value
+	return strings.TrimSpace(value)
 }
