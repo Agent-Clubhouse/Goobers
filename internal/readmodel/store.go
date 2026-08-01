@@ -38,7 +38,7 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
+	sqlite "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
 )
 
 // FileName is read.db's name within an instance root.
@@ -130,7 +130,7 @@ func Open(path string) (*Store, error) {
 	writer.SetMaxOpenConns(1)
 
 	store := &Store{writer: writer, path: path}
-	if err := store.migrate(context.Background()); err != nil {
+	if err := store.migrateWithBusyRetry(context.Background()); err != nil {
 		_ = writer.Close()
 		return nil, err
 	}
@@ -138,6 +138,43 @@ func Open(path string) (*Store, error) {
 	// create the database, switch it to WAL, or run a migration.
 	store.reader = openReaderPool(path)
 	return store, nil
+}
+
+// migrateWithBusyRetry is a thin backstop for SQLITE_BUSY_SNAPSHOT (issue
+// #2032) — the one case busy_timeout's C-level handler cannot wait out (a
+// stale read snapshot can only be abandoned and retaken, not blocked on),
+// same rationale and shape as internal/telemetry/rollup's migrate/#1128 fix.
+// Should rarely, if ever, be reached: migrateOnce's write lock is acquired
+// at BEGIN, so the far more common case — two openers contending for that
+// lock — is a straight acquisition busy_timeout already waits on cleanly.
+func (s *Store) migrateWithBusyRetry(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		if err = s.migrateOnce(ctx); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	return err
+}
+
+// busyRetryMaxAttempts mirrors internal/telemetry/rollup's constant of the
+// same name and rationale — sized with real headroom, not the tightest value
+// that happened to pass a few runs.
+const busyRetryMaxAttempts = 12
+
+// isSQLiteBusy reports whether err (or a wrapped cause) is SQLITE_BUSY (5) or
+// SQLITE_LOCKED (6). Mirrors internal/telemetry/rollup's helper of the same
+// name: modernc.org/sqlite's Error.Code() returns the EXTENDED result code
+// (e.g. 517 = SQLITE_BUSY_SNAPSHOT = 5 | (2<<8)), which must be masked with
+// &0xFF before comparing against the primary code.
+func isSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xFF
+	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
 }
 
 // Close releases both handles, reader first so no query is in flight against a
@@ -222,9 +259,32 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// migrate applies pending forward migrations and seeds projection_state.
-func (s *Store) migrate(ctx context.Context) error {
-	version, err := s.schemaVersion(ctx)
+// migrateOnce reads the schema version and applies every pending migration
+// inside ONE immediate-mode write transaction (issue #2032, mirroring
+// internal/telemetry/rollup's migrateOnce/#1128 fix).
+//
+// This is not just symmetry with rollup — TestConcurrentFirstOpenSucceeds
+// caught a real bug in the prior per-migration-transaction shape: several
+// migrations are `ALTER TABLE ... ADD COLUMN`, which is NOT idempotent like
+// this store's `CREATE TABLE/INDEX IF NOT EXISTS` statements. Reading the
+// version in its own autocommit statement (the old schemaVersion) let two
+// concurrent first-openers both read version=0, then each independently
+// start applying migrations from scratch — the second one's ALTER TABLE
+// crashing on "duplicate column name" once it reached a migration the first
+// opener had already committed. Folding the read into the SAME transaction
+// as every migration it gates means only one opener can ever observe a given
+// version and decide what to apply from it; a second opener blocked on the
+// immediate write lock re-reads the version fresh, inside its own
+// transaction, once unblocked — by which point migrations already applied
+// are no longer pending.
+func (s *Store) migrateOnce(ctx context.Context) error {
+	tx, err := s.writer.BeginTx(ctx, nil) // BEGIN IMMEDIATE via _txlock=immediate (dsnParams)
+	if err != nil {
+		return fmt.Errorf("readmodel: begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	version, err := schemaVersionTx(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -236,29 +296,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			version, len(migrations))
 	}
 	for i := version; i < len(migrations); i++ {
-		tx, err := s.writer.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("readmodel: begin migration %d: %w", i+1, err)
-		}
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("readmodel: apply migration %d: %w", i+1, err)
 		}
 		if err := seedState(ctx, tx, i+1); err != nil {
-			_ = tx.Rollback()
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("readmodel: commit migration %d: %w", i+1, err)
-		}
 	}
-	return nil
+	return tx.Commit()
 }
 
-// schemaVersion reports how many migrations have run, or 0 for a fresh store.
-func (s *Store) schemaVersion(ctx context.Context) (int, error) {
+// schemaVersionTx reads the recorded schema version within the migration
+// transaction (so the read shares the write lock migrateOnce already holds —
+// see migrateOnce's doc for why a separate autocommit read was the bug),
+// or 0 for a fresh store whose projection_state table does not exist yet.
+func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
 	var version int
-	err := s.writer.QueryRowContext(ctx,
+	err := tx.QueryRowContext(ctx,
 		`SELECT schema_version FROM projection_state WHERE id = 1`).Scan(&version)
 	switch {
 	case err == nil:
