@@ -2998,7 +2998,20 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		}
 		result, err = det.Run(ctx, env, *t.Run)
 		if err == nil {
-			mutations = readMutationSidecar(env.Workspace)
+			var issues []string
+			mutations, issues = readMutationSidecar(env.Workspace)
+			if len(issues) > 0 {
+				// Best-effort, matching finishTaskDispatch's own
+				// ref.touched projection (issue #228): a sidecar
+				// read/parse issue doesn't change what the provider
+				// mutation already did for real, so a failed Append here
+				// must not fail the stage either (#2029) — but the loss
+				// must be observable rather than silent.
+				_ = jr.Append(journal.Event{
+					Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
+					Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
+				})
+			}
 		}
 		return result, mutations, err, nil
 	case apiv1.TaskAgentic:
@@ -3121,37 +3134,54 @@ type mutationFact struct {
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,
 // if present. Absence is the overwhelmingly common case (most deterministic
-// stages run no provider-mutating subcommand at all) and is not an error;
-// neither is a symlink/path escape or a malformed line — this is a
-// provenance signal, not the stage's deliverable, and the provider mutation
-// it describes already happened for real regardless of whether this sidecar
+// stages run no provider-mutating subcommand at all) and is not an issue;
+// nor does any issue found here fail the stage — this is a provenance
+// signal, not the stage's deliverable, and the provider mutation it
+// describes already happened for real regardless of whether this sidecar
 // can be trusted, so failing the stage over it would be disproportionate
 // (and a way for a compromised subcommand to sabotage an otherwise-successful
-// stage). All failure modes simply yield no facts; ResolveContainedPath
-// still applies the #120 path/symlink-escape containment check others use
-// for declared-output files, so a malicious sidecar path is never followed.
-func readMutationSidecar(workspace string) []mutationFact {
+// stage). ResolveContainedPath still applies the #120 path/symlink-escape
+// containment check others use for declared-output files, so a malicious
+// sidecar path is never followed.
+//
+// Unlike the read path before #2029, a present-but-corrupt sidecar (an
+// escape/containment failure, a read error other than absence, or a
+// malformed line) is no longer indistinguishable from the benign no-
+// mutations case: the caller uses the returned issues to emit its own
+// best-effort journal signal, since a lost mutation record must at least be
+// observable even though it can't be allowed to fail the stage.
+func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
 	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
 	if err != nil {
-		return nil
+		// ResolveContainedPath's own EvalSymlinks requires the target to
+		// exist, so a sidecar that was never written (the overwhelmingly
+		// common case) surfaces here, not just from the ReadFile below —
+		// still benign, not an issue.
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
 	}
-	var facts []mutationFact
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for i, line := range bytes.Split(data, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 		var f mutationFact
 		if err := json.Unmarshal(line, &f); err != nil {
+			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
 			continue
 		}
 		facts = append(facts, f)
 	}
-	return facts
+	return facts, issues
 }
 
 // errorDetailFrom converts a stage's business-level error into the journal's

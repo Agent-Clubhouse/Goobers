@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,5 +143,39 @@ func TestIssueCloseOutWritesMutationSidecar(t *testing.T) {
 		if f.Provider != "github" || f.Kind != "issue" || f.ID != "7" {
 			t.Fatalf("unexpected mutation fact: %+v", f)
 		}
+	}
+}
+
+// TestRecordExternalRefLogsOnOpenFailure is #2029's writer-side regression:
+// RecordExternalRef must never fail the mutation the provider already made
+// for real, but a failed write must still be observable via a log line —
+// the only channel available to this short-lived subprocess, which has no
+// legal journal access (see mutationsSidecarFile's doc).
+func TestRecordExternalRefLogsOnOpenFailure(t *testing.T) {
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	// Pre-create the sidecar path as a directory so OpenFile(O_WRONLY) on
+	// it fails deterministically, without needing a read-only filesystem.
+	if err := os.Mkdir(filepath.Join(workDir, mutationsSidecarFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	prevOutput := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOutput)
+		log.SetFlags(prevFlags)
+	})
+
+	r := sidecarMutationRecorder{kind: "pr"}
+	r.RecordExternalRef(context.Background(), providers.ExternalRef{
+		Provider: providers.ProviderGitHub, Ref: "acme/app#7", Operation: "open",
+	})
+
+	if !strings.Contains(logs.String(), "mutation sidecar") || !strings.Contains(logs.String(), mutationsSidecarFile) {
+		t.Fatalf("log output = %q, want a mutation-sidecar failure line naming %s", logs.String(), mutationsSidecarFile)
 	}
 }
