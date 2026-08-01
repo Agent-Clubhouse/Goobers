@@ -5,8 +5,10 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -77,6 +79,73 @@ func TestPruneConfiguredRetentionDefaultsOffThenDryRunsAndDeletes(t *testing.T) 
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("enabled retention left worktree: %v", err)
+	}
+}
+
+// TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow is
+// #2052's fix for a retained worktree whose owning run journal is deleted
+// out from under it (e.g. by telemetry retention, which prunes
+// independently and on its own schedule): IsTerminalFailure can never
+// authorize such a worktree again since there's nothing left to read, so
+// without the grace-window rule it was permanently unprunable. Proves both
+// halves: left alone while inside the grace window, reclaimed once past it.
+func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	manager, repo := commandWorktreeFixture(t, layout)
+	setup := &schedulerSetup{
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: true}},
+		LegacyWorktrees: manager,
+	}
+
+	makeJournalLessRetainedWorktree := func(runID string) *worktree.Worktree {
+		t.Helper()
+		createTerminalRun(t, layout, runID)
+		wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+			RepoURL: repo, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: "main",
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := wt.Remove(context.Background(), worktree.RemoveOptions{Keep: true}); err != nil {
+			t.Fatalf("keep worktree: %v", err)
+		}
+		// Simulate telemetry retention deleting the run's journal directory
+		// independently of worktree retention (#2052's grounding scenario).
+		if err := os.RemoveAll(filepath.Join(layout.RunsDir(), runID)); err != nil {
+			t.Fatalf("remove run journal for %s: %v", runID, err)
+		}
+		return wt
+	}
+
+	prevGraceAge := journalGraceAge
+	t.Cleanup(func() { journalGraceAge = prevGraceAge })
+
+	// Still inside a real 24h grace window: left in place.
+	journalGraceAge = prevGraceAge
+	insideWindow := makeJournalLessRetainedWorktree("journal-less-fresh")
+	var stdout, stderr bytes.Buffer
+	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+		t.Fatalf("prune inside grace window: %v", err)
+	}
+	if _, err := os.Stat(insideWindow.Path); err != nil {
+		t.Fatalf("journal-grace reclaimed a worktree still inside its grace window: %v", err)
+	}
+
+	// Shrunk to effectively zero (any positive value): the fixture above was
+	// already created before this point, so its real retainedAt is already
+	// in the past relative to a nanosecond-scale window.
+	journalGraceAge = time.Nanosecond
+	stdout.Reset()
+	stderr.Reset()
+	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+		t.Fatalf("prune past grace window: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "retention deleted rule=journal-grace kind=worktree") {
+		t.Fatalf("past-grace-window output = %q, want a journal-grace deletion", got)
+	}
+	if _, err := os.Stat(insideWindow.Path); !os.IsNotExist(err) {
+		t.Fatalf("journal-grace left a worktree past its (shrunk) grace window in place: %v", err)
 	}
 }
 
