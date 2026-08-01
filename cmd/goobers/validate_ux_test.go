@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -80,6 +81,61 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
+// becomes a GitHub Actions ::error/::warning workflow command anchored to its
+// file, written to stderr so it composes cleanly with --json (stdout stays a
+// single parseable JSON document either way).
+func TestValidateGitHubAnnotations(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "foreign")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code=%d stderr=%q", code, stderr)
+	}
+	path := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, path, "  gaggle: example", "  gaggle: ghost")
+
+	t.Run("plain", func(t *testing.T) {
+		code, _, stderr := runArgs(t, "validate", "--github-annotations", root)
+		if code != 1 {
+			t.Fatalf("validate --github-annotations code=%d, want 1; stderr=%q", code, stderr)
+		}
+		want := `::error file=config/gaggles/example/workflows/default-implement.yaml,title=REF007::spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing annotation %q:\n%s", want, stderr)
+		}
+	})
+
+	t.Run("composes with --json", func(t *testing.T) {
+		code, stdout, stderr := runArgs(t, "validate", "--json", "--github-annotations", root)
+		if code != 1 {
+			t.Fatalf("code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if !strings.Contains(stderr, "::error file=") {
+			t.Fatalf("stderr missing an annotation:\n%s", stderr)
+		}
+		if strings.Contains(stdout, "::error") || strings.Contains(stdout, "::warning") {
+			t.Fatalf("--json stdout must stay pure JSON, no workflow commands: %s", stdout)
+		}
+		var envelope diagnosticsEnvelope
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("stdout is not valid JSON with annotations enabled: %v\n%s", err, stdout)
+		}
+	})
+
+	t.Run("a valid config never emits an error annotation", func(t *testing.T) {
+		cleanRoot := filepath.Join(t.TempDir(), "clean")
+		if code, _, stderr := runArgs(t, "init", cleanRoot); code != 0 {
+			t.Fatalf("init: code=%d stderr=%q", code, stderr)
+		}
+		code, _, stderr := runArgs(t, "validate", "--github-annotations", cleanRoot)
+		if code != 0 {
+			t.Fatalf("code=%d, want 0; stderr=%q", code, stderr)
+		}
+		if strings.Contains(stderr, "::error") {
+			t.Fatalf("a valid (exit 0) config must never emit an ::error annotation: %s", stderr)
+		}
+	})
 }
 
 func TestValidateCheckRepos(t *testing.T) {

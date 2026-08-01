@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
 	"regexp"
@@ -111,6 +112,59 @@ func (c *diagnosticCollector) envelope(ok bool) diagnosticsEnvelope {
 		}
 	}
 	return envelope
+}
+
+// emitGitHubAnnotations renders each collected finding as a GitHub Actions
+// workflow command (error/warning, https://docs.github.com/actions/using-
+// workflows/workflow-commands-for-github-actions#setting-an-error-message),
+// anchored to its file/line/col when known. This is #687's config-repo PR
+// gate: it turns a validate/lint run's findings into annotations that land
+// directly on the PR diff, instead of only a raw log a reviewer has to open.
+// Written to stderr, not stdout, deliberately: composing --github-annotations
+// with --json must not interleave workflow-command lines into the JSON
+// envelope written to stdout.
+func emitGitHubAnnotations(w io.Writer, diagnostics *diagnosticCollector) {
+	if diagnostics == nil {
+		return
+	}
+	for _, finding := range diagnostics.findings {
+		command := "warning"
+		if finding.Severity == string(validate.Error) {
+			command = "error"
+		}
+		properties := "file=" + githubAnnotationEscapeProperty(finding.File)
+		if finding.Line > 0 {
+			properties += fmt.Sprintf(",line=%d", finding.Line)
+			if finding.Col > 0 {
+				properties += fmt.Sprintf(",col=%d", finding.Col)
+			}
+		}
+		title := finding.Code
+		if title == "" {
+			title = "goobers-validate"
+		}
+		properties += ",title=" + githubAnnotationEscapeProperty(title)
+		pf(w, "::%s %s::%s\n", command, properties, githubAnnotationEscapeData(finding.Message))
+	}
+}
+
+// githubAnnotationEscapeData escapes a workflow command's message body per
+// GitHub's documented rule: percent, CR, and LF.
+func githubAnnotationEscapeData(s string) string {
+	s = strings.ReplaceAll(s, "%", "%25")
+	s = strings.ReplaceAll(s, "\r", "%0D")
+	s = strings.ReplaceAll(s, "\n", "%0A")
+	return s
+}
+
+// githubAnnotationEscapeProperty escapes a workflow command property value
+// per GitHub's documented rule: the data escapes plus colon and comma, since
+// those delimit the property list itself.
+func githubAnnotationEscapeProperty(s string) string {
+	s = githubAnnotationEscapeData(s)
+	s = strings.ReplaceAll(s, ":", "%3A")
+	s = strings.ReplaceAll(s, ",", "%2C")
+	return s
 }
 
 func encodeSchemaJSON(w io.Writer, schemaFile string, value any) error {

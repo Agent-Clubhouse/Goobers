@@ -89,6 +89,43 @@ func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
 	}
 }
 
+// TestValidateGateInvalidFixtureFailsClosed is #687's deliberately-failing
+// fixture (test/fixtures/validate-gate/invalid): the config-repo PR gate's
+// self-test workflow (.github/actions/validate) exercises this fixture
+// expecting a non-zero exit, and this test pins that expectation at the Go
+// level so a change that accidentally makes the fixture valid — or breaks it
+// in some OTHER way than the intended one — is caught here rather than only
+// surfacing as a confusing CI-workflow failure.
+func TestValidateGateInvalidFixtureFailsClosed(t *testing.T) {
+	module := moduleRoot(t)
+	root := t.TempDir()
+	source := filepath.Join(root, "config-under-test")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(module, "test", "fixtures", "validate-gate", "invalid")
+	if err := os.CopyFS(source, os.DirFS(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepository(t, root)
+
+	var stdout, stderr bytes.Buffer
+	code := validateTrees(
+		root,
+		[]checkedInTree{{path: "config-under-test", sourceTree: true}},
+		validatorCommand{path: buildValidator(t, module)},
+		&stdout,
+		&stderr,
+	)
+	if code != 1 {
+		t.Fatalf("validateTrees code=%d, want 1; stdout=%q stderr=%q", code, &stdout, &stderr)
+	}
+	want := `spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("validator diagnostic was not preserved:\n%s", &stdout)
+	}
+}
+
 func TestValidateTreesRejectsWarningDrift(t *testing.T) {
 	t.Setenv("GO_WANT_CONFIGVALIDATE_HELPER", "1")
 	t.Setenv("GO_CONFIGVALIDATE_WARNING", "WARNING Workflow/other: unexpected warning")
