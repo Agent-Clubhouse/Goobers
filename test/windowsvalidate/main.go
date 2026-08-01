@@ -226,7 +226,7 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 		select {
 		case err := <-waitErr:
 			exited = true
-			return "", fmt.Errorf("`goobers up` exited before reporting running: %v\n%s", err, readLog(logFile, logPath))
+			return "", fmt.Errorf("`goobers up` exited before reporting running: %w\n%s", err, readLog(logFile, logPath))
 		default:
 		}
 		output, err := runGoobers(bin, 10*time.Second, "status", "--daemon", instanceRoot)

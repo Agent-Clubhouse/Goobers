@@ -125,16 +125,22 @@ jobs:
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
 
-  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, both on cheap
+  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, all on cheap
   # Linux runners. golangci-lint honours GOOS, so it sees each platform's
-  # build-tagged sources (the darwin-only files internal/{sandbox,executor}) are
-  # linted under GOOS=darwin from Linux — no macOS runner required.
+  # build-tagged sources (the darwin-only files internal/{sandbox,executor},
+  # the windows-only files internal/{winsvc,platform/proc,platform/lock,
+  # platform/durability}, safeopen_windows.go, test/windowsvalidate, etc.) are
+  # linted under GOOS=darwin/windows from Linux — no macOS or Windows runner
+  # required. #2016: before this leg existed, every windows-only file was
+  # staticcheck/revive-exempt (build+vet only), which is exactly the class of
+  # gap the repo has already been bitten by once (SA4032 via build-tag-dead
+  # branches).
   lint:
     name: lint (${{ matrix.goos }})
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin]
+        goos: [linux, darwin, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -658,7 +664,7 @@ jobs:
             fi
           }
           check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
-          check "lint (golangci-lint, linux+darwin)" "$LINT_RESULT"
+          check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit behavioral suite (macos)"      "$UNIT_MACOS_RESULT"
