@@ -66,7 +66,7 @@ func TestBuildMatrixCoversEveryCapabilityAndProvider(t *testing.T) {
 // WorkflowRequiredCapabilities() — if this ever fails, GitHub regressed a
 // capability the epic's acceptance gate assumes always works.
 func TestGitHubIsFullyConformantOnRequiredSet(t *testing.T) {
-	declared, _ := declarationsFor(ProviderGitHub)
+	declared, _ := CapabilitiesFor(ProviderGitHub)
 	for cap := range WorkflowRequiredCapabilities() {
 		cell := classify(ProviderGitHub, cap, declared.Has(cap))
 		if cell.Status != StatusConformant {
