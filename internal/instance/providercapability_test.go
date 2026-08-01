@@ -130,16 +130,21 @@ func TestCheckProviderCapabilityRequirementsPassesOnGitHub(t *testing.T) {
 }
 
 func TestCheckProviderCapabilityRequirementsRejectsADOGapOnLanding(t *testing.T) {
+	// apply-verdict (pr.review.submit), not merge-pr: CONF-3 (#2076) flipped
+	// ADO's pr.merge/pr.landing.*/pr.compare/branch.delete declarations to
+	// conformant, so merge-pr no longer exercises a real ADO gap here.
+	// pr.review.submit remains genuinely undeclared (no ADO implementation
+	// exists) — see TestADOStillExcludesUnimplementedSurfaces in providers.
 	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 		Gaggle: "web",
-		Tasks:  []apiv1.Task{deterministicStage("merge", "merge-pr")},
+		Tasks:  []apiv1.Task{deterministicStage("apply", "apply-verdict")},
 	}}
 	wf.Name = "implementation"
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
 
 	err := CheckProviderCapabilityRequirements(set)
 	if err == nil {
-		t.Fatal("expected error — ADO does not declare pr.merge/pr.landing.enqueue/pr.landing.detect-policy/pr.compare/branch.delete")
+		t.Fatal("expected error — ADO does not declare pr.review.submit")
 	}
 	if !strings.Contains(err.Error(), "implementation") || !strings.Contains(err.Error(), "ado") {
 		t.Errorf("error must name the workflow and the provider: %v", err)
