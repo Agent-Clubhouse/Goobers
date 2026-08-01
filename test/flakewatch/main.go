@@ -78,6 +78,13 @@ type checkRun struct {
 	} `json:"output"`
 }
 
+type workflowJob struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+}
+
 type annotation struct {
 	Path      string `json:"path"`
 	Title     string `json:"title"`
@@ -100,6 +107,7 @@ type ledgerEntry struct {
 type source struct {
 	SHA          string
 	URL          string
+	RunID        int64
 	PullRequest  int
 	ChangedFiles map[string]bool
 }
@@ -267,10 +275,10 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 }
 
 func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
-	var issues []ledgerIssue
-	if err := c.get(ctx, "/repos/"+c.repository+"/issues", url.Values{
+	issues, err := getAll[ledgerIssue](ctx, c, "/repos/"+c.repository+"/issues", url.Values{
 		"state": {"all"}, "labels": {flakeLabel}, "per_page": {"100"},
-	}, &issues); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	entries := make([]ledgerEntry, 0, len(issues))
@@ -292,14 +300,15 @@ func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
 }
 
 func (c *githubClient) sources(ctx context.Context, since time.Time) ([]source, error) {
-	var pulls []pullRequest
-	if err := c.get(ctx, "/repos/"+c.repository+"/pulls", url.Values{
+	created := ">=" + since.UTC().Format(time.RFC3339)
+	pulls, err := getAll[pullRequest](ctx, c, "/repos/"+c.repository+"/pulls", url.Values{
 		"state": {"open"}, "base": {c.branch}, "per_page": {"100"},
-	}, &pulls); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	sources := make([]source, 0, len(pulls)+20)
-	seenSHA := make(map[string]bool)
+	seenRun := make(map[int64]bool)
 	for _, pull := range pulls {
 		files, err := c.pullFiles(ctx, pull.Number)
 		if err != nil {
@@ -308,33 +317,56 @@ func (c *githubClient) sources(ctx context.Context, since time.Time) ([]source, 
 		sources = append(sources, source{
 			SHA: pull.Head.SHA, URL: pull.HTMLURL, PullRequest: pull.Number, ChangedFiles: files,
 		})
-		seenSHA[pull.Head.SHA] = true
+		runs, err := c.workflowRuns(ctx, url.Values{
+			"status": {"completed"}, "head_sha": {pull.Head.SHA}, "created": {created}, "per_page": {"100"},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list PR #%d runs: %w", pull.Number, err)
+		}
+		for _, run := range runs {
+			if run.CreatedAt.Before(since) || seenRun[run.ID] {
+				continue
+			}
+			sources = append(sources, source{
+				SHA: pull.Head.SHA, URL: run.HTMLURL, RunID: run.ID,
+				PullRequest: pull.Number, ChangedFiles: files,
+			})
+			seenRun[run.ID] = true
+		}
 	}
-	var runs struct {
-		WorkflowRuns []workflowRun `json:"workflow_runs"`
-	}
-	if err := c.get(ctx, "/repos/"+c.repository+"/actions/runs", url.Values{
-		"status": {"failure"}, "branch": {c.branch}, "per_page": {"20"},
-	}, &runs); err != nil {
+	runs, err := c.workflowRuns(ctx, url.Values{
+		"status": {"completed"}, "branch": {c.branch}, "created": {created}, "per_page": {"100"},
+	})
+	if err != nil {
 		return nil, err
 	}
-	for _, run := range runs.WorkflowRuns {
-		if run.CreatedAt.Before(since) || seenSHA[run.HeadSHA] {
+	for _, run := range runs {
+		if run.CreatedAt.Before(since) || seenRun[run.ID] {
 			continue
 		}
-		sources = append(sources, source{SHA: run.HeadSHA, URL: run.HTMLURL})
-		seenSHA[run.HeadSHA] = true
+		sources = append(sources, source{SHA: run.HeadSHA, URL: run.HTMLURL, RunID: run.ID})
+		seenRun[run.ID] = true
 	}
 	return sources, nil
 }
 
+func (c *githubClient) workflowRuns(ctx context.Context, query url.Values) ([]workflowRun, error) {
+	type page struct {
+		WorkflowRuns []workflowRun `json:"workflow_runs"`
+	}
+	return getAllWrapped(ctx, c, "/repos/"+c.repository+"/actions/runs", query, func(value page) []workflowRun {
+		return value.WorkflowRuns
+	})
+}
+
 func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bool, error) {
-	var files []struct {
+	type pullFile struct {
 		Filename string `json:"filename"`
 	}
-	if err := c.get(ctx, "/repos/"+c.repository+"/pulls/"+strconv.Itoa(number)+"/files", url.Values{
+	files, err := getAll[pullFile](ctx, c, "/repos/"+c.repository+"/pulls/"+strconv.Itoa(number)+"/files", url.Values{
 		"per_page": {"100"},
-	}, &files); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	result := make(map[string]bool, len(files))
@@ -345,35 +377,37 @@ func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bo
 }
 
 func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) ([]failure, error) {
-	var response struct {
-		CheckRuns []checkRun `json:"check_runs"`
-	}
-	if err := c.get(ctx, "/repos/"+c.repository+"/commits/"+source.SHA+"/check-runs", url.Values{
-		"filter": {"latest"}, "per_page": {"100"},
-	}, &response); err != nil {
+	checks, err := c.sourceChecks(ctx, source)
+	if err != nil {
 		return nil, err
 	}
 	var failures []failure
-	for _, check := range response.CheckRuns {
+	for _, check := range checks {
 		if check.Conclusion == "success" || check.Conclusion == "neutral" || check.Conclusion == "skipped" {
 			continue
 		}
-		var annotations []annotation
-		if err := c.get(ctx, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
+		annotations, err := getAll[annotation](ctx, c, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
 			"per_page": {"100"},
-		}, &annotations); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
 		for _, annotation := range annotations {
 			text := strings.TrimSpace(strings.Join([]string{
-				annotation.Title, annotation.Message, annotation.RawDetail, check.Output.Title, check.Output.Summary,
+				annotation.Title, annotation.Message, annotation.RawDetail,
 			}, "\n"))
 			testMatch := testNamePattern.FindStringSubmatch(text)
 			if len(testMatch) != 2 {
 				continue
 			}
 			pkg := annotationPackage(annotation.Path, text)
-			signature := flake.NormalizeSignature(text)
+			signatureText := strings.TrimSpace(strings.Join([]string{
+				annotation.Message, annotation.RawDetail,
+			}, "\n"))
+			if signatureText == "" {
+				signatureText = annotation.Title
+			}
+			signature := flake.NormalizeSignature(signatureText)
 			failures = append(failures, failure{
 				Fingerprint:      flake.Fingerprint(pkg, testMatch[1], signature),
 				Package:          pkg,
@@ -388,6 +422,41 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		}
 	}
 	return failures, nil
+}
+
+func (c *githubClient) sourceChecks(ctx context.Context, source source) ([]checkRun, error) {
+	if source.RunID == 0 {
+		type page struct {
+			CheckRuns []checkRun `json:"check_runs"`
+		}
+		return getAllWrapped(
+			ctx,
+			c,
+			"/repos/"+c.repository+"/commits/"+source.SHA+"/check-runs",
+			url.Values{"filter": {"latest"}, "per_page": {"100"}},
+			func(value page) []checkRun { return value.CheckRuns },
+		)
+	}
+	type page struct {
+		Jobs []workflowJob `json:"jobs"`
+	}
+	jobs, err := getAllWrapped(
+		ctx,
+		c,
+		"/repos/"+c.repository+"/actions/runs/"+strconv.FormatInt(source.RunID, 10)+"/jobs",
+		url.Values{"filter": {"all"}, "per_page": {"100"}},
+		func(value page) []workflowJob { return value.Jobs },
+	)
+	if err != nil {
+		return nil, err
+	}
+	checks := make([]checkRun, 0, len(jobs))
+	for _, job := range jobs {
+		checks = append(checks, checkRun{
+			ID: job.ID, Name: job.Name, Conclusion: job.Conclusion, HTMLURL: job.HTMLURL,
+		})
+	}
+	return checks, nil
 }
 
 func annotationPackage(annotationPath, text string) string {
@@ -446,12 +515,51 @@ func (c *githubClient) dispatch(ctx context.Context, entry ledgerEntry, failure 
 	return c.request(ctx, http.MethodPost, "/repos/"+c.repository+"/dispatches", nil, payload, nil)
 }
 
-func (c *githubClient) get(ctx context.Context, endpoint string, query url.Values, output any) error {
-	return c.request(ctx, http.MethodGet, endpoint, query, nil, output)
+func getAll[T any](ctx context.Context, client *githubClient, endpoint string, query url.Values) ([]T, error) {
+	return getAllWrapped(ctx, client, endpoint, query, func(value []T) []T { return value })
+}
+
+func getAllWrapped[T, P any](
+	ctx context.Context,
+	client *githubClient,
+	endpoint string,
+	query url.Values,
+	items func(P) []T,
+) ([]T, error) {
+	var result []T
+	next := endpoint
+	for next != "" {
+		var page P
+		nextPage, err := client.getPage(ctx, next, query, &page)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, items(page)...)
+		next = nextPage
+		query = nil
+	}
+	return result, nil
+}
+
+func (c *githubClient) getPage(ctx context.Context, endpoint string, query url.Values, output any) (string, error) {
+	return c.requestPage(ctx, http.MethodGet, endpoint, query, nil, output)
 }
 
 func (c *githubClient) request(ctx context.Context, method, endpoint string, query url.Values, input, output any) error {
-	target := c.base + endpoint
+	_, err := c.requestPage(ctx, method, endpoint, query, input, output)
+	return err
+}
+
+func (c *githubClient) requestPage(
+	ctx context.Context,
+	method, endpoint string,
+	query url.Values,
+	input, output any,
+) (string, error) {
+	target := endpoint
+	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+		target = c.base + endpoint
+	}
 	if len(query) != 0 {
 		target += "?" + query.Encode()
 	}
@@ -459,33 +567,55 @@ func (c *githubClient) request(ctx context.Context, method, endpoint string, que
 	if input != nil {
 		data, err := json.Marshal(input)
 		if err != nil {
-			return err
+			return "", err
 		}
 		body = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
-		return err
+		return "", err
+	}
+	baseURL, err := url.Parse(c.base)
+	if err != nil {
+		return "", err
+	}
+	if req.URL.Scheme != baseURL.Scheme || req.URL.Host != baseURL.Host {
+		return "", fmt.Errorf("refuse pagination outside GitHub API origin: %s", req.URL.Redacted())
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
+		return "", fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
 	}
 	if output == nil {
-		return nil
+		return nextLink(resp.Header.Get("Link")), nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(output); err != nil {
-		return fmt.Errorf("decode %s: %w", endpoint, err)
+		return "", fmt.Errorf("decode %s: %w", endpoint, err)
 	}
-	return nil
+	return nextLink(resp.Header.Get("Link")), nil
+}
+
+func nextLink(header string) string {
+	for _, link := range strings.Split(header, ",") {
+		parts := strings.Split(link, ";")
+		if len(parts) < 2 {
+			continue
+		}
+		for _, attribute := range parts[1:] {
+			if strings.TrimSpace(attribute) == `rel="next"` {
+				return strings.Trim(strings.TrimSpace(parts[0]), "<>")
+			}
+		}
+	}
+	return ""
 }
 
 func writeReport(filename string, report failuresReport) error {
