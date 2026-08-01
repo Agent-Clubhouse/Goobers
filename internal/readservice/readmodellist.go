@@ -67,8 +67,11 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		// bad value cannot reach the query as a column name.
 		Population: readmodel.Population(options.StagePopulation),
 	}
+	if options.OrderByActivity {
+		request.OrderBy = readmodel.OrderLastActivity
+	}
 	if cursor != nil {
-		request.Cursor = readmodel.ListCursor{StartedAt: cursor.StartedAt, RunID: cursor.RunID}
+		request.Cursor = readmodel.ListCursor{Key: cursor.StartedAt, RunID: cursor.RunID}
 	}
 
 	page, err := s.sources.ReadModel.ListRuns(ctx, request)
@@ -186,6 +189,9 @@ func readModelDims(options RunListOptions) []readmodel.Dim {
 	}
 	if options.StagePopulation != "" {
 		dims = append(dims, readmodel.DimPopulation)
+	}
+	if options.OrderByActivity {
+		dims = append(dims, readmodel.DimActivity)
 	}
 	if !options.Since.IsZero() {
 		dims = append(dims, readmodel.DimSince)

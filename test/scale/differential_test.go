@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -45,7 +46,24 @@ func TestReadModelMatchesTheJournalDerivedReference(t *testing.T) {
 			continue
 		}
 		t.Run(readmodel.Key(combination.Dims), func(t *testing.T) {
-			wantIDs := referenceRunIDs(t, ctx, service, options)
+			var wantIDs []string
+			if !options.OrderByActivity {
+				wantIDs = referenceRunIDs(t, ctx, service, options)
+			} else {
+				// The activity axis has NO journal-derived implementation, and
+				// that is deliberate: the reference orders by start, and sorting
+				// its candidates to answer this would mean sorting all of them —
+				// the unbounded shape the read model exists to remove. The service
+				// refuses it rather than serving it wrongly (#1777).
+				//
+				// So the oracle supplies its own reference instead of skipping.
+				// referenceActivityOrder pages the reference on its own axis to get
+				// every run, then applies the window and the ordering in plain Go.
+				// That is still an INDEPENDENT implementation — it shares no code
+				// with the read model's SQL — which is the property that makes a
+				// differential test worth running.
+				wantIDs = referenceActivityOrder(t, ctx, service, options)
+			}
 			gotIDs := readModelRunIDs(t, ctx, store, options)
 			compareIDs(t, wantIDs, gotIDs)
 		})
@@ -297,6 +315,8 @@ func optionsFor(dims []readmodel.Dim, gen GenerateResult) (readservice.RunListOp
 			options.Stage = instancefixture.StageName(0)
 		case readmodel.DimPopulation:
 			options.StagePopulation = readservice.StagePopulationRetryWaste
+		case readmodel.DimActivity:
+			options.OrderByActivity = true
 		default:
 			return readservice.RunListOptions{}, false
 		}
@@ -339,6 +359,9 @@ func readModelRunIDs(t *testing.T, ctx context.Context, store *readmodel.Store, 
 		Limit:      200,
 		Stage:      reference.Stage,
 		Population: readmodel.Population(reference.StagePopulation),
+	}
+	if reference.OrderByActivity {
+		options.OrderBy = readmodel.OrderLastActivity
 	}
 	var out []string
 	for page := 0; ; page++ {
@@ -582,4 +605,74 @@ func compareActivity(t *testing.T, want, got []readservice.WorkflowRunActivity) 
 				key, gotCount)
 		}
 	}
+}
+
+// referenceActivityOrder computes the activity-ordered answer without the read
+// model, by fetching every run through the journal-derived path and doing the
+// window and the sort in Go.
+//
+// This is the oracle's own implementation, written deliberately naively: it
+// reads everything and sorts in memory, which is exactly the O(all runs) shape
+// production must not have. That is fine here and is the point — a reference is
+// allowed to be slow, and one that shared the optimised path's code would prove
+// nothing.
+func referenceActivityOrder(
+	t *testing.T,
+	ctx context.Context,
+	service *readservice.Local,
+	options readservice.RunListOptions,
+) []string {
+	t.Helper()
+
+	// Fetch on the axis the reference CAN serve, unfiltered by the window: the
+	// window applies to last activity, and filtering it here by started_at would
+	// drop exactly the runs this axis exists to surface.
+	all := options
+	all.OrderByActivity = false
+	all.Since = time.Time{}
+	all.Until = time.Time{}
+	all.Limit = 200
+
+	var summaries []readservice.RunSummary
+	for page := 0; ; page++ {
+		result, err := service.ListRuns(ctx, all)
+		if err != nil {
+			t.Fatalf("reference activity page %d: %v", page, err)
+		}
+		summaries = append(summaries, result.Runs...)
+		if result.NextCursor == "" {
+			break
+		}
+		all.Cursor = result.NextCursor
+		if page > 50 {
+			t.Fatal("reference pagination did not terminate")
+		}
+	}
+
+	kept := make([]readservice.RunSummary, 0, len(summaries))
+	for _, run := range summaries {
+		if !options.Since.IsZero() && run.LastActivityAt.Before(options.Since) {
+			continue
+		}
+		if !options.Until.IsZero() && run.LastActivityAt.After(options.Until) {
+			continue
+		}
+		kept = append(kept, run)
+	}
+
+	// Descending activity, ascending id — the same total order the SQL declares,
+	// stated here independently so a disagreement is a real finding rather than
+	// two copies of one mistake.
+	sort.Slice(kept, func(i, j int) bool {
+		if !kept[i].LastActivityAt.Equal(kept[j].LastActivityAt) {
+			return kept[i].LastActivityAt.After(kept[j].LastActivityAt)
+		}
+		return kept[i].ID < kept[j].ID
+	})
+
+	out := make([]string, 0, len(kept))
+	for _, run := range kept {
+		out = append(out, run.ID)
+	}
+	return out
 }

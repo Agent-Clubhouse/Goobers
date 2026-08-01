@@ -230,6 +230,8 @@ func probeOptionsFor(dims []Dim, limit int) (ListOptions, bool) {
 			options.Stage = "build"
 		case DimPopulation:
 			options.Population = PopulationCostMeasured
+		case DimActivity:
+			options.OrderBy = OrderLastActivity
 		case DimSince:
 			options.Since = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 		case DimUntil:

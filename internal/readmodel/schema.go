@@ -437,4 +437,43 @@ CREATE INDEX IF NOT EXISTS idx_run_any_retry_waste
 CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_retry_waste
 	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_retry_waste = 1;
 `,
+
+	// v7: the last-activity recency axis (#1777).
+	//
+	// # Why a second axis rather than a different default
+	//
+	// The two orderings answer different operator questions and both are wanted.
+	// started_at is when a run BEGAN, which is what a history page shows.
+	// last_activity_at is when it last DID something, which is what an attention
+	// list needs — a run that started days ago and escalated a minute ago is the
+	// most urgent thing on the instance and the least recent by started_at.
+	//
+	// #1199 could not be built portal-side precisely because of that: a run with
+	// an old start is excluded from a bounded page BEFORE the portal sees it, and
+	// no client-side filter can recover a row that was never sent.
+	//
+	// # Why these mirror the started_at indexes exactly
+	//
+	// A keyset page needs its equality columns first and its ordering column
+	// last. Reusing the started_at indexes for an activity-ordered query would
+	// give the planner an index that seeks the right rows and then has to SORT
+	// them — bounded in returned rows, unbounded in examined ones, which is the
+	// exact failure §5.7's closed set exists to prevent.
+	//
+	// NULL last_activity_at (a run projected from identity with no events) sorts
+	// last under DESC and is excluded by any since-filter. That is the correct
+	// semantic — no recorded activity is not recent activity — and it is why
+	// these are not COALESCE expressions, which would make the index unusable.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_activity
+	ON run(last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_activity
+	ON run(gaggle, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_activity
+	ON run(gaggle, workflow, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_phase_activity
+	ON run(phase, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_phase_activity
+	ON run(gaggle, phase, last_activity_at DESC, run_id ASC);
+`,
 }

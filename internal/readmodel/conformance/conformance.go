@@ -575,6 +575,8 @@ func optionsForDims(dims []readmodel.Dim) readmodel.ListOptions {
 				"contract cannot construct a request for", dim))
 		case readmodel.DimPopulation:
 			options.Population = readmodel.PopulationCostMeasured
+		case readmodel.DimActivity:
+			options.OrderBy = readmodel.OrderLastActivity
 		default:
 			panic(fmt.Sprintf("conformance: unknown dimension %q in the supported set", dim))
 		}

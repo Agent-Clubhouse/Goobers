@@ -113,6 +113,20 @@ type RunListOptions struct {
 	Limit             int
 	Cursor            string
 	LatestPerWorkflow bool
+
+	// OrderByActivity sorts and filters on the run's last journal event rather
+	// than its start (#1777).
+	//
+	// Additive: false is the existing behaviour, so no current caller changes
+	// meaning by this field existing. Since/Until follow the axis — on this one
+	// they bound last activity, which is what makes "runs active in the last 24h"
+	// expressible at all.
+	//
+	// Only the read-model path serves it. The journal-derived paths order by
+	// start and would have to sort every candidate to answer it, which is the
+	// unbounded shape the read model exists to remove -- so a request carrying
+	// this without a read model is refused rather than served slowly.
+	OrderByActivity bool
 }
 
 // RunList is one deterministic page of run summaries.
@@ -462,6 +476,23 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 	// remove an answer the portal can get today.
 	if s.readModelEligible(options) {
 		return s.listRunsFromReadModel(ctx, options, cursor, limit)
+	}
+	// The activity axis is read-model only, and unserved is a REFUSAL rather
+	// than a fallback (#1777).
+	//
+	// The journal-derived paths order by start. Handed OrderByActivity they
+	// would quietly return start-ordered rows — a page that looks correct, is
+	// sorted wrongly, and gives an operator watching an attention list exactly
+	// the answer the feature exists to fix. Sorting the candidates instead would
+	// mean sorting all of them, which is the unbounded shape the read model
+	// removes.
+	//
+	// So say so. A caller that gets this can retry without the axis, or wait for
+	// the projection; both beat being lied to about the order.
+	if options.OrderByActivity {
+		return RunList{}, fmt.Errorf(
+			"%w: ordering by last activity requires the read model (mode %s)",
+			ErrBoundedReadUnavailable, s.ReadMode())
 	}
 	if s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)

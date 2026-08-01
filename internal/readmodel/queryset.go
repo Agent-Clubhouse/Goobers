@@ -53,6 +53,17 @@ const (
 	DimPopulation Dim = "population"
 	DimSince      Dim = "since"
 	DimUntil      Dim = "until"
+	// DimActivity marks a query ordered by last_activity_at rather than
+	// started_at (#1777).
+	//
+	// A dimension rather than a flag beside the set, because the ordering axis
+	// changes which index can serve a combination — {gaggle} needs
+	// idx_run_gaggle_recency on one axis and idx_run_gaggle_activity on the
+	// other. Treating it as anything but part of the combination's identity
+	// would let an activity-ordered query claim a started_at index, seek the
+	// right rows, and then sort them: bounded in rows returned, unbounded in
+	// rows examined, which is exactly what the closed set exists to prevent.
+	DimActivity Dim = "activity"
 )
 
 // AllDims is the full filter space, in canonical order.
@@ -61,7 +72,8 @@ const (
 // so every lookup normalises to this order. Without it, {gaggle, phase} and
 // {phase, gaggle} would be different keys for the same query.
 var AllDims = []Dim{
-	DimGaggle, DimWorkflow, DimPhase, DimStage, DimOutcome, DimPopulation, DimSince, DimUntil,
+	DimGaggle, DimWorkflow, DimPhase, DimStage, DimOutcome, DimPopulation,
+	DimSince, DimUntil, DimActivity,
 }
 
 // Combination is one supported filter combination.
@@ -211,6 +223,38 @@ var supportedCombinations = []Combination{
 	{Dims: []Dim{DimGaggle, DimPopulation, DimSince}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+since"},
 	{Dims: []Dim{DimGaggle, DimPopulation, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+until"},
 	{Dims: []Dim{DimGaggle, DimPopulation, DimSince, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+window"},
+
+	// The last-activity axis (#1777). Each mirrors its started_at counterpart
+	// with an index whose ordering column is last_activity_at, because reusing
+	// the started_at index would make the planner sort rather than seek.
+	//
+	// Not mirrored: anything with DimStage. run_stage carries run_started_at but
+	// no activity copy, so a stage-scoped activity query would sort against the
+	// joined run row. It stays refused rather than served slowly.
+	{Dims: []Dim{DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+activity"},
+	{Dims: []Dim{DimSince, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+since+activity"},
+	{Dims: []Dim{DimUntil, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+until+activity"},
+	{Dims: []Dim{DimSince, DimUntil, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+activity"},
+	{Dims: []Dim{DimGaggle, DimSince, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+since+activity"},
+	{Dims: []Dim{DimGaggle, DimUntil, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+until+activity"},
+	{Dims: []Dim{DimGaggle, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+since+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimUntil, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+until+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+window+activity"},
+
+	{Dims: []Dim{DimPhase, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+activity"},
+	{Dims: []Dim{DimPhase, DimSince, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+since+activity"},
+	{Dims: []Dim{DimPhase, DimUntil, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+until+activity"},
+	{Dims: []Dim{DimPhase, DimSince, DimUntil, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimPhase, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimSince, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+since+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimUntil, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+until+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+window+activity"},
 }
 
 // Lookup returns the supported combination for a dimension set.
