@@ -124,6 +124,7 @@ const (
 	errorGateEvaluatorCardinality WarningCode = "WF014"
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorRunControls              WarningCode = "WF016"
+	errorPathSimulation           WarningCode = "WF017"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -1409,6 +1410,15 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// broken at runtime, on some path, every time.
 	for _, msg := range wf.CheckStageContracts(def) {
 		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Path simulation (#913, Tier 2 of the assurance ladder #903). Walks the
+	// compiled machine over every combination of gate outcomes, tracking what
+	// the immediately preceding task actually emits on each concrete path —
+	// catching an inputsFrom handoff that only breaks along one sequence of
+	// outcomes, which CheckStageContracts' per-edge union above cannot
+	// express, and reporting the exact path as evidence.
+	for _, msg := range wf.CheckPathSimulation(def) {
+		r.add(errorPathSimulation, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Required-input contracts (#1061). The input-side analog of the above:
 	// a deterministic stage that invokes a `goobers` subcommand without
