@@ -2686,6 +2686,16 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 	return p.doStatus(ctx, method, endpoint, body, out, nil)
 }
 
+// doRetryable is do with sendWithAcceptRetryable's explicit retry-safety
+// override — see its doc for why graphql needs this instead of do.
+func (p *GitHubProvider) doRetryable(ctx context.Context, method, endpoint string, body, out interface{}, retryable bool) error {
+	resp, err := p.sendWithAcceptRetryable(ctx, method, endpoint, body, "application/vnd.github+json", retryable)
+	if err != nil {
+		return err
+	}
+	return readJSONResponse(resp, method, endpoint, out)
+}
+
 // send issues one GitHub request, retrying transient failures — rate limits,
 // 5xx server errors, and transport errors — with independent bounded retry
 // budgets. Rate-limit retries also honor maxRateLimitWait total sleep and
@@ -2701,6 +2711,15 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 }
 
 func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint string, body interface{}, accept string) (*http.Response, error) {
+	return p.sendWithAcceptRetryable(ctx, method, endpoint, body, accept, isIdempotentHTTPMethod(method))
+}
+
+// sendWithAcceptRetryable is sendWithAccept with an explicit retry-safety
+// override, for the one caller (graphql) whose wire method (always POST,
+// GraphQL's transport requirement) does not match its actual idempotency —
+// a GraphQL query (read) is exactly as safe to retry as a REST GET, but the
+// literal HTTP method alone can't tell the two apart (#2026).
+func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, endpoint string, body interface{}, accept string, retryable bool) (*http.Response, error) {
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
@@ -2730,8 +2749,14 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 		if err != nil {
 			// Transport error (connection reset, DNS blip, timeout): retry with
 			// backoff rather than fail the stage on a single network hiccup
-			// (#139). No response to close on this path.
-			if transientRetries < p.maxRetries {
+			// (#139) — but only for idempotent methods (#2026). A POST/PATCH
+			// whose response was lost to the transport error may have already
+			// committed server-side (issue creation, a comment post, a label
+			// mutation); GitHub has no transport-level dedup marker to make a
+			// blind retry of those safe, so a lost response on a non-idempotent
+			// method is surfaced as an error rather than silently risking a
+			// duplicate. No response to close on this path.
+			if retryable && transientRetries < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}
@@ -2767,9 +2792,12 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 			rateLimitRetries++
 			continue
 		}
-		if resp.StatusCode >= 500 && transientRetries < p.maxRetries {
+		if resp.StatusCode >= 500 && retryable && transientRetries < p.maxRetries {
 			// Server-side error: retry with backoff. GitHub 5xx is usually
 			// transient; without this a single blip fails the stage attempt.
+			// Restricted to idempotent methods (#2026) for the same reason as
+			// the transport-error retry above — a 5xx can follow a request
+			// that already committed.
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientRetries)); err != nil {
 				return nil, err

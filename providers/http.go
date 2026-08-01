@@ -110,6 +110,24 @@ func IsNotFoundError(err error) bool {
 	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound
 }
 
+// isIdempotentHTTPMethod reports whether method is safe to retry
+// automatically after a transport failure or 5xx without risking a
+// duplicate side effect (#2026), shared by every provider's low-level send
+// loop. GET/HEAD/PUT/DELETE are idempotent by HTTP semantics; POST and
+// PATCH are excluded by default — a provider's write surface (branch/
+// commit/PR/work-item mutations, comments) has no transport-level dedup
+// marker to make a blind retry of those safe, so a lost response is
+// surfaced as an error rather than silently risking a duplicate commit,
+// comment, or state transition.
+func isIdempotentHTTPMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
 // ErrMergeConflict is the provider-neutral sentinel a MergePullRequest
 // implementation wraps when the forge reports a confirmed merge conflict
 // through a channel other than GitHub's 405-with-wording response — e.g.

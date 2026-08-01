@@ -497,7 +497,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			// response was lost, and ADO has no transport-level dedup marker
 			// (unlike GitHub issue creation's footer check, #140) to make a
 			// blind retry safe for those.
-			if isIdempotentADOMethod(method) && transientAttempt < p.maxRetries {
+			if isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr
 				}
@@ -511,7 +511,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			authRetried = true
 			continue
 		}
-		if resp.StatusCode >= 500 && isIdempotentADOMethod(method) && transientAttempt < p.maxRetries {
+		if resp.StatusCode >= 500 && isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
 				return nil, err
@@ -539,22 +539,6 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		p.observeRateLimit(ctx, ev)
 		waited += wait
 		rateAttempt++
-	}
-}
-
-// isIdempotentADOMethod reports whether method is safe to retry automatically
-// after a transport failure or 5xx without risking a duplicate side effect
-// (#2026). GET/HEAD/PUT/DELETE are idempotent by HTTP semantics; POST and
-// PATCH are excluded by default — ADO's write surface (branch/commit/PR/
-// work-item mutations) has no transport-level dedup marker to make a blind
-// retry of those safe, so a lost response is surfaced as an error rather than
-// silently risking a duplicate commit, comment, or state transition.
-func isIdempotentADOMethod(method string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
-		return true
-	default:
-		return false
 	}
 }
 
