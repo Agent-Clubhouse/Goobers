@@ -57,6 +57,15 @@ re-sweep uses only leftover capacity, no more often than resweepInterval
 already in implementation/review are emitted as read-only context and are
 never claimed.
 
+respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the
+assignee field is ignored entirely, exactly as today). Once true,
+assignedTo selects the mode: a real identity (either a literal login, or
+left undeclared so the runner's configured self identity fills it in at
+run time) makes only items assigned to that identity eligible — assigned
+to anyone else, or unassigned, is excluded. assignedTo declared with no
+value is the null/unassigned-only mode: only items with no assignee at
+all are eligible.
+
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing
 trustLabel with --claim, config/credential/provider error), 2 =
