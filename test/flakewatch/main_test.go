@@ -23,6 +23,7 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 
 	var mu sync.Mutex
 	var dispatches []map[string]any
+	var comments []issueComment
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{{
 		Number: 42,
@@ -49,6 +50,9 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
 		"jobs": []workflowJob{{ID: 103, Conclusion: "failure"}},
 	}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/103/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintln(w, "ordinary non-test job output")
+	})
 	mux.HandleFunc("/repos/acme/app/check-runs/101/annotations", jsonHandler([]annotation{{
 		Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE",
 	}}))
@@ -68,6 +72,20 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 		dispatches = append(dispatches, payload)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/repos/acme/app/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost {
+			var comment issueComment
+			if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+				t.Errorf("decode comment: %v", err)
+			}
+			comments = append(comments, comment)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(comments)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -110,6 +128,9 @@ func TestFailuresUsesRunJobsAndIgnoresCheckSummaryForFingerprint(t *testing.T) {
 		[]annotation{{Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE"}},
 		[]annotation{{Path: "internal/runner/run_test.go", Message: "diagnostic without a test name"}},
 	))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintln(w, "ordinary non-test job output")
+	})
 	mux.HandleFunc("/repos/acme/app/commits/shared-sha/check-runs", jsonHandler(map[string]any{
 		"check_runs": []checkRun{{
 			ID: 999, Conclusion: "failure",
@@ -139,6 +160,137 @@ func TestFailuresUsesRunJobsAndIgnoresCheckSummaryForFingerprint(t *testing.T) {
 	}
 }
 
+func TestFailuresParsesGoTestJobLogWithoutAnnotations(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{ID: 201, Conclusion: "failure"}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/201/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `2026-08-01T12:00:00.0000000Z === RUN   TestResume
+	2026-08-01T12:00:00.0000000Z WARNING: DATA RACE
+	2026-08-01T12:00:00.0000000Z Read at 0x00c000000000 by goroutine 19:
+	2026-08-01T12:00:00.0000000Z   github.com/goobers/goobers/internal/runner.resume()
+	2026-08-01T12:00:00.0000000Z       /home/runner/work/Goobers/internal/runner/run.go:42 +0x12
+	2026-08-01T12:00:00.0000000Z --- FAIL: TestResume (0.02s)
+	2026-08-01T12:00:00.0000000Z FAIL	github.com/goobers/goobers/internal/runner	1.234s
+	`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	got, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99, URL: "run-99"}, now)
+	if err != nil {
+		t.Fatalf("failures: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("failures = %+v, want one log failure", got)
+	}
+	if got[0].Package != "./internal/runner" || got[0].Test != "TestResume" {
+		t.Fatalf("failure identity = %s %s", got[0].Package, got[0].Test)
+	}
+	wantSignature := flake.NormalizeSignature(strings.Join([]string{
+		"=== RUN   TestResume",
+		"WARNING: DATA RACE",
+		"Read at 0x00c000000000 by goroutine 19:",
+		"  github.com/goobers/goobers/internal/runner.resume()",
+		"      /home/runner/work/Goobers/internal/runner/run.go:42 +0x12",
+		"--- FAIL: TestResume (0.02s)",
+	}, "\n"))
+	if got[0].FailureSignature != wantSignature {
+		t.Fatalf("signature = %q, want %q", got[0].FailureSignature, wantSignature)
+	}
+	if got[0].Occurrence == "" {
+		t.Fatal("log failure has no occurrence identity")
+	}
+}
+
+func TestScanDeduplicatesOverlappingSourcesAndPriorPolls(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	text := "WARNING: DATA RACE"
+	signature := flake.NormalizeSignature(text)
+	fingerprint := flake.Fingerprint("./internal/runner", "TestResume", signature)
+	var mu sync.Mutex
+	var dispatches int
+	var comments []issueComment
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{{
+		Number: 42,
+		Body: fmt.Sprintf(
+			"<!-- goobers-flake-fingerprint:%s -->\n- **Test:** `TestResume`\n- **Normalized signature:** `%s`\n",
+			fingerprint,
+			signature,
+		),
+	}}))
+	mux.HandleFunc("/repos/acme/app/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost {
+			var comment issueComment
+			if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+				t.Errorf("decode comment: %v", err)
+			}
+			comments = append(comments, comment)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(comments)
+	})
+	mux.HandleFunc("/repos/acme/app/pulls", jsonHandler([]pullRequest{
+		pullFixture(7, "shared-sha", "pull-7"),
+	}))
+	mux.HandleFunc("/repos/acme/app/pulls/7/files", jsonHandler([]map[string]string{{"filename": "README.md"}}))
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		runs := []workflowRun{}
+		if r.URL.Query().Get("head_sha") != "" {
+			runs = append(runs, workflowRun{ID: 99, HeadSHA: "shared-sha", HTMLURL: "run-99", CreatedAt: now})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/shared-sha/check-runs", jsonHandler(checksFixture(201)))
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{ID: 201, Conclusion: "failure"}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/201/annotations", jsonHandler([]annotation{{
+		Path: "internal/runner/run_test.go", Title: "TestResume", Message: text,
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintln(w, "ordinary non-test job output")
+	})
+	mux.HandleFunc("/repos/acme/app/dispatches", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		dispatches++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := &githubClient{
+		base: server.URL, repository: "acme/app", branch: "main", token: "test", http: server.Client(),
+	}
+
+	first, err := scan(context.Background(), client, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	second, err := scan(context.Background(), client, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if first.KnownDispatched != 1 || second.KnownDispatched != 0 || dispatches != 1 || len(comments) != 1 {
+		t.Fatalf(
+			"first=%d second=%d dispatches=%d comments=%d, want 1/0/1/1",
+			first.KnownDispatched, second.KnownDispatched, dispatches, len(comments),
+		)
+	}
+}
 func TestCheckSummaryDoesNotChangeAnnotationFingerprint(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()

@@ -1,9 +1,10 @@
-// Command flakewatch scans structured GitHub check annotations for flake-shaped failures.
+// Command flakewatch scans GitHub checks and Actions job logs for flake-shaped failures.
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -33,6 +34,10 @@ var (
 	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
 	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
+	goTestFailure   = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
+	goPackageFail   = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
+	goPackageDone   = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
+	actionTimestamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
 )
 
 type options struct {
@@ -97,6 +102,10 @@ type ledgerIssue struct {
 	Body   string `json:"body"`
 }
 
+type issueComment struct {
+	Body string `json:"body"`
+}
+
 type ledgerEntry struct {
 	Issue       int
 	Fingerprint string
@@ -123,6 +132,7 @@ type failure struct {
 	LastSeenAt           time.Time `json:"last_seen_at"`
 	Occurrences          int       `json:"occurrences"`
 	SourcePath           string    `json:"-"`
+	Occurrence           string    `json:"-"`
 }
 
 type failuresReport struct {
@@ -243,15 +253,28 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 			return result, fmt.Errorf("scan %s: %w", source.SHA, err)
 		}
 		for _, candidate := range candidates {
-			key := candidate.Fingerprint + "\x00" + source.URL
+			key := candidate.Occurrence
+			if key == "" {
+				key = candidate.Fingerprint + "\x00" + source.URL
+			}
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			entry, known := knownFailure(ledger, candidate)
 			if known {
+				dispatched, err := client.wasDispatched(ctx, entry, candidate)
+				if err != nil {
+					return result, fmt.Errorf("check known flake handoff %s: %w", candidate.Fingerprint, err)
+				}
+				if dispatched {
+					continue
+				}
 				if err := client.dispatch(ctx, entry, candidate, source); err != nil {
 					return result, fmt.Errorf("dispatch known flake %s: %w", candidate.Fingerprint, err)
+				}
+				if err := client.recordDispatch(ctx, entry, candidate); err != nil {
+					return result, fmt.Errorf("record known flake handoff %s: %w", candidate.Fingerprint, err)
 				}
 				result.KnownDispatched++
 				continue
@@ -408,8 +431,9 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 				signatureText = annotation.Title
 			}
 			signature := flake.NormalizeSignature(signatureText)
+			fingerprint := flake.Fingerprint(pkg, testMatch[1], signature)
 			failures = append(failures, failure{
-				Fingerprint:      flake.Fingerprint(pkg, testMatch[1], signature),
+				Fingerprint:      fingerprint,
 				Package:          pkg,
 				Test:             testMatch[1],
 				FailureSignature: signature,
@@ -418,10 +442,84 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 				LastSeenAt:       observed,
 				Occurrences:      1,
 				SourcePath:       annotation.Path,
+				Occurrence:       occurrenceID(check.ID, pkg, testMatch[1]),
 			})
+		}
+		if source.RunID == 0 {
+			continue
+		}
+		log, err := c.jobLog(ctx, check.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read job %d log: %w", check.ID, err)
+		}
+		for _, candidate := range parseGoTestFailures(log, source.URL, observed) {
+			candidate.Occurrence = occurrenceID(check.ID, candidate.Package, candidate.Test)
+			failures = append(failures, candidate)
 		}
 	}
 	return failures, nil
+}
+
+func (c *githubClient) jobLog(ctx context.Context, jobID int64) (string, error) {
+	data, err := c.getBytes(ctx, "/repos/"+c.repository+"/actions/jobs/"+strconv.FormatInt(jobID, 10)+"/logs")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
+	var result []failure
+	var packageLines []string
+	var tests []string
+	seenTests := make(map[string]bool)
+	flush := func(pkg string) {
+		text := strings.TrimSpace(strings.Join(packageLines, "\n"))
+		for _, test := range tests {
+			signature := flake.NormalizeSignature(text)
+			fingerprint := flake.Fingerprint(pkg, test, signature)
+			result = append(result, failure{
+				Fingerprint:      fingerprint,
+				Package:          pkg,
+				Test:             test,
+				FailureSignature: signature,
+				FailureText:      text,
+				LastSeenRun:      sourceURL,
+				LastSeenAt:       observed,
+				Occurrences:      1,
+			})
+		}
+		packageLines = nil
+		tests = nil
+		clear(seenTests)
+	}
+	for _, rawLine := range strings.Split(log, "\n") {
+		line := actionTimestamp.ReplaceAllString(strings.TrimSpace(rawLine), "")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "##[") {
+			continue
+		}
+		if match := goPackageFail.FindStringSubmatch(trimmed); len(match) == 2 {
+			flush(annotationPackage("", match[1]))
+			continue
+		}
+		if goPackageDone.MatchString(trimmed) {
+			packageLines = nil
+			tests = nil
+			clear(seenTests)
+			continue
+		}
+		packageLines = append(packageLines, line)
+		if match := goTestFailure.FindStringSubmatch(trimmed); len(match) == 2 && !seenTests[match[1]] {
+			tests = append(tests, match[1])
+			seenTests[match[1]] = true
+		}
+	}
+	return result
+}
+
+func occurrenceID(checkID int64, pkg, test string) string {
+	return fmt.Sprintf("check:%d:%s:%s", checkID, pkg, test)
 }
 
 func (c *githubClient) sourceChecks(ctx context.Context, source source) ([]checkRun, error) {
@@ -505,6 +603,7 @@ func (c *githubClient) dispatch(ctx context.Context, entry ledgerEntry, failure 
 		"event_type": "flake-fixer",
 		"client_payload": map[string]any{
 			"fingerprint":  entry.Fingerprint,
+			"occurrence":   failure.Occurrence,
 			"issue":        entry.Issue,
 			"source_url":   source.URL,
 			"pull_request": source.PullRequest,
@@ -513,6 +612,48 @@ func (c *githubClient) dispatch(ctx context.Context, entry ledgerEntry, failure 
 		},
 	}
 	return c.request(ctx, http.MethodPost, "/repos/"+c.repository+"/dispatches", nil, payload, nil)
+}
+
+func dispatchMarker(failure failure) string {
+	digest := sha256.Sum256([]byte(failure.Occurrence))
+	return fmt.Sprintf("<!-- goobers-flake-dispatch:%x -->", digest)
+}
+
+func (c *githubClient) wasDispatched(ctx context.Context, entry ledgerEntry, failure failure) (bool, error) {
+	if failure.Occurrence == "" {
+		return false, nil
+	}
+	comments, err := getAll[issueComment](
+		ctx,
+		c,
+		"/repos/"+c.repository+"/issues/"+strconv.Itoa(entry.Issue)+"/comments",
+		url.Values{"per_page": {"100"}},
+	)
+	if err != nil {
+		return false, err
+	}
+	marker := dispatchMarker(failure)
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *githubClient) recordDispatch(ctx context.Context, entry ledgerEntry, failure failure) error {
+	if failure.Occurrence == "" {
+		return nil
+	}
+	body := dispatchMarker(failure) + "\nFixer handoff recorded for `" + failure.Test + "`."
+	return c.request(
+		ctx,
+		http.MethodPost,
+		"/repos/"+c.repository+"/issues/"+strconv.Itoa(entry.Issue)+"/comments",
+		nil,
+		map[string]string{"body": body},
+		nil,
+	)
 }
 
 func getAll[T any](ctx context.Context, client *githubClient, endpoint string, query url.Values) ([]T, error) {
@@ -601,6 +742,26 @@ func (c *githubClient) requestPage(
 		return "", fmt.Errorf("decode %s: %w", endpoint, err)
 	}
 	return nextLink(resp.Header.Get("Link")), nil
+}
+
+func (c *githubClient) getBytes(ctx context.Context, endpoint string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("GET %s: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func nextLink(header string) string {

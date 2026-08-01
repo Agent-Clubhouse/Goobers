@@ -35,7 +35,7 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Scan structured failure annotations
+      - name: Scan failure annotations and job logs
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: go run ./test/flakewatch -branch "${{ github.event.repository.default_branch }}"
