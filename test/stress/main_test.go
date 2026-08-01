@@ -160,6 +160,37 @@ Write at 0x00c000012340 by goroutine 41:
 	}
 }
 
+func TestNormalizeRaceSignatureDistinguishesConflictingSite(t *testing.T) {
+	t.Parallel()
+	// Two races share the same first (new-access) site but conflict with a
+	// different previous-access site — they must not collapse to the same
+	// fingerprint (the original bug returned as soon as the first site's
+	// frame was found, never scanning far enough to see the second site).
+	template := `==================
+WARNING: DATA RACE
+Write at 0x00c000012340 by goroutine 41:
+  github.com/goobers/goobers/internal/runner.(*Runner).resume()
+      /tmp/work-a/internal/runner/resume.go:47 +0xabc
+
+Previous %s at 0x00c000012340 by goroutine 12:
+  github.com/goobers/goobers/internal/runner.(*Runner).%s()
+      /tmp/work-a/internal/runner/%s +0xdef
+==================`
+	first := fmt.Sprintf(template, "write", "abort", "abort.go:99")
+	second := fmt.Sprintf(template, "write", "release", "release.go:12")
+	firstSignature := normalizeFailureSignature(first)
+	secondSignature := normalizeFailureSignature(second)
+	if firstSignature == secondSignature {
+		t.Fatalf("distinct conflicting sites collapsed to one signature %q", firstSignature)
+	}
+	if !strings.Contains(firstSignature, "abort.go:99") {
+		t.Fatalf("race signature lacks conflicting site: %q", firstSignature)
+	}
+	if !strings.Contains(secondSignature, "release.go:12") {
+		t.Fatalf("race signature lacks conflicting site: %q", secondSignature)
+	}
+}
+
 func TestGoTestArgsLockStressFlags(t *testing.T) {
 	t.Parallel()
 	got := goTestArgs("./internal/localscheduler", stressCount, 42)

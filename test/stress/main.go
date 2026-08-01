@@ -582,6 +582,16 @@ func normalizeRaceSignature(lines []string) (string, bool) {
 	}
 	signature := []string{"WARNING: DATA RACE"}
 	function := ""
+	// siteLocated tracks whether the CURRENT access site (the block since the
+	// last "Read/Write/Previous read/Previous write at" header) already
+	// contributed its representative frame to the signature. A race report
+	// has two access sites — the new access and the conflicting previous one
+	// — and both must be represented, or two races that share the first site
+	// but differ at the second (conflicting) site collapse to one
+	// fingerprint. Returning as soon as the FIRST site's frame was found
+	// (the original bug) stopped scanning before the second header was ever
+	// reached.
+	siteLocated := false
 	for _, line := range lines[warning+1:] {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.Trim(trimmed, "=") == "" {
@@ -593,6 +603,13 @@ func normalizeRaceSignature(lines []string) (string, bool) {
 			strings.HasPrefix(trimmed, "Previous write at ") {
 			signature = append(signature, normalizeFailureLine(trimmed))
 			function = ""
+			siteLocated = false
+			continue
+		}
+		if siteLocated {
+			// This site's representative frame is already captured; skip the
+			// remaining stack lines (goroutine-creation frames etc.) until
+			// the next access-site header.
 			continue
 		}
 		match := sourceLocation.FindStringSubmatch(trimmed)
@@ -604,7 +621,8 @@ func normalizeRaceSignature(lines []string) (string, bool) {
 				signature = append(signature, normalizeFailureLine(function))
 			}
 			signature = append(signature, match[1]+":"+match[2])
-			return strings.Join(signature, " | "), true
+			siteLocated = true
+			continue
 		}
 		if len(signature) > 1 {
 			function = trimmed
