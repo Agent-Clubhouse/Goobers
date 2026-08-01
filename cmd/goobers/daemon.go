@@ -250,82 +250,89 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return nil, err
 		}
-		// Construct read.db alongside the existing store (design §6.6 step 1).
-		// Nothing reads it yet: the transition is deliberately additive so that
-		// rollback at this stage is deleting a file. The projector, the change
-		// feed, and the cutover flag land in later slices.
-		//
-		// A failure here does NOT fail daemon start. The read model is derived and
-		// not yet load-bearing, so refusing to start over a store nothing reads
-		// would be an outage caused by an optimization.
-		// A failure here must NOT fail daemon start. Nothing reads read.db yet
-		// (§6.6 step 1), so refusing to start over a store no request touches
-		// would be an outage caused by an optimization — and the daemon's own
-		// tests caught exactly that when an earlier version returned an error.
-		//
-		// The state read uses Background rather than the setup context for the
-		// same reason Open's migration does: it is a startup smoke check, not
-		// request-scoped work, and a caller whose context is already done must
-		// not turn "the store is fine" into "the daemon cannot start".
-		// Discard any half-built epoch left by a rebuild that was killed
-		// mid-flight (#1925, §6.5). The change-retention pin must release on
-		// EVERY terminal outcome — success, abort, discard, and an orphan found
-		// at startup. Without this last case an interrupted rebuild blocks change
-		// pruning indefinitely and the feed grows without bound for a reason
-		// nobody is looking at.
-		if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
-		} else if discarded > 0 {
-			fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
-		}
-		if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
-		} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
-			// Reading the state back turns "the file opened" into "the schema is
-			// at the version this build expects and the store has an epoch",
-			// which is the difference between finding a broken store now and
-			// finding it on the first read after the projector lands.
-			fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
-			_ = readStore.Close()
-		} else {
-			readModelEpoch = state.Epoch
-			readModel = readStore
-			// Measurement flags (#1782). The four population filters are derived
-			// from the telemetry rollup, which no journal event carries, so the
-			// read model needs a source for them or `population=` can only ever
-			// match nothing.
-			//
-			// Attached before the first projection rather than after: a run
-			// projected without a source has its flags cleared, and nothing later
-			// re-projects it. A nil rollupDB detaches, which is correct for a
-			// telemetry-disabled instance -- there, the population filters have no
-			// data to be right about.
-			if rollupDB != nil {
-				readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
-			}
-			// §6.6 step 2: build it by rebuild-from-journals on first start.
-			// Only when EMPTY — a populated store is kept and updated
-			// incrementally by the writer seam, because rebuilding on every start
-			// would make daemon startup pay ~51 s at 1x for data it already has.
-			if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
-			}
+	}
 
-			// The projector (#1923). Opening intake and starting the commit loop
-			// is what inverts the coupling: from here the writer records a
-			// watermark and forgets, and this owns discovery and application.
-			//
-			// Like the read model itself, a failure here must not fail daemon
-			// start. Without a projector the read model simply stops advancing,
-			// and the journal-derived paths still answer every request — a
-			// degraded read model is not an outage, but refusing to start would
-			// be.
-			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
-			} else {
-				watermarks = intakeStore
-				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
-			}
+	// Construct read.db alongside the existing store (design §6.6 step 1).
+	// Nothing reads it yet: the transition is deliberately additive so that
+	// rollback at this stage is deleting a file. The projector, the change
+	// feed, and the cutover flag land in later slices.
+	//
+	// A failure here does NOT fail daemon start. The read model is derived and
+	// not yet load-bearing, so refusing to start over a store nothing reads
+	// would be an outage caused by an optimization.
+	// A failure here must NOT fail daemon start. Nothing reads read.db yet
+	// (§6.6 step 1), so refusing to start over a store no request touches
+	// would be an outage caused by an optimization — and the daemon's own
+	// tests caught exactly that when an earlier version returned an error.
+	//
+	// The state read uses Background rather than the setup context for the
+	// same reason Open's migration does: it is a startup smoke check, not
+	// request-scoped work, and a caller whose context is already done must
+	// not turn "the store is fine" into "the daemon cannot start".
+	// Discard any half-built epoch left by a rebuild that was killed
+	// mid-flight (#1925, §6.5). The change-retention pin must release on
+	// EVERY terminal outcome — success, abort, discard, and an orphan found
+	// at startup. Without this last case an interrupted rebuild blocks change
+	// pruning indefinitely and the feed grows without bound for a reason
+	// nobody is looking at.
+	//
+	// Deliberately NOT gated on cfg.TelemetryEnabled() (#2036): read.db answers
+	// the portal's run listing, a core feature independent of telemetry, so
+	// telemetry.enabled: false must not silently disable it too. Only the
+	// measurement population filters below need rollupDB, and that dependency
+	// is already an explicit nil check, not this block's gate.
+	if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
+	} else if discarded > 0 {
+		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
+	}
+	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
+	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
+		// Reading the state back turns "the file opened" into "the schema is
+		// at the version this build expects and the store has an epoch",
+		// which is the difference between finding a broken store now and
+		// finding it on the first read after the projector lands.
+		fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
+		_ = readStore.Close()
+	} else {
+		readModelEpoch = state.Epoch
+		readModel = readStore
+		// Measurement flags (#1782). The four population filters are derived
+		// from the telemetry rollup, which no journal event carries, so the
+		// read model needs a source for them or `population=` can only ever
+		// match nothing.
+		//
+		// Attached before the first projection rather than after: a run
+		// projected without a source has its flags cleared, and nothing later
+		// re-projects it. A nil rollupDB detaches, which is correct for a
+		// telemetry-disabled instance -- there, the population filters have no
+		// data to be right about.
+		if rollupDB != nil {
+			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+		}
+		// §6.6 step 2: build it by rebuild-from-journals on first start.
+		// Only when EMPTY — a populated store is kept and updated
+		// incrementally by the writer seam, because rebuilding on every start
+		// would make daemon startup pay ~51 s at 1x for data it already has.
+		if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
+		}
+
+		// The projector (#1923). Opening intake and starting the commit loop
+		// is what inverts the coupling: from here the writer records a
+		// watermark and forgets, and this owns discovery and application.
+		//
+		// Like the read model itself, a failure here must not fail daemon
+		// start. Without a projector the read model simply stops advancing,
+		// and the journal-derived paths still answer every request — a
+		// degraded read model is not an outage, but refusing to start would
+		// be.
+		if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+		} else {
+			watermarks = intakeStore
+			stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
 		}
 	}
 

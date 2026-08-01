@@ -12,7 +12,15 @@ import (
 // The read-model cutover (design §6.6 step 3).
 //
 // "Cut reads over behind a config flag, defaulting on, with the old path
-// intact." Rollback is a flag flip or deleting a file; no journal is touched.
+// intact." Rollback is DisableReadModelReads below, wired to `goobers up
+// --disable-read-model-reads` (#2036) — a flag flip or deleting read.db; no
+// journal is touched.
+//
+// For why the default is ON now (it was OFF through Waves 2 and early 3,
+// until the projector and bidirectional repair sweep made completeness
+// something the store could establish rather than assume), see the
+// readModelReads field's doc comment on Local, in readservice.go — the single
+// source for that reasoning, not duplicated here.
 //
 // # What it removes
 //
@@ -22,21 +30,6 @@ import (
 // journal. That is the diagnosis's "lists open and parse a journal per returned
 // row", and it is the last uncorrected item from it. The read-model path opens
 // zero.
-//
-// # Why the default is OFF here, against the design's "defaulting on"
-//
-// The design's step 3 assumes steps 1-2 leave the store continuously current.
-// They do not yet. read.db is built on first start and updated by the writer
-// seam when a run finishes, which matches telemetry.db's freshness — but §6.1's
-// projector, driven by a durable intake watermark, is Wave 3. Until it exists,
-// runs written while the daemon was down are invisible to both stores, and the
-// read model has no repair sweep to notice.
-//
-// Defaulting on before that would trade a slow-but-complete answer for a fast
-// one that can silently omit — which is precisely the failure §14.7 exists to
-// prevent, and a worse trade than the latency it buys. The flag flips to on in
-// Wave 3, when the projector and bidirectional repair make completeness
-// something the store can establish rather than assume.
 
 // ErrReadModelUnavailable reports that the read-model path was requested but the
 // store is not attached.
@@ -220,5 +213,7 @@ func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 // This is the rollback §6.6 requires, and it is deliberately a runtime switch
 // rather than a rebuild: rolling back must be a flag flip or deleting a file,
 // never a deploy. No journal is touched at any step, so the old path is always
-// exactly as correct as it was.
+// exactly as correct as it was. Reachable via `goobers up
+// --disable-read-model-reads` (cmd/goobers/up.go, #2036) — before that the
+// only caller was this file's own doc comment.
 func (s *Local) DisableReadModelReads() { s.readModelReads = false }
