@@ -1,0 +1,510 @@
+// Command flakewatch scans structured GitHub check annotations for flake-shaped failures.
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/goobers/goobers/internal/flake"
+)
+
+const (
+	reportSchema = "goobers.dev/stress/v1"
+	flakeLabel   = "ci:flake"
+)
+
+var (
+	testNamePattern = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
+	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
+	flakeShape      = regexp.MustCompile(`(?i)(WARNING: DATA RACE|test timed out|timed out waiting|deadline exceeded|lock contention|deadlock|concurrent map|order[- ]dependent|eventually condition)`)
+	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
+	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
+	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
+)
+
+type options struct {
+	repository string
+	apiURL     string
+	branch     string
+	output     string
+	lookback   time.Duration
+}
+
+type githubClient struct {
+	base       string
+	repository string
+	branch     string
+	token      string
+	http       *http.Client
+}
+
+type pullRequest struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+	Head    struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+type workflowRun struct {
+	ID         int64     `json:"id"`
+	HeadSHA    string    `json:"head_sha"`
+	HTMLURL    string    `json:"html_url"`
+	CreatedAt  time.Time `json:"created_at"`
+	HeadBranch string    `json:"head_branch"`
+}
+
+type checkRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+	Output     struct {
+		Title   string `json:"title"`
+		Summary string `json:"summary"`
+	} `json:"output"`
+}
+
+type annotation struct {
+	Path      string `json:"path"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	RawDetail string `json:"raw_details"`
+}
+
+type ledgerIssue struct {
+	Number int    `json:"number"`
+	Body   string `json:"body"`
+}
+
+type ledgerEntry struct {
+	Issue       int
+	Fingerprint string
+	Test        string
+	Signature   string
+}
+
+type source struct {
+	SHA          string
+	URL          string
+	PullRequest  int
+	ChangedFiles map[string]bool
+}
+
+type failure struct {
+	Fingerprint          string    `json:"fingerprint"`
+	Package              string    `json:"package"`
+	Test                 string    `json:"test"`
+	FailureSignature     string    `json:"failure_signature"`
+	FailureText          string    `json:"failure_text"`
+	FailureTextTruncated bool      `json:"failure_text_truncated"`
+	LastSeenRun          string    `json:"last_seen_run"`
+	LastSeenAt           time.Time `json:"last_seen_at"`
+	Occurrences          int       `json:"occurrences"`
+	SourcePath           string    `json:"-"`
+}
+
+type failuresReport struct {
+	SchemaVersion string `json:"schema_version"`
+	Run           struct {
+		RunID      string    `json:"run_id"`
+		RunAttempt string    `json:"run_attempt"`
+		URL        string    `json:"url"`
+		SHA        string    `json:"sha"`
+		StartedAt  time.Time `json:"started_at"`
+		FinishedAt time.Time `json:"finished_at"`
+	} `json:"run"`
+	Failures []failure `json:"failures"`
+}
+
+type scanResult struct {
+	KnownDispatched int
+	Novel           []failure
+}
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv, http.DefaultClient, time.Now))
+}
+
+func run(
+	args []string,
+	stdout, stderr io.Writer,
+	getenv func(string) string,
+	httpClient *http.Client,
+	now func() time.Time,
+) int {
+	opts, err := parseOptions(args, stderr, getenv)
+	if err != nil {
+		return 2
+	}
+	token := strings.TrimSpace(getenv("GITHUB_TOKEN"))
+	if token == "" {
+		_, _ = fmt.Fprintln(stderr, "flakewatch: GITHUB_TOKEN is required")
+		return 2
+	}
+	client := &githubClient{
+		base:       strings.TrimRight(opts.apiURL, "/"),
+		repository: opts.repository,
+		branch:     opts.branch,
+		token:      token,
+		http:       httpClient,
+	}
+	started := now().UTC()
+	result, err := scan(context.Background(), client, started.Add(-opts.lookback), started)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "flakewatch: %v\n", err)
+		return 1
+	}
+	report := failuresReport{SchemaVersion: reportSchema, Failures: result.Novel}
+	report.Run.RunID = getenv("GITHUB_RUN_ID")
+	report.Run.RunAttempt = getenv("GITHUB_RUN_ATTEMPT")
+	report.Run.URL = runURL(getenv)
+	report.Run.SHA = getenv("GITHUB_SHA")
+	report.Run.StartedAt = started
+	report.Run.FinishedAt = now().UTC()
+	if err := writeReport(opts.output, report); err != nil {
+		_, _ = fmt.Fprintf(stderr, "flakewatch: write report: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "flake watch: %d known dispatched, %d novel candidate(s)\n", result.KnownDispatched, len(result.Novel))
+	return 0
+}
+
+func parseOptions(args []string, stderr io.Writer, getenv func(string) string) (options, error) {
+	flags := flag.NewFlagSet("flakewatch", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	opts := options{
+		repository: getenv("GITHUB_REPOSITORY"),
+		apiURL:     getenv("GITHUB_API_URL"),
+		branch:     getenv("GITHUB_DEFAULT_BRANCH"),
+		output:     "flake-watch-results/failures.json",
+		lookback:   24 * time.Hour,
+	}
+	flags.StringVar(&opts.repository, "repository", opts.repository, "GitHub repository (owner/name)")
+	flags.StringVar(&opts.apiURL, "api-url", opts.apiURL, "GitHub API base URL")
+	flags.StringVar(&opts.branch, "branch", opts.branch, "default branch")
+	flags.StringVar(&opts.output, "output", opts.output, "novel-candidate report path")
+	flags.DurationVar(&opts.lookback, "lookback", opts.lookback, "default-branch run lookback")
+	if err := flags.Parse(args); err != nil {
+		return options{}, err
+	}
+	if flags.NArg() != 0 || opts.lookback <= 0 || strings.TrimSpace(opts.output) == "" {
+		return options{}, errors.New("usage: go run ./test/flakewatch [-lookback 24h] [-output path]")
+	}
+	parts := strings.Split(opts.repository, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return options{}, fmt.Errorf("repository must be owner/name, got %q", opts.repository)
+	}
+	if strings.TrimSpace(opts.apiURL) == "" {
+		opts.apiURL = "https://api.github.com"
+	}
+	if strings.TrimSpace(opts.branch) == "" {
+		opts.branch = "main"
+	}
+	return opts, nil
+}
+
+func scan(ctx context.Context, client *githubClient, since, observed time.Time) (scanResult, error) {
+	ledger, err := client.ledger(ctx)
+	if err != nil {
+		return scanResult{}, fmt.Errorf("load flake ledger: %w", err)
+	}
+	sources, err := client.sources(ctx, since)
+	if err != nil {
+		return scanResult{}, fmt.Errorf("load failure sources: %w", err)
+	}
+	result := scanResult{Novel: []failure{}}
+	seen := make(map[string]bool)
+	novelIndex := make(map[string]int)
+	for _, source := range sources {
+		candidates, err := client.failures(ctx, source, observed)
+		if err != nil {
+			return result, fmt.Errorf("scan %s: %w", source.SHA, err)
+		}
+		for _, candidate := range candidates {
+			key := candidate.Fingerprint + "\x00" + source.URL
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			entry, known := knownFailure(ledger, candidate)
+			if known {
+				if err := client.dispatch(ctx, entry, candidate, source); err != nil {
+					return result, fmt.Errorf("dispatch known flake %s: %w", candidate.Fingerprint, err)
+				}
+				result.KnownDispatched++
+				continue
+			}
+			if source.PullRequest != 0 && correlatedWithPR(source.ChangedFiles, candidate) {
+				continue
+			}
+			if flakeShape.MatchString(candidate.FailureText) {
+				if index, found := novelIndex[candidate.Fingerprint]; found {
+					result.Novel[index].Occurrences++
+					result.Novel[index].LastSeenRun = candidate.LastSeenRun
+					result.Novel[index].LastSeenAt = candidate.LastSeenAt
+				} else {
+					novelIndex[candidate.Fingerprint] = len(result.Novel)
+					result.Novel = append(result.Novel, candidate)
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
+	var issues []ledgerIssue
+	if err := c.get(ctx, "/repos/"+c.repository+"/issues", url.Values{
+		"state": {"all"}, "labels": {flakeLabel}, "per_page": {"100"},
+	}, &issues); err != nil {
+		return nil, err
+	}
+	entries := make([]ledgerEntry, 0, len(issues))
+	for _, issue := range issues {
+		fingerprint := fingerprintMark.FindStringSubmatch(issue.Body)
+		if len(fingerprint) != 2 {
+			continue
+		}
+		entry := ledgerEntry{Issue: issue.Number, Fingerprint: fingerprint[1]}
+		if match := ledgerTest.FindStringSubmatch(issue.Body); len(match) == 2 {
+			entry.Test = match[1]
+		}
+		if match := ledgerSignature.FindStringSubmatch(issue.Body); len(match) == 2 {
+			entry.Signature = match[1]
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (c *githubClient) sources(ctx context.Context, since time.Time) ([]source, error) {
+	var pulls []pullRequest
+	if err := c.get(ctx, "/repos/"+c.repository+"/pulls", url.Values{
+		"state": {"open"}, "base": {c.branch}, "per_page": {"100"},
+	}, &pulls); err != nil {
+		return nil, err
+	}
+	sources := make([]source, 0, len(pulls)+20)
+	seenSHA := make(map[string]bool)
+	for _, pull := range pulls {
+		files, err := c.pullFiles(ctx, pull.Number)
+		if err != nil {
+			return nil, fmt.Errorf("list PR #%d files: %w", pull.Number, err)
+		}
+		sources = append(sources, source{
+			SHA: pull.Head.SHA, URL: pull.HTMLURL, PullRequest: pull.Number, ChangedFiles: files,
+		})
+		seenSHA[pull.Head.SHA] = true
+	}
+	var runs struct {
+		WorkflowRuns []workflowRun `json:"workflow_runs"`
+	}
+	if err := c.get(ctx, "/repos/"+c.repository+"/actions/runs", url.Values{
+		"status": {"failure"}, "branch": {c.branch}, "per_page": {"20"},
+	}, &runs); err != nil {
+		return nil, err
+	}
+	for _, run := range runs.WorkflowRuns {
+		if run.CreatedAt.Before(since) || seenSHA[run.HeadSHA] {
+			continue
+		}
+		sources = append(sources, source{SHA: run.HeadSHA, URL: run.HTMLURL})
+		seenSHA[run.HeadSHA] = true
+	}
+	return sources, nil
+}
+
+func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bool, error) {
+	var files []struct {
+		Filename string `json:"filename"`
+	}
+	if err := c.get(ctx, "/repos/"+c.repository+"/pulls/"+strconv.Itoa(number)+"/files", url.Values{
+		"per_page": {"100"},
+	}, &files); err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(files))
+	for _, file := range files {
+		result[file.Filename] = true
+	}
+	return result, nil
+}
+
+func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) ([]failure, error) {
+	var response struct {
+		CheckRuns []checkRun `json:"check_runs"`
+	}
+	if err := c.get(ctx, "/repos/"+c.repository+"/commits/"+source.SHA+"/check-runs", url.Values{
+		"filter": {"latest"}, "per_page": {"100"},
+	}, &response); err != nil {
+		return nil, err
+	}
+	var failures []failure
+	for _, check := range response.CheckRuns {
+		if check.Conclusion == "success" || check.Conclusion == "neutral" || check.Conclusion == "skipped" {
+			continue
+		}
+		var annotations []annotation
+		if err := c.get(ctx, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
+			"per_page": {"100"},
+		}, &annotations); err != nil {
+			return nil, err
+		}
+		for _, annotation := range annotations {
+			text := strings.TrimSpace(strings.Join([]string{
+				annotation.Title, annotation.Message, annotation.RawDetail, check.Output.Title, check.Output.Summary,
+			}, "\n"))
+			testMatch := testNamePattern.FindStringSubmatch(text)
+			if len(testMatch) != 2 {
+				continue
+			}
+			pkg := annotationPackage(annotation.Path, text)
+			signature := flake.NormalizeSignature(text)
+			failures = append(failures, failure{
+				Fingerprint:      flake.Fingerprint(pkg, testMatch[1], signature),
+				Package:          pkg,
+				Test:             testMatch[1],
+				FailureSignature: signature,
+				FailureText:      text,
+				LastSeenRun:      source.URL,
+				LastSeenAt:       observed,
+				Occurrences:      1,
+				SourcePath:       annotation.Path,
+			})
+		}
+	}
+	return failures, nil
+}
+
+func annotationPackage(annotationPath, text string) string {
+	if match := packagePattern.FindStringSubmatch(text); len(match) == 2 {
+		pkg := strings.TrimSuffix(match[1], ":")
+		if suffix := strings.TrimPrefix(pkg, "github.com/goobers/goobers"); suffix != pkg {
+			return "." + suffix
+		}
+		return pkg
+	}
+	dir := path.Dir(strings.TrimPrefix(annotationPath, "./"))
+	if dir == "." || dir == "" {
+		return "."
+	}
+	return "./" + dir
+}
+
+func knownFailure(entries []ledgerEntry, failure failure) (ledgerEntry, bool) {
+	for _, entry := range entries {
+		if entry.Fingerprint == failure.Fingerprint ||
+			(entry.Test == failure.Test && entry.Signature == failure.FailureSignature) {
+			return entry, true
+		}
+	}
+	return ledgerEntry{}, false
+}
+
+func correlatedWithPR(changedFiles map[string]bool, failure failure) bool {
+	if changedFiles[failure.SourcePath] {
+		return true
+	}
+	packageDir := strings.Trim(strings.TrimPrefix(failure.Package, "./"), "/")
+	if packageDir == "" || packageDir == "." {
+		return false
+	}
+	for filename := range changedFiles {
+		if strings.HasPrefix(filename, packageDir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *githubClient) dispatch(ctx context.Context, entry ledgerEntry, failure failure, source source) error {
+	payload := map[string]any{
+		"event_type": "flake-fixer",
+		"client_payload": map[string]any{
+			"fingerprint":  entry.Fingerprint,
+			"issue":        entry.Issue,
+			"source_url":   source.URL,
+			"pull_request": source.PullRequest,
+			"package":      failure.Package,
+			"test":         failure.Test,
+		},
+	}
+	return c.request(ctx, http.MethodPost, "/repos/"+c.repository+"/dispatches", nil, payload, nil)
+}
+
+func (c *githubClient) get(ctx context.Context, endpoint string, query url.Values, output any) error {
+	return c.request(ctx, http.MethodGet, endpoint, query, nil, output)
+}
+
+func (c *githubClient) request(ctx context.Context, method, endpoint string, query url.Values, input, output any) error {
+	target := c.base + endpoint
+	if len(query) != 0 {
+		target += "?" + query.Encode()
+	}
+	var body io.Reader
+	if input != nil {
+		data, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
+	}
+	if output == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(output); err != nil {
+		return fmt.Errorf("decode %s: %w", endpoint, err)
+	}
+	return nil
+}
+
+func writeReport(filename string, report failuresReport) error {
+	if err := os.MkdirAll(path.Dir(filename), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filename, append(data, '\n'), 0o644)
+}
+
+func runURL(getenv func(string) string) string {
+	server := strings.TrimRight(getenv("GITHUB_SERVER_URL"), "/")
+	repository := getenv("GITHUB_REPOSITORY")
+	runID := getenv("GITHUB_RUN_ID")
+	if server == "" || repository == "" || runID == "" {
+		return ""
+	}
+	return server + "/" + repository + "/actions/runs/" + runID
+}
