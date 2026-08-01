@@ -223,8 +223,11 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	// The required aggregate must fail if any merge-gate slice fails. `make ci`
 	// is fanned across parallel jobs (checks/lint/unit/shipped) plus the macOS
 	// behavioral unit run and dead-code analysis; those, the Windows gate, the
-	// vulnerability scan, and journal conformance must all be depended on. (The
-	// aggregate keeps its ruleset-pinned name; only its fan-in changed.)
+	// vulnerability scan, journal conformance, and (#2019) the
+	// integration/sandbox/linux-validation jobs must all be depended on — all
+	// three ran on every PR already at full runner cost but enforced nothing
+	// until #2019 added them here. (The aggregate keeps its ruleset-pinned
+	// name; only its fan-in changed.)
 	var needsLine string
 	for _, line := range strings.Split(workflow, "\n") {
 		if strings.Contains(line, "needs:") && strings.Contains(line, "conformance") {
@@ -238,6 +241,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	for _, gate := range []string{
 		"checks", "lint", "darwin-build", "unit", "unit-macos", "shipped",
 		"deadcode", "windows-smoke", "vulnerability-scan", "conformance",
+		"integration", "sandbox", "linux-validation",
 	} {
 		if !strings.Contains(needsLine, gate) {
 			t.Errorf("required CI aggregate must depend on %q so it fails when that gate fails", gate)
