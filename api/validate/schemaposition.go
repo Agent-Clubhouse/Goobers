@@ -3,6 +3,7 @@ package validate
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -129,6 +130,18 @@ func jsonPointerSegments(pointer string) []string {
 	}
 	parts := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
 	for i, p := range parts {
+		// Reverse of jsonschema/v5's own schema.go escape(): it RFC-6901
+		// escapes ("~"->"~0", "/"->"~1") and THEN url.PathEscapes the result,
+		// so any key containing a space, "%", "?", "#", etc. arrives here
+		// percent-encoded on top of the "~1"/"~0" escaping — undo PathEscape
+		// FIRST, then unwind the RFC 6901 escaping, mirroring the encode
+		// order in reverse (#2025, QA-2 finding 2). A malformed percent
+		// sequence falls back to the raw segment rather than losing the
+		// whole lookup — the escape() source never produces one, so this
+		// only guards a lookup fed some other pointer string.
+		if unescaped, err := url.PathUnescape(p); err == nil {
+			p = unescaped
+		}
 		p = strings.ReplaceAll(p, "~1", "/")
 		p = strings.ReplaceAll(p, "~0", "~")
 		parts[i] = p

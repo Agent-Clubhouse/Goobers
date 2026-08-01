@@ -531,7 +531,7 @@ type loadedDoc struct {
 func (v *Validator) ValidateDir(root string) (*Report, error) {
 	r := &Report{}
 	var docs []loadedDoc
-	hadParseFailure := false
+	parseFailureCount := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -570,7 +570,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			}
 			jb, err := yaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
-				hadParseFailure = true
+				parseFailureCount++
 				r.addLocated(errorInvalidYAML, Error, rel,
 					yamlErrorLine(err.Error(), document.lineOffset), 1,
 					"", "", invalidYAMLMessagePrefix+"%s", err)
@@ -594,7 +594,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	}
 
 	idx := newIndex()
-	idx.hadParseFailure = hadParseFailure
+	idx.parseFailureCount = parseFailureCount
 	for _, doc := range docs {
 		r.Objects++
 		if doc.kind == "Manifest" {
@@ -686,23 +686,57 @@ type index struct {
 	// a manifest that merely failed its schema.
 	manifestDocsSeen int
 
-	// hadParseFailure records that some document in this run failed to parse
-	// as YAML at all (errorInvalidYAML). When true, a cross-reference "no
-	// X/Y definition was found" error may just be that document's own missing
-	// definition rather than a second, independent problem — referenceNotFound
-	// subordinates the message accordingly instead of reporting two
-	// confusingly-unrelated-looking failures (#2025).
-	hadParseFailure bool
+	// parseFailureCount counts documents in this run that failed to parse as
+	// YAML at all (errorInvalidYAML). A cross-reference "no X/Y definition was
+	// found" error may just be that document's own missing definition rather
+	// than a second, independent problem — but only when there is exactly one
+	// parse failure and exactly one reference gap in the whole run: with
+	// multiple of either, correlating a specific gap to a specific failure
+	// isn't something we can actually know (we never learn the failed
+	// document's own kind/name), and guessing would mislabel a genuinely
+	// independent, unrelated bug as a probable side effect of the parse
+	// failure. referenceNotFound buffers into pendingReferenceIssues so this
+	// can be decided once, after every reference check in the run has run —
+	// not fired incrementally as each one is discovered (#2025, QA-2 finding
+	// 1).
+	parseFailureCount      int
+	pendingReferenceIssues []pendingReferenceIssue
 }
 
-// referenceNotFound reports a cross-reference error for a name this config
-// doesn't define anywhere. See hadParseFailure.
+// pendingReferenceIssue is a "no X/Y definition was found"-style
+// cross-reference error, held until crossCheck finishes so its subordination
+// note (see parseFailureCount) can be applied — or not — based on the full
+// run's outcome, not just what's known when the gap is first discovered.
+type pendingReferenceIssue struct {
+	code             WarningCode
+	file, kind, name string
+	message          string
+}
+
+// referenceNotFound records a cross-reference error for a name this config
+// doesn't define anywhere. See parseFailureCount and flushReferenceIssues.
 func (ix *index) referenceNotFound(r *Report, code WarningCode, file, kind, name, format string, args ...interface{}) {
-	message := fmt.Sprintf(format, args...)
-	if ix.hadParseFailure {
-		message += " (a document elsewhere failed to parse as YAML — see the invalid-YAML error above; this may be its own missing definition rather than a separate problem)"
+	ix.pendingReferenceIssues = append(ix.pendingReferenceIssues, pendingReferenceIssue{
+		code: code, file: file, kind: kind, name: name,
+		message: fmt.Sprintf(format, args...),
+	})
+}
+
+// flushReferenceIssues adds every buffered referenceNotFound call to r,
+// appending the parse-failure subordination note only when the run had
+// exactly one parse failure and exactly one reference gap — the one
+// situation where attributing the gap to the failure is actually
+// well-founded, not a guess (#2025, QA-2 finding 1). Must run once, after
+// every check in crossCheck that can call referenceNotFound has run.
+func (ix *index) flushReferenceIssues(r *Report) {
+	subordinate := ix.parseFailureCount == 1 && len(ix.pendingReferenceIssues) == 1
+	for _, issue := range ix.pendingReferenceIssues {
+		message := issue.message
+		if subordinate {
+			message += " (a document elsewhere failed to parse as YAML — see the invalid-YAML error above; this may be its own missing definition rather than a separate problem)"
+		}
+		r.add(issue.code, Error, issue.file, issue.kind, issue.name, "%s", message)
 	}
-	r.add(code, Error, file, kind, name, "%s", message)
 }
 
 func newIndex() *index {
@@ -879,6 +913,11 @@ func (ix *index) crossCheck(r *Report) {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
 	}
+
+	// Every referenceNotFound call in this pass (including from checkWorkflow
+	// above) was buffered, not yet added to r — flush now that the run's full
+	// outcome (how many parse failures, how many reference gaps) is known.
+	ix.flushReferenceIssues(r)
 }
 
 // dslSupportMatrix resolves the current binary's DSL version support matrix.
