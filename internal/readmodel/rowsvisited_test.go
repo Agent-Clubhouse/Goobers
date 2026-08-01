@@ -321,8 +321,11 @@ func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
 	registerRowProbe(t)
 
 	store := openTestStore(t)
-	const rows = 100_000
-	seedProbeCorpusBulk(t, store, rows)
+	const (
+		rows         = 100_000
+		stagesPerRun = 10 // 1,000,000 run_stage rows — §14.2's "1M+ attempts"
+	)
+	seedProbeCorpusBulk(t, store, rows, stagesPerRun)
 
 	const limit = 50
 	worst := int64(0)
@@ -362,8 +365,16 @@ func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
 				Key(combination.Dims), visited, rows, limit)
 		}
 	}
-	t.Logf("100k rows, %d combinations: worst case %d rows visited at limit %d (in {%s})",
-		len(SupportedCombinations()), worst, limit, worstAt)
+	var stageRows int
+	if err := store.readDB().QueryRow(`SELECT COUNT(*) FROM run_stage`).Scan(&stageRows); err != nil {
+		t.Fatalf("count run_stage: %v", err)
+	}
+	if stageRows < 1_000_000 {
+		t.Errorf("run_stage has %d rows; §14.2 states the bound at 1M+ attempts and this "+
+			"fixture does not reach it", stageRows)
+	}
+	t.Logf("%d runs / %d attempts, %d combinations: worst case %d rows visited at limit %d (in {%s})",
+		rows, stageRows, len(SupportedCombinations()), worst, limit, worstAt)
 }
 
 // seedProbeCorpusBulk writes n projected runs in batched transactions.
@@ -373,7 +384,7 @@ func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
 // it writes are the same shape — this is a fixture builder, not a second
 // implementation of projection, and the per-combination queries it feeds only
 // read columns that are set here.
-func seedProbeCorpusBulk(t *testing.T, store *Store, n int) {
+func seedProbeCorpusBulk(t *testing.T, store *Store, n, stagesPerRun int) {
 	t.Helper()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	const batch = 5_000
@@ -394,7 +405,7 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n int) {
 		stageStmt, err := tx.Prepare(`INSERT INTO run_stage (
 			run_id, stage, attempts, last_status, gaggle, run_started_at,
 			token_measured, premium_measured, cost_measured, retry_waste
-		) VALUES (?, 'build', 1, 'success', ?, ?, 1, 1, 1, 1)`)
+		) VALUES (?, ?, ?, 'success', ?, ?, 1, 1, 1, 1)`)
 		if err != nil {
 			t.Fatalf("prepare stage: %v", err)
 		}
@@ -409,8 +420,23 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n int) {
 			if _, err := runStmt.Exec(id, "gaggle-000", "workflow-000", at, at, i+1); err != nil {
 				t.Fatalf("insert run %d: %v", i, err)
 			}
-			if _, err := stageStmt.Exec(id, "gaggle-000", at); err != nil {
-				t.Fatalf("insert stage %d: %v", i, err)
+			// stagesPerRun rows per run, so run_stage reaches 1M+ at 100k runs.
+			//
+			// This is the half of §14.2's "100k runs / 1M+ attempts" that a single
+			// stage per run does not test. Stage-scoped queries drive FROM
+			// run_stage, so its row count is what bounds them — and with one stage
+			// per run the index a `stage=build` query seeks contains only matching
+			// rows, which is the easy case. With ten stages it contains ten times
+			// the data and one tenth of it matches, which is the shape a real
+			// instance has.
+			for stage := 0; stage < stagesPerRun; stage++ {
+				name := "build"
+				if stage > 0 {
+					name = fmt.Sprintf("stage-%02d", stage)
+				}
+				if _, err := stageStmt.Exec(id, name, stage+1, "gaggle-000", at); err != nil {
+					t.Fatalf("insert stage %d/%d: %v", i, stage, err)
+				}
 			}
 		}
 		if err := tx.Commit(); err != nil {
