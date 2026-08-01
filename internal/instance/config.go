@@ -1066,6 +1066,9 @@ func (c *Config) Validate() error {
 	if _, err := c.Retention.RetainedWorktreeMaxAgeDuration(); err != nil {
 		return err
 	}
+	if c.Retention.Enabled && c.Retention.MaxRetainedWorktreeBytes == 0 && c.Retention.RetainedWorktreeMaxAge == "" {
+		return fmt.Errorf("retention.enabled requires at least one of retention.maxRetainedWorktreeBytes or retention.retainedWorktreeMaxAge to be set (enabling retention with no limits prunes nothing)")
+	}
 	for i, r := range c.Repos {
 		if r.Provider != "github" && r.Provider != "ado" && r.Provider != "gitea" {
 			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\", \"gitea\")", i, r.Provider)
