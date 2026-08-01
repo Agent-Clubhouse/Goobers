@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -16,6 +17,16 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+// journalGraceAge bounds how long a retained worktree whose owning run
+// journal has vanished entirely (e.g. telemetry retention deleted it first)
+// is tolerated before it becomes prunable under RetentionRuleJournalGrace
+// (#2052). Unlike MaxRetainedWorktreeBytes/RetainedWorktreeMaxAge, this is
+// not operator-configurable: a journal-less retained worktree is always a
+// bug (nothing can ever authorize it via IsTerminalFailure again), so
+// there's no legitimate reason for an operator to want it kept forever. Var,
+// not const, so tests can shrink it rather than waiting out a real 24 hours.
+var journalGraceAge = 24 * time.Hour
 
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
 	cfg := setup.Config.Retention
@@ -51,6 +62,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 			_, protected := protectedBranches[root][branch]
 			return protected, nil
 		},
+		JournalMissing: func(root, worktreeID, ownerRunID string) (bool, error) {
+			return retainedWorktreeJournalMissing(runsByRoot[root], worktreeID, ownerRunID)
+		},
+		JournalGraceAge: journalGraceAge,
 	})
 	if err != nil {
 		return err
@@ -193,15 +208,60 @@ func addRetentionManager(managers *[]*worktree.Manager, runsByRoot map[string]st
 }
 
 func retainedWorktreePhase(runsDir, worktreeID, ownerRunID string) (journal.RunPhase, bool, error) {
+	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+	if err != nil {
+		return "", false, err
+	}
+	if owner == "" {
+		return "", false, nil
+	}
+	return readRunPhase(runsDir, owner)
+}
+
+// retainedWorktreeJournalMissing reports whether the retained worktree's
+// owning run journal directory does not exist under runsDir at all — #2052's
+// grace-window trigger. This is deliberately narrower than "found=false" from
+// retainedWorktreePhase, which also covers a journal that exists but is
+// unreadable or errors reading its phase; only a confirmed-absent directory
+// (e.g. already removed by telemetry retention) counts as "missing" here, so
+// a merely-corrupt-but-present journal is never treated as gone.
+func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (bool, error) {
+	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+	if err != nil {
+		return false, err
+	}
+	if owner == "" {
+		// No owning run directory resolves at all — via a stamped ownerRunID
+		// that doesn't exist, or (for legacy markers with no ownerRunID) no
+		// runsDir entry whose name prefixes worktreeID. Either way, there is
+		// no journal left to ever authorize this worktree, which is exactly
+		// what the grace window exists to eventually resolve.
+		return true, nil
+	}
+	if _, err := os.Stat(filepath.Join(runsDir, owner)); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+// resolveRetainedWorktreeOwner identifies the run ID that owns a retained
+// worktree marker: the stamped OwnerRunID when present, or (for legacy
+// markers predating that field) the longest runsDir entry whose name
+// prefixes the worktree ID. Returns "" — not an error — when no owner can be
+// resolved by either means.
+func resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID string) (string, error) {
 	if ownerRunID != "" {
-		return readRunPhase(runsDir, ownerRunID)
+		return ownerRunID, nil
 	}
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return "", nil
 		}
-		return "", false, fmt.Errorf("read runs directory: %w", err)
+		return "", fmt.Errorf("read runs directory: %w", err)
 	}
 	var owner string
 	for _, entry := range entries {
@@ -216,10 +276,7 @@ func retainedWorktreePhase(runsDir, worktreeID, ownerRunID string) (journal.RunP
 			owner = runID
 		}
 	}
-	if owner == "" {
-		return "", false, nil
-	}
-	return readRunPhase(runsDir, owner)
+	return owner, nil
 }
 
 func readRunPhase(runsDir, runID string) (journal.RunPhase, bool, error) {
