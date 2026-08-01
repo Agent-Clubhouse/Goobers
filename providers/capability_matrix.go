@@ -37,23 +37,6 @@ func BlessedTierProviderKinds() []ProviderKind {
 	return []ProviderKind{ProviderGitHub, ProviderADO}
 }
 
-// declarationsFor returns kind's live Capabilities() declaration. Every
-// provider's Capabilities() is a pure computation over static data (no
-// network/credentials touched), so a zero-value struct is safe here —
-// exactly what the conformance tests already do.
-func declarationsFor(kind ProviderKind) (CapabilitySet, bool) {
-	switch kind {
-	case ProviderGitHub:
-		return (&GitHubProvider{}).Capabilities(), true
-	case ProviderADO:
-		return (&ADOProvider{}).Capabilities(), true
-	case ProviderGitea:
-		return (&GiteaProvider{}).Capabilities(), true
-	default:
-		return nil, false
-	}
-}
-
 // WorkflowRequiredCapabilities is the interim stand-in for CONF-6's
 // (#2079) requires.capabilities registry, which does not exist yet: the
 // capability subset the epic's V1 acceptance gate (design doc §8) actually
@@ -154,7 +137,7 @@ func BuildMatrix() []MatrixCell {
 	var cells []MatrixCell
 	for _, cap := range AllCapabilities() {
 		for _, kind := range AllProviderKinds() {
-			declared, _ := declarationsFor(kind)
+			declared, _ := CapabilitiesFor(kind)
 			cells = append(cells, classify(kind, cap, declared.Has(cap)))
 		}
 	}
@@ -171,7 +154,7 @@ func ValidateBlessedTier() []error {
 	var errs []error
 	required := WorkflowRequiredCapabilities()
 	for _, kind := range BlessedTierProviderKinds() {
-		declared, _ := declarationsFor(kind)
+		declared, _ := CapabilitiesFor(kind)
 		for cap := range required {
 			cell := classify(kind, cap, declared.Has(cap))
 			if cell.Status == StatusNotDeclared {
