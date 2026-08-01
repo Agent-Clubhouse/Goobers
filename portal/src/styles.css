@@ -3915,7 +3915,44 @@ a.telemetry-error-row:hover {
 }
 
 .ledger-item .run-ledger-button {
-  grid-template-columns: 62px minmax(120px, 0.7fr) 58px 82px minmax(220px, 2fr);
+  grid-template-columns: 62px minmax(96px, 0.55fr) minmax(110px, 0.65fr) 58px 82px minmax(200px, 2fr);
+}
+
+/* The stage a row belongs to, as its own column so the ledger can be scanned
+   vertically for "the second implement attempt" instead of read row by row. */
+.ledger-stage {
+  color: var(--ink);
+  font-size: 8px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-stage-filter {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 8px;
+  gap: 5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.journal-stage-filter select {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: normal;
+  padding: 2px 4px;
+  text-transform: none;
+}
+
+.journal-stage-filter select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .ledger-item .run-ledger-button:focus-visible {
@@ -4917,4 +4954,134 @@ a.telemetry-error-row:hover {
     animation: none;
     border-color: var(--accent);
   }
+}
+
+/* Captured agent transcripts. The transcript is the only record of why an
+   agentic stage acted as it did, so it is rendered as a conversation rather
+   than dumped as JSONL; raw bytes stay one click away. */
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transcript-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.transcript-search input {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  padding: 3px 6px;
+}
+
+.transcript-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.transcript-count,
+.transcript-usage,
+.transcript-malformed,
+.transcript-empty {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.transcript-malformed {
+  color: var(--warning);
+}
+
+.transcript-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.transcript-turn {
+  border-left: 2px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.transcript-turn-assistant {
+  border-left-color: var(--accent);
+}
+
+.transcript-turn-tool,
+.transcript-turn-unknown {
+  border-left-color: var(--warning);
+}
+
+.transcript-turn-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.transcript-role {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.transcript-tool-name {
+  color: var(--ink);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.transcript-tool-failed {
+  color: var(--warning);
+  font-size: 7px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Content is rendered as text, not escaped JSON, and wraps rather than forcing
+   the page to scroll horizontally. */
+.transcript-content {
+  color: var(--ink);
+  font-size: 9px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.transcript-code {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.transcript-result-toggle {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 8px;
+  padding: 2px 6px;
+}
+
+.transcript-result-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }

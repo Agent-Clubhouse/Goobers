@@ -276,6 +276,41 @@ func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
 	}
 }
 
+// The configured baseline only moves the floor: a stage that declares its own
+// deadline still wins, and an instance that configures nothing keeps the
+// built-in DefaultTimeout (#1969).
+func TestShellExecutor_ConfiguredDefaultTimeoutIsOnlyAFloor(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+
+	unconfigured := baseEnvelope(t)
+	got, err := exec.timeoutFor(unconfigured)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != DefaultTimeout {
+		t.Fatalf("timeout = %s, want the built-in %s when nothing is configured", got, DefaultTimeout)
+	}
+
+	exec.DefaultTimeout = 25 * time.Minute
+	got, err = exec.timeoutFor(unconfigured)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 25*time.Minute {
+		t.Fatalf("timeout = %s, want the configured baseline 25m", got)
+	}
+
+	declared := baseEnvelope(t)
+	declared.Limits.MaxDurationSeconds = 90
+	got, err = exec.timeoutFor(declared)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 90*time.Second {
+		t.Fatalf("timeout = %s, want the stage's own 90s to win over the configured baseline", got)
+	}
+}
+
 func TestShellExecutor_ExposesWritableTelemetryDir(t *testing.T) {
 	exec, _ := newTestExecutor(t, nil)
 	env := baseEnvelope(t)

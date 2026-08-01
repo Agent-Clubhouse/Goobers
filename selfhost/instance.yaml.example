@@ -79,9 +79,16 @@ runConditions:
 # Go/.NET/Python/Node/Rust families) does not. It stays default-deny: an
 # explicit opt-in list of NAMES, never a value and never os.Environ()
 # passthrough; a name whose var is unset is a harmless no-op.
+# `defaultStageTimeout` is the baseline deadline for a deterministic stage that
+# declares no `timeoutSeconds` of its own. Unset keeps the built-in 10 minutes,
+# which is sized for short commands — raise it if your build/test entrypoint
+# routinely runs longer, rather than stamping `timeoutSeconds` onto every stage
+# in every workflow. A stage's own `timeoutSeconds` always wins; this only moves
+# the floor.
 # runner:
 #   capabilities: [dotnet@8]
 #   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
+#   defaultStageTimeout: 25m
 # Optional external secret stores (#683). A store declares WHERE a secret
 # lives, never a value; any token ref can then opt in with
 # `store: <storeName>/<secretName>` in place of `env`/`file` (still exactly

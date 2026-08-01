@@ -39,14 +39,39 @@ const (
 	maxCICheckSummaryBytes       = 1 << 10
 	maxCIChecksArtifactBytes     = 64 << 10
 	maxCIChecks                  = 20
+	// Per-check annotation bounds. A failing matrix job can emit hundreds of
+	// annotations; the first few carry the diagnosis and the rest are noise
+	// that would crowd out the other failing checks under the artifact budget.
+	maxCICheckAnnotations       = 10
+	maxCIAnnotationMessageBytes = 1 << 10
 )
 
 // CIChecksArtifact is the durable, bounded per-check evidence emitted when CI
 // fails. Checks prioritize failures, retain provider order within each
 // priority, and exclude passing checks.
 type CIChecksArtifact struct {
-	Checks   []providers.CheckDetail  `json:"checks"`
+	Checks   []CICheck                `json:"checks"`
 	Metadata CIChecksArtifactMetadata `json:"metadata"`
+}
+
+// CICheck is one failing check as recorded in the evidence artifact: the
+// provider's own check detail plus its annotations.
+//
+// Annotations are the file/line/message diagnostics the provider already
+// attaches to a failing check run, and for most CI systems they are the ONLY
+// machine-readable statement of what went wrong — GitHub Actions leaves
+// output.summary empty unless a job writes one, which the common `go test`
+// job does not. Without them the evidence handed to a repass is a check name
+// and a URL the stage cannot fetch, so the agent has nothing to act on and
+// repeats its diff (#1972). The provider already retrieves them
+// (providers.CIFailures); only the wire type dropped them.
+//
+// Embedded rather than added to providers.CheckDetail so the existing JSON
+// keys are unchanged and providers.CIFailureDetail — which declares its own
+// Annotations — keeps one unambiguous field.
+type CICheck struct {
+	providers.CheckDetail
+	Annotations []providers.CheckAnnotation `json:"annotations,omitempty"`
 }
 
 // CIChecksArtifactMetadata records every lossy bound applied while curating a
@@ -55,6 +80,7 @@ type CIChecksArtifactMetadata struct {
 	Truncated          bool `json:"truncated"`
 	SummariesTruncated int  `json:"summariesTruncated,omitempty"`
 	SummariesDropped   int  `json:"summariesDropped,omitempty"`
+	AnnotationsDropped int  `json:"annotationsDropped,omitempty"`
 	ChecksDropped      int  `json:"checksDropped,omitempty"`
 }
 
@@ -349,7 +375,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		case providers.CheckStatePassing:
 			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
 		case providers.CheckStateFailing:
-			return e.ciPollFailureOutcome(result)
+			return e.ciPollFailureOutcome(ctx, cfg, result)
 		}
 		if now().After(deadline) {
 			return ciPollTimeoutOutcome(timeout), nil
@@ -363,14 +389,14 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	}
 }
 
-func (e *CIPollExecutor) ciPollFailureOutcome(result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
+func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
 	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing")
 	names := failingCheckNames(result.Checks)
 	if len(names) == 0 {
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifact(result.Checks)
+	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckAnnotations(ctx, cfg, result))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
@@ -385,6 +411,62 @@ func (e *CIPollExecutor) ciPollFailureOutcome(result providers.PullRequestPollRe
 	outcome.Outputs[OutputCIFailedChecks] = boundFailedCheckNames(names)
 	outcome.Artifacts = []apiv1.ArtifactPointer{artifactPointer(ref, "application/json")}
 	return outcome, nil
+}
+
+// CIFailureLister is the optional provider capability that returns failing
+// checks with their annotations. Optional rather than part of PRPoller because
+// not every provider exposes annotations, and a provider that does not must
+// keep working exactly as before — the artifact simply carries no annotations.
+type CIFailureLister interface {
+	CIFailures(ctx context.Context, repo providers.RepositoryRef, ref string) ([]providers.CIFailureDetail, error)
+}
+
+// failingCheckAnnotations resolves annotations for the failing checks, keyed by
+// check name. Called once, on the terminal failing outcome — never on the
+// polling path, so a run that never fails costs no extra provider calls.
+//
+// Best-effort by design: annotations enrich the evidence, they are not the
+// outcome. A provider that cannot supply them, or an error fetching them, must
+// not turn a determined CI verdict into a stage failure.
+func (e *CIPollExecutor) failingCheckAnnotations(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) map[string][]providers.CheckAnnotation {
+	lister, ok := e.Poller.(CIFailureLister)
+	if !ok || result.HeadSHA == "" {
+		return nil
+	}
+	failures, err := lister.CIFailures(ctx, providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}, result.HeadSHA)
+	if err != nil {
+		return nil
+	}
+	annotations := make(map[string][]providers.CheckAnnotation, len(failures))
+	for _, failure := range failures {
+		if len(failure.Annotations) > 0 {
+			annotations[failure.Name] = failure.Annotations
+		}
+	}
+	return annotations
+}
+
+// boundCheckAnnotations caps how much of one check's annotation set reaches the
+// artifact, so a matrix job emitting hundreds cannot crowd out sibling checks.
+func boundCheckAnnotations(annotations []providers.CheckAnnotation) []providers.CheckAnnotation {
+	if len(annotations) == 0 {
+		return nil
+	}
+	bounded := make([]providers.CheckAnnotation, 0, min(len(annotations), maxCICheckAnnotations))
+	for _, annotation := range annotations {
+		if len(bounded) == maxCICheckAnnotations {
+			break
+		}
+		annotation.Path = strings.ToValidUTF8(annotation.Path, "�")
+		annotation.Title = strings.ToValidUTF8(annotation.Title, "�")
+		annotation.Level = strings.ToValidUTF8(annotation.Level, "�")
+		annotation.Message = strings.ToValidUTF8(annotation.Message, "�")
+		if truncated, did := truncateUTF8Bytes(annotation.Message, maxCIAnnotationMessageBytes); did {
+			annotation.Message = truncated
+		}
+		bounded = append(bounded, annotation)
+	}
+	return bounded
 }
 
 func failingCheckNames(checks []providers.CheckDetail) []string {
@@ -423,9 +505,9 @@ func boundFailedCheckNames(names []string) string {
 	return string(first) + marker
 }
 
-func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
+func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation) ([]byte, error) {
 	artifact := CIChecksArtifact{
-		Checks: make([]providers.CheckDetail, 0, min(len(checks), maxCIChecks)),
+		Checks: make([]CICheck, 0, min(len(checks), maxCIChecks)),
 	}
 	nonPassing := 0
 	for _, check := range checks {
@@ -444,7 +526,9 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
 			check.Summary = bounded
 			artifact.Metadata.SummariesTruncated++
 		}
-		artifact.Checks = append(artifact.Checks, check)
+		entry := CICheck{CheckDetail: check}
+		entry.Annotations = boundCheckAnnotations(annotations[check.Name])
+		artifact.Checks = append(artifact.Checks, entry)
 	}
 	for _, check := range checks {
 		if check.State == providers.CheckStateFailing {
@@ -479,7 +563,22 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// Annotations outrank summaries and are shed only after every summary is
+	// gone: a file/line/message is the most actionable thing in the artifact,
+	// and for a job that writes no output.summary it is the only one.
+	for i := len(artifact.Checks) - 1; i >= 0 && len(data) > maxCIChecksArtifactBytes; i-- {
+		if len(artifact.Checks[i].Annotations) == 0 {
+			continue
+		}
+		artifact.Metadata.AnnotationsDropped += len(artifact.Checks[i].Annotations)
+		artifact.Checks[i].Annotations = nil
+		data, err = json.Marshal(artifact)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for len(data) > maxCIChecksArtifactBytes && len(artifact.Checks) > 0 {
+		artifact.Metadata.AnnotationsDropped += len(artifact.Checks[len(artifact.Checks)-1].Annotations)
 		artifact.Checks = artifact.Checks[:len(artifact.Checks)-1]
 		artifact.Metadata.ChecksDropped++
 		data, err = json.Marshal(artifact)

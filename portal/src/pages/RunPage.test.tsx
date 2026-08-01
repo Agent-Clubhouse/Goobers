@@ -827,6 +827,49 @@ describe("run detail", () => {
   });
 });
 
+// The journal is scanned by stage: the reader is looking for "the second
+// implement attempt", and until stage was a column that meant reading every
+// row's prose. Filtering narrows a long ledger to one stage's story.
+describe("journal stage column", () => {
+  it("renders the stage as its own column and announces it", async () => {
+    renderRun("01JZ441DAEMONAPI");
+
+    await screen.findByRole("heading", { name: "Event ledger" });
+    fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
+
+    const rows = screen.getAllByRole("button", { name: /^Select sequence/ });
+    const labels = rows.map((row) => row.getAttribute("aria-label") ?? "");
+    // Every row names its scope right after the sequence, so the column is
+    // populated for gate and run-level events too, not only stages.
+    for (const label of labels) {
+      expect(label).toMatch(/^Select sequence \d+: .+?\. /);
+    }
+    expect(labels.some((label) => /^Select sequence \d+: implement\. /.test(label))).toBe(true);
+  });
+
+  it("filters the ledger to one stage and back", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ441DAEMONAPI");
+
+    await screen.findByRole("heading", { name: "Event ledger" });
+    fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
+    const all = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
+
+    const filter = screen.getByLabelText("Stage");
+    await user.selectOptions(filter, "implement");
+
+    const filtered = screen.getAllByRole("button", { name: /^Select sequence/ });
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.length).toBeLessThan(all);
+    for (const row of filtered) {
+      expect(row.getAttribute("aria-label")).toMatch(/^Select sequence \d+: implement\. /);
+    }
+
+    await user.selectOptions(filter, "");
+    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(all);
+  });
+});
+
 function renderRun(
   runId: string,
   client = new FixtureDaemonClient(populatedDaemonFixtures()),

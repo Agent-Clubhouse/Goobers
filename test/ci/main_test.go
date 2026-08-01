@@ -852,3 +852,63 @@ func checkByLabel(t *testing.T, all []check, label string) check {
 	}
 	return found[0]
 }
+
+// TestLintPinsAPerWorkdirGolangciCache proves the lint check never inherits the
+// ambient golangci-lint cache. Sharing one cache across concurrent worktrees
+// produces two failures that no diff can fix — an exit-3 "parallel golangci-lint
+// is running" lock collision, and a cached diagnostic naming a file in a sibling
+// worktree — so isolation is a correctness property, not a tuning choice.
+func TestLintPinsAPerWorkdirGolangciCache(t *testing.T) {
+	t.Parallel()
+	lint := checkByLabel(t, mergeGateChecks(), "lint")
+
+	var cache string
+	for _, variable := range lint.env {
+		if name, value, found := strings.Cut(variable, "="); found && name == "GOLANGCI_LINT_CACHE" {
+			cache = value
+		}
+	}
+	if cache == "" {
+		t.Fatal("lint check does not pin GOLANGCI_LINT_CACHE; concurrent worktrees would share one cache and one lock")
+	}
+	if !filepath.IsAbs(cache) {
+		t.Fatalf("GOLANGCI_LINT_CACHE = %q, want an absolute path", cache)
+	}
+
+	workdir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if strings.HasPrefix(cache, workdir+string(os.PathSeparator)) {
+		t.Fatalf("GOLANGCI_LINT_CACHE = %q lives inside the worktree; the checkout must stay clean", cache)
+	}
+}
+
+// TestGolangciCacheIsDistinctPerWorkingDirectory proves the key is the working
+// directory, so two sibling run worktrees can never collide, while repeated runs
+// in one checkout keep a warm cache.
+// Not parallel: t.Chdir is incompatible with a parallel test, and the working
+// directory is exactly what this asserts on.
+func TestGolangciCacheIsDistinctPerWorkingDirectory(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+
+	cacheFor := func(dir string) string {
+		t.Helper()
+		t.Chdir(dir)
+		env := golangciCacheEnvironment()
+		if len(env) != 1 {
+			t.Fatalf("golangciCacheEnvironment() = %v, want exactly one variable", env)
+		}
+		return env[0]
+	}
+
+	firstCache := cacheFor(first)
+	secondCache := cacheFor(second)
+	if firstCache == secondCache {
+		t.Fatal("two working directories resolved to one golangci-lint cache; sibling worktrees would share a lock and a path space")
+	}
+	if repeat := cacheFor(first); repeat != firstCache {
+		t.Fatalf("one working directory resolved to two golangci-lint caches (%q then %q); the cache would never stay warm", firstCache, repeat)
+	}
+}

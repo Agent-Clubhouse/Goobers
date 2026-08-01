@@ -14,6 +14,13 @@ import {
   formatDuration,
   isTranscriptEvent,
 } from "../runDetailData";
+import {
+  isEmptyTurn,
+  parseTranscript,
+  transcriptSearchMatches,
+  type TranscriptTurn,
+  type TranscriptUsage,
+} from "../transcript";
 import { Icon } from "../ui/Icon";
 import { Inspector } from "../ui/Inspector";
 
@@ -469,7 +476,7 @@ function TranscriptRow({
           {state === "loading" ? "Loading…" : "View transcript"}
         </button>
       ) : (
-        <pre className="artifact-content code-block">{content}</pre>
+        <TranscriptView text={content} />
       )}
       {state === "error" && (
         <p className="artifact-load-error" role="alert">
@@ -477,6 +484,162 @@ function TranscriptRow({
         </p>
       )}
     </article>
+  );
+}
+
+// How many turns render before the reader asks for more. A real transcript runs
+// to 160+ turns and hundreds of kilobytes; mounting all of it stalls a run page
+// that is already under load-time pressure.
+const TRANSCRIPT_WINDOW = 40;
+
+const ROLE_LABELS: Record<TranscriptTurn["role"], string> = {
+  system: "System",
+  user: "User",
+  assistant: "Assistant",
+  tool: "Tool",
+  unknown: "Unrecognized",
+};
+
+function formatTokens(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+function usageSummary(usage: TranscriptUsage): string {
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined) parts.push(`${formatTokens(usage.inputTokens)} in`);
+  if (usage.outputTokens !== undefined) parts.push(`${formatTokens(usage.outputTokens)} out`);
+  if (usage.reasoningTokens !== undefined) parts.push(`${formatTokens(usage.reasoningTokens)} reasoning`);
+  if (usage.requests !== undefined) parts.push(`${formatTokens(usage.requests)} requests`);
+  return parts.join(" · ");
+}
+
+/**
+ * TranscriptView renders a captured transcript as a conversation.
+ *
+ * The transcript is the only record of why an agentic stage did what it did,
+ * so diagnosing a stage that "succeeded" while changing nothing means reading
+ * it. As raw JSONL that was possible but not practical. Raw bytes stay one
+ * click away — this replaces the default view, not the evidence.
+ */
+export function TranscriptView({ text }: { text: string }) {
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const [raw, setRaw] = useState(false);
+
+  const parsed = parseTranscript(text);
+  const turns = parsed.turns.filter((turn) => !isEmptyTurn(turn));
+  const matches = transcriptSearchMatches(turns, query);
+  const matching = query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
+  const visible = expanded ? matching : matching.slice(0, TRANSCRIPT_WINDOW);
+  const hidden = matching.length - visible.length;
+
+  if (raw) {
+    return (
+      <div className="transcript">
+        <div className="transcript-toolbar">
+          <button className="artifact-action" onClick={() => setRaw(false)} type="button">
+            Show conversation
+          </button>
+        </div>
+        <pre className="artifact-content code-block">{text}</pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="transcript">
+      <div className="transcript-toolbar">
+        <label className="transcript-search">
+          <span className="sr-only">Search transcript</span>
+          <input
+            onChange={(changeEvent) => setQuery(changeEvent.target.value)}
+            placeholder="Search transcript"
+            type="search"
+            value={query}
+          />
+        </label>
+        <span className="transcript-count">
+          {query.trim() === ""
+            ? `${turns.length} ${turns.length === 1 ? "turn" : "turns"}`
+            : `${matching.length} of ${turns.length} matching`}
+        </span>
+        <button className="artifact-action" onClick={() => setRaw(true)} type="button">
+          Show raw JSONL
+        </button>
+      </div>
+
+      {/* The concluding message and the usage record are the two most-wanted
+          points in a transcript and the hardest to reach by scrolling. */}
+      {parsed.usage && (
+        <p className="transcript-usage">
+          <strong>Usage</strong> {usageSummary(parsed.usage)}
+        </p>
+      )}
+      {parsed.malformedLines > 0 && (
+        <p className="transcript-malformed" role="status">
+          {parsed.malformedLines} line{parsed.malformedLines === 1 ? "" : "s"} could not be parsed and
+          {parsed.malformedLines === 1 ? " is" : " are"} shown verbatim.
+        </p>
+      )}
+
+      {matching.length === 0 ? (
+        <p className="transcript-empty" role="status">
+          No turns match “{query.trim()}”.
+        </p>
+      ) : (
+        <ol className="transcript-turns">
+          {visible.map((turn) => (
+            <TranscriptTurnRow key={turn.index} turn={turn} />
+          ))}
+        </ol>
+      )}
+
+      {hidden > 0 && (
+        <button className="artifact-action" onClick={() => setExpanded(true)} type="button">
+          Show {hidden} more turn{hidden === 1 ? "" : "s"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TranscriptTurnRow({ turn }: { turn: TranscriptTurn }) {
+  // Tool results are collapsed by default: they are the bulkiest part of a
+  // transcript and only sometimes the interesting part.
+  const [showResult, setShowResult] = useState(false);
+  const label = ROLE_LABELS[turn.role];
+
+  return (
+    <li className={`transcript-turn transcript-turn-${turn.role}`}>
+      <div className="transcript-turn-heading">
+        <span className="transcript-role">{label}</span>
+        {turn.toolCall?.name && <span className="transcript-tool-name mono">{turn.toolCall.name}</span>}
+        {turn.toolCall?.success === false && (
+          <span className="transcript-tool-failed">failed</span>
+        )}
+        {turn.truncated && <span className="transcript-tool-failed">truncated</span>}
+      </div>
+
+      {turn.content && <p className="transcript-content">{turn.content}</p>}
+
+      {turn.toolCall?.arguments && (
+        <pre className="transcript-code code-block">{turn.toolCall.arguments}</pre>
+      )}
+
+      {turn.toolResult !== undefined && (
+        <>
+          <button
+            aria-expanded={showResult}
+            className="transcript-result-toggle"
+            onClick={() => setShowResult((value) => !value)}
+            type="button"
+          >
+            {showResult ? "Hide result" : "Show result"}
+          </button>
+          {showResult && <pre className="transcript-code code-block">{turn.toolResult}</pre>}
+        </>
+      )}
+    </li>
   );
 }
 

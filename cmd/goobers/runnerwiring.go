@@ -1907,6 +1907,14 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// allowlist (#736) — the executor twin of the harness adapter's
 			// ExtraEnvAllowlist, from the same cfg value so the two never drift.
 			shell.ExtraEnvAllowlist = cfg.Runner.EnvPassthrough
+			// Baseline deadline for a stage that declares no timeoutSeconds
+			// (#1969). Zero leaves executor.DefaultTimeout in force, so an
+			// instance that configures nothing is unchanged.
+			defaultStageTimeout, err := cfg.Runner.DefaultStageTimeoutDuration()
+			if err != nil {
+				return nil, err
+			}
+			shell.DefaultTimeout = defaultStageTimeout
 			// Resolve a bare "goobers" command token to the running daemon's own
 			// binary, so a deterministic stage execs it from its fresh worktree
 			// clone (which never contains the binary) rather than failing (#229).
