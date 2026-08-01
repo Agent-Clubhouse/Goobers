@@ -20,10 +20,13 @@ import {
   formatTimestamp,
   isMajorJournalEvent,
   isInspectableEvidenceEvent,
+  eventStage,
   journalEntries,
   orderRunEvents,
   runFailure,
   type JournalEntry,
+  runEventStages,
+  UNSCOPED_EVENT_STAGE,
   type JournalEventGroup,
   type RunNodeState,
   useRunDetail,
@@ -406,12 +409,18 @@ function EventLedger({
   selectedSeq: number;
 }) {
   const [view, setView] = useState<"major" | "all">("major");
+  const [stageFilter, setStageFilter] = useState<string>("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const grouped = journalEntries(events, run.id);
+  const stages = runEventStages(events);
+  // A filter naming a stage this run never visited would silently empty the
+  // ledger; treat it as unset instead.
+  const activeStage = stageFilter && stages.includes(stageFilter) ? stageFilter : "";
+  const visible = activeStage ? events.filter((event) => eventStage(event) === activeStage) : events;
+  const grouped = journalEntries(visible, run.id);
   const rows: JournalEntry[] =
     view === "all"
-      ? orderRunEvents(events).map((event) => ({ kind: "event", event }))
+      ? orderRunEvents(visible).map((event) => ({ kind: "event", event }))
       : grouped.flatMap((entry) =>
           entry.kind === "group" && expandedGroups.has(entry.id)
             ? [entry, ...entry.events.map((event) => ({ kind: "event" as const, event }))]
@@ -493,6 +502,22 @@ function EventLedger({
               All events ({events.length})
             </button>
           </div>
+          {stages.length > 1 && (
+            <label className="journal-stage-filter">
+              <span>Stage</span>
+              <select
+                onChange={(changeEvent) => setStageFilter(changeEvent.target.value)}
+                value={activeStage}
+              >
+                <option value="">All stages</option>
+                {stages.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </div>
       {events.length === 0 ? (
@@ -533,6 +558,7 @@ function EventLedger({
                       Seq {first.seq}
                       {last.seq === first.seq ? "" : `–${last.seq}`}
                     </span>
+                    <span className="ledger-stage mono">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
                     <span className="ledger-type mono">Supporting</span>
                     <span className="ledger-time mono">{entry.events.length} records</span>
                     <span className="ledger-attempt">{scope}</span>
@@ -571,7 +597,7 @@ function EventLedger({
               >
                 <button
                   aria-current={selected ? "true" : undefined}
-                  aria-label={`Select sequence ${event.seq}: ${heading}. ${summary}`}
+                  aria-label={`Select sequence ${event.seq}: ${eventStage(event)}. ${heading}. ${summary}`}
                   className="run-ledger-button"
                   onClick={() => onSelect(event, true)}
                   onKeyDown={(keyboardEvent) => handleRowKeyDown(keyboardEvent, index)}
@@ -585,6 +611,7 @@ function EventLedger({
                   type="button"
                 >
                   <span className="ledger-seq mono">Seq {event.seq}</span>
+                  <span className="ledger-stage mono">{eventStage(event)}</span>
                   <span className="ledger-type mono">Type {event.type}</span>
                   <span className="ledger-time mono">
                     Elapsed {formatElapsed(run.startedAt, event.time)}

@@ -22,7 +22,7 @@ import (
 // the alternative is that a client which missed the first removal never learns
 // of it, and silence is indistinguishable from "still there".
 func (s *Store) RemoveRun(ctx context.Context, runID string) error {
-	tx, err := s.writer.BeginTx(ctx, nil)
+	tx, err := s.writeDB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin remove: %w", err)
 	}

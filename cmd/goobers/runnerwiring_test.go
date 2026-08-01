@@ -1784,11 +1784,43 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
 	return deterministic
+}
+
+// TestBuildCIPollExecutorSetsGiteaRepo proves ci-poll dispatches to Gitea when
+// the gaggle's repo is Gitea, instead of defaulting to GitHub — the bug that
+// made ci-poll hit api.github.com with a Gitea token and fail 401.
+func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
+	t.Setenv("CI_POLL_TOKEN", "ci-poll-token-value")
+	cfg := repoConfig()
+	cfg.Repos[0].Token.Env = "CI_POLL_TOKEN"
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil)
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+	e, ok := exec.(*ciPollKindExecutor)
+	if !ok {
+		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
+	}
+	if e.giteaRepo == nil || e.giteaRepo.BaseURL != "https://gitea.example.com" {
+		t.Fatalf("giteaRepo not wired into ci-poll executor: %+v", e.giteaRepo)
+	}
+	if e.adoRepo != nil {
+		t.Fatalf("adoRepo must be nil for a gitea ci-poll executor")
+	}
 }
 
 func ciPollTestEnvelope(capabilities []string) apiv1.InvocationEnvelope {

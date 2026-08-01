@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -387,4 +388,30 @@ func TestAbsentMarkerIsAnAnswerNotAnError(t *testing.T) {
 	if ok {
 		t.Error("the store claims to hold a marker that was never written")
 	}
+}
+
+func TestFileURIIsAbsoluteSoSQLiteCanOpenIt(t *testing.T) {
+	// Regression: on Windows filepath.ToSlash yields "C:/dir/intake.db", whose
+	// first segment contains a colon. url.URL.String then prefixes "./" so the
+	// segment cannot be read as a scheme, producing "file:./C:/dir/intake.db" —
+	// a relative URI SQLite rejects with SQLITE_CANTOPEN. POSIX paths are
+	// already rooted, which is why this only ever failed on Windows.
+	uri := fileURI(filepath.Join(t.TempDir(), FileName))
+
+	if !strings.HasPrefix(uri, "file:///") {
+		t.Errorf("fileURI = %q, want a rooted file:/// URI", uri)
+	}
+	if strings.Contains(uri, "./") {
+		t.Errorf("fileURI = %q, want no relative segment", uri)
+	}
+}
+
+func TestOpenAcceptsAHostAbsolutePath(t *testing.T) {
+	// Open must work against a real absolute path on every supported OS, not
+	// only where the path happens to start with a slash.
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open with an absolute host path: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 }

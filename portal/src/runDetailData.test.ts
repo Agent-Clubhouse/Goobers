@@ -7,9 +7,12 @@ import {
   eventHeading,
   eventNodeAtSequence,
   eventNodeId,
+  eventStage,
   eventSummary,
   journalEntries,
   orderRunEvents,
+  runEventStages,
+  UNSCOPED_EVENT_STAGE,
 } from "./runDetailData";
 
 const graph: WorkflowGraph = {
@@ -471,5 +474,46 @@ describe("run detail projection", () => {
       implement: "completed",
       review: "skipped",
     });
+  });
+});
+
+describe("eventStage", () => {
+  it("reports the producing stage", () => {
+    expect(eventStage(event(1, "stage.started", { stage: "implement", attempt: 1 }))).toBe("implement");
+  });
+
+  // A gate event carries `gate`, not `stage`. One column has to carry either,
+  // or half the ledger reads as unscoped.
+  it("falls back to the evaluating gate", () => {
+    expect(eventStage(event(2, "gate.evaluated", { gate: "review", verdict: "pass" }))).toBe("review");
+  });
+
+  it("marks run-level events as unscoped", () => {
+    expect(eventStage(event(3, "run.started", {}))).toBe(UNSCOPED_EVENT_STAGE);
+  });
+});
+
+describe("runEventStages", () => {
+  it("lists each scope once in durable order, unscoped last", () => {
+    const events: RunEvent[] = [
+      event(1, "run.started", {}),
+      event(2, "stage.started", { stage: "implement", attempt: 1 }),
+      event(3, "stage.finished", { stage: "implement", attempt: 1 }),
+      event(4, "gate.evaluated", { gate: "review", verdict: "needs-changes" }),
+      event(5, "stage.started", { stage: "implement", attempt: 2 }),
+      event(6, "run.finished", {}),
+    ];
+
+    expect(runEventStages(events)).toEqual(["implement", "review", UNSCOPED_EVENT_STAGE]);
+  });
+
+  it("omits the unscoped bucket when every event is scoped", () => {
+    expect(runEventStages([event(1, "stage.started", { stage: "implement", attempt: 1 })])).toEqual([
+      "implement",
+    ]);
+  });
+
+  it("is empty for no events", () => {
+    expect(runEventStages([])).toEqual([]);
   });
 });

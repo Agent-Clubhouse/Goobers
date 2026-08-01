@@ -2,6 +2,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -402,7 +404,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		shippedWorkflowCheck,
 		schemaDescriptionCoverageCheck,
 		testCheck,
-		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}, group: groupLint},
+		check{
+			label:   "lint",
+			command: tools.golangciCommand,
+			args:    []string{"run"},
+			env:     golangciCacheEnvironment(),
+			group:   groupLint,
+		},
 		check{
 			label:        "portal-test",
 			command:      tools.npmCommand,
@@ -579,6 +587,32 @@ func commandInvocation(current check, goos string, getenv func(string) string) (
 	args = append(args, "/d", "/s", "/c", current.command)
 	args = append(args, current.args...)
 	return envOrDefault(getenv, "ComSpec", "cmd.exe"), args
+}
+
+// golangciCacheEnvironment pins golangci-lint to a cache directory derived from
+// the working directory, because its cache is neither concurrency-safe nor
+// path-safe and Goobers runs N worktrees against one host at a time.
+//
+// Two distinct failures come from sharing one cache. The lock is per cache
+// directory, so a second concurrent invocation dies with "parallel golangci-lint
+// is running" (exit 3) even though nothing is wrong with the tree. And a cached
+// analysis result carries the path it was computed against, so a run in worktree
+// A can be handed a diagnostic naming a file in sibling worktree B — a violation
+// the failing run cannot fix, because the file is not in its checkout.
+//
+// Keying on the working directory rather than minting a fresh directory keeps
+// the cache warm for the common case of repeated runs in one checkout, while
+// giving every worktree its own lock and its own path space. Falls back to
+// inheriting the ambient environment when the working directory cannot be
+// resolved: a shared cache is the status quo, not a regression.
+func golangciCacheEnvironment() []string {
+	workdir, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(workdir))
+	cache := filepath.Join(os.TempDir(), "goobers-golangci-lint", hex.EncodeToString(digest[:])[:16])
+	return []string{"GOLANGCI_LINT_CACHE=" + cache}
 }
 
 func mergeEnvironment(base, overrides []string, caseInsensitive bool) []string {

@@ -507,6 +507,34 @@ export class LiveDataController {
     if (event.type === "heartbeat" || this.hasApplied(event.id)) {
       return;
     }
+    // An epoch change forces a SNAPSHOT, not a quiet cursor swap (#1930, §8.2).
+    //
+    // The store was rebuilt, so this client's view predates a generation it can
+    // no longer reason about — its sequence numbers came from a different
+    // AUTOINCREMENT. Adopting the new cursor and carrying on would leave it
+    // following the new feed while holding data from before the rebuild, and
+    // nothing would ever correct that: every subsequent event applies cleanly,
+    // so the staleness is permanent and invisible.
+    //
+    // Detected here rather than only on reconnect because the server can hand a
+    // new epoch to an ESTABLISHED stream — a rebuild does not require the
+    // connection to drop.
+    if (this.epochChanged(event.id)) {
+      this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause: "epoch-changed" });
+      this.rememberEvent(event.id);
+      this.cursor = event.id;
+      window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+      // Everything, not just what the event names: the rebuild may have changed
+      // any of it, and the event's entity list describes one transition rather
+      // than the generation gap.
+      // Evict everything: a rebuild may have changed any of it, and the
+      // event's entity list describes one transition rather than a generation
+      // gap. invalidate() with ALL_MODELS is the widest eviction the cache
+      // exposes and is what a fresh connection already does.
+      this.cache.invalidate({ cursor: event.id, models: ALL_MODELS });
+      this.queueRefresh({ cursor: event.id, models: ALL_MODELS }, 0);
+      return;
+    }
     this.rememberEvent(event.id);
     this.cursor = event.id;
     window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
@@ -518,6 +546,23 @@ export class LiveDataController {
     this.queueRefresh(event.data, this.config.invalidationWindowMs);
   }
 
+  /**
+   * Reports whether an event's cursor names a different projection generation.
+   *
+   * Equality, never ordering (§4.2). Epochs are opaque: a rebuilt store mints a
+   * fresh one with no relationship to the last, so any inequality is a new
+   * generation. Comparing them with < would read meaning into a value that has
+   * none.
+   */
+  private epochChanged(id: string): boolean {
+    const current = parseCursor(this.cursor);
+    const candidate = parseCursor(id);
+    if (!current || !candidate) {
+      return false;
+    }
+    return current.epoch !== candidate.epoch;
+  }
+
   private hasApplied(id: string): boolean {
     if (this.seenEventIds.has(id) || id === this.cursor) {
       return true;
@@ -527,7 +572,7 @@ export class LiveDataController {
     return (
       current !== undefined &&
       candidate !== undefined &&
-      current.session === candidate.session &&
+      current.epoch === candidate.epoch &&
       candidate.sequence <= current.sequence
     );
   }
@@ -535,7 +580,7 @@ export class LiveDataController {
   private rememberEvent(id: string): void {
     const current = parseCursor(this.cursor);
     const candidate = parseCursor(id);
-    if (current && candidate && current.session !== candidate.session) {
+    if (current && candidate && current.epoch !== candidate.epoch) {
       this.seenEventIds.clear();
       this.seenEventOrder.length = 0;
     }
@@ -841,10 +886,25 @@ function matchesScope(
   return true;
 }
 
+/**
+ * Parses a stream cursor.
+ *
+ * Two forms, because both are on the wire during the transition (#1929): the
+ * change feed emits `<schemaVersion>:<epoch>:<seq>`, and the filesystem poller
+ * — still the source for topologies with no read model — emits
+ * `<session>:<seq>`.
+ *
+ * `epoch` is whatever identifies the generation in either form: the epoch
+ * proper, or the poller's random per-process session id. That is the right
+ * unification rather than a convenient one — both answer "is this the same
+ * generation of sequence numbers", which is the only question the client asks
+ * of them. Splitting on the LAST colon keeps the three-part form working
+ * without special-casing.
+ */
 function parseCursor(cursor: string | undefined):
   | {
       sequence: bigint;
-      session: string;
+      epoch: string;
     }
   | undefined {
   if (!cursor) {
@@ -860,7 +920,7 @@ function parseCursor(cursor: string | undefined):
   }
   return {
     sequence: BigInt(rawSequence),
-    session: cursor.slice(0, separator),
+    epoch: cursor.slice(0, separator),
   };
 }
 

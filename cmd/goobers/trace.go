@@ -453,8 +453,8 @@ func traceCIFailures(
 	reads readservice.OfflineRuns,
 	runID string,
 	events []readservice.RunEvent,
-) ([]providers.CheckDetail, error) {
-	var failures []providers.CheckDetail
+) ([]executor.CICheck, error) {
+	var failures []executor.CICheck
 	for _, event := range events {
 		if !event.KnownSchema ||
 			event.Type != journal.EventStageFinished ||
@@ -483,7 +483,7 @@ func traceCIFailures(
 	return failures, nil
 }
 
-func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
+func printCIFailures(stdout io.Writer, checks []executor.CICheck) {
 	if len(checks) == 0 {
 		return
 	}
@@ -491,6 +491,32 @@ func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
 	for _, check := range checks {
 		pf(stdout, "  check=%q summary=%q url=%q\n",
 			check.Name, firstLine(check.Summary), check.URL)
+		// Annotations carry file/line/message and are frequently the only
+		// machine-readable diagnosis, since a job that writes no
+		// output.summary leaves summary empty (#1972).
+		for _, annotation := range check.Annotations {
+			pf(stdout, "    %s\n", formatCheckAnnotation(annotation))
+		}
+	}
+}
+
+// formatCheckAnnotation renders one annotation as file:line: message, omitting
+// the parts the provider did not supply.
+func formatCheckAnnotation(annotation providers.CheckAnnotation) string {
+	location := annotation.Path
+	if location != "" && annotation.StartLine > 0 {
+		location = fmt.Sprintf("%s:%d", location, annotation.StartLine)
+	}
+	message := firstLine(annotation.Message)
+	switch {
+	case location == "" && annotation.Title == "":
+		return message
+	case location == "":
+		return fmt.Sprintf("%s: %s", annotation.Title, message)
+	case annotation.Title == "":
+		return fmt.Sprintf("%s: %s", location, message)
+	default:
+		return fmt.Sprintf("%s: %s: %s", location, annotation.Title, message)
 	}
 }
 

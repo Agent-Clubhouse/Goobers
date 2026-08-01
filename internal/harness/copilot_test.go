@@ -1948,6 +1948,74 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 }
 
+// TestCopilotAdapterPreflightCarriesAmbientModelToken is the headless-PAT fix:
+// Preflight has no RunRequest, so it cannot resolve the agent:model credential
+// credentialEnv injects at run time — the sign-in probe would fail a valid
+// headless setup whose Copilot token is supplied by env (COPILOT_GITHUB_TOKEN).
+// When that token is present in the ambient environment, the probe must carry
+// it so preflight reflects the same auth the run will use.
+func TestCopilotAdapterPreflightCarriesAmbientModelToken(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-headless-xyz")
+	var authProbeEnv []string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass with an ambient model token: %v", err)
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-headless-xyz" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should carry the ambient COPILOT_GITHUB_TOKEN; got %v", authProbeEnv)
+	}
+}
+
+// TestCopilotAdapterPreflightFallsBackToGHToken confirms the ambient-token probe
+// also honors GH_TOKEN/GITHUB_TOKEN, the conventional fallbacks the Copilot CLI
+// accepts, when COPILOT_GITHUB_TOKEN itself is unset.
+func TestCopilotAdapterPreflightFallsBackToGHToken(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "gh-fallback-abc")
+	var authProbeEnv []string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass with a GH_TOKEN fallback: %v", err)
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=gh-fallback-abc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should map GH_TOKEN into COPILOT_GITHUB_TOKEN; got %v", authProbeEnv)
+	}
+}
+
 // TestCopilotAdapterPreflightNoAuthProbeByDefault confirms that with no
 // AuthCheckArgs configured, preflight does not run (or require) an auth probe —
 // so the version-only path is unchanged until a real auth command is wired.

@@ -25,7 +25,7 @@ import (
 // a crash between committing the projection and acknowledging the watermark
 // simply reprocesses, harmlessly.
 func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
-	tx, err := s.writer.BeginTx(ctx, nil)
+	tx, err := s.writeDB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin upsert: %w", err)
 	}
@@ -87,6 +87,12 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 		at = p.Run.StartedAt
 	}
 	if err := appendChange(ctx, tx, at, changeKindFor(previous, existed, p.Run), p.Run); err != nil {
+		return err
+	}
+	// Queue the run's day for bucket recompute (#1931). One small insert inside
+	// the transaction rather than an aggregation: recomputing here would put an
+	// O(runs-in-day) scan on every run's commit path.
+	if err := markDayDirty(ctx, tx, p.Run.StartedAt, s.now()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

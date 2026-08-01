@@ -329,6 +329,69 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  // #1930 / §8.2: a differing epoch must force a SNAPSHOT, not a quiet cursor
+  // swap.
+  //
+  // The store was rebuilt, so the client's view predates a generation it cannot
+  // reason about — its sequence numbers came from a different AUTOINCREMENT.
+  // Adopting the new cursor and carrying on leaves it following the new feed
+  // while holding pre-rebuild data, and nothing ever corrects that: every
+  // subsequent event applies cleanly, so the staleness is permanent and
+  // invisible.
+  it("forces a full refresh when the cursor epoch changes mid-stream", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const listener = vi.fn();
+    // Scoped to one run: if the epoch change only refreshed what the event
+    // named, this listener would not fire, because the event names a different
+    // run entirely.
+    controller.subscribe(["run"], listener, { runId: "run-unrelated" });
+    controller.start();
+    await settle();
+
+    stream.push(update("1:epoch-a:5", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(20);
+    listener.mockClear();
+
+    // Same schema, NEW epoch — a rebuild, delivered on the established stream
+    // without the connection dropping.
+    stream.push(update("1:epoch-b:1", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(listener).toHaveBeenCalled();
+
+    controller.stop();
+  });
+
+  // The counterpart: within ONE epoch, an event that names other entities must
+  // not refresh an unrelated subscriber. Otherwise the epoch fix would have
+  // bought correctness by making every event a full refresh.
+  it("does not refresh unrelated subscribers within the same epoch", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const listener = vi.fn();
+    controller.subscribe(["run"], listener, { runId: "run-unrelated" });
+    controller.start();
+    await settle();
+
+    stream.push(update("1:epoch-a:5", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(20);
+    listener.mockClear();
+
+    stream.push(update("1:epoch-a:6", ["run"], { runIds: ["run-a"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(listener).not.toHaveBeenCalled();
+
+    controller.stop();
+  });
+
   it("reconnects with the last applied event ID", async () => {
     const first = new ControlledEventStream();
     const second = new ControlledEventStream();

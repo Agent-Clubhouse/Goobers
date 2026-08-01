@@ -446,6 +446,11 @@ spec:
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
       run:
         command: ["make", "ci"]
+      # Same budget and rationale as implementation.yaml's local-ci (#1969): the
+      # 10-minute executor default leaves no headroom over a `make ci` that runs
+      # 8.1m at p50, and a deadline SIGQUIT presents as a CI failure the
+      # remediating agent cannot act on.
+      timeoutSeconds: 1500
       retry:
         maxAttempts: 1
       next: local-gate

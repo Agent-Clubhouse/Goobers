@@ -172,14 +172,31 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		issueProvider   backlogIssueProvider
 		ghIssueProvider *providers.GitHubProvider
 	)
-	if repo.Provider == providers.ProviderADO {
+	// Explicit per-kind dispatch (github | ado | gitea | default-error). The
+	// former `if ADO {...} else {...}` GitHub-default silently routed a
+	// gitea-provider repo to api.github.com; each backend is now named so a
+	// gitea backlog is served by the gitea provider, not GitHub by omission.
+	switch repo.Provider {
+	case providers.ProviderADO:
 		adoProvider, aerr := newADOProviderForStage(root, repo)
 		if aerr != nil {
 			pf(stderr, "error: %v\n", aerr)
 			return 1
 		}
 		issueProvider = adoProvider
-	} else {
+	case providers.ProviderGitea:
+		token, terr := providerToken(capability.GitHubIssuesWrite)
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if gerr != nil {
+			pf(stderr, "error: %v\n", gerr)
+			return 1
+		}
+		issueProvider = giteaProvider
+	case providers.ProviderGitHub:
 		token, terr := providerToken(capability.GitHubIssuesWrite)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
@@ -187,6 +204,9 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 		issueProvider = ghIssueProvider
+	default:
+		pf(stderr, "error: backlog-query does not support repository provider %q\n", repo.Provider)
+		return 1
 	}
 
 	// ADO splits the code repository (where branches/PRs land) from the backlog
@@ -1407,18 +1427,31 @@ func runBacklogQueryRelease(root string, stdout, stderr io.Writer) int {
 			return rerr
 		}
 		var issueProvider backlogIssueProvider
-		if repo.Provider == providers.ProviderADO {
+		switch repo.Provider {
+		case providers.ProviderADO:
 			adoProvider, aerr := newADOProviderForStage(root, repo)
 			if aerr != nil {
 				return aerr
 			}
 			issueProvider = adoProvider
-		} else {
+		case providers.ProviderGitea:
+			token, terr := providerToken(capability.GitHubIssuesWrite)
+			if terr != nil {
+				return terr
+			}
+			giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+			if gerr != nil {
+				return gerr
+			}
+			issueProvider = giteaProvider
+		case providers.ProviderGitHub:
 			token, terr := providerToken(capability.GitHubIssuesWrite)
 			if terr != nil {
 				return terr
 			}
 			issueProvider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		default:
+			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
 		}
 		// Work-item claim markers live in the backlog project on ADO, not the
 		// routed code repo (see backlogRepoRefForStage).

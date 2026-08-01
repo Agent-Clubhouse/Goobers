@@ -1220,6 +1220,40 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "must not configure token",
 		},
 		{
+			name: "valid gitea",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+		},
+		{
+			name: "gitea missing baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "baseUrl is required",
+		},
+		{
+			name: "gitea rejects project",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "project is only valid for provider",
+		},
+		{
+			name: "gitea rejects auth block",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
+			}},
+			wantErr: "supports only a static token",
+		},
+		{
+			name: "gitea missing token",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web"},
+			}},
+			wantErr: "gitea auth requires token",
+		},
+		{
 			name: "missing owner",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Name: "web", Token: TokenRef{Env: "T"}},
@@ -2026,5 +2060,55 @@ func TestTokenRefCredentialTokenRef(t *testing.T) {
 	}
 	if _, err := credentials.NewResolver([]credentials.TokenRef{got}); err == nil {
 		t.Fatal("a store-backed ref must fail closed in a resolver built without store support")
+	}
+}
+
+func TestDefaultStageTimeoutDuration(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		// Zero means "unset": the executor keeps its own built-in default
+		// rather than this package substituting one.
+		{name: "unset", value: "", want: 0},
+		{name: "duration", value: "25m", want: 25 * time.Minute},
+		{name: "seconds", value: "90s", want: 90 * time.Second},
+		{name: "malformed", value: "25 minutes", wantErr: true},
+		{name: "zero", value: "0s", wantErr: true},
+		{name: "negative", value: "-5m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := RunnerConfig{DefaultStageTimeout: tc.value}.DefaultStageTimeoutDuration()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("DefaultStageTimeoutDuration(%q) = %s, want an error", tc.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DefaultStageTimeoutDuration(%q): %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Fatalf("DefaultStageTimeoutDuration(%q) = %s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// A malformed baseline must fail `goobers validate` once, not every run at
+// dispatch — the value is consumed when the deterministic executor is built.
+func TestValidateRejectsMalformedDefaultStageTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Runner: RunnerConfig{DefaultStageTimeout: "twenty-five minutes"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a malformed runner.defaultStageTimeout")
+	}
+	if !strings.Contains(err.Error(), "runner.defaultStageTimeout") {
+		t.Fatalf("Validate() error = %q, want it to name runner.defaultStageTimeout", err)
 	}
 }

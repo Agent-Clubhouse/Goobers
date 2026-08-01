@@ -26,6 +26,12 @@ github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpr
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
+github.com/goobers/goobers/providers.WithGiteaTokenSource # Public Gitea per-request token-source option retained for the credentialed construction path and external provider consumers; mirrors the ADO credential-source option and is exercised by provider tests.
+github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
+github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
+github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
+github.com/goobers/goobers/providers.WithGiteaMaxTransientRetries # Public Gitea transient-retry option retained for external provider consumers.
+github.com/goobers/goobers/providers.WithGiteaRateLimitMaxWait # Public Gitea rate-limit wait-budget option retained for external provider consumers; mirrors WithRateLimitMaxWait.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
@@ -197,3 +203,22 @@ github.com/goobers/goobers/internal/readmodel/repair.Sweeper.Stats # Sweep count
 # lands with the route wiring in the same wave. Expected to go stale then.
 github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-Applied header decoder (#1927 route wiring).
 
+# Projection retention (#1932). The window type and its constructors land with
+# the mechanism; the daemon's retention pass that calls them is the second PR of
+# this issue. Expected to go stale then.
+
+github.com/goobers/goobers/internal/readmodel.RetentionLoop.Stats # Retention counters for the freshness envelope (#1927 surface).
+
+# Mutability seam (#1934). The seam is deliberately SHIPPED AHEAD OF ITS
+# CALLERS: the portal is read-only today (three mutation routes return 501), and
+# the point of the issue is to settle the read-model requirements that light
+# mutability imposes BEFORE the read model sets, rather than reopening it
+# immediately afterwards. Each helper is directly tested. These go stale when
+# the mutation routes become real.
+github.com/goobers/goobers/internal/httpapi.requireSourceApplied # If-Source-Applied enforcement, wired when reads take the header (#1934).
+github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit detection for definition edits (#1934).
+github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
+github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
+github.com/goobers/goobers/internal/httpapi.idempotencyKey # Validates a durably-recorded key (#1934).
+github.com/goobers/goobers/internal/httpapi.requireIdempotencyKey # Idempotency precondition, wired when mutations become real (#1934); its test is _test.go, which this gate does not count.
+github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.

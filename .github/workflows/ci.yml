@@ -560,6 +560,24 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
+      # The read model and its sibling stores open SQLite files BY PATH, which
+      # is the single operation whose behaviour differs most between Windows and
+      # POSIX — and none of these packages were covered here until #1997.
+      #
+      # That bug was `file:` + url.URL{Path: "C:/dir/intake.db"}.String(), which
+      # yields `file:./C:/...` because url.URL prefixes `./` to any first
+      # segment containing a colon. SQLite answered SQLITE_CANTOPEN, the daemon
+      # logged a warning, and the intake store was silently unavailable on every
+      # Windows install. `go build` and `go vet` cannot see it: the expression is
+      # valid Go, and the fault only appears when something CONSTRUCTS a URI from
+      # a Windows path at runtime.
+      #
+      # POSIX paths begin with `/`, so the first segment is empty and the bug is
+      # unreachable on Linux and macOS — which is exactly why a full green suite
+      # on those platforms proved nothing about this.
+      - name: Windows read model and stores
+        run: go test ./internal/readmodel/... ./internal/readservice
+
       - name: Windows worktree and event stream
         env:
           GIT_CONFIG_COUNT: "2"

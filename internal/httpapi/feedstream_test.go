@@ -59,13 +59,31 @@ func TestFeedStreamOpensWithASnapshotAtHead(t *testing.T) {
 	if len(initial) != 1 || initial[0].Type != "snapshot" {
 		t.Fatalf("opening events = %+v, want one snapshot", initial)
 	}
-	head, err := readmodel.NewFeed(store).Head(context.Background())
+	// Asserted as an INVARIANT rather than as equality against a second read.
+	//
+	// Head() reads through the store's read-only pool, which is a separate
+	// connection: under WAL a pooled reader can observe a snapshot that predates
+	// the writer's most recent commit. Comparing two independent Head() reads for
+	// exact equality is racy on its own, independent of the data race this file
+	// also fixed.
+	//
+	// What actually matters is that the client does not start at zero and get
+	// sent the whole retained feed.
+	cursor, err := readmodel.ParseCursor(initial[0].ID)
+	if err != nil {
+		t.Fatalf("snapshot cursor %q does not parse: %v", initial[0].ID, err)
+	}
+	state, err := store.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if initial[0].ID != head.String() {
-		t.Errorf("snapshot cursor = %q, want the current head %q; a client starting at zero "+
-			"would be sent the whole retained feed", initial[0].ID, head.String())
+	if cursor.Epoch != state.Epoch || cursor.SchemaVersion != state.SchemaVersion {
+		t.Errorf("snapshot cursor %+v does not name this store's generation (%s/%d)",
+			cursor, state.Epoch, state.SchemaVersion)
+	}
+	if cursor.Seq == 0 {
+		t.Error("the snapshot cursor is at zero, so the client will be sent the entire " +
+			"retained feed before the snapshot it actually needs")
 	}
 }
 
@@ -158,33 +176,61 @@ func TestFeedStreamRejectsAMalformedCursor(t *testing.T) {
 
 // TestFeedStreamCoalescesAPageIntoOneEvent pins the batching rule.
 //
-// One event carrying every affected entity, not one per change: a client
-// applies a batch as a single invalidation, and splitting it would turn what
-// the projector committed as one advance into N refetches.
+// One event carrying every affected entity, not one per change: a client applies
+// a batch as a single invalidation, and splitting it would turn what the
+// projector committed as one advance into N refetches.
+//
+// # Asserted against the pure function, not through the pump
+//
+// The first version subscribed, committed five runs, notified, and asserted the
+// delivered event carried at least two run ids. That is timing-dependent twice
+// over: the pump may wake and read after only some commits are visible, and the
+// feed reads through the store's read-only POOL, which under WAL can observe a
+// snapshot predating the writer's latest commit. It failed on a macOS shard for
+// exactly that reason.
+//
+// The coalescing rule itself is a pure function of a page, so it is asserted
+// there. End-to-end delivery has its own test above.
 func TestFeedStreamCoalescesAPageIntoOneEvent(t *testing.T) {
-	store := feedTestStore(t)
-	stream := newFeedStream(store)
-	defer stream.Close()
-
-	_, events, cancel, err := stream.Subscribe("")
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
+	page := readmodel.FeedPosition{
+		Cursor: readmodel.Cursor{SchemaVersion: 4, Epoch: "e1", Seq: 9},
+		Changes: []readmodel.Change{
+			{Seq: 5, RunID: "run-a", Gaggle: "alpha", Workflow: "wf"},
+			{Seq: 6, RunID: "run-b", Gaggle: "alpha", Workflow: "wf"},
+			{Seq: 7, RunID: "run-a", Gaggle: "alpha", Workflow: "wf"},
+			{Seq: 8, RunID: "run-c", Gaggle: "beta", Workflow: "other"},
+			{Seq: 9, RunID: "run-c", Gaggle: "beta", Workflow: "other"},
+		},
 	}
-	defer cancel()
 
-	for i := 1; i <= 5; i++ {
-		commitRun(t, store, i)
+	events := invalidationsFor(page)
+	if len(events) != 1 {
+		t.Fatalf("a five-change page produced %d events, want 1; splitting turns one "+
+			"committed advance into N client refetches", len(events))
 	}
-	stream.feed.Notify()
 
-	select {
-	case event := <-events:
-		if len(event.Data.RunIDs) < 2 {
-			t.Errorf("a batch of 5 commits produced an event with %d run ids; the page should "+
-				"coalesce rather than emit one event per change", len(event.Data.RunIDs))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no event delivered")
+	event := events[0]
+	if len(event.Data.RunIDs) != 3 {
+		t.Errorf("run ids = %v, want 3 distinct (run-a, run-b, run-c); repeats within a page "+
+			"must collapse", event.Data.RunIDs)
+	}
+	if len(event.Data.Workflows) != 2 {
+		t.Errorf("workflows = %v, want 2 distinct", event.Data.Workflows)
+	}
+	// The cursor is the LAST position in the page, so a client that applies the
+	// event and reconnects resumes past all of it rather than replaying the
+	// middle.
+	if event.ID != page.Cursor.String() {
+		t.Errorf("event cursor = %q, want the page's last position %q",
+			event.ID, page.Cursor.String())
+	}
+}
+
+// TestEmptyPageProducesNoEvent pins that a wakeup with nothing behind it does
+// not publish. A client woken to refetch nothing is pure cost.
+func TestEmptyPageProducesNoEvent(t *testing.T) {
+	if events := invalidationsFor(readmodel.FeedPosition{}); len(events) != 0 {
+		t.Errorf("an empty page produced %d events", len(events))
 	}
 }
 

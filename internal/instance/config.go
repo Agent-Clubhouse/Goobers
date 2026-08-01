@@ -203,6 +203,22 @@ type RunnerConfig struct {
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
+	// DefaultStageTimeout is the baseline deadline for a deterministic stage
+	// that declares no timeoutSeconds of its own. Empty keeps the built-in
+	// executor.DefaultTimeout, so an unconfigured instance is unchanged.
+	//
+	// The deterministic twin of the goober-level harness default (#1070): a
+	// stage's own timeoutSeconds has always been declarable, but the value it
+	// falls back to was a hardcoded 10 minutes with no lever. That default was
+	// sized for short commands and is smaller than a real build+test command on
+	// a mature repo — an adopter whose `make ci` takes 15 minutes otherwise has
+	// to stamp timeoutSeconds onto every such stage in every workflow. A
+	// timed-out stage is reported retryable, but a workflow that routes the
+	// failure to an agent instead spends a repass on something no diff can fix
+	// (#1969).
+	//
+	// Per-stage timeoutSeconds still wins; this only moves the floor.
+	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -326,8 +342,12 @@ type PortalSupportLink struct {
 
 // RepoRef is a target repository this instance connects to.
 type RepoRef struct {
-	// Provider is the backing system: "github" or "ado".
+	// Provider is the backing system: "github", "ado", or "gitea".
 	Provider string `json:"provider" yaml:"provider"`
+	// BaseURL is the forge root URL (e.g. https://gitea.example.com). Required
+	// when provider=gitea so stage subprocesses can resolve the self-hosted
+	// host from config; omitted for github/ado.
+	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner is the GitHub owner or Azure DevOps organization.
 	Owner string `json:"owner" yaml:"owner"`
 	// Project is required for Azure DevOps and omitted for GitHub.
@@ -669,6 +689,25 @@ type RetentionConfig struct {
 	DryRun                   bool   `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
 	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
 	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
+	// LISTABLE in the portal read model (#1932, §11.4).
+	//
+	// Independent of journal retention above, and deliberately so: a journal is
+	// the source of truth and its retention is a decision about disk and audit;
+	// the projection is derived, and this is a decision about what stays
+	// listable. Aging a run out of the projection removes no evidence.
+	//
+	// Beyond the window a run stays answerable IN AGGREGATE but may not be
+	// individually listable. That is strictly less than the portal offers
+	// today, and was a product decision rather than an engineering one.
+	//
+	// **0, unset, or negative means UNBOUNDED** — no run is ever aged out. Not
+	// "a zero-day window": compared naively that would age out every run
+	// immediately, which is the most destructive possible reading of the value
+	// an operator would most reasonably expect to mean "off". See
+	// readmodel.RetentionDays, where the distinction is enforced rather than
+	// documented.
+	ProjectionFullFidelityDays int `json:"projectionFullFidelityDays,omitempty" yaml:"projectionFullFidelityDays,omitempty"`
 }
 
 // RetainedWorktreeMaxAgeDuration resolves the optional retention window.
@@ -728,6 +767,24 @@ func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
 	}
 	if timeout < MinimumDaemonLivenessTimeout {
 		return 0, fmt.Errorf("runner.livenessTimeout must be at least %s, got %s", MinimumDaemonLivenessTimeout, timeout)
+	}
+	return timeout, nil
+}
+
+// DefaultStageTimeoutDuration resolves the baseline deterministic-stage
+// deadline. Zero means "unset" — the caller keeps its own built-in default
+// rather than substituting one here, so the fallback stays owned by the
+// executor that applies it.
+func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
+	if c.DefaultStageTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.DefaultStageTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.defaultStageTimeout %q: %w", c.DefaultStageTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.defaultStageTimeout must be positive, got %s", timeout)
 	}
 	return timeout, nil
 }
@@ -948,6 +1005,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
 		}
 	}
+	// Checked here, not only where it is applied: the value is consumed once
+	// per run when the deterministic executor is built, so a malformed duration
+	// would otherwise fail every run at dispatch instead of failing `goobers
+	// validate` once.
+	if _, err := c.Runner.DefaultStageTimeoutDuration(); err != nil {
+		return err
+	}
 	if c.Telemetry.OTLP != nil {
 		if err := c.Telemetry.OTLP.Validate(); err != nil {
 			return fmt.Errorf("telemetry.otlp: %w", err)
@@ -1003,8 +1067,8 @@ func (c *Config) Validate() error {
 		return err
 	}
 	for i, r := range c.Repos {
-		if r.Provider != "github" && r.Provider != "ado" {
-			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\")", i, r.Provider)
+		if r.Provider != "github" && r.Provider != "ado" && r.Provider != "gitea" {
+			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\", \"gitea\")", i, r.Provider)
 		}
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
@@ -1099,6 +1163,19 @@ func (c *Config) Validate() error {
 			}
 			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
 				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
+			}
+		case "gitea":
+			if r.BaseURL == "" {
+				return fmt.Errorf("repos[%d] (%s/%s): baseUrl is required for provider \"gitea\" (self-hosted Gitea has no fixed host)", i, r.Owner, r.Name)
+			}
+			if r.Project != "" {
+				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
+			}
+			if r.Auth != nil {
+				return fmt.Errorf("repos[%d] (%s/%s): provider \"gitea\" supports only a static token; remove the auth block", i, r.Owner, r.Name)
+			}
+			if !r.Token.Configured() {
+				return fmt.Errorf("repos[%d] (%s/%s): gitea auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
 			}
 		}
 		if r.Policy != nil {
