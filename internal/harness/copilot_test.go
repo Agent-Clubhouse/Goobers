@@ -610,7 +610,7 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 		wantIncluded     []string
 		wantOmitted      []string
 		wantCommandParts []string
-		wantIssues       bool
+		wantAllGithubMCP bool
 		externalMCP      bool
 	}{
 		{
@@ -642,26 +642,26 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 			wantOmitted:  []string{"github-mcp-server-issue_write"},
 		},
 		{
-			name:         "shipped github group excludes shell",
-			tools:        []string{"github"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
-			wantOmitted:  []string{"bash", "powershell"},
-			wantIssues:   true,
+			name:             "shipped github group excludes shell",
+			tools:            []string{"github"},
+			wantIncluded:     []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write"},
+			wantOmitted:      []string{"bash", "powershell"},
+			wantAllGithubMCP: true,
 		},
 		{
-			name:         "shipped github and telemetry groups expand independently",
-			tools:        []string{"github", "telemetry"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
-			wantOmitted:  []string{"bash", "powershell", "create"},
-			wantIssues:   true,
+			name:             "shipped github and telemetry groups expand independently",
+			tools:            []string{"github", "telemetry"},
+			wantIncluded:     []string{"github-mcp-server-issue_read", "github-mcp-server-issue_write", "github-mcp-server-add_issue_comment", "github-mcp-server-search_issues", "view", "rg"},
+			wantOmitted:      []string{"bash", "powershell", "create"},
+			wantAllGithubMCP: true,
 		},
 		{
-			name:         "external MCP tools are server-qualified without disabling declared GitHub",
-			tools:        []string{"github", "reachability"},
-			wantIncluded: []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
-			wantOmitted:  []string{"create", "context-github-mcp-server-issue_read"},
-			wantIssues:   true,
-			externalMCP:  true,
+			name:             "external MCP tools are server-qualified without disabling declared GitHub",
+			tools:            []string{"github", "reachability"},
+			wantIncluded:     []string{"github-mcp-server-issue_read", "context-github", "context-reachability"},
+			wantOmitted:      []string{"create", "context-github-mcp-server-issue_read"},
+			wantAllGithubMCP: true,
+			externalMCP:      true,
 		},
 	}
 
@@ -757,8 +757,8 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				!slices.Contains(runner.lastReq.Command, "--output-format=text") {
 				t.Fatalf("response completion flags missing: %v", runner.lastReq.Command)
 			}
-			if got := slices.Contains(runner.lastReq.Command, "--add-github-mcp-toolset=issues"); got != tc.wantIssues {
-				t.Fatalf("GitHub issues toolset enabled = %t, want %t: %v", got, tc.wantIssues, runner.lastReq.Command)
+			if got := slices.Contains(runner.lastReq.Command, "--enable-all-github-mcp-tools"); got != tc.wantAllGithubMCP {
+				t.Fatalf("GitHub MCP tool catalog enabled = %t, want %t: %v", got, tc.wantAllGithubMCP, runner.lastReq.Command)
 			}
 			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
 				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
@@ -905,6 +905,12 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 				t.Fatalf("curator tools = %v, want %v", curator.Spec.Tools, want)
 			}
 
+			// Write tools too (#2195/#2184) — a prior version of this test
+			// only asserted read tools, so it passed identically whether or
+			// not curator could actually reach the write tools it needs, and
+			// missed a live regression where they were listed in
+			// copilotToolGroups but never registered with the CLI (see
+			// copilot.go's --enable-all-github-mcp-tools comment).
 			available := copilotAvailableTools(RunRequest{Tools: curator.Spec.Tools})
 			for _, required := range []string{
 				"github-mcp-server-add_issue_comment",
@@ -954,6 +960,119 @@ func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testin
 			}
 		})
 	}
+}
+
+func TestRequiredGithubTools(t *testing.T) {
+	got := RequiredGithubTools([]string{"github:issues:write"})
+	want := []string{
+		"github-mcp-server-issue_write",
+		"github-mcp-server-add_issue_comment",
+		"github-mcp-server-sub_issue_write",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RequiredGithubTools(github:issues:write) = %v, want %v", got, want)
+	}
+	if got := RequiredGithubTools([]string{"github:milestones:write", "agent:model"}); got != nil {
+		t.Fatalf("RequiredGithubTools(no matching capability) = %v, want nil", got)
+	}
+	if got := RequiredGithubTools(nil); got != nil {
+		t.Fatalf("RequiredGithubTools(nil) = %v, want nil", got)
+	}
+}
+
+func TestParseRegisteredGithubTools(t *testing.T) {
+	dir := t.TempDir()
+	// A genuine tool-schema entry (what --log-level all logs at registration
+	// time) alongside a decoy: the model's own free-text answer merely
+	// mentioning a tool's name, which must NOT count as registered — that
+	// was the exact false-positive risk of a bare substring/word-boundary
+	// scan over conversational log content.
+	content := `{"type":"function","name": "github-mcp-server-issue_write","description":"..."}
+	{"role":"assistant","content":"I could use github-mcp-server-issue_write if it existed, but it does not."}
+	{"type":"function","name": "github-mcp-server-issue_read","description":"..."}`
+	if err := os.WriteFile(filepath.Join(dir, "process-1.log"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	registered, err := parseRegisteredGithubTools(dir)
+	if err != nil {
+		t.Fatalf("parseRegisteredGithubTools: %v", err)
+	}
+	for _, want := range []string{"github-mcp-server-issue_write", "github-mcp-server-issue_read"} {
+		if _, ok := registered[want]; !ok {
+			t.Errorf("parseRegisteredGithubTools missing %q: %v", want, registered)
+		}
+	}
+	if _, ok := registered["github-mcp-server-add_issue_comment"]; ok {
+		t.Errorf("parseRegisteredGithubTools reported an unregistered tool as present: %v", registered)
+	}
+}
+
+func TestCopilotAdapterPreflightGithubToolsNoOpWhenNoneRequired(t *testing.T) {
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	if err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, nil); err != nil {
+		t.Fatalf("PreflightGithubTools: %v", err)
+	}
+	if runner.lastReq.Command != nil {
+		t.Fatalf("expected no probe session for an empty required set, got: %v", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterPreflightGithubToolsPasses(t *testing.T) {
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			logDir := logDirFromCommand(t, req.Command)
+			content := `{"type":"function","name": "github-mcp-server-issue_write","description":"..."}
+			{"type":"function","name": "github-mcp-server-add_issue_comment","description":"..."}
+			{"type":"function","name": "github-mcp-server-sub_issue_write","description":"..."}`
+			return os.WriteFile(filepath.Join(logDir, "process-1.log"), []byte(content), 0o644)
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
+	if err != nil {
+		t.Fatalf("PreflightGithubTools: %v", err)
+	}
+	if !slices.Contains(runner.lastReq.Command, "--enable-all-github-mcp-tools") {
+		t.Fatalf("probe command missing --enable-all-github-mcp-tools: %v", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterPreflightGithubToolsFailsClosedOnMissingTool(t *testing.T) {
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			logDir := logDirFromCommand(t, req.Command)
+			// issue_write and sub_issue_write registered; add_issue_comment
+			// (the #2184 shape) silently missing.
+			content := `{"type":"function","name": "github-mcp-server-issue_write","description":"..."}
+			{"type":"function","name": "github-mcp-server-sub_issue_write","description":"..."}`
+			return os.WriteFile(filepath.Join(logDir, "process-1.log"), []byte(content), 0o644)
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
+	if err == nil {
+		t.Fatal("expected PreflightGithubTools to fail closed on a missing registered tool")
+	}
+	if !strings.Contains(err.Error(), "github-mcp-server-add_issue_comment") {
+		t.Fatalf("error = %v, want it to name the missing tool", err)
+	}
+}
+
+// logDirFromCommand extracts the --log-dir value PreflightGithubTools passed
+// to the probe session, so a scripted fakeProcessRunner can drop its fixture
+// log content exactly where the real code will read it back from.
+func logDirFromCommand(t *testing.T, command []string) string {
+	t.Helper()
+	for i, arg := range command {
+		if arg == "--log-dir" && i+1 < len(command) {
+			return command[i+1]
+		}
+	}
+	t.Fatalf("command missing --log-dir: %v", command)
+	return ""
 }
 
 func TestCopilotAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
