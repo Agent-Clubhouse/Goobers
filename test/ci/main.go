@@ -543,6 +543,21 @@ func portalPreparationChecks(tools toolchain) []check {
 			args:    []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"},
 			group:   groupChecks,
 		},
+		// portal-dist-diff above only reports TRACKED-file changes — a newly
+		// added file the build produced (e.g. the first plain, non-hashed
+		// portal/public/ asset vite copies verbatim, referenced by no hashed
+		// chunk) sits untracked and passes that diff clean, even though it's
+		// missing from every other checkout's git history until someone
+		// remembers to `git add` it. `git status --porcelain` reports
+		// untracked files too, closing that blind spot. #2056.
+		{
+			label:       "portal-dist-untracked",
+			command:     tools.gitCommand,
+			args:        []string{"status", "--porcelain", "--", "cmd/goobers/portal-dist"},
+			capture:     true,
+			expectEmpty: true,
+			group:       groupChecks,
+		},
 	}
 }
 
@@ -571,12 +586,16 @@ func executeChecksAt(
 			return fmt.Errorf("%s: %w", current.label, err)
 		}
 		if current.expectEmpty && strings.TrimSpace(string(output)) != "" {
-			_, _ = fmt.Fprintln(stdout, "These files are not gofmt-clean:")
+			// expectEmpty is a generic "this command's output must be empty
+			// or the gate fails" contract (fmt-check's gofmt -l, #2056's
+			// portal-dist-untracked git status --porcelain, ...) — the
+			// message names the check, not any one consumer's meaning.
+			_, _ = fmt.Fprintf(stdout, "%s produced unexpected output:\n", current.label)
 			_, _ = stdout.Write(output)
 			if output[len(output)-1] != '\n' {
 				_, _ = fmt.Fprintln(stdout)
 			}
-			return fmt.Errorf("%s: files are not gofmt-clean", current.label)
+			return fmt.Errorf("%s: expected no output", current.label)
 		}
 	}
 	return nil
