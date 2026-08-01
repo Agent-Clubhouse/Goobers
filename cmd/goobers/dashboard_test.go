@@ -77,25 +77,21 @@ func TestDashboardHandlerServesStandalonePortalAndAPI(t *testing.T) {
 }
 
 func TestListenDashboardReportsConflictAndCanIncrement(t *testing.T) {
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Deliberately NOT net.Listen("127.0.0.1:0"): the OS hands back a port
+	// from the dynamic/ephemeral range (49152-65535 by default on Windows) —
+	// the exact range Hyper-V/WinNAT periodically reserve blocks out of (see
+	// dashboardPortUnavailable's WSAEACCES handling in
+	// dashboard_socket_windows.go). An "occupied" port drawn from up there
+	// can leave the auto-increment search below with too little headroom
+	// before 65535, or walk straight into a reserved block — a real,
+	// host-NAT-state-dependent flake on Windows CI (#2048), not a code bug.
+	// A low, fixed port far outside that range gives the increment search a
+	// wide, deterministic margin regardless of host NAT state.
+	occupied, port := listenFixedTestPort(t, 23456)
 	defer func() { _ = occupied.Close() }()
-	_, portText, err := net.SplitHostPort(occupied.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	if _, err := listenDashboard(dashboardPort{number: port}); err == nil || !strings.Contains(err.Error(), "--port=auto") {
 		t.Fatalf("exact-port error = %v", err)
-	}
-	if port == 65535 {
-		t.Skip("ephemeral port leaves no increment range")
 	}
 	incremented, err := listenDashboard(dashboardPort{number: port, auto: true})
 	if err != nil {
@@ -113,6 +109,24 @@ func TestListenDashboardReportsConflictAndCanIncrement(t *testing.T) {
 	if incrementedPort <= port {
 		t.Fatalf("auto port = %d, want greater than occupied port %d", incrementedPort, port)
 	}
+}
+
+// listenFixedTestPort binds the first available port at or after base,
+// scanning a small range — used instead of an ephemeral (":0") port by tests
+// that exercise port-conflict/increment logic, so the chosen port stays well
+// outside Windows' dynamic/ephemeral range regardless of which port the OS
+// would have handed back (see the comment on
+// TestListenDashboardReportsConflictAndCanIncrement).
+func listenFixedTestPort(t *testing.T, base int) (net.Listener, int) {
+	t.Helper()
+	for port := base; port < base+20; port++ {
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err == nil {
+			return l, port
+		}
+	}
+	t.Fatalf("no free port available in range %d-%d", base, base+19)
+	return nil, 0
 }
 
 func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {

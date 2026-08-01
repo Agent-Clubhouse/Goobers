@@ -491,6 +491,17 @@ jobs:
   # fixable Windows regression — never as an expected-red. The focused tests
   # exercise platform seams, then the node validation drives the real foreground
   # daemon and canonical fake-harness implementation workflow end to end.
+  #
+  # #2048: that "never an expected-red" contract briefly went false — two
+  # focused tests (proc's attach/resume test, dashboard's port-increment
+  # test) carried fixed timeouts/ephemeral-port assumptions too tight for a
+  # loaded Windows runner's real process-spawn latency and Hyper-V/WinNAT's
+  # dynamic-port-range exclusions, each evicting a merge_group entry. Both
+  # were root-caused and fixed at the source (a generous, still-deterministic
+  # wait deadline; a fixed low test port outside the dynamic range) rather
+  # than quarantined — #664's quarantine machinery doesn't exist in this repo
+  # yet, and per its own scope note explicitly excludes required-gate jobs
+  # like this one regardless. The contract stands restored, not weakened.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
