@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -278,6 +279,147 @@ func seedProbeCorpus(t *testing.T, store *Store, n int) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
+	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+}
+
+// TestBoundHoldsAtOneHundredThousandRows is §14.2's stated scale.
+//
+// # Why the bound has to be re-measured at scale rather than extrapolated
+//
+// A bound that holds at 3,000 rows can break at 100,000. SQLite's planner
+// chooses from statistics, and a plan that seeks a covering index on a small
+// table can switch to a scan-and-filter on a large one — at which point the
+// query still returns limit+1 rows and starts examining the whole table. That
+// is precisely the failure §5.7 exists to prevent, and it is invisible to every
+// check except this one.
+//
+// # Why an env var rather than -short
+//
+// Seeding 100,000 rows costs ~109 s, which does not belong in a gate that was
+// deliberately parallelised down to 4-6 minutes. `-short` would not do it:
+// test/ci does not pass that flag, so a `testing.Short()` guard would skip for
+// developers and run on every commit — exactly backwards.
+//
+// The per-commit protection is TestEveryCombinationVisitsAtMostLimitPlusOneRows
+// at 3,000 rows, which catches a regression in the query or the index set. This
+// test catches something different and rarer: the planner switching strategy as
+// statistics grow. That is worth checking deliberately, not continuously.
+//
+// Run it with:
+//
+//	GOOBERS_SCALE_TESTS=1 go test ./internal/readmodel/ \
+//		-run TestBoundHoldsAtOneHundredThousandRows -timeout 30m
+//
+// Recorded result: 100k rows, 44 combinations, worst case 51 rows visited at
+// limit 50.
+func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
+	if os.Getenv("GOOBERS_SCALE_TESTS") == "" {
+		t.Skip("set GOOBERS_SCALE_TESTS=1 to run; seeds 100k rows (~109s)")
+	}
+	registerRowProbe(t)
+
+	store := openTestStore(t)
+	const rows = 100_000
+	seedProbeCorpusBulk(t, store, rows)
+
+	const limit = 50
+	worst := int64(0)
+	var worstAt string
+	for _, combination := range SupportedCombinations() {
+		options, ok := probeOptionsFor(combination.Dims, limit)
+		if !ok {
+			t.Errorf("harness cannot express {%s}", Key(combination.Dims))
+			continue
+		}
+		query, args := listQuery(options, limit)
+		instrumented, ok := instrument(query)
+		if !ok {
+			t.Fatalf("could not instrument: %s", query)
+		}
+		if production, measured := explainWithArgs(t, store, query, args),
+			explainWithArgs(t, store, instrumented, args); production != measured {
+			t.Fatalf("instrumenting changed the plan for {%s}", Key(combination.Dims))
+		}
+
+		probeCount.Store(0)
+		result, err := store.readDB().Query(instrumented, args...)
+		if err != nil {
+			t.Fatalf("query {%s}: %v", Key(combination.Dims), err)
+		}
+		for result.Next() {
+		}
+		_ = result.Close()
+
+		visited := probeCount.Load()
+		if visited > worst {
+			worst, worstAt = visited, Key(combination.Dims)
+		}
+		if visited > int64(limit+1) {
+			t.Errorf("{%s} visited %d rows of %d at limit %d; the bound that held at 3k "+
+				"does not hold at 100k — the planner has switched to scan-and-filter",
+				Key(combination.Dims), visited, rows, limit)
+		}
+	}
+	t.Logf("100k rows, %d combinations: worst case %d rows visited at limit %d (in {%s})",
+		len(SupportedCombinations()), worst, limit, worstAt)
+}
+
+// seedProbeCorpusBulk writes n projected runs in batched transactions.
+//
+// Direct SQL rather than UpsertRun: that path opens a transaction per run, which
+// is correct for projection and far too slow for a 100,000-row fixture. The rows
+// it writes are the same shape — this is a fixture builder, not a second
+// implementation of projection, and the per-combination queries it feeds only
+// read columns that are set here.
+func seedProbeCorpusBulk(t *testing.T, store *Store, n int) {
+	t.Helper()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const batch = 5_000
+
+	for start := 0; start < n; start += batch {
+		tx, err := store.writeDB().Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		runStmt, err := tx.Prepare(`INSERT INTO run (
+			run_id, gaggle, workflow, phase, terminal, started_at, last_activity_at, last_seq,
+			repass_count, retry_count, policy_retry_count, infra_retry_count,
+			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
+		) VALUES (?, ?, ?, 'completed', 1, ?, ?, ?, 0, 0, 0, 0, 1, 1, 1, 1)`)
+		if err != nil {
+			t.Fatalf("prepare run: %v", err)
+		}
+		stageStmt, err := tx.Prepare(`INSERT INTO run_stage (
+			run_id, stage, attempts, last_status, gaggle, run_started_at,
+			token_measured, premium_measured, cost_measured, retry_waste
+		) VALUES (?, 'build', 1, 'success', ?, ?, 1, 1, 1, 1)`)
+		if err != nil {
+			t.Fatalf("prepare stage: %v", err)
+		}
+
+		end := start + batch
+		if end > n {
+			end = n
+		}
+		for i := start; i < end; i++ {
+			id := fmt.Sprintf("run-%08d", i)
+			at := formatTime(base.Add(time.Duration(i) * time.Minute))
+			if _, err := runStmt.Exec(id, "gaggle-000", "workflow-000", at, at, i+1); err != nil {
+				t.Fatalf("insert run %d: %v", i, err)
+			}
+			if _, err := stageStmt.Exec(id, "gaggle-000", at); err != nil {
+				t.Fatalf("insert stage %d: %v", i, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit batch at %d: %v", start, err)
+		}
+	}
+	// ANALYZE after loading, not before: the planner's choices are what this test
+	// is about, and it must make them against the statistics a real 100k store
+	// would have.
 	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
