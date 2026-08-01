@@ -2981,3 +2981,22 @@ func TestSelfIdentitiesByGaggle(t *testing.T) {
 		t.Fatalf("selfIdentitiesByGaggle = %#v, want %#v", got, want)
 	}
 }
+
+func TestRequireLabelsByGaggle(t *testing.T) {
+	set := &instance.ConfigSet{
+		Gaggles: []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "no-default"}, Spec: apiv1.GaggleSpec{}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "frontend"}, Spec: apiv1.GaggleSpec{RequireLabels: []string{"goobers:ready", "area:frontend"}}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "billing"}, Spec: apiv1.GaggleSpec{RequireLabels: []string{"area:billing"}}},
+		},
+	}
+	got := requireLabelsByGaggle(set)
+	want := map[string]string{
+		"no-default": "",
+		"frontend":   "goobers:ready,area:frontend",
+		"billing":    "area:billing",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("requireLabelsByGaggle = %#v, want %#v", got, want)
+	}
+}

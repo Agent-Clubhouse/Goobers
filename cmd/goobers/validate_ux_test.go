@@ -269,6 +269,127 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 	}
 }
 
+// siblingSameRepoYAML declares a sibling targeting the exact repo
+// initDeterministicDemo's example gaggle uses (github/your-org/your-repo).
+const siblingSameRepoYAML = `  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:frontend
+`
+
+func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+siblingSameRepoYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		`overlaps declared sibling "Billing team"`,
+		"area:frontend",
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidateNoWarningOnDisjointSiblingLabels(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+
+			`  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned on disjoint sibling labels:\n%s", stdout)
+	}
+}
+
+func TestValidateNoWarningOnSiblingDifferentRepo(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+
+			`  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: some-other-org
+        name: unrelated-repo
+      label: Unrelated team
+      requireLabels:
+        - area:frontend
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned on a sibling targeting a different repo:\n%s", stdout)
+	}
+}
+
+func TestValidateWorkflowOverrideChangesSiblingOverlapScope(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+siblingSameRepoYAML)
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "  start: local-ci\n  tasks:\n    - name: local-ci\n",
+		"  start: claim-work\n  tasks:\n"+
+			"    - name: claim-work\n"+
+			"      type: deterministic\n"+
+			"      goal: claim work\n"+
+			"      run:\n"+
+			"        command: [\"goobers\", \"backlog-query\"]\n"+
+			"      capabilities: [\"github:issues:write\"]\n"+
+			"      inputs:\n"+
+			"        requireLabels: \"goobers:ready,area:special\"\n"+
+			"      next: local-ci\n"+
+			"    - name: local-ci\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	// The task's own requireLabels ("goobers:ready,area:special") fully
+	// replaces the gaggle default ("area:frontend") for this workflow, so it
+	// no longer overlaps the sibling's declared "area:frontend" — proving
+	// the override, not the gaggle default, drove the comparison.
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned despite the workflow's own requireLabels override:\n%s", stdout)
+	}
+}
+
 func TestCheckTargetRepositoriesAllowsTokenlessADOAuth(t *testing.T) {
 	original := targetRepositoryReachable
 	t.Cleanup(func() { targetRepositoryReachable = original })
