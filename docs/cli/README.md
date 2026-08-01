@@ -12,6 +12,7 @@
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
 | [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
+| [`goobers apply`](#goobers-apply) | reconcile a live daemon's workflow definitions now |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
@@ -212,6 +213,34 @@ collision, unacknowledged modification, or write error, 2 = usage error.
 ~~~console
 $ goobers agent-kit update ./config-repo
 $ goobers agent-kit update --write ./config-repo
+~~~
+
+## `goobers apply`
+
+reconcile a live daemon's workflow definitions now
+
+~~~text
+Usage: goobers apply [path]
+
+Ask a live `goobers up` daemon to reconcile its workflow definitions
+now, instead of waiting for --watch-config's poll interval (or running
+one at all if it's off). For a git-tracked workflowSource, first pulls
+the tracked ref's latest commit; for a local-dir source, just forces an
+immediate validate-and-reload of the config directory as it stands.
+
+On success the daemon's live definitions swap to the new commit/edit
+immediately. An invalid pulled/edited config is rejected: the daemon
+keeps running its last-known-good definitions, and this command reports
+the validation failure. Exit codes: 0 = applied or already current,
+1 = no live daemon found or the pulled/edited config was rejected,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers apply
+$ goobers apply ./instance
 ~~~
 
 ## `goobers apply-verdict`

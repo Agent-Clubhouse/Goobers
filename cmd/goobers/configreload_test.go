@@ -125,6 +125,72 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	}
 }
 
+// TestConfigReloaderPollSerializedAcrossWatchConfigAndApplySweep pins #459's
+// fix for a real concurrency bug QA-2 caught on review of PR #2131:
+// configReloader was only ever safe because exactly one goroutine called
+// poll() (Run's own ticker, gated behind --watch-config) — but #459 makes
+// the reloader always-constructed and its own apply-sweep ticker
+// (unconditional) also calls into it via pollOnce. An operator running
+// `goobers up --watch-config` and `goobers apply` concurrently would
+// otherwise race on every field configReloader.poll mutates. Runs both
+// callers concurrently and hard under `go test -race` to prove they're now
+// serialized by configReloader.mu rather than merely "usually fine."
+func TestConfigReloaderPollSerializedAcrossWatchConfigAndApplySweep(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	previousDelegationInterval := delegationSweepInterval
+	configReloadInterval = 5 * time.Millisecond
+	delegationSweepInterval = 5 * time.Millisecond
+	t.Cleanup(func() {
+		configReloadInterval = previousReloadInterval
+		delegationSweepInterval = previousDelegationInterval
+	})
+
+	root := initDeterministicDemo(t)
+	address := freeLoopbackAddress(t)
+	setAPIListenAddress(t, root, address)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	daemonDone := make(chan int, 1)
+	go func() {
+		daemonDone <- runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, io.Discard)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case code := <-daemonDone:
+			if code != 0 {
+				t.Errorf("daemon exit code = %d", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-started.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup with code %d", code)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	// --watch-config's own ticker is now independently polling the same
+	// configReloader every 5ms. Hammer `goobers apply` from several
+	// concurrent goroutines at the same time — before the r.mu fix this
+	// raced on configReloader's fields under `go test -race`.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				runApply([]string{root}, io.Discard, io.Discard)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestUpReloadsResolvedGooberContentForNextRun(t *testing.T) {
 	previousReloadInterval := configReloadInterval
 	previousDelegationInterval := delegationSweepInterval

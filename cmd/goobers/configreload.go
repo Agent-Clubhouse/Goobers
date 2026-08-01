@@ -77,6 +77,14 @@ type configReloader struct {
 	scheduler *localscheduler.Scheduler
 	openPRs   *openPRLoop
 	reads     *readservice.Local
+	// mu serializes poll()/pollOnce() across the reloader's two independent
+	// callers (Run's own ticker, gated behind --watch-config, and #459's
+	// on-demand apply sweep, which is unconditional). Before #459, poll()
+	// only ever ran on Run's single goroutine; now a concurrent `goobers
+	// apply` while --watch-config is also on would otherwise race on every
+	// field below plus the non-idempotent scheduler.Reload/RunnerRegistry
+	// .Replace/openPRs.Replace side effects poll performs.
+	mu sync.Mutex
 	// readModel publishes a definitions-changed row into the change feed
 	// (#1929). Replaces the deleted poller's out-of-band publish, so a config
 	// reload reaches clients through the SAME ordered feed as everything else
@@ -86,6 +94,12 @@ type configReloader struct {
 	appliedDigest   string
 	observedDigest  string
 	lastDigestError string
+	// lastRejectionMessage is set by reject() during the most recent poll
+	// call and cleared at the start of each pollOnce (#459) — it lets an
+	// on-demand caller distinguish a validation rejection from "nothing to
+	// do," which poll's own plain error return cannot (reject reports success
+	// once the rejection is durably journaled).
+	lastRejectionMessage string
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -96,13 +110,38 @@ func (r *configReloader) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case now := <-ticker.C:
-			if err := r.poll(now); err != nil {
+			r.mu.Lock()
+			err := r.poll(now)
+			r.mu.Unlock()
+			if err != nil {
 				return err
 			}
 		}
 	}
 }
 
+// pollOnce runs exactly one reload check — the same check the ticker in Run
+// performs every tick — and reports a structured outcome instead of just
+// success/failure, so an on-demand caller (goobers apply, #459) can
+// distinguish "nothing changed," "applied," and "rejected: <message>."
+func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	oldDigest = r.appliedDigest
+	r.lastRejectionMessage = ""
+	if pollErr := r.poll(now); pollErr != nil {
+		return false, oldDigest, oldDigest, "", pollErr
+	}
+	if r.appliedDigest != oldDigest {
+		return true, oldDigest, r.appliedDigest, "", nil
+	}
+	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
+}
+
+// poll runs one reload check. Callers must hold r.mu — poll freely mutates
+// appliedDigest/observedDigest/lastDigestError/lastRejectionMessage and
+// drives non-idempotent side effects (scheduler.Reload, RunnerRegistry
+// .Replace, openPRs.Replace) with no internal synchronization of its own.
 func (r *configReloader) poll(now time.Time) error {
 	digest, err := configDirectoryDigest(r.layout.ConfigDir())
 	if err != nil {
@@ -196,6 +235,7 @@ func (r *configReloader) poll(now time.Time) error {
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
+	r.lastRejectionMessage = message
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
 		Error: &journal.ErrorDetail{

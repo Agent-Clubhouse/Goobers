@@ -221,6 +221,10 @@ func init() {
 			withSynopsis(synopsisByID["down"]).
 			withHelp("request a live daemon's graceful drain-shutdown from a separate terminal", downHelp).
 			withExamples("goobers down", "goobers down ./instance"),
+		command("apply", apicontract.ActionDaemonLifecycle, runApply).
+			withSynopsis(synopsisByID["apply"]).
+			withHelp("reconcile a live daemon's workflow definitions now", applyHelp).
+			withExamples("goobers apply", "goobers apply ./instance"),
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).

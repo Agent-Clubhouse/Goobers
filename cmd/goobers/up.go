@@ -600,6 +600,23 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
 
+	// The reloader is always constructed (not gated behind --watch-config)
+	// because `goobers apply` (#459) needs to run exactly one reload check
+	// on demand regardless of whether continuous watching is enabled — the
+	// flag only decides whether its own ticker loop (wired further below)
+	// runs automatically.
+	reloader := &configReloader{
+		layout:         l,
+		setup:          setup,
+		scheduler:      sched,
+		openPRs:        openPRs,
+		reads:          reads,
+		readModel:      setup.ReadModel,
+		wg:             &wg,
+		appliedDigest:  setup.ConfigDigest,
+		observedDigest: setup.ConfigDigest,
+	}
+
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume). A run whose workflow no longer
@@ -635,6 +652,39 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return sweepPendingCancelRequests(l.SchedulerDir(), setup.RunnerRegistry, setup.InstanceLog, sched.ReleaseRun, time.Now)
 	}
 	cancelSweepErrors.report(cancelSweep())
+
+	// #459's daemon-side half: on operator request (`goobers apply`), run
+	// exactly one config-reload check now instead of waiting for
+	// --watch-config's own ticker (or performing one at all if it's off). For
+	// a git-tracked workflowSource, first pull the tracked ref's latest
+	// commit into the config directory — the same validate-or-keep-LKG
+	// contract reloader.pollOnce already enforces for a hand-edited file
+	// applies unchanged to a git-sourced one.
+	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		var resp applyResponse
+		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			if syncErr != nil {
+				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
+				return resp
+			}
+			resp.Revision = revision
+		}
+		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
+		resp.Applied = applied
+		resp.OldDigest = oldDigest
+		resp.NewDigest = newDigest
+		resp.Rejected = rejected
+		if reloadErr != nil {
+			resp.Error = reloadErr.Error()
+		}
+		return resp
+	}
+	applySweep := func() error {
+		return sweepPendingApplyRequests(ctx, l.SchedulerDir(), reconcileApply, time.Now)
+	}
+	applySweepErrors.report(applySweep())
 
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
@@ -770,6 +820,24 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
+	// #459's apply sweep runs on its own ticker for the same reason cancel's
+	// does: a slow reconcile (a remote git fetch) must never delay the
+	// trigger/claim delegation sweeps it shares no ticker with.
+	applyTicker := time.NewTicker(delegationSweepInterval)
+	applyTickerDone := make(chan struct{})
+	go func() {
+		defer close(applyTickerDone)
+		defer applyTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-applyTicker.C:
+				applySweepErrors.report(applySweep())
+			}
+		}
+	}()
+
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})
 	go func() {
@@ -790,24 +858,14 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
-	// Config hot-reload is opt-in. Off by default, `goobers up` keeps the V0
-	// load-once-at-startup behavior; with --watch-config the daemon watches the
-	// config dir and swaps validated edits live. This gate is interim: the
-	// Workflow CD config source (#453) replaces both the flag and this poll loop
-	// with an instance-level workflowSource once that epic lands.
+	// Continuous config hot-reload is opt-in. Off by default, `goobers up`
+	// keeps the V0 load-once-at-startup behavior; with --watch-config the
+	// daemon watches the config dir and swaps validated edits live. This gate
+	// is interim: the Workflow CD config source (#453) replaces both the flag
+	// and this poll loop with an instance-level workflowSource once that epic
+	// lands. reloader itself was already constructed above, unconditionally.
 	configDone := make(chan error, 1)
 	if *watchConfig {
-		reloader := &configReloader{
-			layout:         l,
-			setup:          setup,
-			scheduler:      sched,
-			openPRs:        openPRs,
-			reads:          reads,
-			readModel:      setup.ReadModel,
-			wg:             &wg,
-			appliedDigest:  setup.ConfigDigest,
-			observedDigest: setup.ConfigDigest,
-		}
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
@@ -936,6 +994,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	<-worktreeRetentionTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
+	<-applyTickerDone
 	<-supervisorStopDone
 	if heartbeatDone != nil {
 		<-heartbeatDone
