@@ -3872,6 +3872,124 @@ a.telemetry-error-row:hover {
   stroke-width: 2.5;
 }
 
+/* #1431: the accessible key for the encoding above — a collapsible details
+   element, mirroring ReplayScrubber's "Chapter key" pattern. Every sample
+   pairs a shape/style cue with its own text label, never color alone. */
+.graph-legend-details {
+  margin-top: 10px;
+}
+
+.graph-legend-details > summary {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  height: 28px;
+  list-style: none;
+  padding: 0 10px;
+  width: fit-content;
+}
+
+.graph-legend-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.graph-legend-details > summary::after {
+  content: "▾";
+  font-size: 9px;
+  margin-left: 8px;
+}
+
+.graph-legend-details[open] > summary {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-ink);
+}
+
+.graph-legend-details[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.graph-legend-panel {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 8px;
+  padding: 12px;
+}
+
+.graph-legend-section h3 {
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 760;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.graph-legend-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.graph-legend-list li {
+  align-items: center;
+  display: grid;
+  font-size: 11px;
+  gap: 10px;
+  grid-template-columns: 28px 1fr;
+}
+
+.graph-legend-edge-sample {
+  flex-shrink: 0;
+}
+
+.graph-legend-node-sample {
+  background: var(--panel);
+  border: 1.5px solid var(--line-strong);
+  border-radius: 4px;
+  display: inline-block;
+  height: 14px;
+  width: 20px;
+}
+
+.graph-legend-node-pending {
+  border-style: dotted;
+}
+
+.graph-legend-node-running {
+  border-color: var(--active);
+}
+
+.graph-legend-node-completed {
+  border-color: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+
+.graph-legend-node-failed,
+.graph-legend-node-aborted,
+.graph-legend-node-escalated {
+  border-color: var(--danger);
+}
+
+.graph-legend-node-blocked {
+  border-color: var(--warning);
+}
+
+.graph-legend-node-skipped {
+  border-style: dashed;
+  opacity: 0.5;
+}
+
 .run-node-state {
   font-size: 9px;
   font-weight: 760;

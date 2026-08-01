@@ -10,6 +10,12 @@ import {
 } from "../workflowGraph";
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph";
 
+// traversedEdgesFrom builds a TraversedEdges map from edge keys alone, for
+// tests that only care about membership, not the specific causal sequence.
+function traversedEdgesFrom(keys: string[]): Map<string, number> {
+  return new Map(keys.map((key, index) => [key, index + 1]));
+}
+
 const cyclicGraph: WorkflowGraph = {
   name: "implementation",
   version: 7,
@@ -286,7 +292,14 @@ describe("workflow topology graph", () => {
     expect(selected).toHaveAttribute("aria-pressed", "true");
 
     const firstFocusable = screen.getByRole("button", { name: "Zoom in" });
-    screen.getByRole("button", { name: /^stage-16,/ }).focus();
+    // #1431's graph legend adds one more focusable stop (a native <summary>)
+    // after the last graph node — it, not stage-16, is now the trap's actual
+    // last element. The trap only intercepts the wrap-around edges (it
+    // otherwise relies on the browser's native tab order between stops, which
+    // jsdom's synthetic keydown does not simulate), so focus the legend
+    // directly here rather than tabbing from stage-16 to it.
+    const legendSummary = screen.getByText("Graph legend");
+    legendSummary.focus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(firstFocusable).toHaveFocus();
 
@@ -473,10 +486,10 @@ describe("workflow topology graph traversed edges (#1430)", () => {
         nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
         onSelectStage={() => {}}
         stateSeq={4}
-        traversedEdges={new Set(["query->implement", "implement->review", "review=>complete"])}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review=>complete"])}
       />,
     );
-    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
     // query -> implement -> review -> complete: the taken path.
     expect(edges[0]).toHaveClass("workflow-graph-edge-traversed");
     expect(edges[1]).toHaveClass("workflow-graph-edge-traversed");
@@ -498,10 +511,10 @@ describe("workflow topology graph traversed edges (#1430)", () => {
         nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
         onSelectStage={() => {}}
         stateSeq={4}
-        traversedEdges={new Set(["query->implement", "implement->review", "review->implement"])}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review->implement"])}
       />,
     );
-    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
     const repass = edges[3]; // review -> implement (needs-changes)
     expect(repass).toHaveClass("workflow-graph-edge-repass");
     expect(repass).toHaveClass("workflow-graph-edge-traversed");
@@ -514,17 +527,21 @@ describe("workflow topology graph traversed edges (#1430)", () => {
         nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
         onSelectStage={() => {}}
         stateSeq={4}
-        traversedEdges={new Set(["query->implement", "implement->review", "review=>complete"])}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review=>complete"])}
       />,
     );
     const topology = screen.getByRole("list", { name: "implementation accessible topology" });
     const reviewItem = within(topology)
       .getAllByRole("listitem")
       .find((item) => item.textContent?.startsWith("review,"));
-    expect(reviewItem?.textContent).toContain("approve to Complete terminal, traversed");
-    // The untaken repass gets no traversed qualifier.
-    expect(reviewItem?.textContent).toContain("needs-changes to implement;");
-    expect(reviewItem?.textContent).not.toContain("needs-changes to implement, traversed");
+    expect(reviewItem?.textContent).toContain(
+      "approve to Complete terminal, configured forward route, traversed at sequence 3",
+    );
+    // The untaken repass gets no traversed qualifier, and is explicitly named
+    // as a configured repass route rather than a forward one.
+    expect(reviewItem?.textContent).toContain(
+      "needs-changes to implement, configured repass route, not traversed",
+    );
   });
 
   it("never emphasizes an edge when transitions are unavailable, even with matching node states", () => {
@@ -536,7 +553,7 @@ describe("workflow topology graph traversed edges (#1430)", () => {
         stateSeq={4}
       />,
     );
-    const edges = container.querySelectorAll<SVGPathElement>("path.workflow-graph-edge");
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
     for (const edge of edges) {
       expect(edge).not.toHaveClass("workflow-graph-edge-traversed");
     }
