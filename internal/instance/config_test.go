@@ -743,6 +743,31 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 	}
 }
 
+// TestRetentionConfigEnabledWithNoLimitsIsRejected covers the exact silent
+// no-op combination from #2052: enabling retention without setting either
+// limit previously pruned nothing, giving an operator false confidence that
+// disk usage was bounded.
+func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
+	if err := (&Config{Retention: RetentionConfig{Enabled: true}}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.enabled requires at least one") {
+		t.Fatalf("Validate(enabled, no limits) error = %v, want a retention.enabled-requires-a-limit error", err)
+	}
+
+	// A single configured axis remains a valid, intentional configuration —
+	// this must NOT be rejected by the new check.
+	if err := (&Config{Retention: RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, byte cap only) error = %v, want nil", err)
+	}
+	if err := (&Config{Retention: RetentionConfig{Enabled: true, RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, age limit only) error = %v, want nil", err)
+	}
+
+	// Disabled retention with no limits is unaffected — it already prunes
+	// nothing by design, so there is no silent-no-op trap to guard against.
+	if err := (&Config{Retention: RetentionConfig{}}).Validate(); err != nil {
+		t.Fatalf("Validate(disabled, no limits) error = %v, want nil", err)
+	}
+}
+
 func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
 	var zero TelemetryRetentionConfig
 	if zero.Enabled {
