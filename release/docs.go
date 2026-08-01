@@ -8,17 +8,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
-	readmeSourceInstall = "Install an exact tagged release on Linux or macOS and let its guided flow create\n" +
-		"and validate a release-pinned instance:\n\n" +
+	readmeSourceInstall = "No tagged release exists yet, so build from source with the Go toolchain\n" +
+		"declared in [`go.mod`](go.mod) and run the CLI from `bin/`:\n\n" +
 		"```sh\n" +
-		"VERSION=v1.2.3 # replace with the exact release to install\n" +
-		"/bin/sh -c \"$(curl -fsSL \"https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh\")\" \\\n" +
-		"  -- \"$VERSION\" ./my-instance\n\n"
+		"make build   # or: go build -o bin/goobers ./cmd/goobers\n\n" +
+		"bin/goobers init ./my-instance\n\n"
 	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
 	quickstartSourceInit = "## 2. `init` — scaffold an instance root\n\n" +
@@ -204,26 +205,39 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 	}{
 		{
 			path: "README.md",
-			sections: []onboardingSectionRewrite{{
-				source: readmeSourceInstall,
-				installed: fmt.Sprintf(
-					"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
-						"a newer release cannot change this walkthrough:\n\n"+
-						"```sh\n%s --version\n```\n\n"+
-						"The release installer already ran guided setup at the requested instance path\n"+
-						"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
-						"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
-						"quoting it if needed.\n\n"+
-						"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
-						"below with `./goobers` and create the guided instance now:\n\n"+
-						"```sh\n%s init --guided ./my-instance\n\n",
-					version,
-					releaseCommand,
-					releaseCommand,
-					releaseCommand,
-				),
-			}},
-			sourceCommandPrefix:  "$HOME/.local/bin/goobers",
+			sections: []onboardingSectionRewrite{
+				{
+					source: readmeSourceInstall,
+					installed: fmt.Sprintf(
+						"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
+							"a newer release cannot change this walkthrough:\n\n"+
+							"```sh\n%s --version\n```\n\n"+
+							"The release installer already ran guided setup at the requested instance path\n"+
+							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
+							"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
+							"quoting it if needed.\n\n"+
+							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
+							"below with `./goobers` and create the guided instance now:\n\n"+
+							"```sh\n%s init --guided ./my-instance\n\n",
+						version,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+					),
+				},
+				{
+					// The source (plain `init`) reader only ever has
+					// default-implement scaffolded; the installed (guided
+					// `init --guided`) reader has the richer implementation
+					// workflow guided setup creates instead — these are
+					// genuinely different workflows, not just a renamed
+					// command, so this needs its own section rewrite rather
+					// than riding the blanket command-prefix rename below.
+					source:    "bin/goobers run default-implement ./my-instance",
+					installed: releaseCommand + " run " + instance.GuidedWorkflowImplementation + " ./my-instance",
+				},
+			},
+			sourceCommandPrefix:  "bin/goobers",
 			installedCommandName: releaseCommand,
 		},
 		{
