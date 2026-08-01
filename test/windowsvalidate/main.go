@@ -149,6 +149,36 @@ func validateImplementationJournal(runDir string) error {
 	if err != nil {
 		return fmt.Errorf("read captured implementation events: %w", err)
 	}
+	sequence := stageGateSequence(events)
+	if strings.Join(sequence, "\n") != strings.Join(wantImplementationSequence, "\n") {
+		return fmt.Errorf("implementation workflow sequence:\n got: %v\nwant: %v", sequence, wantImplementationSequence)
+	}
+	return nil
+}
+
+// wantImplementationSequence is the exact stage/gate order the canonical
+// shipped selfhost/goobers/implementation happy path must produce.
+var wantImplementationSequence = []string{
+	"stage:query-backlog",
+	"stage:gather-implement-context",
+	"stage:implement",
+	"gate:review=pass",
+	"stage:local-ci",
+	"gate:local-gate=pass",
+	"stage:push-branch",
+	"stage:open-pr",
+	"gate:open-pr-gate=pass",
+	"stage:ci-poll",
+	"gate:ci-gate=pass",
+	"stage:close-out",
+}
+
+// stageGateSequence projects a run's journal events into the ordered
+// "stage:<name>" / "gate:<name>=<verdict>" strings validateImplementationJournal
+// compares against wantImplementationSequence — pulled out as its own pure
+// function so the projection logic itself has direct unit coverage (#2031)
+// independent of a real recorded journal on disk.
+func stageGateSequence(events []journal.Event) []string {
 	var sequence []string
 	for _, event := range events {
 		switch event.Type {
@@ -158,24 +188,7 @@ func validateImplementationJournal(runDir string) error {
 			sequence = append(sequence, "gate:"+event.Gate+"="+event.Verdict)
 		}
 	}
-	want := []string{
-		"stage:query-backlog",
-		"stage:gather-implement-context",
-		"stage:implement",
-		"gate:review=pass",
-		"stage:local-ci",
-		"gate:local-gate=pass",
-		"stage:push-branch",
-		"stage:open-pr",
-		"gate:open-pr-gate=pass",
-		"stage:ci-poll",
-		"gate:ci-gate=pass",
-		"stage:close-out",
-	}
-	if strings.Join(sequence, "\n") != strings.Join(want, "\n") {
-		return fmt.Errorf("implementation workflow sequence:\n got: %v\nwant: %v", sequence, want)
-	}
-	return nil
+	return sequence
 }
 
 func validateDaemonLifecycle(bin, outDir string) (string, error) {
@@ -340,6 +353,14 @@ func repositoryRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve current directory: %w", err)
 	}
+	return repositoryRootFrom(dir)
+}
+
+// repositoryRootFrom walks parent directories starting at dir looking for
+// this module's go.mod, split out from repositoryRoot so the walk itself
+// (including the stop condition at a filesystem root) is unit-testable
+// without depending on the real process working directory (#2031).
+func repositoryRootFrom(dir string) (string, error) {
 	for {
 		data, readErr := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if readErr == nil && strings.Contains(string(data), "module github.com/goobers/goobers") {

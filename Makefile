@@ -179,6 +179,11 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
+## windows-coverage: Enforce the Windows test-surface inventory (#2031).
+.PHONY: windows-coverage
+windows-coverage:
+	$(GO) run ./test/windowscoverage -go $(GO)
+
 ## build: Build all cmd/* binaries into bin/.
 .PHONY: build
 build: $(addprefix build-,$(CMDS))

@@ -12,10 +12,11 @@ name: CI
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
 #   shipped  shipped-workflow contract suite
 #
-# plus deadcode, and the dedicated conformance, windows-smoke, integration,
-# vulnerability-scan, sandbox, and linux-validation jobs. Coverage of the merge
-# tier is unchanged: the four groups are a disjoint, exhaustive partition of the
-# checks the monolith used to run serially (asserted by test/ci's group tests).
+# plus deadcode, and the dedicated conformance, windows-smoke, windows-coverage,
+# integration, vulnerability-scan, sandbox, and linux-validation jobs. Coverage
+# of the merge tier is unchanged: the four groups are a disjoint, exhaustive
+# partition of the checks the monolith used to run serially (asserted by
+# test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
 # full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
@@ -27,6 +28,11 @@ name: CI
 # platform slices, the Windows gate, the vulnerability scan, and the journal
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
+#
+# windows-coverage (#2031) is the deliberate, reviewed boundary for WHICH
+# packages windows-smoke's go-test steps actually exercise: every package is
+# either named there or explicitly recorded, with a reason, in
+# test/windowscoverage/skip-inventory.txt — never a silent, undocumented gap.
 
 on:
   push:
@@ -81,6 +87,41 @@ jobs:
 
       - name: Dead-code analysis
         run: make deadcode
+
+  # Windows test-surface coverage inventory (#2031): every package must be
+  # exercised by a windows-smoke go-test step, or explicitly recorded (with a
+  # reason) in test/windowscoverage/skip-inventory.txt. Static analysis only
+  # (go list, never go test), so this runs on Linux like deadcode above —
+  # it audits which packages are accounted for, not whether their Windows
+  # tests actually pass (that's windows-smoke's job).
+  windows-coverage:
+    name: windows test-surface coverage inventory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Windows coverage inventory
+        run: make windows-coverage
 
   # Fast fan-in: formatting, module hygiene, the no-phone-home guard, vet,
   # command builds, config validation, and the portal build/test/contract
@@ -548,8 +589,18 @@ jobs:
       - name: make build (windows)
         run: make build-scheduler
 
+      # #2031: internal/platform/shutdown has a real _windows_test.go
+      # counterpart (raise_windows_test.go, mirroring raise_unix_test.go) that
+      # was never wired into this job — an accident of the allowlist's
+      # history, not a deliberate exclusion, per the coverage inventory below.
       - name: Windows platform runtime
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/shutdown
+
+      # #2031: internal/instance already carries a Windows-specific test file
+      # (gitsource_windows_test.go, mirroring gitsource_unix_test.go) that was
+      # never run here — same accidental-gap shape as platform/shutdown above.
+      - name: Windows instance config
+        run: go test ./internal/instance
 
       - name: Windows inline script runtime
         run: go test ./internal/executor -run '^TestShellExecutor_RunScript$'
@@ -590,6 +641,13 @@ jobs:
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
 
+      # #2031: test/windowsvalidate had zero test coverage of its own —
+      # everything it does was "verified" only by whether the end-to-end walk
+      # below happened to pass. Its pure projection/path logic (stageGateSequence,
+      # repositoryRootFrom, firstLine, environmentValue) now has direct unit tests.
+      - name: Windows validation harness unit tests
+        run: go test ./test/windowsvalidate
+
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
 
@@ -623,7 +681,7 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() }}
-    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
+    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, windows-coverage, vulnerability-scan, conformance]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -636,6 +694,7 @@ jobs:
           SHIPPED_RESULT: ${{ needs.shipped.result }}
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
+          WINDOWS_COVERAGE_RESULT: ${{ needs.windows-coverage.result }}
           VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
         run: |
@@ -654,6 +713,7 @@ jobs:
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
+          check "windows test-surface coverage inventory" "$WINDOWS_COVERAGE_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
           check "journal conformance"                "$CONFORMANCE_RESULT"
           exit "$fail"
