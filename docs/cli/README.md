@@ -35,6 +35,7 @@
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
@@ -753,6 +754,30 @@ failed or drift was found, 2 = usage/IO error.
 ~~~console
 $ goobers doctor --k8s
 $ goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0
+~~~
+
+## `goobers down`
+
+request a live daemon's graceful drain-shutdown from a separate terminal
+
+~~~text
+Usage: goobers down [path]
+
+Request a live `goobers up` daemon for this instance to perform the
+same graceful drain-shutdown SIGINT/SIGTERM already trigger, from a
+separate terminal or from automation. No daemon HTTP API, port, or
+auth surface is required or added. Exits 0 once the shutdown request
+has been delivered — the daemon picks it up and begins draining on its
+next sweep. With no live daemon for this instance, fails fast with a
+clear message rather than hanging. Exit codes: 0 = shutdown requested,
+1 = no live daemon found, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers down
+$ goobers down ./instance
 ~~~
 
 ## `goobers elect-lander`

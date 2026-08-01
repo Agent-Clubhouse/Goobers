@@ -28,6 +28,7 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
   goobers service install|uninstall|status [path]
@@ -164,6 +165,7 @@ Usage:
                                 preflight or test local speech notifications
   goobers up [--quiet] [--notify[=all]] [--skip-preflight] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
+  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
   goobers service install|uninstall|status [path]
@@ -629,6 +631,18 @@ prints a human-readable table (--k8s) or per-repo findings (--repo).
 
 Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
 failed or drift was found, 2 = usage/IO error.
+
+### down
+Usage: goobers down [path]
+
+Request a live `goobers up` daemon for this instance to perform the
+same graceful drain-shutdown SIGINT/SIGTERM already trigger, from a
+separate terminal or from automation. No daemon HTTP API, port, or
+auth surface is required or added. Exits 0 once the shutdown request
+has been delivered — the daemon picks it up and begins draining on its
+next sweep. With no live daemon for this instance, fails fast with a
+clear message rather than hanging. Exit codes: 0 = shutdown requested,
+1 = no live daemon found, 2 = usage/IO error.
 
 ### elect-lander
 Usage: goobers elect-lander [--gate name] [path]
