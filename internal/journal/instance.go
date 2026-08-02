@@ -58,7 +58,7 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 		return nil, RecoverReport{}, err
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := openInstanceLogAppend(path, true)
 	if err != nil {
 		return nil, RecoverReport{}, fmt.Errorf("journal: open instance log: %w", err)
 	}
@@ -149,7 +149,7 @@ func (l *InstanceLog) ensureActiveFile(path string) error {
 }
 
 func (l *InstanceLog) reopenFile(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := openInstanceLogAppend(path, false)
 	if err != nil {
 		return fmt.Errorf("journal: reopen active instance log: %w", err)
 	}
