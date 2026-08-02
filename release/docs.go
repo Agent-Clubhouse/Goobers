@@ -240,8 +240,9 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"%s run demo ./demo-instance\n"+
 							"%s trace <run-id> ./demo-instance\n"+
 							"```\n\n"+
-							"The demo runs the full curate -> implement -> review -> merge-preview loop with\n"+
-							"mock providers, no credentials, and no network writes. From there, graduate to\n"+
+							"The demo runs the full curate -> implement -> review -> merge-preview loop on\n"+
+							"Linux or macOS with mock providers, no credentials, and no network writes. From\n"+
+							"there, graduate to\n"+
 							"the token-bearing `quickstart@v1` template with\n"+
 							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
 							"instance and the\n"+

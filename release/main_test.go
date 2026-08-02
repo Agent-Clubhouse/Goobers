@@ -144,6 +144,7 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
+		"Linux or macOS with mock providers",
 		"The release installer already ran guided setup at the requested instance path",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
