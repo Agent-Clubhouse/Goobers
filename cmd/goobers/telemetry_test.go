@@ -125,6 +125,33 @@ func TestTelemetryStatsAfterRun(t *testing.T) {
 	}
 }
 
+func TestRebuildReadModelRefusesToBypassActiveProjector(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	const sentinel = "existing read model"
+	if err := os.WriteFile(l.ReadDB(), []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatalf("hold projector lock: %v", err)
+	}
+	defer release()
+
+	err = rebuildReadModel(context.Background(), l, nil)
+	if err == nil || !strings.Contains(err.Error(), "projector is active") {
+		t.Fatalf("rebuild error = %v, want active-projector refusal", err)
+	}
+	got, err := os.ReadFile(l.ReadDB())
+	if err != nil {
+		t.Fatalf("read original model: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("read model changed while projector lock was held: %q", got)
+	}
+}
+
 func TestTelemetryErrorsAfterRun(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
