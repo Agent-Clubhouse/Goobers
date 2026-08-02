@@ -199,8 +199,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		issues.Capabilities[1] != "github:issues:write" {
 		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:write]", issues.Capabilities)
 	}
-	if issues.Next != "implement" {
-		t.Errorf("gather-issue-context next = %q, want implement", issues.Next)
+	if issues.Next != "guard-before-implement" {
+		t.Errorf("gather-issue-context next = %q, want guard-before-implement", issues.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -255,10 +255,10 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		responseGate.Automated.Check != "status-equals" {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
-	if responseGate.Branches["pass"] != "review" ||
+	if responseGate.Branches["pass"] != "guard-before-review" ||
 		responseGate.Branches["fail"] != "guard-before-implement" ||
 		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+		t.Errorf("finding-responses-gate branches = %v, want pass->guard-before-review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
 	}
 	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
 	if !ok {
@@ -330,6 +330,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	for name, next := range map[string]string{
 		"guard-before-agent-context": "gather-review-threads",
 		"guard-before-implement":     "implement",
+		"guard-before-review":        "review",
 		"guard-before-local-ci":      "local-ci",
 	} {
 		guard, ok := m.Task(name)
@@ -526,8 +527,8 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if !ok {
 		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
 	}
-	if respond.Next != "" {
-		t.Errorf("respond-to-findings next = %q, want terminal", respond.Next)
+	if respond.Next != "release-claim" {
+		t.Errorf("respond-to-findings next = %q, want release-claim", respond.Next)
 	}
 	if respond.Run == nil {
 		t.Fatal("respond-to-findings has no deterministic run command")

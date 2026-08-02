@@ -368,6 +368,20 @@ spec:
         - release-pr-claim
       next: implement
 
+    # Implementation can outlive its subject. Re-check before spending a
+    # reviewer session on work for a PR that has since become terminal.
+    - name: guard-before-review
+      type: deterministic
+      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      run:
+        command: ["goobers", "pr-claim"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: review
+
     # PRR-4 / design doc D1: enrich the versioned brief with every resolvable
     # issue the PR declares through GitHub's closing-keyword grammar. Missing
     # references produce an explicit empty section, so this optional evidence
@@ -383,7 +397,7 @@ spec:
       capabilities:
         - github:pr:write
         - github:issues:write
-      next: implement
+      next: guard-before-implement
 
     # Agentic rework in a worktree provisioned on the PR's own branch (see
     # this file's top comment): the SAME implementer goober implementation.yaml
@@ -701,7 +715,7 @@ spec:
       automated:
         check: status-equals
       branches:
-        pass: review
+        pass: guard-before-review
         fail: guard-before-implement
         escalate: park-invalid-finding-responses
 
