@@ -73,7 +73,7 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	go retention.Run(sweepCtx)
-	sweeper := repair.New(store, watermarks, repair.Options{RunsDirs: runsDirs})
+	sweeper := repair.New(store, p, watermarks, repair.Options{RunsDirs: runsDirs})
 	go sweeper.Run(sweepCtx)
 
 	// The restart pass runs after Start, so its commits go through the same

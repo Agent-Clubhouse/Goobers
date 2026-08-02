@@ -87,10 +87,92 @@ func (f *fakeStore) RemoveRun(_ context.Context, runID string) error {
 	return nil
 }
 
+func (f *fakeStore) SaveSweepCursor(_ context.Context, _ readmodel.SweepCursor) error {
+	current := atomic.AddInt32(&f.inFlight, 1)
+	for {
+		observed := atomic.LoadInt32(&f.maxInFlight)
+		if current <= observed || atomic.CompareAndSwapInt32(&f.maxInFlight, observed, current) {
+			break
+		}
+	}
+	defer atomic.AddInt32(&f.inFlight, -1)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "sweep-cursor")
+	return nil
+}
+
+func (f *fakeStore) MarkUnpublished(
+	_ context.Context,
+	runID string,
+	_ time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "mark-unpublished:"+runID)
+	return nil
+}
+
+func (f *fakeStore) ClearUnpublished(_ context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "clear-unpublished:"+runID)
+	return nil
+}
+
+func (f *fakeStore) Tombstone(
+	_ context.Context,
+	runID string,
+	_ time.Time,
+	_ string,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "tombstone:"+runID)
+	return nil
+}
+
 func (f *fakeStore) commitOrder() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.commits...)
+}
+
+// TestRepairMutationsShareTheProjectionCommitLoop prevents repair from becoming
+// a second read-model writer.
+func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.hold = make(chan struct{})
+	store.holdFor = "run-a"
+
+	p := New(store, newFakeIntake(), Options{})
+	stop := p.Start(ctx)
+	defer stop()
+
+	upserted := make(chan error, 1)
+	go func() { upserted <- p.UpsertRun(ctx, projectionFor("run-a", 1)) }()
+	waitFor(t, func() bool { return atomic.LoadInt32(&store.inFlight) == 1 })
+
+	saved := make(chan error, 1)
+	go func() { saved <- p.SaveSweepCursor(ctx, readmodel.SweepCursor{AfterName: "run-a"}) }()
+	close(store.hold)
+
+	if err := <-upserted; err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := <-saved; err != nil {
+		t.Fatalf("save sweep cursor: %v", err)
+	}
+	if got := atomic.LoadInt32(&store.maxInFlight); got != 1 {
+		t.Errorf("observed %d simultaneous projector and repair writes; repair bypassed "+
+			"the sole-writer commit loop", got)
+	}
+	if got := store.commitOrder(); len(got) != 2 ||
+		got[0] != "run-a" || got[1] != "sweep-cursor" {
+		t.Errorf("commit order = %v, want [run-a sweep-cursor]", got)
+	}
 }
 
 // TestCommitsAreSerializedUnderConcurrentPreparation is #1923's third acceptance

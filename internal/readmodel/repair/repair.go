@@ -46,24 +46,28 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/intake"
 )
 
-// Store is what the sweep needs from the read model.
+// Store is the read-only surface the sweep needs from the read model.
 type Store interface {
 	SweepCursor(ctx context.Context) (readmodel.SweepCursor, error)
-	SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error
 	ProjectionFloor(ctx context.Context) (time.Time, bool, error)
 
 	GetRun(ctx context.Context, runID string) (readmodel.RunRow, bool, error)
-	UpsertRun(ctx context.Context, p readmodel.Projection) error
-	RemoveRun(ctx context.Context, runID string) error
 
 	IsUnpublished(ctx context.Context, runID string, mtime time.Time) (bool, error)
-	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
-	ClearUnpublished(ctx context.Context, runID string) error
 
 	Tombstoned(ctx context.Context, runID string) (bool, error)
-	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
 
 	ProjectedRunIDsBefore(ctx context.Context, before time.Time, limit int) ([]readmodel.RunRow, error)
+}
+
+// Writer routes repair mutations through the read model's sole-writer loop.
+type Writer interface {
+	UpsertRun(ctx context.Context, p readmodel.Projection) error
+	RemoveRun(ctx context.Context, runID string) error
+	SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error
+	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
+	ClearUnpublished(ctx context.Context, runID string) error
+	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
 }
 
 // Watermarks is the intake surface the sweep consults.
@@ -100,6 +104,7 @@ const (
 // Sweeper walks run directories and reconciles them against the read model.
 type Sweeper struct {
 	store      Store
+	writer     Writer
 	watermarks Watermarks
 	options    Options
 	stats      Stats
@@ -118,7 +123,7 @@ type Stats struct {
 }
 
 // New constructs a sweeper.
-func New(store Store, watermarks Watermarks, options Options) *Sweeper {
+func New(store Store, writer Writer, watermarks Watermarks, options Options) *Sweeper {
 	if options.EntriesPerSecond <= 0 {
 		options.EntriesPerSecond = defaultEntriesPerSecond
 	}
@@ -131,7 +136,7 @@ func New(store Store, watermarks Watermarks, options Options) *Sweeper {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Sweeper{store: store, watermarks: watermarks, options: options}
+	return &Sweeper{store: store, writer: writer, watermarks: watermarks, options: options}
 }
 
 // Run sweeps continuously until the context is cancelled.
@@ -177,7 +182,7 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		// The recorded root no longer exists — a gaggle was removed, or the
 		// layout changed. Restart the cycle rather than failing: the cursor is a
 		// position hint, not a fact about the world.
-		return s.store.SaveSweepCursor(ctx, s.beginCycle(readmodel.SweepCursor{}))
+		return s.writer.SaveSweepCursor(ctx, s.beginCycle(readmodel.SweepCursor{}))
 	}
 
 	names, err := s.readBatch(root, cursor.AfterName, s.options.BatchSize)
@@ -205,7 +210,7 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		// This root is exhausted. Move to the next, or complete the cycle.
 		cursor = s.advanceRoot(cursor)
 	}
-	if err := s.store.SaveSweepCursor(ctx, cursor); err != nil {
+	if err := s.writer.SaveSweepCursor(ctx, cursor); err != nil {
 		return err
 	}
 	return s.sweepReverse(ctx)
@@ -238,11 +243,11 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 	}
 	if !journal.Recorded(dir) {
 		s.stats.SkippedUnpub++
-		return s.store.MarkUnpublished(ctx, runID, info.ModTime())
+		return s.writer.MarkUnpublished(ctx, runID, info.ModTime())
 	}
 	// It was unpublished and now is not. Clear the memo so a later mtime change
 	// is not measured against a stale entry.
-	if err := s.store.ClearUnpublished(ctx, runID); err != nil {
+	if err := s.writer.ClearUnpublished(ctx, runID); err != nil {
 		return err
 	}
 
@@ -292,11 +297,11 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 		if !resumed {
 			s.stats.SkippedFloor++
 			s.stats.Tombstoned++
-			return s.store.Tombstone(ctx, runID, projection.Run.StartedAt, "below_projection_floor")
+			return s.writer.Tombstone(ctx, runID, projection.Run.StartedAt, "below_projection_floor")
 		}
 	}
 
-	if err := s.store.UpsertRun(ctx, projection); err != nil {
+	if err := s.writer.UpsertRun(ctx, projection); err != nil {
 		return err
 	}
 	s.stats.Projected++
@@ -324,7 +329,7 @@ func (s *Sweeper) sweepReverse(ctx context.Context) error {
 		// Projected with no journal anywhere. Whether retention removed it or an
 		// operator did, the row is now unsupported by any source, and §3.2 makes
 		// journals authoritative — so the row goes and run.removed is published.
-		if err := s.store.RemoveRun(ctx, row.RunID); err != nil {
+		if err := s.writer.RemoveRun(ctx, row.RunID); err != nil {
 			return err
 		}
 		s.stats.Removed++

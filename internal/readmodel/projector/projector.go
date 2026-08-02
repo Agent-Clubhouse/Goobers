@@ -58,6 +58,10 @@ type Store interface {
 	GetRun(ctx context.Context, runID string) (readmodel.RunRow, bool, error)
 	NonTerminalRuns(ctx context.Context, limit int) ([]readmodel.RunRow, error)
 	RemoveRun(ctx context.Context, runID string) error
+	SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error
+	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
+	ClearUnpublished(ctx context.Context, runID string) error
+	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
 }
 
 // Projection is the unit the projector commits. Aliased so callers and tests do
@@ -152,10 +156,9 @@ type Stats struct {
 
 // commitRequest is one prepared projection awaiting its turn at the commit loop.
 type commitRequest struct {
-	projection Projection
-	remove     bool
-	runID      string
-	result     chan error
+	write  func(context.Context, Store) error
+	notify bool
+	result chan error
 }
 
 // New constructs a projector.
@@ -226,16 +229,11 @@ func (p *Projector) commitLoop(ctx context.Context) {
 		case <-p.stop:
 			return
 		case request := <-p.commits:
-			var err error
-			if request.remove {
-				err = p.store.RemoveRun(ctx, request.runID)
-			} else {
-				err = p.store.UpsertRun(ctx, request.projection)
-			}
+			err := request.write(ctx, p.store)
 			// Notify only on a successful commit, and only after it. A failed
 			// projection has published nothing, so waking subscribers would send
 			// them to read a change that does not exist.
-			if err == nil && p.options.Feed != nil {
+			if err == nil && request.notify && p.options.Feed != nil {
 				p.options.Feed.Notify()
 			}
 			request.result <- err
@@ -257,6 +255,59 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 	case err := <-request.result:
 		return err
 	}
+}
+
+// UpsertRun commits a prepared projection through the sole-writer loop.
+func (p *Projector) UpsertRun(ctx context.Context, projection Projection) error {
+	return p.commit(ctx, commitRequest{
+		write: func(ctx context.Context, store Store) error {
+			return store.UpsertRun(ctx, projection)
+		},
+		notify: true,
+	})
+}
+
+// RemoveRun removes a projected run through the sole-writer loop.
+func (p *Projector) RemoveRun(ctx context.Context, runID string) error {
+	return p.commit(ctx, commitRequest{
+		write: func(ctx context.Context, store Store) error {
+			return store.RemoveRun(ctx, runID)
+		},
+		notify: true,
+	})
+}
+
+// SaveSweepCursor commits repair progress through the sole-writer loop.
+func (p *Projector) SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.SaveSweepCursor(ctx, cursor)
+	}})
+}
+
+// MarkUnpublished commits an unpublished-directory memo through the sole-writer loop.
+func (p *Projector) MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.MarkUnpublished(ctx, runID, mtime)
+	}})
+}
+
+// ClearUnpublished removes an unpublished-directory memo through the sole-writer loop.
+func (p *Projector) ClearUnpublished(ctx context.Context, runID string) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.ClearUnpublished(ctx, runID)
+	}})
+}
+
+// Tombstone records an intentionally excluded run through the sole-writer loop.
+func (p *Projector) Tombstone(
+	ctx context.Context,
+	runID string,
+	startedAt time.Time,
+	reason string,
+) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.Tombstone(ctx, runID, startedAt, reason)
+	}})
 }
 
 // schedule drains intake on an interval.
@@ -349,7 +400,7 @@ func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker) error
 		return nil
 	}
 
-	if err := p.commit(ctx, commitRequest{projection: projection}); err != nil {
+	if err := p.UpsertRun(ctx, projection); err != nil {
 		return err
 	}
 	p.bump(func(s *Stats) { s.Projected++ })
@@ -380,7 +431,7 @@ func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker) error
 // clears `removing` when a newer sequence proves the run is still live — so a
 // marker still flagged here has not been contradicted.
 func (p *Projector) applyRemoval(ctx context.Context, marker intake.Marker) error {
-	if err := p.commit(ctx, commitRequest{remove: true, runID: marker.RunID}); err != nil {
+	if err := p.RemoveRun(ctx, marker.RunID); err != nil {
 		return err
 	}
 	p.bump(func(s *Stats) { s.Removed++ })
@@ -485,7 +536,7 @@ func (p *Projector) Restart(ctx context.Context) (RestartResult, error) {
 			result.Missing++
 			continue
 		}
-		if err := p.commit(ctx, commitRequest{projection: projection}); err != nil {
+		if err := p.UpsertRun(ctx, projection); err != nil {
 			return result, err
 		}
 		result.Reprojected++
