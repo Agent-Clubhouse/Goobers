@@ -141,12 +141,7 @@ spec:
 	// without it this test fails on loaded runners with
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
-	waitForRunnableWorkflow(t, root, "reloaded-implement")
-
-	code, stdout, stderr := runArgs(t, "run", "--no-wait", "reloaded-implement", root)
-	if code != 0 {
-		t.Fatalf("run reloaded workflow: code=%d stdout=%q stderr=%q", code, stdout, stderr)
-	}
+	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
 	runID := runIDFromRunStdout(t, stdout)
 	runDir := filepath.Join(layout.ForGaggle("example").RunsDir(), runID)
 	deadline := time.Now().Add(10 * time.Second)
@@ -175,7 +170,7 @@ spec:
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	code, stdout, stderr = runArgs(t, "approve", "--actor=config-reloader", runID, "approval", root)
+	code, stdout, stderr := runArgs(t, "approve", "--actor=config-reloader", runID, "approval", root)
 	if code != 0 {
 		t.Fatalf("approve post-reload run: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -767,17 +762,17 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 // the "unknown workflow" stderr is retried: any other non-zero exit fails
 // immediately, so a genuine regression still surfaces rather than being spun on
 // until the deadline.
-func waitForRunnableWorkflow(t *testing.T, root, workflow string) {
+func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 	t.Helper()
-	waitForConfigValue(t, workflow+" to become runnable", func() (struct{}, bool) {
-		code, stdout, stderr := runArgs(t, "run", workflow, root)
+	return waitForConfigValue(t, workflow+" to become runnable", func() (string, bool) {
+		code, stdout, stderr := runArgs(t, "run", "--no-wait", workflow, root)
 		if code == 0 {
-			return struct{}{}, true
+			return stdout, true
 		}
 		if !strings.Contains(stderr, "unknown workflow") {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
-		return struct{}{}, false
+		return "", false
 	})
 }
 
