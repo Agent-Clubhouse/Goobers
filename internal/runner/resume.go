@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -230,7 +231,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	})
 }
 
-func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (Result, error) {
+func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (result Result, retErr error) {
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: open run %q for resume: %w", in.RunID, err)
@@ -561,13 +562,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
 	}
-	lease, err := r.acquirePinnedWorkspace(ctx, jr, &startIn)
+	_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 	if err != nil {
+		if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, startState, 0); ok {
+			return interrupted, interruptErr
+		}
 		return Result{}, err
 	}
-	if lease != nil {
-		defer func() { _ = lease.Release() }()
-	}
+	defer func() {
+		if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+			retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+		}
+	}()
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
 	setStalledAttemptContext(ctx)
@@ -611,7 +617,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	result, err := r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+	result, err = r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 	if err != nil {
 		span.Fail(err)
 		return result, err

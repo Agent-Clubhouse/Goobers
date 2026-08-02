@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -69,7 +70,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (result Result, retErr error) {
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: open run %q for stage rerun: %w", in.RunID, err)
@@ -146,13 +147,18 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Item:         item,
 			RunControls:  runControls,
 		}
-		lease, err := r.acquirePinnedWorkspace(ctx, jr, &startIn)
+		_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 		if err != nil {
+			if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, in.Stage, 0); ok {
+				return interrupted, interruptErr
+			}
 			return Result{}, err
 		}
-		if lease != nil {
-			defer func() { _ = lease.Release() }()
-		}
+		defer func() {
+			if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+				retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+			}
+		}()
 		pointerEvents := seedEvents
 		if activeParallel != nil {
 			pointerEvents = seedEvents[:parallelStart]
@@ -177,7 +183,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		defer span.End()
 		setStalledAttemptContext(ctx)
 
-		result, err := r.walk(ctx, jr, startIn, in.Stage, nil, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+		result, err = r.walk(ctx, jr, startIn, in.Stage, nil, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 		if err != nil {
 			span.Fail(err)
 			return result, err

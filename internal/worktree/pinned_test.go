@@ -84,6 +84,26 @@ func TestPinnedDiffUsesRefreshedBaseAfterConsecutiveRun(t *testing.T) {
 	}
 }
 
+func TestAcquirePinnedResetsTrackedResidueBeforeAdvancedBaseCheckout(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	first := acquirePinnedFixture(t, manager, repo, "run-one", PinnedCleanNone)
+	mustWriteFile(t, filepath.Join(first.Worktree.Path, "README.md"), "dirty prior run")
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "advanced base")
+	runTestGit(t, repo, "add", "README.md")
+	runTestGit(t, repo, "commit", "-m", "advance tracked base file")
+
+	second := acquirePinnedFixture(t, manager, repo, "run-two", PinnedCleanNone)
+	defer func() { _ = second.Release() }()
+	got, err := os.ReadFile(filepath.Join(second.Worktree.Path, "README.md"))
+	if err != nil || string(got) != "advanced base" {
+		t.Fatalf("tracked file after reset = %q, %v", got, err)
+	}
+}
+
 func TestPreparePinnedSelectsRemoteBranchAndSyncsLatestBase(t *testing.T) {
 	_, repo := pinnedFixture(t)
 	manager, err := NewManager(t.TempDir(), WithPinnedRoot(t.TempDir()))

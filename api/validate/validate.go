@@ -1386,6 +1386,10 @@ func (ix *index) checkGaggleCheckout(r *Report) {
 			}
 		}
 		warn("spec.project.checkout", g.Spec.Project.Checkout)
+		if g.Spec.Project.Checkout != nil && g.Spec.Project.Checkout.Mode == apiv1.CheckoutModePinned && len(g.Spec.AdditionalRepos) > 0 {
+			r.add(errorCheckoutConflict, Error, file, "Gaggle", name,
+				"spec.project.checkout.mode %q cannot be combined with spec.additionalRepos; pinned runs use no per-stage worktrees", apiv1.CheckoutModePinned)
+		}
 		for i := range g.Spec.AdditionalRepos {
 			field := fmt.Sprintf("spec.additionalRepos[%d].checkout", i)
 			checkout := g.Spec.AdditionalRepos[i].Checkout

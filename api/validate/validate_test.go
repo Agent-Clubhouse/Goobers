@@ -1750,6 +1750,15 @@ func TestGagglePinnedCheckoutRejectsWorktreeContradictions(t *testing.T) {
       checkout:
         mode: pinned`,
 		},
+		{
+			name:     "pinned project with additional repo",
+			checkout: "mode: pinned",
+			additionalRepos: `
+  additionalRepos:
+    - provider: github
+      owner: acme
+      name: assets`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := `apiVersion: goobers.dev/v1alpha1

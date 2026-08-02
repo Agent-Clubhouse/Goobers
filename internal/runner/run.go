@@ -409,6 +409,8 @@ type Runner struct {
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
+	pinnedMu             sync.Mutex
+	pinnedRuns           map[string]*worktree.PinnedLease
 	toolchains           ToolchainVerifier
 	lookPath             func(string) (string, error)
 }
@@ -443,6 +445,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 	}, nil
 }
 
@@ -609,14 +612,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
-		lease, err := r.acquirePinnedWorkspace(ctx, jr, &in)
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (result Result, retErr error) {
+		_, err := r.acquirePinnedWorkspace(ctx, jr, &in)
 		if err != nil {
-			return Result{}, err
+			if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, in.Machine.Def.Spec.Start, 0); ok {
+				return interrupted, interruptErr
+			}
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, "workspace-lease", 0, err)
 		}
-		if lease != nil {
-			defer func() { _ = lease.Release() }()
-		}
+		defer func() {
+			if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+				retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+			}
+		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
@@ -660,7 +668,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			seed.branchRecorded = true
 		}
 
-		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
+		result, err = r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -3848,6 +3856,17 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 	if in.RepoRef.Checkout == nil || in.RepoRef.Checkout.Mode != apiv1.CheckoutModePinned {
 		return nil, nil
 	}
+	if len(r.cfg.AdditionalRepos) > 0 {
+		return nil, fmt.Errorf("runner: pinned project workspaces cannot provision additional repository worktrees")
+	}
+	r.pinnedMu.Lock()
+	owned := r.pinnedRuns[in.RunID]
+	r.pinnedMu.Unlock()
+	if owned != nil {
+		in.pinnedWorkspace = owned.Worktree
+		in.pinnedStage = &sync.Mutex{}
+		return owned, nil
+	}
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
 		return nil, err
@@ -3857,7 +3876,7 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 		baseRef = "main"
 	}
 	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
-	lease, err := r.cfg.Worktrees.AcquirePinned(ctx, worktree.PinnedOptions{
+	lease, err := r.cfg.Worktrees.AcquirePinned(stalledAttemptContext(ctx), worktree.PinnedOptions{
 		RepoURL:     repoURL,
 		RunID:       in.RunID,
 		BaseRef:     baseRef,
@@ -3888,7 +3907,18 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 	}
 	in.pinnedWorkspace = lease.Worktree
 	in.pinnedStage = &sync.Mutex{}
+	r.pinnedMu.Lock()
+	r.pinnedRuns[in.RunID] = lease
+	r.pinnedMu.Unlock()
 	return lease, nil
+}
+
+func (r *Runner) releasePinnedWorkspace(runID string) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	delete(r.pinnedRuns, runID)
+	r.pinnedMu.Unlock()
+	return lease.Release()
 }
 
 // provisionAdditionalCheckouts materializes a read-only checkout of each of the

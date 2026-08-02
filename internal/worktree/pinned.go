@@ -320,6 +320,12 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		}
 	}
 	baseRef := pinnedBaseRef(ctx, pinDir, opts.BaseRef)
+	if err := runGit(ctx, pinDir, "checkout", "--detach", "--force", baseRef); err != nil {
+		return nil, fmt.Errorf("worktree: reset pinned workspace to base: %w", err)
+	}
+	if err := runGit(ctx, pinDir, "reset", "--hard", baseRef); err != nil {
+		return nil, fmt.Errorf("worktree: reset pinned workspace: %w", err)
+	}
 	existing := false
 	var err error
 	if opts.Branch != "" {
@@ -343,9 +349,6 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		if err := runGit(ctx, pinDir, "checkout", "-b", opts.Branch, baseRef); err != nil {
 			return nil, fmt.Errorf("worktree: create pinned branch: %w", err)
 		}
-	}
-	if err := runGit(ctx, pinDir, "reset", "--hard", "HEAD"); err != nil {
-		return nil, fmt.Errorf("worktree: reset pinned workspace: %w", err)
 	}
 	switch opts.CleanPolicy {
 	case PinnedCleanIgnoredSafe:
