@@ -33,7 +33,7 @@ jobs:
         env:
           PROVIDER_FIXTURE_REPOSITORY: ${{ vars.PROVIDER_FIXTURE_REPOSITORY }}
           PROVIDER_FIXTURE_ISSUE: ${{ vars.PROVIDER_FIXTURE_ISSUE }}
-          PROVIDER_FIXTURE_TOKEN: ${{ secrets.PROVIDER_FIXTURE_TOKEN }}
+          PROVIDER_FIXTURE_TOKEN: ${{ secrets.GH_READONLY_VALIDATION_PAT }}
         run: |
           missing=""
           [ -n "$PROVIDER_FIXTURE_REPOSITORY" ] || missing="$missing PROVIDER_FIXTURE_REPOSITORY"
@@ -46,7 +46,7 @@ jobs:
 
       - name: Refresh normalized candidate
         env:
-          GOOBERS_PROVIDER_FIXTURE_TOKEN: ${{ secrets.PROVIDER_FIXTURE_TOKEN }}
+          GOOBERS_PROVIDER_FIXTURE_TOKEN: ${{ secrets.GH_READONLY_VALIDATION_PAT }}
           PROVIDER_FIXTURE_REPOSITORY: ${{ vars.PROVIDER_FIXTURE_REPOSITORY }}
           PROVIDER_FIXTURE_ISSUE: ${{ vars.PROVIDER_FIXTURE_ISSUE }}
         run: >-
