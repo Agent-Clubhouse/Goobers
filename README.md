@@ -66,16 +66,36 @@ defines behavior while runs, workcopies, and scheduler records are runtime
 state.
 
 No tagged release exists yet, so build from source with the Go toolchain
-declared in [`go.mod`](go.mod) and run the CLI from `bin/`:
+declared in [`go.mod`](go.mod). The fastest first run is the hermetic demo:
 
 ```sh
 make build   # or: go build -o bin/goobers ./cmd/goobers
 
-bin/goobers init ./my-instance
+bin/goobers init --demo ./demo-instance
+bin/goobers run demo ./demo-instance
+bin/goobers trace <run-id> ./demo-instance
+```
 
-# Or seed the onboarding-only backlog -> review -> PR path on a disposable instance:
-bin/goobers init --template=quickstart ./tutorial-instance
+The demo runs the full curate -> implement -> review -> merge-preview loop on
+Linux or macOS with mock providers, no credentials, and no network writes. It
+also shows how a run pauses at a gate before completing.
 
+From there, graduate in this order:
+
+1. Seed the disposable, token-bearing `quickstart@v1` path with
+   `bin/goobers init --template=quickstart ./tutorial-instance`.
+2. Scaffold a regular instance with `bin/goobers init ./my-instance` and run
+   its starter workflow with
+   `bin/goobers run default-implement ./my-instance`.
+3. Adapt the production-oriented definitions under [`config-examples/`](config-examples/),
+   which add review, CI, remediation, escalation, and merge-policy patterns.
+
+The [full quickstart](docs/guides/quickstart.md) walks through that progression
+and the remaining CLI surfaces.
+
+For a regular instance, the core inspection and operator commands are:
+
+```sh
 bin/goobers config show ./my-instance    # effective config (secrets redacted)
 bin/goobers run default-implement ./my-instance # trigger a run manually
 bin/goobers status ./my-instance         # list runs + their phase
@@ -114,9 +134,8 @@ merge policy.
 any run interrupted by a prior crash via `Runner.Resume`, then drives
 scheduled workflows until interrupted, draining in-flight runs gracefully on
 SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
-without a daemon running. Full walkthrough:
-[`docs/guides/quickstart.md`](docs/guides/quickstart.md). Platform-specific
-setup: [Linux quickstart](docs/guides/quickstart-linux.md),
+without a daemon running. Platform-specific setup:
+[Linux quickstart](docs/guides/quickstart-linux.md),
 [Windows quickstart](docs/guides/quickstart-windows.md); run
 the daemon as a supervised service via
 [Daemon supervision](docs/guides/supervision.md)

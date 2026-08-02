@@ -144,6 +144,7 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
+		"Linux or macOS with mock providers",
 		"The release installer already ran guided setup at the requested instance path",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
@@ -189,6 +190,9 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
+		"goobers-v1.2.3 init --demo ./demo-instance",
+		"goobers-v1.2.3 run demo ./demo-instance",
+		"goobers-v1.2.3 trace <run-id> ./demo-instance",
 		"goobers-v1.2.3 onboarding stub-sample",
 		"--destination ./getting-started-task-api",
 		"--json",
@@ -226,11 +230,12 @@ func TestRunEndToEnd(t *testing.T) {
 		"bundled quickstart direct onboarding",
 		string(quickstart),
 		"goobers-v1.2.3 --version",
+		"goobers-v1.2.3 init --demo ./demo-instance",
+		"goobers-v1.2.3 onboarding stub-sample",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
 		"goobers-v1.2.3 init --guided ./my-instance",
-		"goobers-v1.2.3 onboarding stub-sample",
 		"goobers-v1.2.3 validate ./my-instance",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)
