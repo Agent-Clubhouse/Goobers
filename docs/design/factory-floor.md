@@ -25,7 +25,7 @@ toggle:
 | Layout | Route value | What it answers |
 |---|---|---|
 | Lines | `lines` (default) | Exactly how a workflow is wired: declared stages in graph order, each edge, each outcome, each terminal |
-| Plant | `plant` | What the whole instance looks like as one working hall: workflow districts, machinery, belts, crates, staff |
+| Plant | `plant` | What the whole instance looks like from the boss's window: production zones, real stage machines, alarms, crates, and staff |
 
 Layout is presentation only. Both layouts:
 
@@ -60,33 +60,28 @@ back to `lines`, exactly as an unrecognised `lens` falls back to `world`.
 lane bands, station rectangles, conveyor paths, docks, the inbound yard, and the
 ready commons.
 
-`FactoryPlant.tsx` (plant) reads the model's grid facts instead: which lane a
-stage belongs to, its declared column and row, which runs stand on it, which
-goober owns it, and which pair of stages a belt joins. `factoryPlant.ts`
-projects those facts onto an isometric tile grid. That projection is pure: no
-randomness, no wall clock, no module state, so the same model always yields
-byte-identical geometry and a crate only slides when its run really changed
-stage. The projection uses one fixed 56 pixel tile and a fixed origin. A larger
-plant expands its scrollable scene instead of rescaling or shifting existing
-districts. A later workflow or topology read therefore cannot move geometry
-that was already visible.
+`FactoryPlant.tsx` (plant) places the same model onto a fixed 1450 by 950
+boss's-window scene. `factoryClassicPlant.ts` deterministically maps declared
+stage order onto the factory's intake, planning, build, quality, and shipping
+areas. There is no randomness, wall clock, or module state, so an unchanged
+model never moves. A crate changes position only after its run reports a real
+stage transition.
 
-Because an isometric scene overlaps rectangles constantly, every machine and
-crate in the plant is clipped to its own silhouette, so a near building cannot
-swallow a click meant for the one behind it. Native focus remains on the HTML
-button, while the inner machine faces and crate faces receive the visible focus
-stroke.
+The artwork is stable scenery, not data. Workflow buttons, stage pins,
+production-zone callouts, belts, crates, workers, capacity, and alarms are live
+React elements layered over it. The complete scene scales as one unit to the
+available viewport and never requires internal scrolling. This keeps the
+factory readable as a whole even when the instance has many workflows.
 
-Outcome labels are projected by true polyline arc length near the target side
-of each belt. Sibling branches receive deterministic, outcome-aware offsets.
-Each label and each operational pad label is drawn with a backing plate in a
-dedicated annotation SVG above machinery. Repass edges receive separate,
-deterministic return lanes and label positions.
+Every real stage remains a keyboard-accessible machine pin. Its placard opens
+on hover, focus, selection, or alarm. World view keeps the scene quiet, Flow
+reveals graph belts and outcome labels, and Risk suppresses healthy activity.
+The five production-zone cards are honest aggregates of configured stages;
+Lines remains the exact topology when an operator needs every edge and branch.
 
-District floor paint uses the safe gaggle and workflow display identity rather
-than a synthetic line number. The Plant legend explains beacon alarms, placard
-status, outcome docks, ready commons, and the observed-order cue. The Lines
-legend remains limited to concepts used by the line topology layout.
+The Plant legend explains beacon alarms, placard status, outcome docks, ready
+commons, and the observed-order cue. The Lines legend remains limited to
+concepts used by the line topology layout.
 
 Transition metadata belongs to a newly observed model generation. FactoryPage
 consumes it for the layout that was mounted when the update arrived. Mounting

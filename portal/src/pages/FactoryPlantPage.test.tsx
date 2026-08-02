@@ -605,7 +605,7 @@ describe("plant layout presentation contracts", () => {
     const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
     expect(plant).toHaveAttribute("data-lens", "risk");
     expect(plant).toHaveAttribute("data-motion", "full");
-    expect(plant).toHaveAttribute("data-responsive-layout", "scroll-under-1100");
+    expect(plant).toHaveAttribute("data-responsive-layout", "fit");
     // Theme is carried by tokens, so the plant never hard-codes a palette.
     const pageBlock = portalStyles.slice(
       portalStyles.indexOf(".factory-page {"),

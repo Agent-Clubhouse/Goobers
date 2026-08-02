@@ -7203,6 +7203,551 @@ a.telemetry-error-row:hover {
   opacity: 1;
 }
 
+/* --- Boss's-window plant ---------------------------------------------- */
+
+.factory-plant-classic {
+  aspect-ratio: 1450 / 950;
+  container-type: inline-size;
+  margin-inline: auto;
+  max-height: none;
+  overflow: hidden;
+  width: min(100%, calc(68vh * 1450 / 950));
+}
+
+.factory-plant-classic .factory-plant-scene {
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-backdrop {
+  display: block;
+  height: 100%;
+  inset: 0;
+  object-fit: fill;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
+  width: 100%;
+}
+
+.factory-plant-live-belts,
+.factory-plant-classic .factory-plant-annotations {
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-live-belts {
+  z-index: 2;
+}
+
+.factory-plant-classic .factory-plant-annotations {
+  z-index: 40;
+}
+
+.factory-plant-classic .plant-belt-bed {
+  opacity: 0.06;
+  stroke-width: 8;
+}
+
+.factory-plant-classic .plant-belt-line {
+  opacity: 0.12;
+  stroke-width: 3.5;
+}
+
+.factory-plant-classic .factory-plant-annotations {
+  opacity: 0;
+}
+
+.factory-plant-classic[data-lens="flow"] .factory-plant-annotations {
+  opacity: 1;
+}
+
+.factory-plant-classic[data-lens="flow"] .plant-belt-bed {
+  opacity: 0.7;
+}
+
+.factory-plant-classic[data-lens="flow"] .plant-belt-line {
+  opacity: 1;
+}
+
+.factory-plant-classic .plant-belt-line[data-active="true"] {
+  opacity: 1;
+}
+
+.factory-plant-classic .factory-plant-sign {
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-left: 0.32cqw solid var(--success);
+  border-radius: 0.62cqw;
+  box-shadow: 0 0.4cqw 1.1cqw -0.8cqw rgb(0 0 0 / 65%);
+  display: grid;
+  gap: 0.12cqw;
+  min-height: 3.7cqw;
+  padding: 0.46cqw 0.62cqw;
+  text-align: left;
+  transform: none;
+  width: 14.8cqw;
+  z-index: 30;
+}
+
+.factory-plant-classic .factory-plant-sign[data-blocked="true"] {
+  border-left-color: var(--danger);
+}
+
+.factory-plant-classic .factory-plant-sign[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.2cqw color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.factory-plant-classic .factory-plant-sign-title {
+  font-size: 0.82cqw;
+  line-height: 1.05;
+}
+
+.factory-plant-classic .factory-plant-sign-gaggle,
+.factory-plant-classic .factory-plant-sign-readout {
+  font-size: 0.56cqw;
+  line-height: 1.1;
+}
+
+.factory-plant-classic .factory-plant-sign-badge {
+  border-radius: 0.4cqw;
+  font-size: 0.52cqw;
+  justify-self: start;
+  padding: 0.08cqw 0.34cqw;
+}
+
+.factory-plant-classic .factory-plant-machine {
+  --machine-tint: var(--muted);
+  background: var(--machine-tint);
+  border: 0.22cqw solid var(--panel-raised);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.14cqw color-mix(in srgb, var(--machine-tint) 60%, transparent);
+  height: 1.35cqw;
+  padding: 0;
+  transform: translate(-50%, -100%);
+  width: 1.35cqw;
+  z-index: 24;
+}
+
+.factory-plant-classic .factory-plant-machine[data-kind="agentic"] {
+  --machine-tint: var(--accent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-kind="gate"] {
+  --machine-tint: var(--active);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="blocked"] {
+  --machine-tint: var(--danger);
+  animation: plant-alarm-blink 760ms steps(1, end) infinite;
+  box-shadow: 0 0 2.2cqw 0.7cqw color-mix(in srgb, var(--danger) 70%, transparent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="held"] {
+  --machine-tint: var(--warning);
+  animation: plant-alarm-blink 900ms steps(1, end) infinite;
+  box-shadow: 0 0 1.8cqw 0.55cqw color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="idle"] {
+  --machine-tint: var(--line-strong);
+  box-shadow: none;
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="impeded"],
+.factory-plant-classic .factory-plant-machine[data-status="unknown"] {
+  --machine-tint: var(--warning);
+}
+
+.factory-plant-classic .factory-plant-machine[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.26cqw var(--focus), 0 0 1.4cqw 0.3cqw color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.factory-plant-machine-core {
+  display: block;
+  inset: 0;
+  position: absolute;
+}
+
+.factory-plant-machine-core > i {
+  background: color-mix(in srgb, white 82%, transparent);
+  border-radius: 50%;
+  display: block;
+  height: 0.28cqw;
+  margin: 0.12cqw;
+  width: 0.28cqw;
+}
+
+.factory-plant-machine-tooltip {
+  align-content: center;
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
+  border-left: 0.3cqw solid var(--machine-tint);
+  border-radius: 0.58cqw;
+  box-shadow: 0 0.7cqw 1.5cqw -0.9cqw rgb(0 0 0 / 82%);
+  display: grid;
+  gap: 0.2cqw;
+  left: 50%;
+  min-height: 4.1cqw;
+  opacity: 0;
+  padding: 0.48cqw 0.62cqw;
+  pointer-events: none;
+  position: absolute;
+  text-align: left;
+  top: -0.7cqw;
+  transform: translate(-50%, -100%) scale(0.96);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  width: 13.5cqw;
+  z-index: 60;
+}
+
+.factory-plant-machine:hover .factory-plant-machine-tooltip,
+.factory-plant-machine:focus-visible .factory-plant-machine-tooltip,
+.factory-plant-machine[aria-pressed="true"] .factory-plant-machine-tooltip,
+.factory-plant-machine[data-alarm="blocked"] .factory-plant-machine-tooltip,
+.factory-plant-machine[data-alarm="hold"] .factory-plant-machine-tooltip {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
+  visibility: visible;
+}
+
+.factory-plant-machine-alarm {
+  background: var(--danger);
+  border-radius: 0.25cqw;
+  color: white;
+  font-size: 0.58cqw;
+  font-weight: 800;
+  left: 50%;
+  letter-spacing: 0.08em;
+  padding: 0.18cqw 0.42cqw;
+  position: absolute;
+  top: -1.6cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.factory-plant-machine[data-alarm="hold"] .factory-plant-machine-alarm {
+  background: var(--warning);
+  color: var(--ink);
+}
+
+.factory-plant-classic .factory-plant-placard-head,
+.factory-plant-classic .factory-plant-placard-foot {
+  gap: 0.35cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-kind,
+.factory-plant-classic .factory-plant-placard-status,
+.factory-plant-classic .factory-plant-placard-wip,
+.factory-plant-classic .factory-plant-placard-foot > span:last-child {
+  font-size: 0.53cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-name {
+  font-size: 0.78cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-gauge {
+  height: 0.28cqw;
+  min-width: 2.4cqw;
+}
+
+.factory-plant-zone-card {
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 76%, transparent);
+  border-left: 0.34cqw solid var(--success);
+  border-radius: 0.62cqw;
+  box-shadow: 0 0.5cqw 1.2cqw -0.85cqw rgb(0 0 0 / 75%);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  min-height: 4.1cqw;
+  padding: 0.5cqw 0.68cqw;
+  pointer-events: none;
+  position: absolute;
+  width: 14.2cqw;
+  z-index: 16;
+}
+
+.factory-plant-zone-card[data-state="running"] {
+  border-left-color: var(--success);
+}
+
+.factory-plant-zone-card[data-state="held"],
+.factory-plant-zone-card[data-state="unknown"] {
+  border-left-color: var(--warning);
+}
+
+.factory-plant-zone-card[data-state="blocked"] {
+  border-color: var(--danger);
+  border-left-color: var(--danger);
+  box-shadow: 0 0 0 0.2cqw color-mix(in srgb, var(--danger) 38%, transparent);
+}
+
+.factory-plant-zone-title {
+  align-items: center;
+  display: flex;
+  font-size: 0.78cqw;
+  font-weight: 780;
+  gap: 0.32cqw;
+  line-height: 1;
+}
+
+.factory-plant-zone-title > i {
+  background: var(--success);
+  border-radius: 50%;
+  height: 0.48cqw;
+  width: 0.48cqw;
+}
+
+.factory-plant-zone-card[data-state="held"] .factory-plant-zone-title > i,
+.factory-plant-zone-card[data-state="unknown"] .factory-plant-zone-title > i {
+  background: var(--warning);
+}
+
+.factory-plant-zone-card[data-state="blocked"] .factory-plant-zone-title > i {
+  background: var(--danger);
+}
+
+.factory-plant-zone-card > strong {
+  color: var(--accent);
+  font-size: 1cqw;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-plant-zone-card > small {
+  color: var(--muted-strong);
+  font-size: 0.56cqw;
+  grid-column: 1 / -1;
+}
+
+.factory-plant-machine-pin {
+  background: var(--success);
+  border: 0.22cqw solid var(--panel-raised);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.13cqw color-mix(in srgb, var(--success) 60%, transparent);
+  height: 1.25cqw;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: 1.25cqw;
+  z-index: 18;
+}
+
+.factory-plant-machine-pin > i {
+  background: color-mix(in srgb, white 80%, transparent);
+  border-radius: 50%;
+  display: block;
+  height: 0.28cqw;
+  margin: 0.16cqw;
+  width: 0.28cqw;
+}
+
+.factory-plant-machine-pin[data-status="idle"] {
+  background: var(--line-strong);
+  box-shadow: none;
+}
+
+.factory-plant-machine-pin[data-status="held"],
+.factory-plant-machine-pin[data-status="impeded"],
+.factory-plant-machine-pin[data-status="unknown"] {
+  background: var(--warning);
+  box-shadow: 0 0 1.8cqw 0.55cqw color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.factory-plant-machine-pin[data-status="blocked"] {
+  background: var(--danger);
+  box-shadow: 0 0 2.2cqw 0.7cqw color-mix(in srgb, var(--danger) 70%, transparent);
+}
+
+.factory-plant-machine-pin[data-alarm="blocked"],
+.factory-plant-machine-pin[data-alarm="hold"] {
+  animation: plant-alarm-blink 760ms steps(1, end) infinite;
+}
+
+.factory-plant-machine-pin > b {
+  background: var(--danger);
+  border-radius: 0.25cqw;
+  color: white;
+  font-size: 0.58cqw;
+  left: 50%;
+  letter-spacing: 0.08em;
+  padding: 0.18cqw 0.42cqw;
+  position: absolute;
+  top: -1.7cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.factory-plant-machine-pin[data-alarm="hold"] > b {
+  background: var(--warning);
+  color: var(--ink);
+}
+
+.factory-plant-classic .factory-plant-crate {
+  height: 2.1cqw;
+  left: auto;
+  top: auto;
+  transform: translate(-50%, -50%) rotate(-1deg);
+  transition:
+    left 640ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    top 640ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  width: 2.3cqw;
+  z-index: 20;
+}
+
+.factory-plant-classic .factory-plant-crate > span:not(.sr-only) {
+  display: block;
+  position: absolute;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-top {
+  background: var(--crate-top);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  height: 48%;
+  inset: 0 8% auto;
+  transform: skewX(-28deg);
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-front {
+  background: var(--crate-front);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  height: 52%;
+  inset: 43% 19% auto 0;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-right {
+  background: var(--crate-right);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  clip-path: polygon(0 0, 100% 18%, 100% 100%, 0 82%);
+  height: 52%;
+  inset: 43% 0 auto 79%;
+  width: 21%;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-halo {
+  border: 0.18cqw solid var(--accent);
+  border-radius: 50%;
+  height: 150%;
+  inset: -25%;
+  opacity: 0;
+  width: 150%;
+}
+
+.factory-plant-classic .factory-plant-crate[data-state="blocked"] {
+  filter: drop-shadow(0 0 0.45cqw color-mix(in srgb, var(--danger) 75%, transparent));
+}
+
+.factory-plant-classic .factory-plant-crate[aria-pressed="true"] {
+  filter: drop-shadow(0 0 0.45cqw color-mix(in srgb, var(--accent) 80%, transparent));
+}
+
+.factory-plant-classic .factory-plant-staff {
+  height: 4.1cqw;
+  transform: translate(-50%, -75%);
+  width: 2.4cqw;
+  z-index: 19;
+}
+
+.factory-plant-classic .factory-plant-staff-tag {
+  bottom: -0.55cqw;
+  border-radius: 0.24cqw;
+  font-size: 0.48cqw;
+  max-width: 7cqw;
+  overflow: hidden;
+  padding: 0.08cqw 0.25cqw;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.factory-plant-classic .factory-plant-overflow {
+  font-size: 0.55cqw;
+  min-height: 1.4cqw;
+  min-width: 3.8cqw;
+  padding: 0.18cqw 0.42cqw;
+  z-index: 35;
+}
+
+.factory-plant-hud {
+  align-items: center;
+  display: flex;
+  font-size: 0.62cqw;
+  justify-content: space-between;
+  left: 1.2%;
+  pointer-events: none;
+  position: absolute;
+  right: 1.2%;
+  z-index: 45;
+}
+
+.factory-plant-hud-top {
+  top: 1.4%;
+}
+
+.factory-plant-hud-top > span,
+.factory-plant-hud-top > b,
+.factory-plant-hud-bottom {
+  background: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 65%, transparent);
+  border-radius: 0.55cqw;
+  box-shadow: 0 0.35cqw 0.9cqw -0.7cqw rgb(0 0 0 / 70%);
+  padding: 0.34cqw 0.65cqw;
+}
+
+.factory-plant-hud-top > b {
+  color: var(--success);
+  letter-spacing: 0.1em;
+}
+
+.factory-plant-hud-bottom {
+  bottom: 1.3%;
+  gap: 1.1cqw;
+  left: 1.2%;
+  right: auto;
+}
+
+.factory-plant-hud-bottom > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.28cqw;
+}
+
+.factory-plant-hud-bottom i {
+  background: var(--success);
+  border-radius: 50%;
+  height: 0.48cqw;
+  width: 0.48cqw;
+}
+
+.factory-plant-hud-bottom i[data-tone="waiting"] {
+  background: var(--warning);
+}
+
+.factory-plant-hud-bottom i[data-tone="blocked"] {
+  background: var(--danger);
+}
+
+.factory-plant-classic[data-lens="flow"] .factory-plant-machine,
+.factory-plant-classic[data-lens="flow"] .factory-plant-sign,
+.factory-plant-classic[data-lens="flow"] .factory-plant-staff {
+  opacity: 0.68;
+}
+
+.factory-plant-classic[data-lens="risk"] .factory-plant-machine:not([data-status="blocked"]):not([data-status="held"]):not([data-status="impeded"]),
+.factory-plant-classic[data-lens="risk"] .factory-plant-crate:not([data-state="blocked"]):not([data-state="paused"]),
+.factory-plant-classic[data-lens="risk"] .factory-plant-staff {
+  opacity: 0.38;
+}
+
 /* --- Responsive -------------------------------------------------------- */
 
 @media (max-width: 1100px) {
