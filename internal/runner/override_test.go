@@ -153,7 +153,86 @@ func TestOverrideGateRequiresRationaleAndNondeterministicGate(t *testing.T) {
 	}
 }
 
-func TestResumeCompletesCrashPersistedTerminalGateOverride(t *testing.T) {
+func TestCurrentEscalatedGateRejectsStaleVerdicts(t *testing.T) {
+	escalated := journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+		Target: workflow.TargetEscalate, Escalated: true,
+	}
+	tests := []struct {
+		name   string
+		events []journal.Event
+		want   bool
+	}{
+		{name: "current escalation", events: []journal.Event{escalated}, want: true},
+		{name: "target records escalation", events: []journal.Event{{
+			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TargetEscalate,
+		}}, want: true},
+		{name: "different gate", events: []journal.Event{{
+			Type: journal.EventGateEvaluated, Gate: "security", Target: workflow.TargetEscalate,
+		}}},
+		{name: "non-escalating verdict", events: []journal.Event{{
+			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TerminalComplete,
+		}}},
+		{name: "newer gate verdict", events: []journal.Event{escalated, {
+			Type: journal.EventGateEvaluated, Gate: "security", Target: workflow.TargetEscalate,
+		}}},
+		{name: "after resume", events: []journal.Event{
+			escalated, {Type: journal.EventRunResumed, Target: "fix"},
+		}},
+		{name: "after override", events: []journal.Event{
+			escalated, {Type: journal.EventGateOverridden, Gate: "review", Target: "fix"},
+		}},
+		{name: "after rerun request", events: []journal.Event{
+			escalated, {Type: journal.EventStageRerunRequested, Stage: "implement"},
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isCurrentEscalatedGate(test.events, "review"); got != test.want {
+				t.Fatalf("isCurrentEscalatedGate() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestOverrideGateRejectsEscalationUnrelatedToGate(t *testing.T) {
+	machine := overrideFixtureMachine(t, apiv1.EvaluatorAgentic)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "override-unrelated-escalation"
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass",
+		Target: workflow.TerminalComplete,
+	}); err != nil {
+		t.Fatalf("append gate verdict: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated),
+	}); err != nil {
+		t.Fatalf("append unrelated escalation: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close run: %v", err)
+	}
+
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	_, err = r.OverrideGate(context.Background(), OverrideGateInput{
+		RunID: runID, Machine: machine, Gate: "review", Verdict: "pass",
+		Actor: "maintainer", Rationale: "manual inspection",
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not cause") {
+		t.Fatalf("unrelated escalation error = %v", err)
+	}
+}
+
+func TestResumeFollowsCrashPersistedGateOverrideTarget(t *testing.T) {
 	machine := overrideFixtureMachine(t, apiv1.EvaluatorAgentic)
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	const runID = "override-crash-recovery"
@@ -164,8 +243,9 @@ func TestResumeCompletesCrashPersistedTerminalGateOverride(t *testing.T) {
 		t.Fatalf("Recover: %v", err)
 	}
 	if err := jr.Append(journal.Event{
-		Type: journal.EventGateOverridden, Gate: "review", Verdict: "pass",
-		Actor: "maintainer", Rationale: "manual inspection", Status: string(journal.PhaseEscalated),
+		Type: journal.EventGateOverridden, Gate: "review", Verdict: "needs-changes",
+		Target: "fix",
+		Actor:  "maintainer", Rationale: "manual inspection", Status: string(journal.PhaseEscalated),
 		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
 	}); err != nil {
 		t.Fatalf("append override: %v", err)
@@ -174,7 +254,8 @@ func TestResumeCompletesCrashPersistedTerminalGateOverride(t *testing.T) {
 		t.Fatalf("close interrupted override: %v", err)
 	}
 
-	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	det := &countingDeterministic{}
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, det)
 	result, err := r.Resume(context.Background(), ResumeInput{
 		RunID: runID, Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
@@ -184,5 +265,8 @@ func TestResumeCompletesCrashPersistedTerminalGateOverride(t *testing.T) {
 	}
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("result = %+v, want completed", result)
+	}
+	if det.calls != 1 {
+		t.Fatalf("deterministic calls = %d, want 1", det.calls)
 	}
 }

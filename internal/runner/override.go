@@ -97,8 +97,8 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
 		}
-		if !isLatestEvaluatedGate(events, in.Gate) {
-			return Result{}, fmt.Errorf("runner: gate %q is not the run's latest recorded gate verdict", in.Gate)
+		if !isCurrentEscalatedGate(events, in.Gate) {
+			return Result{}, fmt.Errorf("runner: gate %q did not cause the run's current escalation", in.Gate)
 		}
 
 		if err := jr.Append(journal.Event{
@@ -121,10 +121,14 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 	})
 }
 
-func isLatestEvaluatedGate(events []journal.Event, gate string) bool {
+func isCurrentEscalatedGate(events []journal.Event, gate string) bool {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventGateEvaluated {
-			return events[i].Gate == gate
+		switch events[i].Type {
+		case journal.EventGateEvaluated:
+			return events[i].Gate == gate &&
+				(events[i].Target == workflow.TargetEscalate || events[i].Escalated)
+		case journal.EventRunResumed, journal.EventGateOverridden, journal.EventStageRerunRequested:
+			return false
 		}
 	}
 	return false

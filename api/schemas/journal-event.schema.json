@@ -13,7 +13,7 @@
         "required": ["type"]
       },
       "then": {
-        "required": ["gate", "verdict", "actor", "rationale", "status", "workflowVersion", "workflowDigest"]
+        "required": ["gate", "verdict", "target", "actor", "rationale", "status", "workflowVersion", "workflowDigest"]
       }
     }
   ],
