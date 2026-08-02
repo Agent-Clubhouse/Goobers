@@ -129,13 +129,15 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 func resolvePinnedWorkspaceProject(set *instance.ConfigSet, selector string) (apiv1.RepoRef, error) {
 	var matches []apiv1.RepoRef
 	seen := make(map[string]bool)
+	hasUnpinnedMatch := false
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
 		if !workspaceRepoMatches(project, selector) {
 			continue
 		}
 		if project.Checkout == nil || project.Checkout.Mode != apiv1.CheckoutModePinned {
-			return apiv1.RepoRef{}, fmt.Errorf("repository %q is not configured for pinned checkout", selector)
+			hasUnpinnedMatch = true
+			continue
 		}
 		key := strings.Join([]string{string(project.Provider), project.BaseURL, project.Owner, project.Project, project.Name}, "\x00")
 		if !seen[key] {
@@ -145,6 +147,9 @@ func resolvePinnedWorkspaceProject(set *instance.ConfigSet, selector string) (ap
 	}
 	switch len(matches) {
 	case 0:
+		if hasUnpinnedMatch {
+			return apiv1.RepoRef{}, fmt.Errorf("repository %q is not configured for pinned checkout", selector)
+		}
 		return apiv1.RepoRef{}, fmt.Errorf("no configured pinned repository matches %q", selector)
 	case 1:
 		return matches[0], nil
