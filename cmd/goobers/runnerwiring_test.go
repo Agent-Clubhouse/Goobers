@@ -584,6 +584,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -631,6 +632,7 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -1325,6 +1327,7 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 			harnessPreflightInfo{},
 			nil,
 			instance.SandboxDisabled,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("buildRunnerConfig: %v", err)
@@ -1358,6 +1361,28 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 	}
 	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
 		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestADORemoteGitQuotaGateConsumesADOWindow(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).UTC()
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderADO, 1, resetAt)
+	gate := adoRemoteGitQuotaGate(quota)
+
+	if err := gate(context.Background(), "https://github.com/acme/web.git"); err != nil {
+		t.Fatalf("GitHub remote admission: %v", err)
+	}
+	if err := gate(context.Background(), "https://dev.azure.com/acme/widgets/_git/web"); err != nil {
+		t.Fatalf("first ADO remote admission: %v", err)
+	}
+	err := gate(context.Background(), "https://acme.visualstudio.com/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("second ADO remote error = %v, want ProviderPollBudgetError", err)
+	}
+	if budgetErr.Provider != apiv1.ProviderADO || budgetErr.ResetAt != resetAt {
+		t.Fatalf("budget error = %+v, want ADO reset at %s", budgetErr, resetAt)
 	}
 }
 

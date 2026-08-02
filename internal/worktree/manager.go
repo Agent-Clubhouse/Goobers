@@ -58,6 +58,7 @@ type Manager struct {
 	usageObserver UsageObserver
 	diskUsage     func(string) (int64, error)
 	gitEnv        func(context.Context, string) ([]string, error)
+	remoteGitGate func(context.Context, string) error
 
 	// partialClone provisions NEW mirrors as blobless partial clones and
 	// narrows their refresh refspec — see WithPartialClone. Never set for an
@@ -136,6 +137,14 @@ func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 func WithGitEnvironment(resolve func(context.Context, string) ([]string, error)) ManagerOption {
 	return func(m *Manager) {
 		m.gitEnv = resolve
+	}
+}
+
+// WithRemoteGitGate admits remote git operations before credentials are
+// resolved or a git subprocess is started.
+func WithRemoteGitGate(acquire func(context.Context, string) error) ManagerOption {
+	return func(m *Manager) {
+		m.remoteGitGate = acquire
 	}
 }
 
@@ -411,6 +420,11 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 }
 
 func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ...string) error {
+	if m.remoteGitGate != nil {
+		if err := m.remoteGitGate(ctx, repoURL); err != nil {
+			return fmt.Errorf("admit remote git operation: %w", err)
+		}
+	}
 	if m.gitEnv == nil {
 		return runGit(ctx, dir, args...)
 	}
@@ -428,6 +442,11 @@ func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ..
 // promisor fetch spawned mid-command classifies through
 // IsTransientProvisionError.
 func (m *Manager) remoteGitOutput(ctx context.Context, repoURL, dir string, args ...string) ([]byte, error) {
+	if m.remoteGitGate != nil {
+		if err := m.remoteGitGate(ctx, repoURL); err != nil {
+			return nil, fmt.Errorf("admit remote git operation: %w", err)
+		}
+	}
 	if m.gitEnv == nil {
 		return rawGitOutput(ctx, dir, nil, args...)
 	}

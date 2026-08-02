@@ -1758,6 +1758,27 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
+func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
+	if state == nil {
+		return nil
+	}
+	return func(_ context.Context, repoURL string) error {
+		if !isADORemote(repoURL) {
+			return nil
+		}
+		decision := state.ReserveCurrentPolls(apiv1.ProviderADO, 1)
+		if decision.Allowed != 0 {
+			return nil
+		}
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
+}
+
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
 // `goobers run` share: real worktrees, registry-selected harness adapters and
 // the shell executor, credentials scoped to instance.yaml's configured repo(s).
@@ -1777,7 +1798,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture, providerQuota *localscheduler.ProviderQuotaState) (runner.Config, *worktree.Manager, error) {
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -1817,6 +1838,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		}
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
+		}
+		if gitQuotaGate := adoRemoteGitQuotaGate(providerQuota); gitQuotaGate != nil {
+			managerOptions = append(managerOptions, worktree.WithRemoteGitGate(gitQuotaGate))
 		}
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())

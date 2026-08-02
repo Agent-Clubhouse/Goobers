@@ -58,6 +58,33 @@ func TestManagerRemoteGitUsesConfiguredEnvironment(t *testing.T) {
 	}
 }
 
+func TestManagerRemoteGitUsesAdmissionGate(t *testing.T) {
+	repo := newSourceRepo(t)
+	calls := 0
+	manager, err := NewManager(t.TempDir(), WithRemoteGitGate(func(_ context.Context, gotRepo string) error {
+		calls++
+		if gotRepo != repo {
+			t.Fatalf("repo URL = %q, want %q", gotRepo, repo)
+		}
+		if calls == 2 {
+			return errors.New("quota exhausted")
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+		t.Fatalf("fetch error = %v, want quota exhaustion", err)
+	}
+	if calls != 2 {
+		t.Fatalf("remote git admission calls = %d, want 2", calls)
+	}
+}
+
 // TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
 // harness-owned paths written into a provisioned run worktree must be invisible
 // to git, even though the target repo has no matching .gitignore entries.
