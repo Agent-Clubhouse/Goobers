@@ -88,6 +88,7 @@ Usage:
   goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
@@ -226,6 +227,7 @@ Usage:
   goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
   goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
   goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
+  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)
   goobers set-milestone --item ID --milestone N [path]
                                 assign an existing milestone to an issue (a workflow stage)
   goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
@@ -1069,6 +1071,25 @@ done. Declared input: pullNumber (required — the just-merged PR).
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
+
+### pr-comment-watch
+Usage: goobers pr-comment-watch [path]
+
+Scan open goober-authored PRs (head under the gaggle branch namespace)
+and label any whose newest human comment is newer than the bot's own
+newest comment with goobers:needs-remediation, so pr-remediation updates
+that PR in place. The bot identity is the token's own login
+(AuthenticatedLogin) — a dedicated bot account is required for signal;
+with a shared human identity the stage never fires. Comments landing
+mid-remediation after the brief snapshot can be masked by the bot's
+response comment until the human comments again (accepted v1 limit).
+
+Inputs: maxPullRequests (default 20), headPrefixes (default the branch
+namespace), base (default the gaggle base branch), excludeLabels,
+excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
+resultFile (default comment-watch-result.json).
+Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
+2 = usage/IO error.
 
 ### pr-select
 Usage: goobers pr-select [path]

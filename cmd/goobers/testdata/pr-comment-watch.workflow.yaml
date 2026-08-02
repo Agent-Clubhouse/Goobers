@@ -1,0 +1,38 @@
+# Reference config artifact for the pr-comment-watch stage (architecture §7).
+#
+# This is the scheduled workflow that arms the watcher. Its home is the HikeView
+# gaggle's own config repo (outside this tree); it is captured here as testdata
+# because this checkout cannot reach that repo. Drop it into a gaggle's
+# workflows/ directory and set spec.gaggle to that gaggle's metadata.name.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: pr-comment-watch
+spec:
+  gaggle: hikeview            # must match the HikeView gaggle's metadata.name
+  displayName: PR comment watcher
+  # A new human comment on an open goober PR becomes goobers:needs-remediation,
+  # which the pr-remediation workflow consumes to update that PR in place.
+  triggers:
+    - type: schedule
+      schedule: "*/10 * * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 6         # matches the 10-minute cadence
+  start: watch-pr-comments
+  tasks:
+    - name: watch-pr-comments
+      type: deterministic
+      goal: Label open goober PRs carrying unaddressed human comments goobers:needs-remediation.
+      run:
+        command: ["goobers", "pr-comment-watch"]
+      inputs:
+        resultFile: "comment-watch-result.json"
+        maxPullRequests: "20"
+        timeout: "120s"
+      capabilities:
+        - github:issues:write   # the label-issue contract; rebinds to the Gitea cred seam
+      policyActions:
+        - label-issue           # prescribed by commandPolicyActions once the registry entries land
+      # no `next` — single-stage workflow, terminal on success
