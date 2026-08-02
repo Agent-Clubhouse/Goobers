@@ -827,6 +827,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
+				if err == nil {
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+				}
 				telemetryRetentionErrors.report(err)
 			}
 		}

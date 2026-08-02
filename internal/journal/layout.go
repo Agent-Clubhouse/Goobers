@@ -15,6 +15,11 @@ const (
 	fileLock      = ".lock"
 	filePruning   = ".telemetry-pruning"
 
+	// fileEventsPointer names the instance journal's generation pointer (see
+	// instancegen.go). Run journals have no pointer — a run's events.jsonl
+	// never rotates — this is instance-log-only.
+	fileEventsPointer = fileEvents + ".current"
+
 	dirInputs    = "inputs"
 	dirArtifacts = "artifacts"
 	dirSpans     = "spans"
