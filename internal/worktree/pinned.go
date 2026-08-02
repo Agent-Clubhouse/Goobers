@@ -12,9 +12,12 @@ import (
 type CleanPolicy string
 
 const (
-	CleanNone        CleanPolicy = "none"
+	// CleanNone preserves ignored and untracked files between runs.
+	CleanNone CleanPolicy = "none"
+	// CleanIgnoredSafe removes untracked files while preserving ignored files.
 	CleanIgnoredSafe CleanPolicy = "ignored-safe"
-	CleanFull        CleanPolicy = "full"
+	// CleanFull removes all ignored and untracked files.
+	CleanFull CleanPolicy = "full"
 )
 
 type pinnedWaiter struct {

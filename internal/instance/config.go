@@ -394,9 +394,12 @@ type RepoPathLengthConfig struct {
 }
 
 const (
-	WorkspaceCleanNone        = "none"
+	// WorkspaceCleanNone preserves ignored and untracked files between runs.
+	WorkspaceCleanNone = "none"
+	// WorkspaceCleanIgnoredSafe removes untracked files while preserving ignored files.
 	WorkspaceCleanIgnoredSafe = "ignored-safe"
-	WorkspaceCleanFull        = "full"
+	// WorkspaceCleanFull removes all ignored and untracked files.
+	WorkspaceCleanFull = "full"
 )
 
 // RepoWorkspaceConfig configures the mutually exclusive local checkout modes.
