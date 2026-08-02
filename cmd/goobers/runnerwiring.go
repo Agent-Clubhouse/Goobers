@@ -692,13 +692,14 @@ type ciPollKindExecutor struct {
 	// of defaulting to GitHub.
 	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
+	quota     providers.QuotaObserver
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -744,7 +745,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -754,7 +755,11 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar}, nil
+	var quotaObserver providers.QuotaObserver
+	if quota != nil {
+		quotaObserver = &providerQuotaAccounting{state: quota}
+	}
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
@@ -1766,7 +1771,7 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 		if !isADORemote(repoURL) {
 			return nil
 		}
-		decision := state.ReserveCurrentPolls(apiv1.ProviderADO, 1)
+		decision := state.ReservePolls(apiv1.ProviderADO, time.Now(), 1)
 		if decision.Allowed != 0 {
 			return nil
 		}
@@ -1971,7 +1976,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if r, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
 				giteaRepo = &r
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg, providerQuota)
 			if err != nil {
 				return nil, err
 			}

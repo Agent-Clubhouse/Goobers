@@ -46,7 +46,7 @@ func Source(repo instance.RepoRef, runner providers.CommandRunner, stores creden
 }
 
 // Provider constructs an ADO provider from one validated instance repository.
-func Provider(repo instance.RepoRef, runner providers.CommandRunner, registrar providers.SecretRegistrar, observer providers.RateLimitObserver, stores credentials.StoreResolver) (*providers.ADOProvider, error) {
+func Provider(repo instance.RepoRef, runner providers.CommandRunner, registrar providers.SecretRegistrar, rateObserver providers.RateLimitObserver, quotaObserver providers.QuotaObserver, stores credentials.StoreResolver) (*providers.ADOProvider, error) {
 	source, err := Source(repo, runner, stores)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,8 @@ func Provider(repo instance.RepoRef, runner providers.CommandRunner, registrar p
 	options := []func(*providers.ADOProvider){
 		providers.WithADOCredentialSource(source),
 		providers.WithADOSecretRegistrar(registrar),
-		providers.WithADORateLimitObserver(observer),
+		providers.WithADORateLimitObserver(rateObserver),
+		providers.WithADOQuotaObserver(quotaObserver),
 	}
 	if runner != nil {
 		options = append(options, func(provider *providers.ADOProvider) {
