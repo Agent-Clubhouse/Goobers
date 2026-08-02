@@ -106,6 +106,14 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 				t.Errorf("workflow %q agentic task %q lacks agent:model: %v",
 					workflow.Name, task.Name, task.Capabilities)
 			}
+			// #2173: the generated implementation.yaml's local-ci stage must
+			// reflect the operator's answered CI command on disk, not the
+			// acme-web example's literal `make ci`.
+			if task.Name == LocalCIStageName {
+				if task.Run == nil || !slices.Equal(task.Run.Command, []string{"npm", "run", "ci"}) {
+					t.Errorf("workflow %q local-ci command = %+v, want [npm run ci]", workflow.Name, task.Run)
+				}
+			}
 		}
 	}
 

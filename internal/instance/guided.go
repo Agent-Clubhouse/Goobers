@@ -617,6 +617,16 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		if task.Type == apiv1.TaskAgentic {
 			task.Capabilities = prependCapability(task.Capabilities, string(capability.AgentModel))
 		}
+		// Template the operator's answered CI command into the generated
+		// local-ci stage instead of leaving the source example's literal
+		// command on disk: gaggle.yaml's ciCommand (ApplyGaggleCICommand) wins
+		// at runtime either way, but a mismatched on-disk command reads as a
+		// lie to anyone who answered something other than the example's
+		// default and later hand-edits this file (#2173).
+		if task.Type == apiv1.TaskDeterministic && task.Name == LocalCIStageName && task.Run != nil && len(opts.CICommand) > 0 {
+			task.Run.Command = append([]string(nil), opts.CICommand...)
+			task.Run.Script = ""
+		}
 	}
 	data, err = yaml.Marshal(workflow)
 	if err != nil {
