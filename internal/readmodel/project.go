@@ -3,6 +3,7 @@ package readmodel
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -272,6 +273,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if queue, ok := RunnerQueueStatus(event); ok {
 				row.CurrentStage = queue
 			}
+			if suggestion, ok := RunnerResetSuggestion(event); ok {
+				row.CurrentStage = suggestion
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
@@ -323,7 +327,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.Phase = phase
 			finished := event.Time
 			row.FinishedAt = &finished
-			row.CurrentStage = ""
+			if !strings.HasPrefix(row.CurrentStage, workspaceResetSuggestionPrefix) {
+				row.CurrentStage = ""
+			}
 		}
 	}
 
@@ -347,6 +353,23 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	}
 
 	return Projection{Run: row, Stages: out}
+}
+
+const workspaceResetSuggestionPrefix = "Workspace reset suggested:"
+
+// RunnerResetSuggestion projects pinned-workspace recovery guidance into the
+// run summary field rendered by portal run lists.
+func RunnerResetSuggestion(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation ||
+		event.Runner["kind"] != "workspace_reset_suggested" ||
+		event.Runner["workspaceMode"] != "pinned" {
+		return "", false
+	}
+	suggestion, ok := event.Runner["suggestion"].(string)
+	if !ok || suggestion == "" {
+		return "", false
+	}
+	return workspaceResetSuggestionPrefix + " " + suggestion, true
 }
 
 // RunnerQueueStatus projects pinned-workspace lease bookkeeping into the

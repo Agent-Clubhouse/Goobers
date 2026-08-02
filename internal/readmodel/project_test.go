@@ -57,6 +57,28 @@ func TestPinnedWorkspaceQueueIsVisibleAsCurrentStage(t *testing.T) {
 	}
 }
 
+func TestPinnedWorkspaceResetSuggestionRemainsVisibleAfterFailure(t *testing.T) {
+	suggestion := "Run `goobers workspace reset <repo>` before retrying."
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+			e.Runner = map[string]any{
+				"kind":          "workspace_reset_suggested",
+				"workspaceMode": "pinned",
+				"failureStreak": float64(3),
+				"suggestion":    suggestion,
+			}
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}).Run
+
+	want := workspaceResetSuggestionPrefix + " " + suggestion
+	if run.CurrentStage != want {
+		t.Fatalf("terminal current stage = %q, want portal-visible suggestion %q", run.CurrentStage, want)
+	}
+}
+
 // completedRunEvents is a run that starts, retries once, and completes.
 func completedRunEvents() []journal.Event {
 	return []journal.Event{

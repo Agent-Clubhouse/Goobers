@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,8 +67,23 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 func TestResetPinnedKillsLockHoldersAndRematerializes(t *testing.T) {
 	_, repo := pinnedFixture(t)
 	var killedPath string
+	var lockHolderExited bool
+	var lockHolder *exec.Cmd
 	manager, err := NewManager(t.TempDir(), WithPinnedProcessKiller(func(path string) error {
 		killedPath = path
+		if lockHolder == nil {
+			return errors.New("lock holder was not started")
+		}
+		if err := lockHolder.Process.Kill(); err != nil {
+			return err
+		}
+		if err := lockHolder.Wait(); err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				return err
+			}
+		}
+		lockHolderExited = true
 		return nil
 	}))
 	if err != nil {
@@ -75,13 +91,43 @@ func TestResetPinnedKillsLockHoldersAndRematerializes(t *testing.T) {
 	}
 	lease := acquirePinnedFixture(t, manager, repo, "run-before-reset", PinnedCleanNone)
 	pinPath := lease.Worktree.Path
-	mustWriteFile(t, filepath.Join(pinPath, "build", "locked.obj"), "poisoned")
+	lockedPath := filepath.Join(pinPath, "build", "locked.obj")
+	mustWriteFile(t, lockedPath, "poisoned")
 	if _, err := lease.RecordOutcome(true); err != nil {
 		t.Fatal(err)
 	}
 	if err := lease.Release(); err != nil {
 		t.Fatal(err)
 	}
+
+	readyPath := filepath.Join(t.TempDir(), "lock-holder-ready")
+	lockHolder = exec.Command(os.Args[0], "-test.run=TestPinnedWorkspaceLockHolderProcess")
+	lockHolder.Env = append(os.Environ(),
+		"GOOBERS_PINNED_LOCK_HOLDER="+lockedPath,
+		"GOOBERS_PINNED_LOCK_READY="+readyPath,
+	)
+	if err := lockHolder.Start(); err != nil {
+		t.Fatalf("start lock holder: %v", err)
+	}
+	t.Cleanup(func() {
+		if lockHolder.ProcessState == nil {
+			_ = lockHolder.Process.Kill()
+			_ = lockHolder.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("check lock-holder readiness: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lock holder did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	root := filepath.Join(manager.pinnedRoot, repoKey(repo))
 	stale, err := json.Marshal(pinnedLeaseRecord{RunID: "dead-run", PID: 999999})
 	if err != nil {
@@ -101,6 +147,9 @@ func TestResetPinnedKillsLockHoldersAndRematerializes(t *testing.T) {
 	if killedPath != pinPath {
 		t.Fatalf("process killer path = %q, want %q", killedPath, pinPath)
 	}
+	if !lockHolderExited {
+		t.Fatal("reset removed workspace before lock-holding process exited")
+	}
 	if resetPath != pinPath {
 		t.Fatalf("reset path = %q, want stable path %q", resetPath, pinPath)
 	}
@@ -112,6 +161,22 @@ func TestResetPinnedKillsLockHoldersAndRematerializes(t *testing.T) {
 			t.Fatalf("%s survived reset: %v", name, err)
 		}
 	}
+}
+
+func TestPinnedWorkspaceLockHolderProcess(t *testing.T) {
+	lockPath := os.Getenv("GOOBERS_PINNED_LOCK_HOLDER")
+	if lockPath == "" {
+		return
+	}
+	lock, err := os.Open(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := os.WriteFile(os.Getenv("GOOBERS_PINNED_LOCK_READY"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Minute)
 }
 
 func TestPinnedFailureStreakCountsOnlyConsecutiveFailures(t *testing.T) {

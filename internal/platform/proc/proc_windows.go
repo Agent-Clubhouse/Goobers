@@ -200,13 +200,20 @@ func (t *Tree) kill() error {
 // terminatePID force-terminates a single process by pid — the degraded path when
 // no Job Object was assigned.
 func terminatePID(pid int) error {
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
 		return fmt.Errorf("proc: open %d for terminate: %w", pid, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	if err := windows.TerminateProcess(h, 1); err != nil {
 		return fmt.Errorf("proc: terminate %d: %w", pid, err)
+	}
+	status, err := windows.WaitForSingleObject(h, windows.INFINITE)
+	if err != nil {
+		return fmt.Errorf("proc: wait for %d to terminate: %w", pid, err)
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("proc: wait for %d to terminate returned status %#x", pid, status)
 	}
 	return nil
 }
