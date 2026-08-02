@@ -95,6 +95,7 @@ github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContextAndFactory # Tra
 github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transcript-boundary option retained for executor tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
+github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-workspace process-termination injection seam retained for the lock-aware reset lifecycle test.
 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
