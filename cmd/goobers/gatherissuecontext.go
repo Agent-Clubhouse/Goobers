@@ -71,8 +71,16 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	// per-capability credential overrides may back with different tokens.
 	// Use each capability's own provider so issue resolution never fails on a
 	// PR-scoped credential.
-	prProvider := newCachedGitHubProvider(root, prToken)
-	issuesProvider := newCachedGitHubProvider(root, issuesToken)
+	prProvider, err := remediationStageProvider(root, repo, prToken, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProvider(root, repo, issuesToken, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 

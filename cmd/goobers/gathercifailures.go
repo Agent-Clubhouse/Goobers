@@ -71,7 +71,10 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "resolve GitHub credential", err, remediationBriefResultFile)
 	}
-	provider := newCachedGitHubProvider(root, token)
+	provider, err := remediationStageProvider(root, repo, token, true)
+	if err != nil {
+		return failProviderStage(stderr, "build remediation provider", err, remediationBriefResultFile)
+	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	failures, err := provider.CIFailures(ctx, repo, brief.GatherPRContext.HeadSHA)

@@ -116,12 +116,18 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	provider := newGitHubProvider(issuesToken)
+	provider, err := remediationStageProvider(root, repo, issuesToken, false)
+	if err != nil {
+		return fail(err)
+	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		return fail(err)
 	}
-	handoffProvider := newGitHubProvider(prToken)
+	handoffProvider, err := remediationStageProvider(root, repo, prToken, false)
+	if err != nil {
+		return fail(err)
+	}
 
 	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
@@ -383,7 +389,7 @@ type trustedSiblingHandoffs struct {
 
 func trustedSiblingOverlapHandoffs(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	selectedNumber string,
 	targetHeadSHA string,

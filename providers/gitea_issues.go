@@ -260,6 +260,28 @@ func (p *GiteaProvider) AuthenticatedLogin(ctx context.Context) (string, error) 
 	return login, nil
 }
 
+// UpdateComment edits an existing issue/PR comment's body in place — the
+// sticky-comment pattern (#716) a caller uses so a repeated event (e.g.
+// pr-remediation's per-cycle checkpoint/escalation state) updates the SAME
+// comment instead of growing a new one every run. Gitea scopes comment IDs
+// repo-wide, not per-issue, so the edit endpoint takes no issue number.
+func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, commentID, body string) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+}
+
 // CreateWorkItem creates a Gitea issue. Gitea takes label IDs, not names, so
 // requested labels are resolved (or created) via giteaLabelIDs. When RunID is
 // set the body carries a run-id footer and a recent-window scan makes creation

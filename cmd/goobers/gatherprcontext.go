@@ -106,7 +106,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, prToken)
+	provider, err := remediationStageProvider(root, repo, prToken, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
@@ -362,7 +366,7 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 // update a branch even while another local worktree has it checked out. The
 // returned counts identify eligible crowned landers from their live parked
 // dependents without a second provider scan.
-func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+func filterRemediationPullRequests(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 	var eligible []providers.PullRequestSummary
 	blockedDependents := make(map[int]int)
 	for _, pr := range prs {
