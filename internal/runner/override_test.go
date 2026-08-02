@@ -49,6 +49,10 @@ func overrideFixtureMachine(t *testing.T, evaluator apiv1.EvaluatorKind) *workfl
 }
 
 func createEscalatedGateRun(t *testing.T, runsDir, runID string, machine *workflow.Machine) {
+	createTerminalGateRun(t, runsDir, runID, machine, "needs-changes", workflow.TargetEscalate, journal.PhaseEscalated)
+}
+
+func createTerminalGateRun(t *testing.T, runsDir, runID string, machine *workflow.Machine, verdict, target string, phase journal.RunPhase) {
 	t.Helper()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
@@ -59,16 +63,58 @@ func createEscalatedGateRun(t *testing.T, runsDir, runID string, machine *workfl
 		t.Fatalf("journal.Create: %v", err)
 	}
 	if err := jr.Append(journal.Event{
-		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
-		Target: workflow.TargetEscalate, Escalated: true,
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: verdict,
+		Target: target, Escalated: target == workflow.TargetEscalate,
 	}); err != nil {
 		t.Fatalf("append gate verdict: %v", err)
 	}
-	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
-		t.Fatalf("append escalated terminal: %v", err)
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+		t.Fatalf("append terminal: %v", err)
 	}
 	if err := jr.Close(); err != nil {
 		t.Fatalf("close run: %v", err)
+	}
+}
+
+func TestOverrideGateReopensAbortedRunAndAdvancesSelectedBranch(t *testing.T) {
+	machine := overrideFixtureMachine(t, apiv1.EvaluatorAgentic)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "override-aborted"
+	createTerminalGateRun(t, runsDir, runID, machine, "fail", workflow.TargetAbort, journal.PhaseAborted)
+
+	det := &countingDeterministic{}
+	r := terminalResumeRunner(t, runsDir, fixtureRepo, wtMgr, det)
+	result, err := r.OverrideGate(context.Background(), OverrideGateInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Gate:    "review", Verdict: "needs-changes", Actor: "maintainer@example.test",
+		Rationale: "The failure was reviewed and needs a corrective pass.",
+	})
+	if err != nil {
+		t.Fatalf("OverrideGate: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted || det.calls != 1 {
+		t.Fatalf("result = %+v, deterministic calls = %d; want completed after one corrective task", result, det.calls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var override journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventGateOverridden {
+			override = event
+		}
+	}
+	if override.Status != string(journal.PhaseAborted) ||
+		override.Target != "fix" ||
+		override.Rationale != "The failure was reviewed and needs a corrective pass." {
+		t.Fatalf("gate.overridden = %+v", override)
 	}
 }
 
@@ -157,7 +203,7 @@ func TestOverrideGateRequiresRationaleAndNondeterministicGate(t *testing.T) {
 	}
 }
 
-func TestCurrentEscalatedGateRejectsStaleVerdicts(t *testing.T) {
+func TestCurrentTerminalGateRejectsStaleOrUnrelatedVerdicts(t *testing.T) {
 	escalated := journal.Event{
 		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
 		Target: workflow.TargetEscalate, Escalated: true,
@@ -165,35 +211,42 @@ func TestCurrentEscalatedGateRejectsStaleVerdicts(t *testing.T) {
 	tests := []struct {
 		name   string
 		events []journal.Event
+		phase  journal.RunPhase
 		want   bool
 	}{
-		{name: "current escalation", events: []journal.Event{escalated}, want: true},
+		{name: "current escalation", events: []journal.Event{escalated}, phase: journal.PhaseEscalated, want: true},
 		{name: "target records escalation", events: []journal.Event{{
 			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TargetEscalate,
-		}}, want: true},
+		}}, phase: journal.PhaseEscalated, want: true},
+		{name: "current abort", events: []journal.Event{{
+			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TargetAbort,
+		}}, phase: journal.PhaseAborted, want: true},
+		{name: "current completion", events: []journal.Event{{
+			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TerminalComplete,
+		}}, phase: journal.PhaseCompleted, want: true},
 		{name: "different gate", events: []journal.Event{{
 			Type: journal.EventGateEvaluated, Gate: "security", Target: workflow.TargetEscalate,
-		}}},
+		}}, phase: journal.PhaseEscalated},
 		{name: "non-escalating verdict", events: []journal.Event{{
 			Type: journal.EventGateEvaluated, Gate: "review", Target: workflow.TerminalComplete,
-		}}},
+		}}, phase: journal.PhaseEscalated},
 		{name: "newer gate verdict", events: []journal.Event{escalated, {
 			Type: journal.EventGateEvaluated, Gate: "security", Target: workflow.TargetEscalate,
-		}}},
+		}}, phase: journal.PhaseEscalated},
 		{name: "after resume", events: []journal.Event{
 			escalated, {Type: journal.EventRunResumed, Target: "fix"},
-		}},
+		}, phase: journal.PhaseEscalated},
 		{name: "after override", events: []journal.Event{
 			escalated, {Type: journal.EventGateOverridden, Gate: "review", Target: "fix"},
-		}},
+		}, phase: journal.PhaseEscalated},
 		{name: "after rerun request", events: []journal.Event{
 			escalated, {Type: journal.EventStageRerunRequested, Stage: "implement"},
-		}},
+		}, phase: journal.PhaseEscalated},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := isCurrentEscalatedGate(test.events, "review"); got != test.want {
-				t.Fatalf("isCurrentEscalatedGate() = %v, want %v", got, test.want)
+			if got := isCurrentTerminalGate(test.events, "review", test.phase); got != test.want {
+				t.Fatalf("isCurrentTerminalGate() = %v, want %v", got, test.want)
 			}
 		})
 	}

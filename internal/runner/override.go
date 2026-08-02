@@ -12,7 +12,7 @@ import (
 )
 
 // OverrideGateInput selects a configured branch for a nondeterministic gate
-// whose verdict escalated the run.
+// whose verdict ended the run.
 type OverrideGateInput struct {
 	RunID        string
 	Machine      *workflow.Machine
@@ -24,7 +24,7 @@ type OverrideGateInput struct {
 	Rationale    string
 }
 
-// OverrideGate records an operator's rationale and continues an escalated run
+// OverrideGate records an operator's rationale and continues a terminal run
 // down the selected agentic or human gate branch.
 func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result, error) {
 	if !apiv1.ValidRunID(in.RunID) {
@@ -87,9 +87,6 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)
 		}
-		if phase != journal.PhaseEscalated {
-			return Result{}, fmt.Errorf("runner: run %q has phase %s, not escalated", in.RunID, phase)
-		}
 		if id.Workflow != in.Machine.Def.Name ||
 			id.WorkflowVersion != in.Machine.Def.Version ||
 			id.WorkflowDigest == "" ||
@@ -101,8 +98,8 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
 		}
-		if !isCurrentEscalatedGate(events, in.Gate) {
-			return Result{}, fmt.Errorf("runner: gate %q did not cause the run's current escalation", in.Gate)
+		if !isCurrentTerminalGate(events, in.Gate, phase) {
+			return Result{}, fmt.Errorf("runner: gate %q did not cause the run's current terminal phase %s", in.Gate, phase)
 		}
 
 		if err := jr.Append(journal.Event{
@@ -125,12 +122,24 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 	})
 }
 
-func isCurrentEscalatedGate(events []journal.Event, gate string) bool {
+func isCurrentTerminalGate(events []journal.Event, gate string, phase journal.RunPhase) bool {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
 		case journal.EventGateEvaluated:
-			return events[i].Gate == gate &&
-				(events[i].Target == workflow.TargetEscalate || events[i].Escalated)
+			if events[i].Gate != gate {
+				return false
+			}
+			switch phase {
+			case journal.PhaseCompleted:
+				return events[i].Target == workflow.TerminalComplete ||
+					events[i].Target == journal.TargetComplete
+			case journal.PhaseAborted:
+				return events[i].Target == workflow.TargetAbort
+			case journal.PhaseEscalated:
+				return events[i].Target == workflow.TargetEscalate || events[i].Escalated
+			default:
+				return false
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden, journal.EventStageRerunRequested:
 			return false
 		}
