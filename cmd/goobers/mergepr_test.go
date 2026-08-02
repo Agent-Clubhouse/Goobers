@@ -448,13 +448,13 @@ func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *tes
 	compareFiles := make([]fakePRFile, 300)
 	for i := range compareFiles {
 		compareFiles[i] = fakePRFile{
-			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
+			path:   fmt.Sprintf("reference-workflows/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
 			status: "modified",
 		}
 	}
 	pullFiles := append([]fakePRFile(nil), compareFiles...)
 	pullFiles = append(pullFiles, fakePRFile{
-		path: "selfhost/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
+		path: "reference-workflows/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
 	})
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",

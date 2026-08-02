@@ -48,7 +48,7 @@ const (
 // "timeout" as one of ci-status's producible outcomes, so a ci-status gate
 // missing a "timeout" branch fails Compile outright (GT-002) rather than
 // compiling clean and only failing closed the first time a real poll times
-// out. Every in-tree ci-status gate (acme-web/selfhost/testdata) declares
+// out. Every in-tree ci-status gate (acme-web/reference-workflows/testdata) declares
 // one.
 const OutcomeTimeout = "timeout"
 

@@ -29,13 +29,13 @@ func loadWorkflowFile(t *testing.T, path string) Definition {
 }
 
 // shippedWorkflowRoots are every directory of workflow definitions this repo
-// ships. selfhost is the config the Goobers instance that builds Goobers
+// ships. reference-workflows is the config the Goobers instance that builds Goobers
 // actually runs, so a regression there breaks our own pipeline; the examples
 // are what other instances copy from, so a regression there ships the defect
 // to everyone else.
 func shippedWorkflowRoots() []string {
 	return []string{
-		filepath.Join("..", "..", "..", "selfhost", "gaggles", "goobers", "workflows"),
+		filepath.Join("..", "..", "..", "reference-workflows", "gaggles", "goobers", "workflows"),
 		filepath.Join("..", "..", "..", "config-examples", "gaggles", "acme-web", "workflows"),
 	}
 }

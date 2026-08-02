@@ -792,7 +792,7 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
-// config (selfhost/instance.yaml.example) but had zero callers.
+// config (reference-workflows/instance.yaml.example) but had zero callers.
 func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }

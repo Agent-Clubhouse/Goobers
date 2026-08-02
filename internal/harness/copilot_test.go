@@ -890,7 +890,7 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -925,7 +925,7 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "nominator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)

@@ -217,7 +217,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
 	@echo "deploy/reference kustomize builds OK"
 
-## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
+## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers

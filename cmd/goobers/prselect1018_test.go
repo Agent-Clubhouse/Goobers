@@ -15,7 +15,7 @@ func TestPRSelectSupportsMultipleHeadPrefixes(t *testing.T) {
 	server.addOpenPR(11, "goobers/docs-updater/run-11", "main", "docs-head", "base",
 		false, nil, []fakePRFile{{path: "docs/guide.md", status: "modified"}})
 	server.addOpenPR(10, "goobers/tutor/run-10", "main", "tutor-head", "base",
-		false, nil, []fakePRFile{{path: "selfhost/gaggle.yaml", status: "modified"}})
+		false, nil, []fakePRFile{{path: "reference-workflows/gaggle.yaml", status: "modified"}})
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.RepoProviderEnvVar, "github")

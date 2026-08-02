@@ -648,7 +648,7 @@ compare active workflows with canonical definitions
 Usage: goobers config diff [--against <canonical-root>] [instance-root]
 
 Compare the active workflows under <instance-root>/config with a canonical
-config source tree. The canonical root defaults to ./selfhost; use --against
+config source tree. The canonical root defaults to ./reference-workflows; use --against
 when running outside the Goobers source checkout or comparing another set.
 
 Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,
@@ -664,7 +664,7 @@ Exit codes: 0 = structurally identical (informational tuning is allowed),
 
 ~~~console
 $ goobers config diff ./instance
-$ goobers config diff --against ./selfhost ./instance
+$ goobers config diff --against ./reference-workflows ./instance
 ~~~
 
 ## `goobers config materialize`
