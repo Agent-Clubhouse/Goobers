@@ -1,50 +1,43 @@
 # Quickstart (tier 1, local)
 
-Walks the full `goobers` CLI surface end to end: scaffold an instance, point it
-at your repo, and trigger a run. See `docs/ARCHITECTURE.md` §6 for the instance
-layout these commands operate on.
+Start with a credential-free local demo, then graduate to a disposable
+GitHub-backed run and the production-oriented configuration examples. See
+`docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 If declarative systems are new to you, read
 [How Goobers works: desired state, not scripts](../concepts/README.md) first.
 It explains the config/runtime split and why agents propose definition changes
 through pull requests.
 
-## Prerequisites
-
-- `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
-  stage (`make ci` -> `lint`) runs as a subprocess of the daemon, not your
-  interactive shell, so it inherits the daemon's `PATH`, not your dotfile's.
-- The daemon passes through the Go toolchain env family (`GOPATH`, `GOBIN`,
-  `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
-  `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
-  relocates the Go cache/module store or sits behind a corporate module proxy.
-
-## 1. Build the binary
+## Build the binary
 
 ```sh
 go build -o bin/goobers ./cmd/goobers    # or: make build
 ```
 
-## 2. `init` — scaffold an instance root
+## 1. Run the zero-credential demo
+
+The hermetic demo uses mock providers and requires no repository, provider
+credentials, model tokens, or network writes. It is supported on Linux and
+macOS, where Goobers enforces network isolation.
 
 ```sh
-bin/goobers init ./my-instance
+bin/goobers init --demo ./demo-instance
+bin/goobers run demo ./demo-instance
+bin/goobers trace <run-id> ./demo-instance
 ```
 
-Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
-implement-only workflow), and the empty `gaggles/`, `scheduler/`, and
-`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
-gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing
-pieces are left untouched.
+The run walks through curate -> implement -> review, pauses at the
+`review-verdict` gate, and then produces a merge-preview artifact before
+finishing. `run` prints the run ID used by `trace`; the trace shows the complete
+journal and gate transition.
 
-A fresh successful initialization records
-`init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+## 2. Graduate to the token-bearing quickstart template
 
-### Onboarding-only template
-
-For a first autonomous run against a disposable tutorial target, seed the
-versioned `quickstart@v1` template and copy its paired sample into a separate
-throwaway directory:
+Next, use the versioned `quickstart@v1` template for a first autonomous run
+against a disposable GitHub repository. This path requires a GitHub token and
+an authenticated Copilot CLI. Copy the paired sample into a separate throwaway
+directory:
 
 ```sh
 bin/goobers onboarding stub-sample \
@@ -82,12 +75,42 @@ is **not for production**: it intentionally omits CI gates, remediation loops,
 bounded escalation, merge policy, and issue close-out so the onboarding happy
 path has no stall points.
 
-Graduate by scaffolding the canonical `implementation` workflow through
-`goobers init --guided`, or by adapting
-`config-examples/gaggles/acme-web/workflows/implementation.yaml`. That workflow
-adds reviewer verdict policy, local CI with bounded implementation repasses,
-explicit escalation paths, and PR CI polling. Add the separate `merge-review`
-workflow only after those safeguards are configured.
+The complete graduation path is:
+
+1. Run the hermetic `demo` workflow above.
+2. Run the disposable, token-bearing `quickstart@v1` template.
+3. Scaffold a regular instance and run its starter `default-implement`
+   workflow.
+4. Adapt
+   [`config-examples/gaggles/acme-web/workflows/implementation.yaml`](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
+   for production-oriented review, local CI with bounded implementation
+   repasses, explicit escalation paths, and PR CI polling. Add the separate
+   `merge-review` workflow only after those safeguards are configured.
+
+## 3. `init` — scaffold a regular instance root
+
+```sh
+bin/goobers init ./my-instance
+```
+
+Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
+`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and
+`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
+gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —
+existing pieces are left untouched.
+
+A fresh successful initialization records
+`init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+
+### Prerequisites for regular workflows
+
+- `golangci-lint` must be on the **daemon's** `PATH` — a workflow's `local-ci`
+  stage (`make ci` -> `lint`) runs as a subprocess of the daemon, not your
+  interactive shell, so it inherits the daemon's `PATH`, not your dotfile's.
+- The daemon passes through the Go toolchain env family (`GOPATH`, `GOBIN`,
+  `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
+  `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
+  relocates the Go cache/module store or sits behind a corporate module proxy.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into
@@ -99,7 +122,7 @@ returns to one gaggle, because mixed historical state cannot be assigned safely.
 Operators may relocate retained journals by their recorded gaggle during a
 maintenance window; retained Git workcopies should stay at their legacy paths.
 
-## 3. Configure
+## 4. Configure
 
 Edit `my-instance/instance.yaml` to point at your own repo and set the
 referenced provider token (env var or file — never inline, CFG-009/SEC-010).
@@ -111,7 +134,7 @@ For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
 an operator choice.
 
-## 4. `validate` — check it
+## 5. `validate` — check it
 
 ```sh
 bin/goobers validate ./my-instance
@@ -121,7 +144,7 @@ Checks `instance.yaml` and every document under `config/` against the
 canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
 error (e.g. not an instance root yet).
 
-## 5. `up` — run the daemon
+## 6. `up` — run the daemon
 
 ```sh
 bin/goobers up ./my-instance
@@ -146,7 +169,7 @@ last-known-good definitions active. Without the flag, `config/` is also read onc
 at startup. (Live watch is experimental and will be superseded by the Workflow CD
 config source, #453.)
 
-## 6. `run` — trigger one manually
+## 7. `run` — trigger one manually
 
 ```sh
 bin/goobers run default-implement ./my-instance
@@ -160,7 +183,7 @@ tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
 until the run reaches a terminal state or pauses (e.g. a human gate). Prints
 the run id up front and the final phase/state once it returns.
 
-## 7. `status` — list runs
+## 8. `status` — list runs
 
 ```sh
 bin/goobers status ./my-instance
@@ -182,7 +205,7 @@ RUN ID                              WORKFLOW                  GAGGLE      PHASE 
 a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
 ```
 
-## 8. `trace` — inspect one run
+## 9. `trace` — inspect one run
 
 ```sh
 bin/goobers trace a671b69fe766595e550677b91658726a ./my-instance
@@ -195,7 +218,7 @@ in `internal/journal/README.md` use, just pre-formatted. If the telemetry
 rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
 this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
 
-## 9. `reset-rate-limit` — run again without losing history
+## 10. `reset-rate-limit` — run again without losing history
 
 A workflow's `maxRunsPerHour` budget can leave you rate-limited when you want to
 trigger another run immediately (e.g. during acceptance testing). Reset just the
