@@ -2100,18 +2100,6 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	return rc, wtMgr, nil
 }
 
-func pathLengthManagerOptions(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) ([]worktree.ManagerOption, error) {
-	limits, err := pathLengthManagerLimits(cfg, cloneURL, goos)
-	if err != nil {
-		return nil, err
-	}
-	options := make([]worktree.ManagerOption, 0, len(limits))
-	for repoURL, limit := range limits {
-		options = append(options, worktree.WithPathLengthLimit(repoURL, limit))
-	}
-	return options, nil
-}
-
 func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {
 	limits := make(map[string]worktree.PathLengthLimit)
 	for i, repo := range cfg.Repos {

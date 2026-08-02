@@ -1266,29 +1266,29 @@ func TestGitAuthEnvironmentSupportsMirrorCloneAndFetch(t *testing.T) {
 	}
 }
 
-func TestPathLengthManagerOptions(t *testing.T) {
+func TestPathLengthManagerLimits(t *testing.T) {
 	cloneURL := func(repo apiv1.RepoRef) (string, error) {
 		return fmt.Sprintf("https://example.test/%s/%s.git", repo.Owner, repo.Name), nil
 	}
 	base := instance.RepoRef{Provider: "github", Owner: "acme", Name: "web"}
 
-	options, err := pathLengthManagerOptions(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
-	if err != nil || len(options) != 0 {
-		t.Fatalf("unconfigured linux options = %d, %v; want 0", len(options), err)
+	limits, err := pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("unconfigured linux limits = %d, %v; want 0", len(limits), err)
 	}
-	options, err = pathLengthManagerOptions(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
-	if err != nil || len(options) != 1 {
-		t.Fatalf("unconfigured windows options = %d, %v; want 1", len(options), err)
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("unconfigured windows limits = %d, %v; want 1", len(limits), err)
 	}
 	base.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 320, BuildOutputAllowance: 40}
-	options, err = pathLengthManagerOptions(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
-	if err != nil || len(options) != 1 {
-		t.Fatalf("configured linux options = %d, %v; want 1", len(options), err)
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("configured linux limits = %d, %v; want 1", len(limits), err)
 	}
 	base.PathLength.Disabled = true
-	options, err = pathLengthManagerOptions(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
-	if err != nil || len(options) != 0 {
-		t.Fatalf("disabled windows options = %d, %v; want 0", len(options), err)
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("disabled windows limits = %d, %v; want 0", len(limits), err)
 	}
 }
 
