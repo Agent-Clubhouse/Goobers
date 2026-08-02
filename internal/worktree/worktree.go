@@ -157,6 +157,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		return nil, err
 	}
 	key := repoKey(opts.RepoURL)
+	directory := worktreeDirectoryName(opts.RunID)
+	path := filepath.Join(m.runsDirForKey(key), directory)
 
 	// Worktree add mutates the repo's administrative worktree list; serialize
 	// it per repo alongside clone/fetch so concurrent Creates for the same
@@ -170,8 +172,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
-	directory := worktreeDirectoryName(opts.RunID)
-	path := filepath.Join(m.runsDirForKey(key), directory)
+	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
+	if limit, ok := m.pathLengthLimits[opts.RepoURL]; ok {
+		ref := opts.BaseRef
+		if existingBranch {
+			ref = opts.Branch
+		}
+		if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
 		// worktree at this exact key can only be a previous attempt of the
@@ -200,7 +211,6 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
 	args := []string{"worktree", "add"}
-	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
@@ -328,6 +338,31 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string, limit PathLengthLimit) error {
+	out, err := rawGitOutput(ctx, repoDir, nil, "ls-tree", "-r", "-z", "--name-only", ref)
+	if err != nil {
+		return fmt.Errorf("worktree: path-length preflight list tracked paths at %q: %w", ref, err)
+	}
+	var deepest string
+	for _, entry := range strings.Split(string(out), "\x00") {
+		if len(filepath.FromSlash(entry)) > len(filepath.FromSlash(deepest)) {
+			deepest = entry
+		}
+	}
+	if deepest == "" {
+		return nil
+	}
+	available := limit.MaxPathLength - len(checkoutPath) - 1 - limit.BuildOutputAllowance
+	required := len(filepath.FromSlash(deepest))
+	if required <= available {
+		return nil
+	}
+	return fmt.Errorf(
+		"worktree: path-length preflight refused checkout: tracked path %q requires %d characters but only %d are available (maximum %d, checkout prefix %d, build-output allowance %d); shorten the instance root, raise repos[].pathLength.maxPathLength, reduce the allowance, or set repos[].pathLength.disabled: true",
+		deepest, required, available, limit.MaxPathLength, len(checkoutPath)+1, limit.BuildOutputAllowance,
+	)
 }
 
 func mergeConflictFiles(ctx context.Context, path string) ([]string, error) {

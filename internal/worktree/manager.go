@@ -64,6 +64,8 @@ type Manager struct {
 	// unconfigured Manager, so the default path issues byte-identical git
 	// invocations to previous releases.
 	partialClone bool
+
+	pathLengthLimits map[string]PathLengthLimit
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -74,6 +76,16 @@ type Manager struct {
 // gaggle that retunes its namespace is honored without this fallback ever
 // diverging in the configured path.
 const defaultRunBranchNamespace = "goobers/"
+
+// DefaultMaxPathLength is the Windows MAX_PATH ceiling used when no
+// repository-specific maximum is configured.
+const DefaultMaxPathLength = 260
+
+// PathLengthLimit configures preflight for one repository URL.
+type PathLengthLimit struct {
+	MaxPathLength        int
+	BuildOutputAllowance int
+}
 
 // ManagerOption configures a Manager at construction.
 type ManagerOption func(*Manager)
@@ -145,6 +157,20 @@ func WithGitEnvironment(resolve func(context.Context, string) ([]string, error))
 func WithPartialClone() ManagerOption {
 	return func(m *Manager) {
 		m.partialClone = true
+	}
+}
+
+// WithPathLengthLimit enables checkout path-length preflight for repoURL. A
+// zero maximum uses DefaultMaxPathLength.
+func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
+	return func(m *Manager) {
+		if m.pathLengthLimits == nil {
+			m.pathLengthLimits = make(map[string]PathLengthLimit)
+		}
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		m.pathLengthLimits[repoURL] = limit
 	}
 }
 

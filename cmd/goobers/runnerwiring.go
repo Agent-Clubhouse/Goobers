@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1810,6 +1811,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
+		pathOptions, pathOptionsErr := pathLengthManagerOptions(cfg, cloneURLFn, runtime.GOOS)
+		if pathOptionsErr != nil {
+			return runner.Config{}, nil, pathOptionsErr
+		}
+		managerOptions = append(managerOptions, pathOptions...)
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
@@ -2089,6 +2095,37 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		rc.Telemetry = tel
 	}
 	return rc, wtMgr, nil
+}
+
+func pathLengthManagerOptions(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) ([]worktree.ManagerOption, error) {
+	var options []worktree.ManagerOption
+	for i, repo := range cfg.Repos {
+		if repo.PathLength != nil && repo.PathLength.Disabled {
+			continue
+		}
+		if repo.PathLength == nil && goos != "windows" {
+			continue
+		}
+		url, err := cloneURL(apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider),
+			BaseURL:  repo.BaseURL,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("repos[%d] (%s/%s): resolve clone URL for path-length preflight: %w", i, repo.Owner, repo.Name, err)
+		}
+		limit := worktree.PathLengthLimit{MaxPathLength: worktree.DefaultMaxPathLength}
+		if repo.PathLength != nil {
+			if repo.PathLength.MaxPathLength != 0 {
+				limit.MaxPathLength = repo.PathLength.MaxPathLength
+			}
+			limit.BuildOutputAllowance = repo.PathLength.BuildOutputAllowance
+		}
+		options = append(options, worktree.WithPathLengthLimit(url, limit))
+	}
+	return options, nil
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

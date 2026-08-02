@@ -49,6 +49,24 @@ headroom. Enable Windows and Git long-path support as described in the
 [Windows quickstart](quickstart-windows.md), but do not use that support as a
 reason to bury the instance under a deep source checkout.
 
+Before creating a checkout, Goobers measures the deepest tracked path and
+refuses it when the worktree prefix plus that path exceeds the repository's
+budget. Windows defaults to the 260-character `MAX_PATH` ceiling. Configure a
+different ceiling and reserve room for generated build output per repository:
+
+```yaml
+repos:
+  - provider: github
+    owner: acme
+    name: widget
+    pathLength:
+      maxPathLength: 320
+      buildOutputAllowance: 48
+```
+
+Declaring `pathLength` also enables the check on non-Windows hosts. Set
+`pathLength.disabled: true` to opt a repository out explicitly.
+
 Prefer a parent directory that is not tracked by Git. If an operational parent
 directory is itself version-controlled, but is not a target repository, ignore
 the exact local-state directory at that repository's root:

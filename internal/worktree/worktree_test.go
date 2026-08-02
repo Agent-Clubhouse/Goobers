@@ -298,6 +298,62 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
+func TestManagerCreatePathLengthPreflightRefusesBeforeCheckout(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	mustWriteFile(t, filepath.Join(repo, deepest), "content")
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "add deep path")
+
+	root := t.TempDir()
+	runID := "path-budget"
+	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
+	available := len(filepath.FromSlash(deepest)) - 1
+	maximum := len(checkoutPath) + 1 + available + 12
+	m, err := NewManager(root, WithPathLengthLimit(repo, PathLengthLimit{
+		MaxPathLength:        maximum,
+		BuildOutputAllowance: 12,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.Create(ctx, CreateOptions{RepoURL: repo, RunID: runID, BaseRef: "main"})
+	if err == nil {
+		t.Fatal("Create succeeded despite exhausted path budget")
+	}
+	for _, fragment := range []string{deepest, fmt.Sprintf("only %d are available", available), "pathLength.disabled: true"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("Create error %q does not contain %q", err, fragment)
+		}
+	}
+	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout path exists after preflight failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(m.markerPath(repoKey(repo), runID)); !os.IsNotExist(statErr) {
+		t.Fatalf("marker exists after preflight failure: %v", statErr)
+	}
+}
+
+func TestManagerCreatePathLengthPreflightAllowsFittingCheckout(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m, err := NewManager(t.TempDir(), WithPathLengthLimit(repo, PathLengthLimit{
+		MaxPathLength: 1024,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "fits", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
 // mirrorRefExists reports whether refs/heads/<branch> exists in the managed
 // mirror for repo — used to assert the mirror prune did or did not delete a
 // local-only run branch. Non-fatal (git exits non-zero when the ref is absent),
