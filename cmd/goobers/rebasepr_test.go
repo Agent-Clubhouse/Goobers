@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+const portalBuildMakeEnv = "GOOBERS_TEST_PORTAL_BUILD_MAKE"
+
 // rebasePRServerState is a small stateful fake GitHub server for rebase-pr's
 // (#363) tests: one PR's label state and durable handoff comments. rebase-pr
 // never lists PRs — its core inputs arrive via InputsFrom, mirroring the real
@@ -257,6 +259,55 @@ func initPortalDistConflictPRBranch(t *testing.T, prBranch string, sourceConflic
 	runGitT(t, work, "push", "origin", "main")
 
 	return origin
+}
+
+func installPortalBuildMake(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable for make fixture: %v", err)
+	}
+	dir := t.TempDir()
+	name := "make"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if err := os.Link(executable, filepath.Join(dir, name)); err != nil {
+		t.Fatalf("install make fixture: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(portalBuildMakeEnv, "1")
+}
+
+func runPortalBuildMake() int {
+	if len(os.Args) != 2 || os.Args[1] != "portal-build" {
+		fmt.Fprintf(os.Stderr, "make fixture: args = %q, want [portal-build]\n", os.Args[1:])
+		return 2
+	}
+	base, err := os.ReadFile(filepath.Join("portal", "src", "base.txt"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: read base source: %v\n", err)
+		return 1
+	}
+	app, err := os.ReadFile(filepath.Join("portal", "src", "app.txt"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: read app source: %v\n", err)
+		return 1
+	}
+	if err := os.RemoveAll(portalDistPath); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: remove portal bundle: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(portalDistPath, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: create portal bundle: %v\n", err)
+		return 1
+	}
+	data := fmt.Appendf(nil, "%s+%s\n", strings.TrimSpace(string(base)), strings.TrimSpace(string(app)))
+	if err := os.WriteFile(filepath.Join(portalDistPath, "index.html"), data, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: write portal bundle: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // initConflictingPRBranch builds a bare origin where the PR branch and main
@@ -1032,6 +1083,7 @@ func TestRebasePRRegeneratesPortalDistConflict(t *testing.T) {
 	const prBranch = "goobers/impl/run-portal-dist"
 	origin := initPortalDistConflictPRBranch(t, prBranch, false)
 	wt := prWorktree(t, origin, prBranch)
+	installPortalBuildMake(t)
 
 	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
 	server := st.start(t, "your-org", "your-repo", 63)
