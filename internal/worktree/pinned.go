@@ -35,6 +35,14 @@ type PinnedOptions struct {
 	OnQueuePosition       func(int) error
 }
 
+// PinnedPrepareOptions selects the branch exposed to one serialized stage.
+type PinnedPrepareOptions struct {
+	BaseRef               string
+	Branch                string
+	RequireExistingBranch bool
+	SyncBase              bool
+}
+
 type pinnedLeaseRecord struct {
 	RunID     string    `json:"run_id"`
 	PID       int       `json:"pid"`
@@ -240,14 +248,22 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		return nil, fmt.Errorf("worktree: stat pinned workspace: %w", err)
 	}
 	if !createdPin {
-		if err := runGit(ctx, pinDir, "fetch", "--prune", "mirror", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+		if err := fetchPinnedWorkspaceRefs(ctx, pinDir); err != nil {
 			return nil, fmt.Errorf("worktree: refresh pinned workspace refs: %w", err)
 		}
 	}
-	existing := opts.Branch != "" && branchExists(ctx, pinDir, opts.Branch)
+	baseRef := pinnedBaseRef(ctx, pinDir, opts.BaseRef)
+	existing := false
+	var err error
+	if opts.Branch != "" {
+		existing, err = ensurePinnedBranch(ctx, pinDir, opts.Branch)
+		if err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case opts.Branch == "":
-		if err := runGit(ctx, pinDir, "checkout", "--detach", "--force", opts.BaseRef); err != nil {
+		if err := runGit(ctx, pinDir, "checkout", "--detach", "--force", baseRef); err != nil {
 			return nil, fmt.Errorf("worktree: checkout pinned base: %w", err)
 		}
 	case existing:
@@ -257,7 +273,7 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	case opts.RequireExistingBranch:
 		return nil, fmt.Errorf("worktree: branch %q does not exist in pinned workspace for run %s", opts.Branch, opts.RunID)
 	default:
-		if err := runGit(ctx, pinDir, "checkout", "-b", opts.Branch, opts.BaseRef); err != nil {
+		if err := runGit(ctx, pinDir, "checkout", "-b", opts.Branch, baseRef); err != nil {
 			return nil, fmt.Errorf("worktree: create pinned branch: %w", err)
 		}
 	}
@@ -288,7 +304,7 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		return nil, err
 	}
 	if opts.SyncBase && existing {
-		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", opts.BaseRef); err != nil {
+		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", baseRef); err != nil {
 			return nil, fmt.Errorf("worktree: sync pinned branch %q with base %q: %w", opts.Branch, opts.BaseRef, err)
 		}
 	}
@@ -297,4 +313,92 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		manager: m, key: key, startRef: startRef, repoURL: opts.RepoURL,
 		pinned: true, repoDir: pinDir,
 	}, nil
+}
+
+// PreparePinned selects the branch and optional base synchronization requested
+// by a stage after the caller has serialized access to the pinned workspace.
+func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions) error {
+	if !wt.pinned {
+		return fmt.Errorf("worktree: prepare pinned called for non-pinned workspace")
+	}
+	if opts.BaseRef == "" || opts.Branch == "" {
+		return fmt.Errorf("worktree: pinned stage BaseRef and Branch are required")
+	}
+	repoDir := wt.manager.repoDirForKey(wt.key)
+	refspecs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+	if err := wt.manager.runRemoteGit(ctx, wt.repoURL, repoDir, append([]string{"fetch", "--prune", "origin"}, refspecs...)...); err != nil {
+		return fmt.Errorf("worktree: refresh pinned mirror: %w", err)
+	}
+	if err := fetchPinnedWorkspaceRefs(ctx, wt.Path); err != nil {
+		return fmt.Errorf("worktree: refresh pinned workspace refs: %w", err)
+	}
+	baseRef := pinnedBaseRef(ctx, wt.Path, opts.BaseRef)
+	existing, err := ensurePinnedBranch(ctx, wt.Path, opts.Branch)
+	if err != nil {
+		return err
+	}
+	switch {
+	case existing:
+		if err := runGit(ctx, wt.Path, "checkout", "--force", opts.Branch); err != nil {
+			return fmt.Errorf("worktree: checkout pinned branch: %w", err)
+		}
+	case opts.RequireExistingBranch:
+		return fmt.Errorf("worktree: branch %q does not exist in pinned workspace for run %s", opts.Branch, wt.RunID)
+	default:
+		if err := runGit(ctx, wt.Path, "checkout", "-b", opts.Branch, baseRef); err != nil {
+			return fmt.Errorf("worktree: create pinned branch: %w", err)
+		}
+	}
+	if err := runGit(ctx, wt.Path, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("worktree: reset pinned stage workspace: %w", err)
+	}
+	startRef, err := gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if opts.SyncBase && existing {
+		if err := runGit(ctx, wt.Path, "merge", "--ff", "--no-edit", baseRef); err != nil {
+			conflictingFiles, inspectErr := mergeConflictFiles(ctx, wt.Path)
+			cleanupErr := runGit(context.WithoutCancel(ctx), wt.Path, "merge", "--abort")
+			return baseSyncFailure(CreateOptions{
+				RunID: wt.RunID, BaseRef: opts.BaseRef, Branch: opts.Branch,
+			}, err, conflictingFiles, inspectErr, cleanupErr)
+		}
+	}
+	wt.Branch = opts.Branch
+	wt.startRef = startRef
+	return nil
+}
+
+func fetchPinnedWorkspaceRefs(ctx context.Context, pinDir string) error {
+	return runGit(ctx, pinDir, "fetch", "--prune", "mirror",
+		"+refs/heads/*:refs/remotes/mirror/*",
+		"+refs/tags/*:refs/tags/*")
+}
+
+func pinnedBaseRef(ctx context.Context, pinDir, baseRef string) string {
+	remoteRef := "refs/remotes/mirror/" + baseRef
+	if refExists(ctx, pinDir, remoteRef) {
+		return remoteRef
+	}
+	return baseRef
+}
+
+func ensurePinnedBranch(ctx context.Context, pinDir, branch string) (bool, error) {
+	if branchExists(ctx, pinDir, branch) {
+		return true, nil
+	}
+	remoteRef := "refs/remotes/mirror/" + branch
+	if !refExists(ctx, pinDir, remoteRef) {
+		return false, nil
+	}
+	if err := runGit(ctx, pinDir, "branch", branch, remoteRef); err != nil {
+		return false, fmt.Errorf("worktree: create local branch %q from pinned mirror: %w", branch, err)
+	}
+	return true, nil
+}
+
+func refExists(ctx context.Context, repoDir, ref string) bool {
+	_, err := gitOutput(ctx, repoDir, "show-ref", "--verify", "--quiet", ref)
+	return err == nil
 }

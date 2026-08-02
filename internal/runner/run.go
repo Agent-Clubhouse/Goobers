@@ -3705,7 +3705,17 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		return &stageWorkspace{path: path}, nil
 	case apiv1.WorkspaceRepoReadOnly:
 		if in.pinnedWorkspace != nil {
+			if syncBase {
+				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
+			}
+			if workspaceBranch != "" {
+				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+			}
 			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
 			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 			if err != nil {
 				in.pinnedStage.Unlock()
@@ -3754,6 +3764,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	case "", apiv1.WorkspaceRepo:
 		if in.pinnedWorkspace != nil {
 			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
 			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 			if err != nil {
 				in.pinnedStage.Unlock()
@@ -3800,6 +3814,26 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase bool, workspaceBranch string) error {
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	if workspaceBranch != "" {
+		branch = workspaceBranch
+	}
+	if err := in.pinnedWorkspace.PreparePinned(ctx, worktree.PinnedPrepareOptions{
+		BaseRef:               baseRef,
+		Branch:                branch,
+		SyncBase:              syncBase,
+		RequireExistingBranch: workspaceBranch != "",
+	}); err != nil {
+		return fmt.Errorf("prepare pinned workspace: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {

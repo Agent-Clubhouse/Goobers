@@ -43,6 +43,7 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 		t.Fatalf("pinned origin = %q, want push remote %q", origin, repo)
 	}
 	mustWriteFile(t, filepath.Join(pinPath, "build", "incremental.obj"), "warm")
+	runTestGit(t, pinPath, "push", "origin", "HEAD")
 	if err := first.Release(); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +58,35 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(manager.pinnedRoot, repoKey(repo), "runs")); !os.IsNotExist(err) {
 		t.Fatalf("pinned mode created a per-run worktree directory: %v", err)
+	}
+}
+
+func TestPreparePinnedSelectsRemoteBranchAndSyncsLatestBase(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	runTestGit(t, repo, "branch", "goobers/remediation/pr", "main")
+	lease := acquirePinnedFixture(t, manager, repo, "run-one", PinnedCleanNone)
+	defer func() { _ = lease.Release() }()
+
+	if err := lease.Worktree.PreparePinned(context.Background(), PinnedPrepareOptions{
+		BaseRef: "main", Branch: "goobers/remediation/pr", RequireExistingBranch: true,
+	}); err != nil {
+		t.Fatalf("prepare remote branch: %v", err)
+	}
+	if got := strings.TrimSpace(runTestGit(t, lease.Worktree.Path, "branch", "--show-current")); got != "goobers/remediation/pr" {
+		t.Fatalf("prepared branch = %q, want goobers/remediation/pr", got)
+	}
+
+	mustWriteFile(t, filepath.Join(repo, "base-update.txt"), "latest")
+	runTestGit(t, repo, "add", "base-update.txt")
+	runTestGit(t, repo, "commit", "-m", "advance base")
+
+	if err := lease.Worktree.PreparePinned(context.Background(), PinnedPrepareOptions{
+		BaseRef: "main", Branch: "goobers/remediation/pr", RequireExistingBranch: true, SyncBase: true,
+	}); err != nil {
+		t.Fatalf("sync prepared branch: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(lease.Worktree.Path, "base-update.txt")); err != nil || string(got) != "latest" {
+		t.Fatalf("synced base file = %q, %v", got, err)
 	}
 }
 

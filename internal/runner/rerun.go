@@ -146,6 +146,13 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Item:         item,
 			RunControls:  runControls,
 		}
+		lease, err := r.acquirePinnedWorkspace(ctx, jr, &startIn)
+		if err != nil {
+			return Result{}, err
+		}
+		if lease != nil {
+			defer func() { _ = lease.Release() }()
+		}
 		pointerEvents := seedEvents
 		if activeParallel != nil {
 			pointerEvents = seedEvents[:parallelStart]

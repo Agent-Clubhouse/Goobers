@@ -187,6 +187,7 @@ func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path {
 		t.Fatalf("stage paths = %v, want shared pin %q", paths, lease.Worktree.Path)
 	}
@@ -196,5 +197,81 @@ func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
 	}
 	if len(runDirs) != 0 {
 		t.Fatalf("pinned stages created per-run worktree directories: %v", runDirs)
+	}
+}
+
+func TestPinnedWorkspaceHonorsReboundBranchAndSyncBase(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updater := filepath.Join(t.TempDir(), "updater")
+	runGit(t, "", "clone", repoURL, updater)
+	runGit(t, updater, "config", "user.name", "test")
+	runGit(t, updater, "config", "user.email", "test@example.com")
+	runGit(t, updater, "checkout", "-b", "goobers/remediation/pr")
+	if err := os.WriteFile(filepath.Join(updater, "pr-marker.txt"), []byte("pr"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "pr-marker.txt")
+	runGit(t, updater, "commit", "-m", "add PR marker")
+	runGit(t, updater, "push", "origin", "goobers/remediation/pr")
+
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+
+	baseline, err := r.createStageWorkspace(context.Background(), in, "implement", apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseline.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rebound, err := r.createStageWorkspace(context.Background(), in, "remediate", apiv1.WorkspaceRepo, false, "goobers/remediation/pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(rebound.path, "pr-marker.txt")); err != nil || string(got) != "pr" {
+		t.Fatalf("rebound marker = %q, %v", got, err)
+	}
+	if err := rebound.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(readOnly.path, "pr-marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("read-only stage remained on rebound branch: %v", err)
+	}
+	if err := readOnly.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	runGit(t, updater, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(updater, "base-update.txt"), []byte("latest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "base-update.txt")
+	runGit(t, updater, "commit", "-m", "advance base")
+	runGit(t, updater, "push", "origin", "main")
+
+	synced, err := r.createStageWorkspace(context.Background(), in, "local-ci", apiv1.WorkspaceRepo, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = synced.Remove(context.Background()) }()
+	if got, err := os.ReadFile(filepath.Join(synced.path, "base-update.txt")); err != nil || string(got) != "latest" {
+		t.Fatalf("synced base file = %q, %v", got, err)
 	}
 }
