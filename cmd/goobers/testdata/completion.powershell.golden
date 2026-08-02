@@ -46,6 +46,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'backlog-health'
         'backlog-query'
         'select-source'
+        'validate-plan'
         'reconcile-branches'
         'push-branch'
         'check-fail-first'

@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS VALIDATE PLAN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers validate-plan \- validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers validate-plan\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers validate-plan [path]
+
+validate-plan is the decomposition workflow's `validate-plan` stage
+(docs/design/decomposition-workflow.md §3.2/§4, DEC-2). It reads the
+decomposition plan design-slices produced and the selection artifact
+select-source produced, checks the plan's schema version, its binding to
+the selector artifact, every child's shape, the dependency graph, and the
+label allowlist, then re-fetches the live parent to detect whether it
+changed since selection. It never mutates the provider.
+
+Exit codes: 0 = the plan is valid, or invalid/conflicting (the result file
+reports which — not a business error) / 1 = business error (provider/
+credential/config/IO error) / 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers validate-plan
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

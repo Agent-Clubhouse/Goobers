@@ -469,6 +469,10 @@ func init() {
 			withSynopsis(synopsisByID["select-source"]).
 			withHelp("select and claim an unconsumed L6 decomposition disposition (a workflow stage)", selectSourceHelp).
 			withExamples("goobers select-source"),
+		command("validate-plan", apicontract.ActionWorkflowExecution, runValidatePlan).
+			withSynopsis(synopsisByID["validate-plan"]).
+			withHelp("validate a decomposition plan against its selector artifact and the live parent (a workflow stage)", validatePlanHelp).
+			withExamples("goobers validate-plan"),
 		command("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).

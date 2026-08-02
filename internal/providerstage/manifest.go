@@ -80,6 +80,12 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"),
 		},
 	},
+	"validate-plan": {
+		ResultFile: "plan-validation.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
+		},
+	},
 	"elect-lander": {
 		ResultFile: "election.json",
 		Capabilities: []CapabilityUse{
