@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const (
@@ -1172,47 +1173,16 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-// fixtureGitConfig is prepended to every fixture git invocation.
-//
-// gc.auto and maintenance.auto are the load-sensitivity fix (#1784). Without
-// them, `git commit` may fork a background `git gc --auto` / `git maintenance
-// run --auto` that outlives the subtest and keeps the repository's .git
-// directory open. On an idle machine that child finishes before cleanup and
-// nothing is observed; on a loaded CI runner it does not, and t.TempDir's
-// RemoveAll fails with "unlinkat .../.git: directory not empty" while the
-// repository is concurrently repacked underneath the binary under test.
-//
 // protocol.file.allow keeps behaviour stable across git versions that changed
 // the default, so a fixture repository is materialized the same way everywhere.
 var fixtureGitConfig = []string{
-	"-c", "gc.auto=0",
-	"-c", "maintenance.auto=0",
 	"-c", "protocol.file.allow=always",
-}
-
-// fixtureGitEnv isolates fixture git invocations from whatever configuration
-// happens to exist on the machine running the suite.
-//
-// The suite already points HOME at a temp dir, which hides ~/.gitconfig, but
-// that alone leaves /etc/gitconfig and XDG_CONFIG_HOME in play. A developer or
-// runner image carrying core.hooksPath, commit.gpgsign, init.templateDir or
-// similar would change what these fixtures produce, which is exactly the class
-// of environment dependence a capture-replay fixture must not have.
-func fixtureGitEnv() []string {
-	return append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_OPTIONAL_LOCKS=0",
-	)
 }
 
 func runGit(t *testing.T, root string, args ...string) []byte {
 	t.Helper()
 	full := append([]string{"-C", root}, fixtureGitConfig...)
-	command := exec.Command("git", append(full, args...)...)
-	command.Env = fixtureGitEnv()
+	command := testgit.Command(append(full, args...)...)
 	output, err := command.Output()
 	if err == nil {
 		return output

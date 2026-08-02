@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
@@ -2629,8 +2629,8 @@ func containsString(items []string, want string) bool {
 
 func runGitTest(t *testing.T, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", args...)
-	command.Env = append(os.Environ(),
+	command := testgit.Command(args...)
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",

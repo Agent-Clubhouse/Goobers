@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -270,7 +270,7 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 }
 
 func retentionBranchExists(repoDir, branch string) bool {
-	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd := testgit.Command("-c", "safe.bareRepository=all", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }

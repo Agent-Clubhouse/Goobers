@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // newSourceRepo creates a throwaway git repo with one commit on "main" and
@@ -272,9 +273,9 @@ func mustWriteFile(t *testing.T, path, content string) {
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", hardenedGitArgs(args)...)
+	cmd := testgit.Command(hardenedGitArgs(args)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",
@@ -303,9 +304,9 @@ func newTestManager(t *testing.T) *Manager {
 // unlike runTestGit.
 func mirrorRefExists(t *testing.T, m *Manager, repo, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd := testgit.Command(hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = m.repoDirForKey(repoKey(repo))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",

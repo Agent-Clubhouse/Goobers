@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const supportMatrixSnapshotProgram = `package main
@@ -152,7 +154,7 @@ func loadSupportMatrixAtRelease(t *testing.T, repository, tag string) SupportMat
 	releaseTree := filepath.Join(t.TempDir(), "release")
 	runSupportGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, tag)
 	t.Cleanup(func() {
-		if output, err := exec.Command("git", "-C", repository, "worktree", "remove", "--force", releaseTree).CombinedOutput(); err != nil {
+		if output, err := testgit.Command("-C", repository, "worktree", "remove", "--force", releaseTree).CombinedOutput(); err != nil {
 			t.Errorf("remove release worktree: %v: %s", err, strings.TrimSpace(string(output)))
 		}
 	})
@@ -274,9 +276,9 @@ func runSupportGit(t *testing.T, repository string, args ...string) string {
 func runSupportCommand(t *testing.T, directory, name string, args ...string) string {
 	t.Helper()
 	command := exec.Command(name, args...)
-	command.Dir = directory
 	if name == "git" {
-		command.Env = append(os.Environ(),
+		command = testgit.Command(args...)
+		command.Env = append(command.Env,
 			"GIT_CONFIG_COUNT=2",
 			"GIT_CONFIG_KEY_0=core.autocrlf",
 			"GIT_CONFIG_VALUE_0=false",
@@ -284,6 +286,7 @@ func runSupportCommand(t *testing.T, directory, name string, args ...string) str
 			"GIT_CONFIG_VALUE_1=false",
 		)
 	}
+	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
