@@ -307,6 +307,7 @@
               "record-merge-refusal",
               "record-remediation-checkpoint",
               "release-backlog-claim",
+              "release-pr-claim",
               "respond-to-findings",
               "rework-pr",
               "route-queue-outcome",

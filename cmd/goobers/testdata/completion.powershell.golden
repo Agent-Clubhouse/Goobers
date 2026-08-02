@@ -67,6 +67,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'apply-verdict'
         'elect-lander'
         'update-behind-pr'
+        'pr-claim'
         'gather-pr-context'
         'gather-review-threads'
         'gather-issue-context'
