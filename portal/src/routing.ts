@@ -1,4 +1,6 @@
 import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
+import { isFactoryLayout, type FactoryLayout } from "./factoryLayout";
+import { isFactoryLens, type FactoryLens } from "./factoryModel";
 
 export type Route =
   | { page: "overview" }
@@ -6,6 +8,7 @@ export type Route =
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
+  | { page: "factory"; scope?: FactoryRouteScope }
   | { page: "insight" }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
@@ -20,6 +23,15 @@ export interface RunRouteFilters {
   until?: string;
 }
 
+/** Factory Floor scope: which plant the operator is standing in, and the lens. */
+export interface FactoryRouteScope {
+  gaggle?: string;
+  workflow?: string;
+  lens?: FactoryLens;
+  /** Presentation only: which layout draws the same floor model. */
+  layout?: FactoryLayout;
+}
+
 export interface ErrorRouteFilters {
   gaggle?: string;
   workflow?: string;
@@ -30,7 +42,7 @@ export interface ErrorRouteFilters {
   until?: string;
 }
 
-export type PrimaryArea = "overview" | "workflows" | "runs" | "insight";
+export type PrimaryArea = "overview" | "factory" | "workflows" | "runs" | "insight";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -82,6 +94,15 @@ export function parseRoute(hash = window.location.hash): Route {
   if (area === "insight") {
     return { page: "insight" };
   }
+  if (area === "factory") {
+    const scope: FactoryRouteScope = {
+      gaggle: optionalQuery(search, "gaggle"),
+      workflow: optionalQuery(search, "workflow"),
+      lens: lensQuery(search),
+      layout: layoutQuery(search),
+    };
+    return Object.values(scope).some(Boolean) ? { page: "factory", scope } : { page: "factory" };
+  }
   return { page: "overview" };
 }
 
@@ -118,6 +139,16 @@ export function routeHash(route: Route): string {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/errors${suffix}`;
   }
+  if (route.page === "factory") {
+    const search = new URLSearchParams();
+    for (const [name, value] of Object.entries(route.scope ?? {})) {
+      if (value) {
+        search.set(name, value);
+      }
+    }
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return `#/factory${suffix}`;
+  }
   return `#/${route.page}`;
 }
 
@@ -153,6 +184,18 @@ function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
     value === "other"
     ? value
     : undefined;
+}
+
+/** An unrecognised lens falls back to the default rather than rendering nothing. */
+function lensQuery(search: URLSearchParams): FactoryLens | undefined {
+  const value = optionalQuery(search, "lens");
+  return isFactoryLens(value) ? value : undefined;
+}
+
+/** Same contract for layout: an unknown value falls back to the default. */
+function layoutQuery(search: URLSearchParams): FactoryLayout | undefined {
+  const value = optionalQuery(search, "layout");
+  return isFactoryLayout(value) ? value : undefined;
 }
 
 function populationQuery(search: URLSearchParams): StagePopulationFilter | undefined {

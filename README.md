@@ -40,6 +40,28 @@ Quarantined paths stay in-tree, compiling, and status-bannered — they are the
 documented tier-3 drop-in points (`docs/ARCHITECTURE.md §10`), not dead code.
 See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
+## Factory Floor
+
+Factory Floor is the portal's operations view. It is under active development. It maps
+configured workflows, stages, active runs, and goobers into a live plant without
+simulated work.
+
+It offers two layouts over the same live model, chosen by a toggle on the page.
+**Lines** is the precise topology: declared stages in graph order with every
+edge, outcome, and terminal. **Plant** is the boss's-window overview: one
+polished isometric factory with production-zone callouts, real stage machines,
+work crates, alarms, and posted goobers. The complete plant scales to the
+available viewport instead of becoming a scrollable map. Switching layout
+changes only how the floor is drawn, never what is read.
+
+![Factory Floor line layout showing synthetic workflow topology](docs/images/factory-floor-lines.png)
+
+![Factory Floor plant layout showing the live boss's-window factory](docs/images/factory-floor-plant.png)
+
+See the [Factory Floor read-model design](docs/design/factory-floor.md) for data
+sources, safe fields, failure behavior, the layout contract, and the proposed
+future read endpoint.
+
 ## Go module
 
 - Module path: `github.com/goobers/goobers`
