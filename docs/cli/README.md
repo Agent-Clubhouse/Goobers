@@ -128,6 +128,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
+| [`goobers pr-comment-watch`](#goobers-pr-comment-watch) | label open goober PRs carrying unaddressed human comments (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
@@ -1641,6 +1642,36 @@ Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
 ~~~console
 $ goobers pr-claim
 $ goobers pr-claim --release
+~~~
+
+## `goobers pr-comment-watch`
+
+label open goober PRs carrying unaddressed human comments (a workflow stage)
+
+~~~text
+Usage: goobers pr-comment-watch [path]
+
+Scan open goober-authored PRs (head under the gaggle branch namespace)
+and label any whose newest human comment is newer than the bot's own
+newest comment with goobers:needs-remediation, so pr-remediation updates
+that PR in place. The bot identity is the token's own login
+(AuthenticatedLogin) — a dedicated bot account is required for signal;
+with a shared human identity the stage never fires. Comments landing
+mid-remediation after the brief snapshot can be masked by the bot's
+response comment until the human comments again (accepted v1 limit).
+
+Inputs: maxPullRequests (default 20), headPrefixes (default the branch
+namespace), base (default the gaggle base branch), excludeLabels,
+excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
+resultFile (default comment-watch-result.json).
+Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr-comment-watch
 ~~~
 
 ## `goobers pr-select`

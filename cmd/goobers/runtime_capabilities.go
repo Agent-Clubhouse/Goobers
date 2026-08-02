@@ -524,6 +524,10 @@ func init() {
 			withSynopsis(synopsisByID["issue-close-out"]).
 			withHelp("comment + close out the claimed issue (a workflow stage)", issueCloseOutHelp).
 			withExamples("goobers issue-close-out"),
+		stageCommand("pr-comment-watch", apicontract.ActionWorkflowExecution, runPRCommentWatch).
+			withSynopsis(synopsisByID["pr-comment-watch"]).
+			withHelp("label open goober PRs carrying unaddressed human comments (a workflow stage)", prCommentWatchHelp).
+			withExamples("goobers pr-comment-watch"),
 		stageCommand("set-milestone", apicontract.ActionWorkflowExecution, runSetMilestone).
 			withSynopsis(synopsisByID["set-milestone"]).
 			withHelp("assign an existing milestone to an issue (a workflow stage)", setMilestoneHelp).
