@@ -161,11 +161,14 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-022 (MUST, Shipped):** The election policy MUST be a **workflow-
   configurable seam** (#834): `fifo` (lowest PR number — default) and `newest`
   ship as pure policies; cluster-data policies (`most-blockers`,
-  `fewest-overlaps`, #1028/#1029) resolve from the live open-PR set. An
-  unknown policy name falls back to `fifo` with a logged warning, never a
-  pipeline failure. `elect-lander` and `apply-verdict` MUST be configured with
-  the **same** policy and MUST derive identical decisions from identical
-  inputs (a pinned test enforces agreement).
+  `fewest-overlaps`, #1028/#1029) resolve from the live open-PR set; `race`
+  (#2268) is a third pure policy that elects unconditionally, for a dedicated
+  fast-track workflow lane that must not couple a defect-free PR's landing
+  speed to sibling sequencing at all. An unknown policy name falls back to
+  `fifo` with a logged warning, never a pipeline failure. `elect-lander` and
+  `apply-verdict` MUST be configured with the **same** policy and MUST derive
+  identical decisions from identical inputs (a pinned test enforces
+  agreement).
 - **PRL-023 (MUST, Shipped):** Election means "those siblings stop counting as
   blockers", **not** a separate merge authority: the crowned lander's verdict
   is resolved into a **derived, published `pass`** (rationale stating the
