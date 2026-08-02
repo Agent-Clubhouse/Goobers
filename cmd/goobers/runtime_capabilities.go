@@ -465,6 +465,10 @@ func init() {
 			withSynopsis(synopsisByID["backlog-query"]).
 			withHelp("query/claim one eligible backlog item (a workflow stage)", backlogQueryHelp).
 			withExamples("goobers backlog-query", "goobers backlog-query --claim"),
+		command("select-source", apicontract.ActionWorkflowExecution, runSelectSource).
+			withSynopsis(synopsisByID["select-source"]).
+			withHelp("select and claim an unconsumed L6 decomposition disposition (a workflow stage)", selectSourceHelp).
+			withExamples("goobers select-source"),
 		command("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).

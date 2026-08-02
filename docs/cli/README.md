@@ -93,6 +93,7 @@
 | [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
 | [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
 | [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
+| [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
 | [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
@@ -2164,6 +2165,32 @@ kind or output error, 2 = usage error.
 $ goobers schema --list
 $ goobers schema workflow
 $ goobers schema --human goober
+~~~
+
+## `goobers select-source`
+
+select and claim an unconsumed L6 decomposition disposition (a workflow stage)
+
+~~~text
+Usage: goobers select-source [path]
+
+select-source is the decomposition workflow's `select-source` stage
+(docs/design/decomposition-workflow.md §3.2, DEC-1). It scans escalated
+runs for an unconsumed, non-retryable ISSUE_OVER_SCOPE/NEEDS_DECOMPOSITION
+disposition (#415), resolves the oldest eligible one's claimed parent issue,
+and — if it is still open, maintainer-approved, not already claimed or
+decomposed — claims it in the local claim ledger and writes the immutable
+selection artifact to the declared result file.
+
+Exit codes: 0 = a source was selected (or none was eligible — a no-work
+result, not an error) / 1 = business error (provider/credential/config
+error) / 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers select-source
 ~~~
 
 ## `goobers self-update`

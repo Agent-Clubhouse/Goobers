@@ -62,6 +62,7 @@ var synopsisByID = map[string]string{
 	"backlog-assignment":     "  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)\n",
 	"backlog-health":         "  goobers backlog-health                 snapshot ready-pool depth and age (a workflow stage)\n",
 	"backlog-query":          "  goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)\n",
+	"select-source":          "  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)\n",
 	"reconcile-branches":     "  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]\n                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)\n",
 	"push-branch":            "  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)\n",
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
