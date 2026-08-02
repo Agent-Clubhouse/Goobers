@@ -296,6 +296,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
 	}
+	if override, ok := latestActiveGateOverride(events); ok {
+		switch override.Target {
+		case journal.TargetComplete, workflow.TerminalComplete:
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, override.Gate, 0)
+		case workflow.TargetAbort:
+			return r.finish(in.RunID, jr, journal.PhaseAborted, override.Gate, 0)
+		case workflow.TargetEscalate:
+			return r.finish(in.RunID, jr, journal.PhaseEscalated, override.Gate, 0)
+		}
+	}
 	if resumed, ok := latestRunResume(events); ok &&
 		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
 		return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
@@ -636,7 +646,7 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 			return humanGateProgress{gate: g.Name, pauseSeq: event.Seq, waiting: true}
 		case journal.EventGateStarted,
 			journal.EventStageStarted, journal.EventStageFinished,
-			journal.EventRunResumed, journal.EventRunFinished:
+			journal.EventRunResumed, journal.EventGateOverridden, journal.EventRunFinished:
 			return humanGateProgress{}
 		}
 	}
@@ -645,7 +655,7 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 
 func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed {
+		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
 			return events[i+1:], events[i].Target
 		}
 	}
@@ -654,8 +664,20 @@ func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
 
 func latestRunResume(events []journal.Event) (journal.Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed {
+		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
 			return events[i], true
+		}
+	}
+	return journal.Event{}, false
+}
+
+func latestActiveGateOverride(events []journal.Event) (journal.Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case journal.EventGateOverridden:
+			return events[i], true
+		case journal.EventRunFinished:
+			return journal.Event{}, false
 		}
 	}
 	return journal.Event{}, false

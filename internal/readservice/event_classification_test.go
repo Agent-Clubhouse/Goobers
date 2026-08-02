@@ -24,6 +24,7 @@ func TestProjectEventClassifiesEveryKnownEventType(t *testing.T) {
 		{event: journal.Event{Type: journal.EventGateStarted}, category: RunEventBookkeeping},
 		{event: journal.Event{Type: journal.EventGatePaused}, category: RunEventTransition, chapter: true},
 		{event: journal.Event{Type: journal.EventGateEvaluated}, category: RunEventDecision, chapter: true},
+		{event: journal.Event{Type: journal.EventGateOverridden}, category: RunEventDecision, chapter: true},
 		{event: journal.Event{Type: journal.EventArtifactRecorded}, category: RunEventEvidence},
 		{event: journal.Event{Type: journal.EventSpanRecorded}, category: RunEventEvidence},
 		{event: journal.Event{Type: journal.EventInputSnapshot}, category: RunEventEvidence},

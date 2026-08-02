@@ -297,6 +297,7 @@ func completeJournalEvent() journal.Event {
 		AttemptClass:        journal.AttemptPolicy,
 		Actor:               "maintainer@example.com",
 		InstructionAddendum: "Reuse the existing parser.",
+		Rationale:           "The nondeterministic result was manually reviewed.",
 		Gate:                "review",
 		Verdict:             "needs-changes",
 		Target:              "implement",

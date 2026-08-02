@@ -241,7 +241,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		}
 
 		switch event.Type {
-		case journal.EventRunResumed:
+		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
 			row.Phase = journal.PhaseRunning
