@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:8080";
@@ -25,6 +25,7 @@ export function createViteConfig(environment: PortalEnvironment = process.env) {
     test: {
       css: true,
       environment: "jsdom",
+      exclude: [...configDefaults.exclude, "e2e/**"],
       globals: true,
       setupFiles: "./src/test/setup.ts",
     },
