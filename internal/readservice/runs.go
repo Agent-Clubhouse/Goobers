@@ -1534,6 +1534,9 @@ func summarizeRunForStage(
 			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
 				currentStage = queue
 			}
+			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+				currentStage = suggestion
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil
@@ -1562,7 +1565,9 @@ func summarizeRunForStage(
 			phase = journal.RunPhase(event.Status)
 			finished := event.Time
 			finishedAt = &finished
-			currentStage = ""
+			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+				currentStage = ""
+			}
 		}
 	}
 
