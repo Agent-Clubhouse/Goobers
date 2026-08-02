@@ -38,7 +38,7 @@ const configShowHelp = "Usage: goobers config show [--json] [path]\n\n" +
 
 const configDiffHelp = "Usage: goobers config diff [--against <canonical-root>] [instance-root]\n\n" +
 	"Compare the active workflows under <instance-root>/config with a canonical\n" +
-	"config source tree. The canonical root defaults to ./selfhost; use --against\n" +
+	"config source tree. The canonical root defaults to ./reference-workflows; use --against\n" +
 	"when running outside the Goobers source checkout or comparing another set.\n\n" +
 	"Schedule, maxConcurrentRuns, maxRunsPerHour, maxRunsPerDay, maxOpenPRs,\n" +
 	"and trigger presence (enablement) are operational tuning: they are printed\n" +
@@ -182,7 +182,7 @@ func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
 func runConfigDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("config diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	against := fs.String("against", "selfhost", "canonical config source root")
+	against := fs.String("against", "reference-workflows", "canonical config source root")
 	fs.Usage = helpUsage(stderr, "config diff")
 	if err := fs.Parse(args); err != nil {
 		return 2

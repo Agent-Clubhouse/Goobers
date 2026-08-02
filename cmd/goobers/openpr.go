@@ -162,7 +162,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
 	// by default. When set, every file this run's branch changes must resolve
 	// into the SAME single declared action root (the comma/newline
-	// `actionRoots` input, e.g. "selfhost,skills") — a skill-authoring action
+	// `actionRoots` input, e.g. "reference-workflows,skills") — a skill-authoring action
 	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
 	// CLOSED before the PR opens (configboundary.ConfineExclusive).
 	if providerInput("confineToActionRoots", "") == "true" {

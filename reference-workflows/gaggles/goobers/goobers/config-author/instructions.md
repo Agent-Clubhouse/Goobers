@@ -22,7 +22,7 @@ then `open-pr`, separate deterministic stages, do that).
    context). Treat it as the scope of this run — implement the one change
    it names, not a broader cleanup.
 2. Locate the exact config file(s) the change touches under this
-   instance's configured config root (`selfhost/` on this dogfood
+   instance's configured config root (`reference-workflows/` on this dogfood
    instance — never assume a hardcoded `config/`; if you are ever unsure
    what the configured root is, stop and fail rather than guess). The
    Tutor's proposals span the full config surface (TUT-011); make whichever

@@ -101,7 +101,7 @@ func (g *remediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (a
 // synthetic re-statement of it that could drift away from the YAML silently.
 func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -740,7 +740,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 
 func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
 	if err != nil {
 		t.Fatalf("read implementation.yaml: %v", err)

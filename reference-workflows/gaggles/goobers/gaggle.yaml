@@ -21,4 +21,4 @@ spec:
       - goobers
     connectionRef: goobers-repo-token
   isolation:
-    namespace: gaggle-goobers-selfhost
+    namespace: gaggle-goobers-reference-workflows

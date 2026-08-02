@@ -189,7 +189,7 @@ func init() {
 			runConfig,
 			subcommand("config diff", "diff", apicontract.ActionConfigTime, runConfigDiff).
 				withHelp("compare active workflows with canonical definitions", configDiffHelp).
-				withExamples("goobers config diff ./instance", "goobers config diff --against ./selfhost ./instance"),
+				withExamples("goobers config diff ./instance", "goobers config diff --against ./reference-workflows ./instance"),
 			subcommand("config materialize", "materialize", apicontract.ActionConfigTime, runConfigMaterialize).
 				withHelp("apply the recorded checked-in source to the runtime instance", configMaterializeHelp).
 				withExamples("goobers config materialize", "goobers config materialize ./instance"),

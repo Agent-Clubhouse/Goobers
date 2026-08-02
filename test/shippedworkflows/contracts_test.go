@@ -103,7 +103,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "selfhost", path: filepath.Join(root, "selfhost")},
+		{name: "reference-workflows", path: filepath.Join(root, "reference-workflows")},
 		{name: "config-examples", path: filepath.Join(root, "config-examples")},
 		{name: "ios-simulator", path: filepath.Join(root, "examples", "ios-simulator")},
 	}
@@ -204,7 +204,7 @@ func captureImplementationEvidence(t *testing.T, config, workflowName, scenario,
 	t.Helper()
 	evidenceDir := os.Getenv(contractEvidenceDir)
 	if evidenceDir == "" ||
-		config != "selfhost" ||
+		config != "reference-workflows" ||
 		workflowName != "goobers/implementation" ||
 		scenario != "01_query-backlog_next" {
 		return

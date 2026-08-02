@@ -133,7 +133,7 @@ Close the loop, conservatively:
   incident forensics (#797-class questions become answerable).
 - Prerequisite for mixed-mode actor classification (#805) — you cannot classify actors
   while the daemon shares the operator's identity.
-- Migration: identity is configuration (`instance.yaml` credential refs); selfhost
+- Migration: identity is configuration (`instance.yaml` credential refs); reference-workflows
   migrates first; single-token remains supported for tier-1 friction-free start.
 
 ## 4. Phasing & dependencies
@@ -150,7 +150,7 @@ watched round with the run-watch methodology.
 ## 5. Open questions
 
 - **UNOP-Q1:** Self-update source of truth — git main of the instance's own product repo,
-  or tagged releases only? (Selfhost wants main; adopters want releases. Policy knob,
+  or tagged releases only? (Dogfood wants main; adopters want releases. Policy knob,
   but which is default?)
 - **UNOP-Q2:** GitHub App vs PAT for the daemon identity at tier 1 — is App setup
   friction acceptable for solo builders, or does the tier-1 default stay single-token

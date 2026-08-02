@@ -3,7 +3,7 @@
 This guide takes a GitHub repository that has never used Goobers through one
 curation run and one implementation pull request. It also shows how to add a
 second gaggle to the same local instance. It is the repository-neutral version
-of the [self-hosting runbook](../../selfhost/README.md).
+of the [self-hosting runbook](../../reference-workflows/README.md).
 
 The guide uses the complete
 [`config-examples/`](../../config-examples/) definitions as a starting point,

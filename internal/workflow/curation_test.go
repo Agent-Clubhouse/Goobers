@@ -199,7 +199,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -225,7 +225,7 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 func TestCuratorInstructionsDefineContinuousResweep(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -250,7 +250,7 @@ func TestCuratorInstructionsDefineContinuousResweep(t *testing.T) {
 func TestCuratorActionOutputsDelegateDeterministicCounts(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {

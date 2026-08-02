@@ -68,7 +68,7 @@ definitions but never rewrites them as part of executing a workflow.
 The left side defines what may run: gaggles, agents, workflows, triggers,
 stages, gates, capabilities, and instructions. It can be a `config/` directory
 inside the instance, a checkout of a separate config repository, or a
-repo-relative subtree such as this project's `selfhost/` dogfood config.
+repo-relative subtree such as this project's `reference-workflows/` dogfood config.
 Use [Choose where an instance and its config live](../guides/instance-placement.md)
 to select among those layouts. The instance root and its runtime state stay
 outside every target repository in all three cases.
@@ -124,7 +124,7 @@ edit the active definitions in place:
 The Tutor follows this same rule for self-improvement. Before its `open-pr`
 stage can open a pull request, Goobers verifies that every changed path is
 inside the configured config root and fails closed otherwise. In a same-repo
-layout such as `selfhost/`, that root must be a non-empty subtree and should be
+layout such as `reference-workflows/`, that root must be a non-empty subtree and should be
 protected by CODEOWNERS and branch rules. A separate config repository makes
 the permission boundary stronger because its credential cannot reach platform
 code.

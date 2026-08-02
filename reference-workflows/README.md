@@ -1,4 +1,4 @@
-# The Goobers self-hosting instance (`selfhost/`)
+# Goobers reference workflows (`reference-workflows/`)
 
 "Begins to build itself" (`docs/ARCHITECTURE.md` §12, the V0 definition of
 done): this is the **blessed reference config** — a canonical, proven-to-work
@@ -20,7 +20,7 @@ its `config/` at this directory's contents (see below).
 ## What's in here
 
 ```
-selfhost/
+reference-workflows/
   README.md               # this file
   instance.yaml.example    # template instance.yaml (no secrets — copy and use as-is)
   manifest.yaml             # top-level desired state (kind: Manifest)
@@ -72,9 +72,9 @@ config itself, not left to operator discretion:
   the run's git diff and refuses (fail-closed, no PR opened) to touch anything
   outside it — platform code, CI, and credentials are unreachable through it.
   Since Tutor PRs land in this same repo as platform code, `.github/CODEOWNERS`
-  owns `/selfhost/`. Persona/gate-tune changes may follow normal merge-review;
-  workflow structure, skill body, and validation changes require a maintainer
-  and are never auto-merged. Structural credential scoping rides #35. See
+  owns `/reference-workflows/`. Persona/gate-tune changes may follow normal
+  merge-review; workflow structure, skill body, and validation changes require
+  a maintainer and are never auto-merged. Structural credential scoping rides #35. See
   [`docs/guides/tutor-write-boundary.md`](../docs/guides/tutor-write-boundary.md).
 
 ## Tokens and scopes
@@ -120,9 +120,9 @@ admin can touch.
    ```sh
    rm -rf ~/goobers-instance/config
    mkdir -p ~/goobers-instance/config
-   cp -r selfhost/gaggles ~/goobers-instance/config/
-   cp selfhost/manifest.yaml ~/goobers-instance/config/
-   cp selfhost/instance.yaml.example ~/goobers-instance/instance.yaml
+   cp -r reference-workflows/gaggles ~/goobers-instance/config/
+   cp reference-workflows/manifest.yaml ~/goobers-instance/config/
+   cp reference-workflows/instance.yaml.example ~/goobers-instance/instance.yaml
    ```
 
 4. **Sign in and set repository tokens** (never inline them into

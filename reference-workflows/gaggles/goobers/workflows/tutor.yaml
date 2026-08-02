@@ -146,14 +146,14 @@ spec:
         resultFile: "gate-edit.json"
       next: gate-removal-clear
 
-    # Validate the drafted selfhost tree, not the running instance's unchanged
+    # Validate the drafted reference-workflows tree, not the running instance's unchanged
     # config copy. Calling the CLI directly lets the executor substitute the
     # running daemon's exact binary rather than relying on PATH.
     - name: validate-config
       type: deterministic
       goal: Validate the drafted config before publishing the run branch.
       run:
-        command: ["goobers", "validate", "--source-tree", "selfhost"]
+        command: ["goobers", "validate", "--source-tree", "reference-workflows"]
       next: config-valid
 
     # TUT-A2 (#1214, docs/design/tutor-redesign.md §5.1): fail-first
@@ -197,7 +197,7 @@ spec:
         # Persist required structure/skill/validation findings outside this
         # run so later scheduled passes can verify them after CD promotion.
         recordLiveVerification: "true"
-        tutorConfigSource: "selfhost"
+        tutorConfigSource: "reference-workflows"
         # Action-root write-boundary (#104/T4, activated here per #223;
         # widened to skill-body authoring by TUT-A5/#1217): every file this
         # run's branch changed (relative to base) must resolve into the SAME
@@ -211,9 +211,9 @@ spec:
         # Supersedes the earlier confineToConfigRoot/configRoot pair (#223):
         # config authoring is now just one of the two action roots, still
         # hard-siloed to this gaggle's own subtree per TUT-A4 rather than the
-        # whole selfhost instance config.
+        # whole reference-workflows instance config.
         confineToActionRoots: "true"
-        actionRoots: "selfhost/gaggles/goobers,skills"
+        actionRoots: "reference-workflows/gaggles/goobers,skills"
       capabilities:
         - github:pr:write
       policyActions:
