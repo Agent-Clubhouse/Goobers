@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"encoding/json"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -311,22 +310,6 @@ type Event struct {
 	// SkipCount is the consecutive shared-pool refusal count for a
 	// workflow.starved event.
 	SkipCount int `json:"skipCount,omitempty"`
-}
-
-// MarshalJSON preserves an explicit empty target for terminal-complete gate
-// overrides, whose selected workflow target is the empty string.
-func (e Event) MarshalJSON() ([]byte, error) {
-	type event Event
-	if e.Type != EventGateOverridden || e.Target != "" {
-		return json.Marshal(event(e))
-	}
-	return json.Marshal(struct {
-		event
-		Target string `json:"target"`
-	}{
-		event:  event(e),
-		Target: e.Target,
-	})
 }
 
 // BranchStatus is the terminal status of one parallel branch.
