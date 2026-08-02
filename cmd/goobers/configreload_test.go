@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -122,6 +123,324 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
 	if code != 0 {
 		t.Fatalf("last-known-good workflow unavailable after rejected edit: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	address := freeLoopbackAddress(t)
+	setAPIListenAddress(t, root, address)
+
+	sourceRepo := filepath.Join(t.TempDir(), "workflow-source")
+	if err := os.CopyFS(sourceRepo, os.DirFS(layout.ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "init", "-b", "main")
+	runGitT(t, sourceRepo, "config", "user.name", "config source")
+	runGitT(t, sourceRepo, "config", "user.email", "config-source@example.test")
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "initial config")
+
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkflowSource = &instance.WorkflowSource{
+		Kind: instance.WorkflowSourceKindGit,
+		Path: sourceRepo,
+	}
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	daemonDone := make(chan int, 1)
+	go func() {
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, io.Discard)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case code := <-daemonDone:
+			if code != 0 {
+				t.Errorf("daemon exit code = %d", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-started.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup with code %d", code)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
+	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reconciled-implement", 1)
+	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "valid config")
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
+	waitForRunnableWorkflow(t, root, "reconciled-implement")
+
+	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "invalid config")
+	rejected := waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 1)
+	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" {
+		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
+	}
+	waitForRunnableWorkflow(t, root, "reconciled-implement")
+}
+
+func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
+
+	sourceRepo := filepath.Join(t.TempDir(), "workflow-source")
+	if err := os.CopyFS(sourceRepo, os.DirFS(layout.ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "init", "-b", "main")
+	runGitT(t, sourceRepo, "config", "user.name", "config source")
+	runGitT(t, sourceRepo, "config", "user.email", "config-source@example.test")
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "initial config")
+
+	const (
+		secretEnv = "GOOBERS_TEST_CONFIG_RECONCILE_WEBHOOK_SECRET"
+		secret    = "config-reconcile-webhook-secret"
+	)
+	webhookAddress := freeLoopbackAddress(t)
+	t.Setenv(secretEnv, secret)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkflowSource = &instance.WorkflowSource{
+		Kind: instance.WorkflowSourceKindGit,
+		Path: sourceRepo,
+	}
+	cfg.Webhook.Listen = webhookAddress
+	cfg.Webhook.Secret.Env = secretEnv
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	daemonDone := make(chan int, 1)
+	var stderr bytes.Buffer
+	go func() {
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case code := <-daemonDone:
+			if code != 0 {
+				t.Errorf("daemon exit code = %d", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-started.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup with code %d: %s", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
+	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: webhook-reconciled-implement", 1)
+	valid = strings.Replace(
+		valid,
+		"    - type: schedule\n      schedule: \"@every 24h\"\n",
+		"    - type: webhook\n      events: [issues]\n",
+		1,
+	)
+	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "add first webhook trigger")
+
+	if status := postWebhook(t, webhookAddress, secret, "push", "config-push-1", []byte(`{}`)); status != http.StatusAccepted {
+		t.Fatalf("push webhook status = %d, want %d", status, http.StatusAccepted)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
+	waitForRunnableWorkflow(t, root, "webhook-reconciled-implement")
+
+	withoutTrigger := strings.Replace(
+		valid,
+		"    - type: webhook\n      events: [issues]\n",
+		"    - type: schedule\n      schedule: \"@every 24h\"\n",
+		1,
+	)
+	if err := os.WriteFile(workflowPath, []byte(withoutTrigger), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "remove last webhook trigger")
+
+	if status := postWebhook(t, webhookAddress, secret, "push", "config-push-2", []byte(`{}`)); status != http.StatusAccepted {
+		t.Fatalf("push webhook status = %d, want %d", status, http.StatusAccepted)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
+}
+
+func TestConfigSourceReconcilerWakesWithoutPolling(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	wake := make(chan struct{}, 1)
+	reconciled := make(chan struct{}, 2)
+	loop := &configSourceReconciler{
+		source: instance.WorkflowSource{Kind: instance.WorkflowSourceKindLocalDir},
+		errors: &sweepErrorReporter{},
+		wake:   wake,
+		reconcile: func(context.Context, time.Time) error {
+			reconciled <- struct{}{}
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("initial reconcile did not run")
+	}
+
+	wake <- struct{}{}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("hook wake did not reconcile")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("reconciler stopped with error: %v", err)
+	}
+}
+
+// TestConfigSourceReconcilerObservesLinkedWorktreeCommit pins the fix for a
+// bug in watchGitRef: for a linked worktree, ".git" is a file pointing at the
+// per-worktree admin directory (.git/worktrees/<name>), which holds HEAD and
+// the index, but branch refs (refs/heads/..., packed-refs) live in the
+// common Git directory recorded by that admin directory's "commondir" file.
+// Watching only the per-worktree admin directory can observe "git add"
+// staging but misses the ref update a commit finalizes there. configReloadInterval
+// is pinned to an hour so the ticker cannot be the one driving reconciliation:
+// the only way this test's reconcile can fire before it times out is the
+// fsnotify watcher correctly resolving and watching the common directory.
+func TestConfigSourceReconcilerObservesLinkedWorktreeCommit(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	mainRepo := t.TempDir()
+	runGitT(t, mainRepo, "init", "-b", "main")
+	runGitT(t, mainRepo, "config", "user.name", "config source")
+	runGitT(t, mainRepo, "config", "user.email", "config-source@example.test")
+	if err := os.WriteFile(filepath.Join(mainRepo, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, mainRepo, "add", "README.md")
+	runGitT(t, mainRepo, "commit", "-m", "seed")
+
+	worktree := filepath.Join(t.TempDir(), "linked-worktree")
+	runGitT(t, mainRepo, "worktree", "add", "-b", "tracked", worktree, "main")
+
+	// A single commit can fan out into many inotify events on Linux (index
+	// lock create/rename, packed-refs rewrite, loose-ref create, etc. —
+	// macOS's FSEvents backend coalesces far more aggressively), so the
+	// reconcile hook must never block Run's event loop: a blocking send
+	// here deadlocks Run inside the select case that called it, and cancel
+	// can't unstick it because ctx.Done() is only observed back at the
+	// select. Use a generously buffered channel plus a non-blocking send
+	// and drain-then-wait on the receive side instead of counting exact
+	// reconcile calls.
+	reconciled := make(chan struct{}, 64)
+	loop := &configSourceReconciler{
+		source: instance.WorkflowSource{
+			Kind: instance.WorkflowSourceKindGit,
+			Path: worktree,
+			Ref:  "tracked",
+		},
+		errors: &sweepErrorReporter{},
+		wake:   make(chan struct{}),
+		reconcile: func(context.Context, time.Time) error {
+			select {
+			case reconciled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("reconciler did not stop after cancel")
+		}
+	})
+
+	drainReconciled := func() {
+		for {
+			select {
+			case <-reconciled:
+			default:
+				return
+			}
+		}
+	}
+
+	select {
+	case <-reconciled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial reconcile did not run")
+	}
+	// The initial reconcile can be followed by extra watcher-driven signals
+	// from setup (e.g. the watcher's own directory Add calls). Drain them so
+	// the wait below only observes signals caused by the commit itself.
+	drainReconciled()
+
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, worktree, "add", "README.md")
+	runGitT(t, worktree, "commit", "-m", "update in linked worktree")
+
+	select {
+	case <-reconciled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("commit in linked worktree did not trigger a watcher-driven reconcile")
 	}
 }
 
