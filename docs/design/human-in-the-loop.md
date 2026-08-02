@@ -36,8 +36,9 @@ Goal ladder (PO):
   human-triggered `ResumeFromTerminal` primitive for those two phases; the CLI/API action surface that
   invokes it remains separate work. Crash-`Resume` restarts interrupted running segments and preserves
   unresolved human-gate pauses without advancing them.
-- The higher-level intervention actions remain unimplemented: no `goobers approve`/`approvals` (#170),
-  no instruction addendum, no gate-verdict override, no checkout/drive, no access-control seam (#172).
+- The runner implements recorded instruction addenda and nondeterministic gate-verdict overrides,
+  including required operator rationale. The external intervention actions remain unimplemented:
+  no `goobers approve`/`approvals` (#170), no checkout/drive, and no access-control seam (#172).
   The failure *cause* is journaled as an `EventError` but there's no summarized "why it escalated"
   surface (#309).
 - The journal **does** already carry what tier-1 needs: per-stage `Attempt`/`AttemptClass`, gate

@@ -6,6 +6,17 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "seq", "type", "branch", "time"],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "type": { "const": "gate.overridden" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["gate", "verdict", "actor", "rationale", "status", "workflowVersion", "workflowDigest"]
+      }
+    }
+  ],
   "properties": {
     "schema": {
       "description": "Versioned envelope id. A reader branches on this; a newer version is read leniently (unknown fields/types tolerated).",
@@ -32,6 +43,7 @@
         "gate.started",
         "gate.paused",
         "gate.evaluated",
+        "gate.overridden",
         "artifact.recorded",
         "span.recorded",
         "input.snapshot",
@@ -99,7 +111,7 @@
       "x-conformance": "conditional: excluded for stage.heartbeat and when 'infra'"
     },
     "actor": {
-      "description": "Human/operator identity for an auditable intervention such as stage.rerun.requested or run.resumed.",
+      "description": "Human/operator identity for an auditable intervention.",
       "type": "string",
       "minLength": 1,
       "x-conformance": "normative"
@@ -110,13 +122,19 @@
       "minLength": 1,
       "x-conformance": "normative"
     },
+    "rationale": {
+      "description": "Required operator explanation for a gate.overridden intervention.",
+      "type": "string",
+      "minLength": 1,
+      "x-conformance": "normative"
+    },
     "gate": {
-      "description": "Gate name for gate.* events. gate.started and gate.paused are operational bookkeeping excluded from conformance; gate.evaluated is normative.",
+      "description": "Gate name for gate.* events. gate.started and gate.paused are operational bookkeeping excluded from conformance; gate.evaluated and gate.overridden are normative.",
       "type": "string",
       "x-conformance": "normative"
     },
     "verdict": {
-      "description": "Gate decision for gate.evaluated.",
+      "description": "Gate decision for gate.evaluated or gate.overridden.",
       "type": "string",
       "x-conformance": "normative"
     },

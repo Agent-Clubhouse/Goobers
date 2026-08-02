@@ -168,6 +168,18 @@ func TestResumeReopensATerminalRun(t *testing.T) {
 	}
 }
 
+func TestGateOverrideReopensATerminalRun(t *testing.T) {
+	events := append(completedRunEvents(),
+		ev(8, 8*time.Second, journal.EventGateOverridden, func(e *journal.Event) {
+			e.Gate, e.Verdict, e.Target = "review", "needs-changes", "implement"
+		}),
+	)
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	if run.Phase != journal.PhaseRunning || run.Terminal || run.FinishedAt != nil || run.CurrentStage != "implement" {
+		t.Fatalf("run after gate override = %+v, want live at implement", run)
+	}
+}
+
 // TestUnrecognisedTerminalStatusDoesNotCorruptPhase pins the refusal.
 //
 // phase is an indexed, filtered column. Writing an unrecognised terminal status

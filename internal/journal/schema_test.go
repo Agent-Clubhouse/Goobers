@@ -65,6 +65,11 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventGatePaused, Gate: "approval"},
 		{Type: EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated", Escalated: true},
 		{
+			Type: EventGateOverridden, Gate: "review", Verdict: "pass",
+			Actor: "operator@example.test", Rationale: "Reviewed the nondeterministic finding.", Status: string(PhaseEscalated),
+			WorkflowVersion: testIdentity().WorkflowVersion, WorkflowDigest: testIdentity().WorkflowDigest,
+		},
+		{
 			Type: EventRunResumed, Status: string(PhaseEscalated), Target: "impl",
 			Actor: "operator@example.test", WorkflowVersion: testIdentity().WorkflowVersion,
 			WorkflowDigest: testIdentity().WorkflowDigest,
@@ -137,6 +142,7 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"not.a.real.type"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z"}`), // missing type
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"artifact.recorded","ref":{"path":"x","digest":"notasha","size":1}}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","actor":"operator","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 	for i, b := range bad {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {

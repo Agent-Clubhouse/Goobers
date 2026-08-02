@@ -225,7 +225,7 @@ func walkOccurrence(events []journal.Event, branch, occurrence int, depth map[st
 			// parallel.finished (no case handles that event type here) so the
 			// eventual arrival records the correct source.
 			arrive(event.Parallel, event.Seq)
-		case journal.EventGateEvaluated:
+		case journal.EventGateEvaluated, journal.EventGateOverridden:
 			source := position
 			if source == "" {
 				source = event.Gate

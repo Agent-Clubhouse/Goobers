@@ -39,6 +39,9 @@ const (
 	EventGatePaused EventType = "gate.paused"
 	// EventGateEvaluated records a gate verdict and the branch it selected.
 	EventGateEvaluated EventType = "gate.evaluated"
+	// EventGateOverridden records an operator replacing a nondeterministic
+	// gate's verdict with a configured branch, including the required rationale.
+	EventGateOverridden EventType = "gate.overridden"
 	// EventArtifactRecorded records an artifact committed by content digest.
 	EventArtifactRecorded EventType = "artifact.recorded"
 	// EventSpanRecorded records a within-stage trace span (harness transcript,
@@ -203,16 +206,19 @@ type Event struct {
 	// AttemptClass tags why a non-initial attempt exists. Normative iff the
 	// event is not a heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
-	// Actor identifies the human principal that requested an intervention —
-	// a stage.rerun.requested or a run.resumed action. Normative.
+	// Actor identifies the human principal that requested an intervention.
+	// Normative.
 	Actor string `json:"actor,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
-	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
-	// gate.started and gate.paused are excluded as operational state.
+	// Rationale explains why an operator overrode a nondeterministic gate.
+	// Normative.
+	Rationale string `json:"rationale,omitempty"`
+	// Gate is the gate name for gate.* events. Normative on gate.evaluated and
+	// gate.overridden; gate.started and gate.paused are excluded.
 	Gate string `json:"gate,omitempty"`
-	// Verdict is the gate decision for gate.evaluated. Normative.
+	// Verdict is the gate decision for gate.evaluated or gate.overridden.
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state a gate selected or a run.resumed action chose.
 	// Normative.
