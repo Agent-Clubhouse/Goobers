@@ -98,6 +98,14 @@ type RetentionResult struct {
 	Skipped int
 }
 
+// RetentionWriter routes retention mutations through the read model's sole writer.
+type RetentionWriter interface {
+	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
+	RemoveRun(ctx context.Context, runID string) error
+	SetProjectionFloor(ctx context.Context, floor time.Time) error
+	PruneChangeFeed(ctx context.Context, keep int) (int64, error)
+}
+
 // ApplyRetention ages runs out of the projection down to the window's floor.
 //
 // # Ordering
@@ -111,7 +119,12 @@ type RetentionResult struct {
 // The floor advances LAST, after the rows are gone. If it advanced first and the
 // pass then failed, the floor would exclude runs that are still present, and
 // repair would skip them forever as though they had been aged out.
-func (s *Store) ApplyRetention(ctx context.Context, window RetentionWindow, limit int) (RetentionResult, error) {
+func (s *Store) ApplyRetention(
+	ctx context.Context,
+	writer RetentionWriter,
+	window RetentionWindow,
+	limit int,
+) (RetentionResult, error) {
 	var result RetentionResult
 	if !window.Bounded() {
 		// Unbounded: no floor, no tombstones, no removals. Returning early here
@@ -138,18 +151,18 @@ func (s *Store) ApplyRetention(ctx context.Context, window RetentionWindow, limi
 			result.Skipped++
 			continue
 		}
-		if err := s.Tombstone(ctx, row.RunID, row.StartedAt, "retention_window"); err != nil {
+		if err := writer.Tombstone(ctx, row.RunID, row.StartedAt, "retention_window"); err != nil {
 			return result, err
 		}
 		result.Tombstoned++
-		if err := s.RemoveRun(ctx, row.RunID); err != nil {
+		if err := writer.RemoveRun(ctx, row.RunID); err != nil {
 			return result, err
 		}
 		result.AgedOut++
 	}
 
 	// Only advance the floor once this batch is actually gone.
-	if err := s.SetProjectionFloor(ctx, floor); err != nil {
+	if err := writer.SetProjectionFloor(ctx, floor); err != nil {
 		return result, err
 	}
 	return result, nil

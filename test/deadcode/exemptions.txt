@@ -172,11 +172,6 @@ github.com/goobers/goobers/internal/readmodel/conformance.runID # Contract fixtu
 # go STALE and be deleted as each of those lands; a stale entry fails this gate.
 github.com/goobers/goobers/internal/readmodel/intake.PathFor # Resolves intake.db inside an instance directory for every opener.
 
-# Projector observability (#1923). Stats is read by the freshness surface
-# (#1927, Wave 4), which reports projector lag and degraded conditions to the
-# client. Expected to go stale when that lands.
-github.com/goobers/goobers/internal/readmodel/projector.Projector.Stats # Projector counters for the freshness envelope (#1927).
-
 # Repair sweep observability (#1924). Stats feeds the freshness envelope (#1927,
 # Wave 4), which reports sweep cycle time and degraded conditions. Expected to go
 # stale when that lands.

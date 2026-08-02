@@ -18,6 +18,7 @@ import (
 // RetentionLoop applies the projection retention window on a schedule.
 type RetentionLoop struct {
 	store   *Store
+	writer  RetentionWriter
 	window  RetentionWindow
 	options RetentionOptions
 	stats   RetentionStats
@@ -53,7 +54,12 @@ const (
 )
 
 // NewRetentionLoop constructs the loop.
-func NewRetentionLoop(store *Store, window RetentionWindow, options RetentionOptions) *RetentionLoop {
+func NewRetentionLoop(
+	store *Store,
+	writer RetentionWriter,
+	window RetentionWindow,
+	options RetentionOptions,
+) *RetentionLoop {
 	if options.Interval <= 0 {
 		options.Interval = defaultRetentionInterval
 	}
@@ -63,7 +69,7 @@ func NewRetentionLoop(store *Store, window RetentionWindow, options RetentionOpt
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &RetentionLoop{store: store, window: window, options: options}
+	return &RetentionLoop{store: store, writer: writer, window: window, options: options}
 }
 
 // Run applies retention until the context ends.
@@ -104,7 +110,7 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	l.stats.Passes++
 	l.stats.LastPassAt = time.Now().UTC()
 
-	result, err := l.store.ApplyRetention(ctx, l.window, l.options.Batch)
+	result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			l.stats.Failures++
@@ -122,7 +128,7 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	// removal writes a change row, and pruning first would leave exactly those
 	// rows behind while dropping older ones a client might still be resuming
 	// from.
-	pruned, err := l.store.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
+	pruned, err := l.writer.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			l.stats.Failures++
