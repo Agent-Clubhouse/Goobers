@@ -363,7 +363,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testArgs = append(testArgs,
 		"--",
 		"-race",
-		"-timeout", "20m",
+		"-timeout", "30m",
 		"-covermode=atomic",
 		"-coverprofile=coverage.out",
 		"./...",
@@ -371,14 +371,14 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testCheck := check{
 		label:   "test",
 		command: tools.goCommand,
-		// -timeout 20m raises the per-package ceiling above Go's 10m default
+		// -timeout 30m raises the per-package ceiling above Go's 10m default
 		// purely as headroom against macOS hosted-runner contention (#1124):
 		// the cmd/goobers integration package legitimately runs long under a
-		// loaded runner, and a timeout there panics the whole suite. This is
-		// not masking a hang — the affected tests pass locally at high
-		// -count and the OTLP-flush blocking that compounded it is fixed in
-		// this change (telemetry soft-fails an unreachable collector). Normal
-		// runs finish in ~2m, so the higher ceiling never slows a green run.
+		// loaded runner, and a timeout there panics the whole suite. The hermetic
+		// environment also excludes an ambient OTLP collector so unavailable
+		// infrastructure cannot consume this headroom with exporter retries.
+		// Normal runs finish much sooner, so the higher ceiling never slows a
+		// green run.
 		args: testArgs,
 		env: append(
 			append([]string(nil), testEnvironment...),

@@ -104,7 +104,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	wantTestArgs := []string{
 		"run", "./test/hermetic", "--go-command", "custom-go", "--",
-		"-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+		"-race", "-timeout", "30m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
@@ -594,7 +594,7 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 		if current.label != "test" {
 			continue
 		}
-		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./..."
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -covermode=atomic -coverprofile=coverage.out ./..."
 		if args := strings.Join(current.args, " "); args != want {
 			t.Fatalf("timed test args = %q, want %q", args, want)
 		}

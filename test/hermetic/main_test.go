@@ -124,9 +124,16 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 		"GOPRIVATE=example.com",
 		"GOFLAGS=-mod=mod",
 		"CC=ambient-cc",
+		"GOOBERS_OTLP_ENDPOINT=http://127.0.0.1:4317",
+		"GOOBERS_OTLP_INSECURE=true",
 	}, "/isolated/tools", "hermetic-cc")
 
 	values := environmentMap(got)
+	for _, name := range []string{"GOOBERS_OTLP_ENDPOINT", "GOOBERS_OTLP_INSECURE"} {
+		if _, ok := values[name]; ok {
+			t.Errorf("%s leaked into hermetic test environment", name)
+		}
+	}
 	for name, want := range map[string]string{
 		"CC":          "hermetic-cc",
 		"GO":          executableName("go"),
