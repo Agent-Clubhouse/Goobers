@@ -15,7 +15,7 @@ func writeAgedSchedulerEvent(t *testing.T, root string) string {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	line := `{"schema":"goobers.dev/journal/event/v1","seq":1,"time":"2020-01-01T00:00:00Z","type":"trigger.fired","workflow":"a"}` + "\n"
+	line := `{"schema":"goobers.dev/journal/event/v1","seq":1,"time":"2020-01-01T00:00:00Z","type":"tick.skipped","workflow":"a"}` + "\n"
 	path := filepath.Join(schedulerDir, "events.jsonl")
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
