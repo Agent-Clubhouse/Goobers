@@ -296,6 +296,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		invalidResponsesPark.Run.Command[5] != "budget-exhausted" {
 		t.Errorf("park-invalid-finding-responses command = %v, want forced budget-exhausted checkpoint", invalidResponsesPark.Run)
 	}
+	if got := invalidResponsesPark.Inputs["resultFile"]; got != "finding-response-escalation-result.json" {
+		t.Errorf("park-invalid-finding-responses resultFile = %q, want finding-response-escalation-result.json", got)
+	}
 	if len(invalidResponsesPark.PolicyActions) != 2 ||
 		invalidResponsesPark.PolicyActions[0] != "record-remediation-checkpoint" ||
 		invalidResponsesPark.PolicyActions[1] != "escalate-pr" {
@@ -392,6 +395,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if escalatedRelease.Next != TargetEscalate {
 		t.Errorf("release-escalated-claim next = %q, want %q", escalatedRelease.Next, TargetEscalate)
+	}
+	if got := park.Inputs["resultFile"]; got != "reviewer-escalation-result.json" {
+		t.Errorf("park-escalated resultFile = %q, want reviewer-escalation-result.json", got)
 	}
 	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
 		if !containsString(park.ExpectedOutputs, output) {
