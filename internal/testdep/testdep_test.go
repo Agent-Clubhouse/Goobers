@@ -96,6 +96,7 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "copilot", InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)"},
 		{Name: "dirname", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "dotnet", InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)"},
+		{Name: "git", InstallHint: "install Git (Debian/Ubuntu: apt-get install git)"},
 		{Name: "head", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "sh", InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)"},
