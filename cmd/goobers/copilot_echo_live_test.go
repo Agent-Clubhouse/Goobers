@@ -19,6 +19,11 @@ func TestIntegrationCopilotEchoWorkflow(t *testing.T) {
 	testdep.RequireEnv(t, "COPILOT_GITHUB_TOKEN")
 	testdep.Require(t, "copilot", "git")
 
+	profile := t.TempDir()
+	t.Setenv("HOME", profile)
+	t.Setenv("COPILOT_HOME", filepath.Join(profile, ".copilot"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(profile, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(profile, ".local", "share"))
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_copilot_echo_fixture_dummy_token")
 	root := initDemo(t)
 	installCopilotEchoFixture(t, root)
