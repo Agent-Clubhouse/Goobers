@@ -148,6 +148,8 @@ var constBackedEnums = []enumRule{
 	{schema: "goober.schema.json", path: "properties/spec/properties/harness/enum", source: "api/v1alpha1.Harness", want: goConsts("api/v1alpha1/goober_types.go", "Harness")},
 	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/scheme/enum", source: "api/v1alpha1.MCPHeaderScheme", want: goConsts("api/v1alpha1/goober_types.go", "MCPHeaderScheme")},
 	{schema: "gaggle.schema.json", path: "$defs/repoRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
+	{schema: "gaggle.schema.json", path: "$defs/repoRef/properties/checkout/properties/mode/enum", source: "api/v1alpha1.CheckoutMode", want: goConsts("api/v1alpha1/common.go", "CheckoutMode")},
+	{schema: "gaggle.schema.json", path: "$defs/repoRef/properties/checkout/properties/cleanPolicy/enum", source: "api/v1alpha1.CleanPolicy", want: goConsts("api/v1alpha1/common.go", "CleanPolicy")},
 	{schema: "gaggle.schema.json", path: "$defs/backlogRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/backlogItem/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/repoRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
