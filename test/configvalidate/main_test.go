@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestValidateCheckedInTreesRunsEveryTreeWithoutPollutingRepository(t *testing.T) {
@@ -273,7 +275,7 @@ func moduleRoot(t *testing.T) string {
 
 func initGitRepository(t *testing.T, root string) {
 	t.Helper()
-	cmd := exec.Command("git", "init", "-q", root)
+	cmd := testgit.Command("init", "-q", root)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
 	}

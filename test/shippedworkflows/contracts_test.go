@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -30,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -1827,11 +1827,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 func runGitCommand(dir string, args ...string) error {
-	command := exec.Command("git", args...)
+	command := testgit.Command(args...)
 	if dir != "" {
 		command.Dir = dir
 	}
-	command.Env = append(os.Environ(),
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",

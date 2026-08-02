@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/base64"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -43,7 +43,7 @@ func runGitT(t *testing.T, dir string, args ...string) {
 
 func runGitOutputT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -57,7 +57,7 @@ func runGitOutputT(t *testing.T, dir string, args ...string) string {
 // origin, not just the worktree's local git state.
 func branchExistsOnOrigin(t *testing.T, originDir, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "rev-parse", "--verify", "refs/heads/"+branch)
+	cmd := testgit.Command("-c", "safe.bareRepository=all", "rev-parse", "--verify", "refs/heads/"+branch)
 	cmd.Dir = originDir
 	return cmd.Run() == nil
 }

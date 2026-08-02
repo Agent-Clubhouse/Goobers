@@ -1,9 +1,10 @@
 package main
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // TestGitFsyncDisabledForSuite is #811's guard: TestMain must leave every git
@@ -15,7 +16,7 @@ import (
 // set. If git is unavailable the rest of the suite can't run either, so a
 // missing binary is a hard failure, not a skip.
 func TestGitFsyncDisabledForSuite(t *testing.T) {
-	out, err := exec.Command("git", "config", "--get", "core.fsync").CombinedOutput()
+	out, err := testgit.AmbientCommand("config", "--get", "core.fsync").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git config --get core.fsync: %v\n%s", err, out)
 	}

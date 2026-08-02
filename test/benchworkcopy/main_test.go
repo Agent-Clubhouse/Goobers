@@ -6,16 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // fixtureRefs returns `git for-each-ref` output for the repo at dir — the
 // content-hash surface the determinism test compares (every ref name and the
 // object id it points at).
 func fixtureRefs(ctx context.Context, dir string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname) %(objectname)")
+	cmd := testgit.CommandContext(ctx, "for-each-ref", "--format=%(refname) %(objectname)")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
