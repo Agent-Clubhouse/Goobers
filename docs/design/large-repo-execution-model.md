@@ -445,8 +445,9 @@ tier 0:
    `-ref-<name>` reference-repo variant) to a fixed short token for the *directory name*
    only — the full RunID stays in the marker file and journal for traceability, only the
    filesystem path shortens. This is the single largest Goobers-controlled contributor to
-   the ~131-char fixed prefix (§3.4) and reclaims meaningful budget with no behavior change
-   visible to a stage.
+   the ~131-char fixed prefix (§3.4). The implemented `wt-` plus 96-bit SHA-256 token is
+   always 27 characters, replacing the roughly 50-character trace-ID-plus-stage segment
+   and reclaiming about 23 characters with no behavior change visible to a stage.
 2. **A loud preflight, not a silent failure deep in a build.** Before provisioning a
    workspace or worktree, compute the worst-case path length the repo's checkout could
    reach (needs a configured or measured ceiling per repo — see §10's benchmark-harness

@@ -170,7 +170,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 	}()
 
-	path := filepath.Join(m.runsDirForKey(key), opts.RunID)
+	directory := worktreeDirectoryName(opts.RunID)
+	path := filepath.Join(m.runsDirForKey(key), directory)
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
 		// worktree at this exact key can only be a previous attempt of the
@@ -182,7 +183,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// concurrent second attempt of the same (run, stage) never happens
 		// — so it is always safe to clear it and start fresh rather than
 		// refusing forever until an operator does disk surgery.
-		if err := m.forceClear(ctx, key, path); err != nil {
+		if err := m.forceClear(ctx, key, path, opts.RunID); err != nil {
 			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -217,6 +218,30 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
 	}
+
+	pid := os.Getpid()
+	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
+	mk := marker{
+		RunID:        opts.RunID,
+		OwnerRunID:   opts.OwnerRunID,
+		Directory:    directory,
+		Branch:       opts.Branch,
+		PID:          pid,
+		PIDStartedAt: startedAt,
+		CreatedAt:    time.Now(),
+		Status:       statusActive,
+	}
+	// Persist ownership before git creates the directory so a crash during
+	// worktree add never leaves an opaque hash that cleanup cannot resolve.
+	ownershipPath := m.ownershipPath(key, directory)
+	if err := writeMarker(ownershipPath, mk); err != nil {
+		return nil, fmt.Errorf("worktree: persist ownership for run %s: %w", opts.RunID, err)
+	}
+	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+		_ = os.Remove(ownershipPath)
+		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
+	}
+
 	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
 	if partialMirror {
 		// Materializing a tree from a blobless mirror fetches missing blobs
@@ -262,7 +287,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 		if mergeErr != nil {
 			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
-			cleanupErr := m.forceClear(ctx, key, path)
+			cleanupErr := m.forceClear(ctx, key, path, opts.RunID)
 			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, cleanupErr)
 		}
 	}
@@ -277,21 +302,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, fmt.Errorf("worktree: inspect symlinks for run %s: %w", opts.RunID, err)
 	}
 
-	pid := os.Getpid()
-	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
-	mk := marker{
-		RunID:        opts.RunID,
-		OwnerRunID:   opts.OwnerRunID,
-		Branch:       opts.Branch,
-		StartRef:     startRef,
-		PID:          pid,
-		PIDStartedAt: startedAt,
-		CreatedAt:    time.Now(),
-		Status:       statusActive,
-	}
+	mk.StartRef = startRef
 	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
-		// Without a marker, Reap can never distinguish this worktree from an
-		// orphan, so don't leave it behind half-registered.
+		// Do not expose a worktree whose complete marker could not be
+		// persisted. The pre-provision ownership records remain recoverable.
 		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
@@ -497,9 +511,8 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 // git's record but left the directory), falls back to removing the
 // directory directly and pruning git's administrative state. The marker is
 // cleared too — Create writes a fresh one immediately after.
-func (m *Manager) forceClear(ctx context.Context, key, path string) error {
+func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error {
 	repoDir := m.repoDirForKey(key)
-	runID := filepath.Base(path)
 	markerPath := m.markerPath(key, runID)
 	mk, markerErr := readMarker(markerPath)
 	switch {
@@ -522,6 +535,9 @@ func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale marker: %w", err)
+	}
+	if err := os.Remove(m.ownershipPath(key, filepath.Base(path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale ownership record: %w", err)
 	}
 	return nil
 }
@@ -588,6 +604,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: unregister run %s: %w", wt.RunID, err)
+	}
+	if err := os.Remove(wt.manager.ownershipPath(wt.key, filepath.Base(wt.Path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: remove ownership record for run %s: %w", wt.RunID, err)
 	}
 	return nil
 }

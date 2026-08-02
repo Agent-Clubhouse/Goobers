@@ -187,16 +187,37 @@ func markerlessWorktreeCount(runsDir, markersDir string) (int, error) {
 		return 0, fmt.Errorf("worktree: list usage runs %s: %w", runsDir, err)
 	}
 
-	var count int
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	markerEntries, err := os.ReadDir(markersDir)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("worktree: list usage markers %s: %w", markersDir, err)
+	}
+	seen := make(map[string]bool, len(markerEntries))
+	for _, entry := range markerEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(markersDir, entry.Name()+".json")); os.IsNotExist(err) {
-			count++
-		} else if err != nil {
-			return count, fmt.Errorf("worktree: inspect usage marker for %s: %w", entry.Name(), err)
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		mk, err := readMarker(filepath.Join(markersDir, entry.Name()))
+		if err != nil {
+			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
+			continue
 		}
+		directory, err := mk.directoryName()
+		if err != nil {
+			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
+			continue
+		}
+		seen[directory] = true
+	}
+
+	var count int
+	for _, entry := range entries {
+		if !entry.IsDir() || seen[entry.Name()] {
+			continue
+		}
+		count++
 	}
 	return count, nil
 }

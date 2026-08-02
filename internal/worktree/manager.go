@@ -198,6 +198,16 @@ func repoKey(repoURL string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+const worktreeDirectoryHashBytes = 12
+
+// worktreeDirectoryName bounds the run-specific checkout path segment at 27
+// characters ("wt-" plus 96 hash bits), down from roughly 50 characters for a
+// typical trace ID plus stage name.
+func worktreeDirectoryName(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return "wt-" + hex.EncodeToString(sum[:worktreeDirectoryHashBytes])
+}
+
 func (m *Manager) repoDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "repo.git")
 }
@@ -208,6 +218,10 @@ func (m *Manager) runsDirForKey(key string) string {
 
 func (m *Manager) markersDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "markers")
+}
+
+func (m *Manager) ownershipPath(key, directory string) string {
+	return filepath.Join(m.Root, key, "owners", directory+".json")
 }
 
 func (m *Manager) markerPath(key, runID string) string {
