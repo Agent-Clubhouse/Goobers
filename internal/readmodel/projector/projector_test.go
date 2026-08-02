@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readmodel/repair"
 )
 
 // fakeStore records commit order, which is the property most of these tests are
@@ -133,6 +134,44 @@ func (f *fakeStore) Tombstone(
 	return nil
 }
 
+func (f *fakeStore) SetProjectionFloor(_ context.Context, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "projection-floor")
+	return nil
+}
+
+func (f *fakeStore) PruneChangeFeed(_ context.Context, _ int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "prune-change-feed")
+	return 0, nil
+}
+
+func (f *fakeStore) SweepCursor(context.Context) (readmodel.SweepCursor, error) {
+	return readmodel.SweepCursor{}, nil
+}
+
+func (f *fakeStore) ProjectionFloor(context.Context) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func (f *fakeStore) IsUnpublished(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeStore) Tombstoned(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeStore) ProjectedRunIDsBefore(
+	context.Context,
+	time.Time,
+	int,
+) ([]readmodel.RunRow, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) commitOrder() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -155,15 +194,25 @@ func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
 	go func() { upserted <- p.UpsertRun(ctx, projectionFor("run-a", 1)) }()
 	waitFor(t, func() bool { return atomic.LoadInt32(&store.inFlight) == 1 })
 
-	saved := make(chan error, 1)
-	go func() { saved <- p.SaveSweepCursor(ctx, readmodel.SweepCursor{AfterName: "run-a"}) }()
+	swept := make(chan error, 1)
+	sweeper := repair.New(store, p, nil, repair.Options{
+		RunsDirs:  []string{t.TempDir()},
+		BatchSize: 1,
+	})
+	go func() { swept <- sweeper.Step(ctx) }()
+
+	select {
+	case err := <-swept:
+		t.Fatalf("repair completed while projection commit was blocked: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(store.hold)
 
 	if err := <-upserted; err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := <-saved; err != nil {
-		t.Fatalf("save sweep cursor: %v", err)
+	if err := <-swept; err != nil {
+		t.Fatalf("repair sweep: %v", err)
 	}
 	if got := atomic.LoadInt32(&store.maxInFlight); got != 1 {
 		t.Errorf("observed %d simultaneous projector and repair writes; repair bypassed "+

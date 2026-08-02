@@ -69,7 +69,7 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	if cfg != nil {
 		window = readmodel.RetentionDays(cfg.Retention.ProjectionFullFidelityDays)
 	}
-	retention := readmodel.NewRetentionLoop(store, window, readmodel.RetentionOptions{})
+	retention := readmodel.NewRetentionLoop(store, p, window, readmodel.RetentionOptions{})
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	go retention.Run(sweepCtx)

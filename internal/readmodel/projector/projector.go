@@ -62,6 +62,8 @@ type Store interface {
 	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
 	ClearUnpublished(ctx context.Context, runID string) error
 	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
+	SetProjectionFloor(ctx context.Context, floor time.Time) error
+	PruneChangeFeed(ctx context.Context, keep int) (int64, error)
 }
 
 // Projection is the unit the projector commits. Aliased so callers and tests do
@@ -308,6 +310,24 @@ func (p *Projector) Tombstone(
 	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
 		return store.Tombstone(ctx, runID, startedAt, reason)
 	}})
+}
+
+// SetProjectionFloor advances retention through the sole-writer loop.
+func (p *Projector) SetProjectionFloor(ctx context.Context, floor time.Time) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.SetProjectionFloor(ctx, floor)
+	}})
+}
+
+// PruneChangeFeed removes expired feed entries through the sole-writer loop.
+func (p *Projector) PruneChangeFeed(ctx context.Context, keep int) (int64, error) {
+	var pruned int64
+	err := p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		var err error
+		pruned, err = store.PruneChangeFeed(ctx, keep)
+		return err
+	}})
+	return pruned, err
 }
 
 // schedule drains intake on an interval.
