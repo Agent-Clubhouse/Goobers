@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -250,12 +251,21 @@ type RunOutcome struct {
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {
-	Selector       EscalationSelector `json:"selector"`
-	SelectedBranch string             `json:"selectedBranch,omitempty"`
-	RepassCount    int                `json:"repassCount"`
-	RetryCount     int                `json:"retryCount"`
-	TerminalReason string             `json:"terminalReason,omitempty"`
-	CausalEventSeq uint64             `json:"causalEventSeq,omitempty"`
+	Selector       EscalationSelector     `json:"selector"`
+	SelectedBranch string                 `json:"selectedBranch,omitempty"`
+	RepassCount    int                    `json:"repassCount"`
+	RetryCount     int                    `json:"retryCount"`
+	TerminalReason string                 `json:"terminalReason,omitempty"`
+	CausalEventSeq uint64                 `json:"causalEventSeq,omitempty"`
+	Remediation    *RemediationEscalation `json:"remediation,omitempty"`
+}
+
+// RemediationEscalation describes what the PR remediation workflow actually
+// attempted before selecting escalation.
+type RemediationEscalation struct {
+	Outcome         string   `json:"outcome"`
+	Attempted       bool     `json:"attempted"`
+	AttemptedCauses []string `json:"attemptedCauses,omitempty"`
 }
 
 // EscalationSelector identifies the gate or condition responsible.
@@ -1822,6 +1832,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		RepassCount: repasses,
 		RetryCount:  retries,
 	}
+	if remediation := remediationEscalation(records); remediation != nil {
+		cause.Remediation = remediation
+	}
+	remediationReason := remediationEscalationReason(records)
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -1829,11 +1843,15 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
+			if remediationReason != "" {
+				cause.TerminalReason = remediationReason
+			}
 			cause.CausalEventSeq = event.Seq
 			repasses, err := gateRepassCount(records[:i+1], event.Gate)
 			if err != nil {
 				return nil, err
 			}
+
 			cause.RepassCount = repasses
 			return cause, nil
 		}
@@ -1866,6 +1884,54 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		break
 	}
 	return cause, nil
+}
+
+func remediationEscalation(records []journal.EventRecord) *RemediationEscalation {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		outcome, _ := event.Outputs["escalationOutcome"].(string)
+		if outcome == "" {
+			return nil
+		}
+		attempted, err := strconv.ParseBool(fmt.Sprint(event.Outputs["remediationAttempted"]))
+		if err != nil {
+			return nil
+		}
+		var causes []string
+		for _, cause := range strings.Split(fmt.Sprint(event.Outputs["attemptedCauses"]), ",") {
+			if cause = strings.TrimSpace(cause); cause != "" {
+				causes = append(causes, cause)
+			}
+		}
+		return &RemediationEscalation{Outcome: outcome, Attempted: attempted, AttemptedCauses: causes}
+	}
+	return nil
+}
+
+func remediationEscalationReason(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		reason, _ := event.Outputs["escalationReason"].(string)
+		return strings.TrimSpace(reason)
+	}
+	return ""
+}
+
+func isRemediationCheckpointStage(stage string) bool {
+	switch stage {
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses":
+		return true
+	default:
+		return false
+	}
 }
 
 // runOutcome derives the #851 business-decision axis for a completed run
