@@ -29,7 +29,7 @@ func TestExamplesListFromOutsideCheckout(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	const want = "backlog-curation\nimplementation\nwork-nomination\n"
+	const want = "backlog-assignment\nbacklog-curation\nimplementation\nwork-nomination\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
@@ -103,7 +103,7 @@ func TestExamplesUsageErrors(t *testing.T) {
 
 func TestExamplesCompletionCandidates(t *testing.T) {
 	got := completionCandidates("examples", t.TempDir())
-	want := []string{"backlog-curation", "implementation", "work-nomination"}
+	want := []string{"backlog-assignment", "backlog-curation", "implementation", "work-nomination"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %v, want %v", got, want)
 	}
