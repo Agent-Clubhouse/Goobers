@@ -159,6 +159,12 @@ var commands = map[string]Command{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
+	"pr-claim": {
+		ResultFile: "pr-remediation-lifecycle.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"),
+		},
+	},
 	"report-pr-status": {
 		ResultFile: "status-result.json",
 		Capabilities: []CapabilityUse{

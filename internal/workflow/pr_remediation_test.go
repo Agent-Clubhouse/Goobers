@@ -88,8 +88,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("update-behind-gate not found")
 	}
-	if got := updateGate.Branches["pass"]; got != "" {
-		t.Errorf("update-behind-gate pass -> %q, want terminal", got)
+	if got := updateGate.Branches["pass"]; got != "release-claim" {
+		t.Errorf("update-behind-gate pass -> %q, want release-claim", got)
 	}
 	if got := updateGate.Branches["fail"]; got != "gather-pr-context" {
 		t.Errorf("update-behind-gate fail -> %q, want gather-pr-context", got)
@@ -108,14 +108,14 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "gather-review-threads" {
-		t.Errorf("checkpoint-gate pass -> %q, want gather-review-threads", got)
+	if got := checkpointGate.Branches["pass"]; got != "guard-before-agent-context" {
+		t.Errorf("checkpoint-gate pass -> %q, want guard-before-agent-context", got)
 	}
 	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "continueRemediation" {
 		t.Errorf("checkpoint-gate input = %+v, want continueRemediation", checkpointGate.Automated)
 	}
-	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
-		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
+	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "release-claim" {
+		t.Errorf("checkpoint-gate fail -> %q, want release-claim: an escalated PR must stop, not loop", got)
 	}
 
 	siblings, ok := m.Task("gather-sibling-context")
@@ -256,16 +256,16 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
 	if responseGate.Branches["pass"] != "review" ||
-		responseGate.Branches["fail"] != "implement" ||
+		responseGate.Branches["fail"] != "guard-before-implement" ||
 		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->review, fail->implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+		t.Errorf("finding-responses-gate branches = %v, want pass->review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
 	}
 	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
 	if !ok {
 		t.Fatal("park-invalid-finding-responses not found")
 	}
-	if invalidResponsesPark.Next != TargetEscalate {
-		t.Errorf("park-invalid-finding-responses next = %q, want %q", invalidResponsesPark.Next, TargetEscalate)
+	if invalidResponsesPark.Next != "release-escalated-claim" {
+		t.Errorf("park-invalid-finding-responses next = %q, want release-escalated-claim", invalidResponsesPark.Next)
 	}
 	if invalidResponsesPark.Run == nil ||
 		len(invalidResponsesPark.Run.Command) != 4 ||
@@ -293,8 +293,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Errorf("review evaluator = %q, want agentic", review.Evaluator)
 	}
 	for branch, want := range map[string]string{
-		"pass":          "local-ci",
-		"needs-changes": "implement",
+		"pass":          "guard-before-local-ci",
+		"needs-changes": "guard-before-implement",
 		"fail":          "park-escalated",
 		"escalate":      "park-escalated",
 	} {
@@ -309,7 +309,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	for branch, want := range map[string]string{
 		"pass": "push-remediated",
-		"fail": "implement",
+		"fail": "guard-before-implement",
 	} {
 		if got := localGate.Branches[branch]; got != want {
 			t.Errorf("local-gate %s -> %q, want %q", branch, got, want)
@@ -323,8 +323,46 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("park-escalated not found")
 	}
-	if park.Next != TargetEscalate {
-		t.Errorf("park-escalated next = %q, want %q", park.Next, TargetEscalate)
+	if park.Next != "release-escalated-claim" {
+		t.Errorf("park-escalated next = %q, want release-escalated-claim", park.Next)
+	}
+
+	for name, next := range map[string]string{
+		"guard-before-agent-context": "gather-review-threads",
+		"guard-before-implement":     "implement",
+		"guard-before-local-ci":      "local-ci",
+	} {
+		guard, ok := m.Task(name)
+		if !ok {
+			t.Errorf("%s not found", name)
+			continue
+		}
+		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, []string{"goobers", "pr-claim"}) {
+			t.Errorf("%s command = %v, want PR lifecycle check", name, guard.Run)
+		}
+		if guard.Next != next {
+			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
+		}
+	}
+	release, ok := m.Task("release-claim")
+	if !ok {
+		t.Fatal("release-claim not found")
+	}
+	if release.Run == nil || !reflect.DeepEqual(release.Run.Command, []string{"goobers", "pr-claim", "--release"}) {
+		t.Errorf("release-claim command = %v, want explicit PR claim release", release.Run)
+	}
+	if release.Next != "" {
+		t.Errorf("release-claim next = %q, want terminal", release.Next)
+	}
+	escalatedRelease, ok := m.Task("release-escalated-claim")
+	if !ok {
+		t.Fatal("release-escalated-claim not found")
+	}
+	if escalatedRelease.Run == nil || !reflect.DeepEqual(escalatedRelease.Run.Command, []string{"goobers", "pr-claim", "--release"}) {
+		t.Errorf("release-escalated-claim command = %v, want explicit PR claim release", escalatedRelease.Run)
+	}
+	if escalatedRelease.Next != TargetEscalate {
+		t.Errorf("release-escalated-claim next = %q, want %q", escalatedRelease.Next, TargetEscalate)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -89,6 +90,27 @@ func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
 		return 0, false, fmt.Errorf("claim ledger holds malformed PR claim %q for run %s: %w", claimed, runID, perr)
 	}
 	return number, true, nil
+}
+
+func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRRelease, l.Gaggle(), runID, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+			localscheduler.WithInstanceLog(log),
+		)
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		for _, entry := range ledger.ForRunAll(runID) {
+			if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
+				continue
+			}
+			if err := ledger.ReleaseEntry(entry, runID); err != nil {
+				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
+			}
+		}
+		return nil
+	})
 }
 
 func pullRequestClaimLease() (time.Duration, error) {

@@ -338,6 +338,36 @@ spec:
         - github:pr:write
       next: gather-issue-context
 
+    # Re-check the selected PR immediately before spending another agent
+    # session on it. A terminal PR returns no-work and releases its claim, so a
+    # merge between checkpointing and rework cannot occupy the remediation
+    # slot for the rest of the run.
+    - name: guard-before-agent-context
+      type: deterministic
+      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      run:
+        command: ["goobers", "pr-claim"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: gather-review-threads
+
+    # Reviewer and CI repasses route here rather than directly back to the
+    # agent, closing the same merged-while-running window on every attempt.
+    - name: guard-before-implement
+      type: deterministic
+      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      run:
+        command: ["goobers", "pr-claim"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: implement
+
     # PRR-4 / design doc D1: enrich the versioned brief with every resolvable
     # issue the PR declares through GitHub's closing-keyword grammar. Missing
     # references produce an explicit empty section, so this optional evidence
@@ -457,6 +487,21 @@ spec:
         maxAttempts: 1
       next: local-gate
 
+    # Review can outlive its subject. Check once more before the expensive
+    # project-wide validation stage; a closed PR cannot consume CI capacity or
+    # reach publication.
+    - name: guard-before-local-ci
+      type: deterministic
+      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      run:
+        command: ["goobers", "pr-claim"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: local-ci
+
     # Publish (issue #392, design doc §5's "re-push -> clear label"). The
     # counterpart to implementation's push-branch: force-push-with-lease to
     # the PR's own head instead of a plain push to a fresh run branch, then
@@ -517,9 +562,37 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 5
-      # Terminal: the cycle's product — a republished PR plus its explicit
-      # finding-by-finding changelog — is back in merge-review's hands. This
-      # workflow never merges; merge-review owns that capability-gated path.
+      next: release-claim
+
+    # Explicit release mirrors backlog-curation's terminal cleanup rather than
+    # relying solely on runner finalization. It is idempotent with the early
+    # guards and the runner's terminal cleanup.
+    - name: release-claim
+      type: deterministic
+      goal: Release this run's pull-request claim as soon as remediation work ends.
+      run:
+        command: ["goobers", "pr-claim", "--release"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      # Terminal: the PR is back in merge-review's hands and its remediation
+      # slot is immediately available to another open PR.
+
+    # Escalation must retain its terminal phase after releasing the claim, so
+    # its release stage has an explicit @escalate successor.
+    - name: release-escalated-claim
+      type: deterministic
+      goal: Release this run's pull-request claim before terminal escalation.
+      run:
+        command: ["goobers", "pr-claim", "--release"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: "@escalate"
 
     # Terminal @escalate for a reviewer "fail" verdict (design doc §4 D2:
     # `fail` is a fundamentally wrong approach, and must NOT be burned on
@@ -550,7 +623,7 @@ spec:
       # PhaseEscalated, so collapsing this into an abort would make a
       # reviewer-rejected remediation indistinguishable from an ordinary
       # failure.
-      next: "@escalate"
+      next: release-escalated-claim
 
     - name: park-invalid-finding-responses
       type: deterministic
@@ -570,7 +643,7 @@ spec:
       policyActions:
         - record-remediation-checkpoint
         - escalate-pr
-      next: "@escalate"
+      next: release-escalated-claim
 
   gates:
     # A completed API update is terminal. Every confirmed conflict, substantive
@@ -584,7 +657,7 @@ spec:
           key: needsFullRemediation
           equals: "false"
       branches:
-        pass: ""
+        pass: release-claim
         fail: gather-pr-context
 
     # Automated branch on rebase-pr's own needsAgent output (internal/
@@ -599,7 +672,7 @@ spec:
           key: needsAgent
           equals: "false"
       branches:
-        pass: ""
+        pass: release-claim
         fail: remediation-checkpoint
 
     # Loop-control decision (#392): remediation-checkpoint runs BEFORE the
@@ -615,8 +688,8 @@ spec:
           key: continueRemediation
           equals: "true"
       branches:
-        pass: gather-review-threads
-        fail: ""
+        pass: guard-before-agent-context
+        fail: release-claim
 
     # A malformed or partial finding account is repairable agent output, not a
     # post-publication provider failure. Route its exact validation error back
@@ -629,7 +702,7 @@ spec:
         check: status-equals
       branches:
         pass: review
-        fail: implement
+        fail: guard-before-implement
         escalate: park-invalid-finding-responses
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
@@ -648,8 +721,8 @@ spec:
         retry:
           maxAttempts: 2
       branches:
-        pass: local-ci
-        needs-changes: implement
+        pass: guard-before-local-ci
+        needs-changes: guard-before-implement
         fail: park-escalated
         escalate: park-escalated
 
@@ -662,5 +735,5 @@ spec:
         check: status-equals
       branches:
         pass: push-remediated
-        fail: implement
+        fail: guard-before-implement
         escalate: park-escalated

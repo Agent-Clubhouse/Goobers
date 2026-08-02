@@ -553,6 +553,10 @@ func init() {
 			withSynopsis(synopsisByID["update-behind-pr"]).
 			withHelp("API-update a clean behind-base PR, else route to remediation (a workflow stage)", updateBehindPRHelp).
 			withExamples("goobers update-behind-pr"),
+		command("pr-claim", apicontract.ActionWorkflowExecution, runPRRemediationLifecycle).
+			withSynopsis(synopsisByID["pr-claim"]).
+			withHelp("check PR liveness or release its remediation claim (a workflow stage)", prRemediationLifecycleHelp).
+			withExamples("goobers pr-claim", "goobers pr-claim --release"),
 		command("gather-pr-context", apicontract.ActionWorkflowExecution, runGatherPRContext).
 			withSynopsis(synopsisByID["gather-pr-context"]).
 			withHelp("pr-remediation entrypoint: select and load a PR's context (a workflow stage)", gatherPRContextHelp).

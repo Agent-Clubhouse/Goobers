@@ -109,6 +109,7 @@ Usage:
   goobers apply-verdict                  publish a managed or advisory merge-review verdict (a workflow stage)
   goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
+  goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
@@ -124,7 +125,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/pr-claim/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
@@ -248,6 +249,7 @@ Usage:
   goobers apply-verdict                  publish a managed or advisory merge-review verdict (a workflow stage)
   goobers elect-lander                   elect the landing PR among a merge-review cohort (a workflow stage)
   goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
+  goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
@@ -263,7 +265,7 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 modes exit 0 before a terminal outcome is known.
 
 backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
+pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/pr-claim/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
 rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
 and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
 #359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
@@ -1082,6 +1084,18 @@ done. Declared input: pullNumber (required — the just-merged PR).
 Exit codes: 0 = done (even if the PR body references no issue, or
 there are no other open PRs — both are normal outcomes, not
 errors), 1 = business error, 2 = usage/IO error.
+
+### pr-claim
+Usage: goobers pr-claim [--release] [path]
+
+At a pr-remediation stage boundary, verify that this run's claimed pull
+request is still open. If it has merged or closed, release the claim and
+return a structured no-work result so the runner stops the workflow.
+With --release, explicitly release the run's PR claim without querying the
+provider. Releasing an already-released claim is an idempotent success.
+
+Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
+2 = usage/IO error.
 
 ### pr-select
 Usage: goobers pr-select [path]
