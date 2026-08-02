@@ -239,22 +239,22 @@ func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
 
 type blockingBacklogCounter struct {
 	started chan struct{}
-	release chan struct{}
 }
 
-func (c *blockingBacklogCounter) EligibleCount(context.Context) (int, error) {
+func (c *blockingBacklogCounter) EligibleCount(ctx context.Context) (int, error) {
 	close(c.started)
-	<-c.release
-	return 0, nil
+	<-ctx.Done()
+	return 0, ctx.Err()
 }
 
-func TestReloadWaitsForActiveTick(t *testing.T) {
-	counter := &blockingBacklogCounter{started: make(chan struct{}), release: make(chan struct{})}
+func TestStalledDemandPollDoesNotIndefinitelyDelayReload(t *testing.T) {
+	counter := &blockingBacklogCounter{started: make(chan struct{})}
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:       "old",
 		BacklogCounter: counter,
 		Starter:        &fakeStarter{},
 	}})
+	sched.demandPollTimeout = 50 * time.Millisecond
 
 	tickDone := make(chan struct{})
 	go func() {
@@ -272,15 +272,13 @@ func TestReloadWaitsForActiveTick(t *testing.T) {
 	}()
 	select {
 	case err := <-reloadDone:
-		t.Fatalf("Reload returned during an active tick: %v", err)
-	case <-time.After(50 * time.Millisecond):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload remained blocked after the demand poll deadline")
 	}
-
-	close(counter.release)
 	<-tickDone
-	if err := <-reloadDone; err != nil {
-		t.Fatal(err)
-	}
 	if _, err := sched.Trigger(context.Background(), "new", time.Now()); err != nil {
 		t.Fatalf("new workflow unavailable after reload: %v", err)
 	}
