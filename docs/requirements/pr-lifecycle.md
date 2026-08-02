@@ -470,6 +470,7 @@ therefore have no action row.
 | Rebase a PR branch (`rebase-pr`) | `pr-remediation/rebase-pr` | `repo:push` | Covered |
 | Rework a PR from reviewer findings (`rework-pr`) | `pr-remediation/implement` | `repo:push` | Covered |
 | Record remediation progress or cycle exhaustion (`record-remediation-checkpoint`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
+| Release a remediation claim when its PR becomes terminal or the run ends (`release-pr-claim`) | `pr-remediation/guard-before-*`, `release-claim`, `release-escalated-claim` | `github:pr:write` | Covered |
 | Publish a remediated PR branch (`push-pr-branch`) | `pr-remediation/push-remediated` | `repo:push` | Covered |
 | Respond to every original finding (`respond-to-findings`) | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
 | Escalate a non-converging or rejected remediation (`escalate-pr`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
