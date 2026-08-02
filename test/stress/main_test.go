@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadPackages(t *testing.T) {
@@ -431,16 +433,55 @@ func TestRepositoryStressWiring(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "stress.yml"),
 		"schedule:",
 		"workflow_dispatch:",
-		"types: [labeled]",
-		"github.event.label.name == '/stress'",
+		"format('refs/pull/{0}/merge', inputs.pr)",
 		"make stress",
 		"actions/upload-artifact@v7",
 		"flake-ledger:",
-		"github.event_name != 'pull_request'",
+		"github.event_name == 'schedule'",
 		"issues: write",
 		"actions/download-artifact@v8",
 		"go run ./test/flakeledger",
 	)
+}
+
+func TestStressWorkflowTriggers(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", ".github", "workflows", "stress.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, trigger := range []string{"pull_request", "pull_request_target"} {
+		if _, ok := workflow.On[trigger]; ok {
+			t.Fatalf("%s events must not trigger the Stress workflow", trigger)
+		}
+	}
+	if _, ok := workflow.On["schedule"]; !ok {
+		t.Fatal("Stress workflow has no scheduled trigger")
+	}
+	dispatch, ok := workflow.On["workflow_dispatch"]
+	if !ok {
+		t.Fatal("Stress workflow has no explicit dispatch trigger")
+	}
+	var config struct {
+		Inputs map[string]struct {
+			Required bool   `yaml:"required"`
+			Type     string `yaml:"type"`
+		} `yaml:"inputs"`
+	}
+	if err := dispatch.Decode(&config); err != nil {
+		t.Fatalf("decode workflow_dispatch: %v", err)
+	}
+	pr, ok := config.Inputs["pr"]
+	if !ok || !pr.Required || pr.Type != "string" {
+		t.Fatalf("workflow_dispatch PR input = %+v, present = %v; want required string input", pr, ok)
+	}
 }
 
 func assertFileContains(t *testing.T, path string, values ...string) {
