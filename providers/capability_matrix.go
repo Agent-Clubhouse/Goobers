@@ -42,10 +42,10 @@ func BlessedTierProviderKinds() []ProviderKind {
 // capability subset the epic's V1 acceptance gate (design doc §8) actually
 // needs for an ADO repo to complete issue -> curated -> implemented ->
 // merged autonomously. The blessed-tier rule (§5) is enforced against this
-// set, not the full enum — capabilities outside it (e.g. native review
-// threads, repo-policy reads) are informational in the matrix and do not
-// gate CI, because nothing in the shipped workflows reaches them through a
-// provider-neutral path today (they are still hardcoded to
+// set, not the full enum — capabilities outside it (e.g. repo-policy
+// reads) are informational in the matrix and do not gate CI, because
+// nothing in the shipped workflows reaches them through a provider-neutral
+// path today (they are still hardcoded to
 // *providers.GitHubProvider at their call sites). Once CONF-6 lands a real
 // per-workflow registry, this can be replaced by deriving the union of
 // every shipped workflow's requirements instead of hand-maintaining it.

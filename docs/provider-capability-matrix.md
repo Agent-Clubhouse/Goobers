@@ -18,7 +18,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.compare` | yes | conformant | conformant | conformant |
 | `pr.review.request` | yes | conformant | conformant | conformant |
 | `pr.review.submit` |  | conformant | not declared | conformant |
-| `pr.review.threads` |  | conformant | not declared | not declared |
+| `pr.review.threads` |  | conformant | not declared | conformant |
 | `pr.merge` | yes | conformant | conformant | conformant |
 | `pr.landing.detect-policy` | yes | conformant | conformant | conformant |
 | `pr.landing.enqueue` | yes | conformant | conformant | not declared |

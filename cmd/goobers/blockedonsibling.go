@@ -26,7 +26,7 @@ func latestBlockedOnSiblingState(comments []providers.Comment) (state blockedOnS
 
 // recordedBlockedOnSiblingBlockers fails open for an absent record: without
 // named blockers there is no concrete condition that can keep a PR parked.
-func recordedBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
+func recordedBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
 	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
 		return nil, nil
 	}
@@ -45,7 +45,7 @@ func blockedOnSiblingScanContext(parent context.Context) (context.Context, conte
 	return context.WithTimeout(parent, stageTimeout())
 }
 
-func namedBlockerStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, blocker int) (bool, error) {
+func namedBlockerStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blocker int) (bool, error) {
 	item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
 	if err != nil {
 		return false, err
@@ -71,7 +71,7 @@ func namedBlockerStillBlocks(ctx context.Context, provider *providers.GitHubProv
 // liveBlockedOnSiblingBlockers returns the named blocker PRs that are still
 // effective for a parked PR. A blocker resolves when it closes or while a
 // snapshot-valid merge demotion lets its successors drain around it.
-func liveBlockedOnSiblingBlockers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
+func liveBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) ([]int, error) {
 	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
 	if err != nil {
 		return nil, err

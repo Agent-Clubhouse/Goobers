@@ -581,7 +581,7 @@ func changedFilesTouchPath(files []providers.ChangedFile, path string) bool {
 
 func findStructuralCollisions(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	selected providers.PullRequestSummary,
 	base, headPrefix string,

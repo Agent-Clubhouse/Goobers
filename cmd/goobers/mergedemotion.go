@@ -101,7 +101,7 @@ func latestMergeDemotionState(comments []providers.Comment) (state mergeDemotion
 // election shot), exactly as escalationStillBlocks self-heals a merge-escalated
 // PR on base advance. Fetches comments only for a labeled PR (a small, by-design
 // subset), so this stays cheap for the common unlabeled case.
-func demotionStillHolds(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+func demotionStillHolds(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
 		return false, nil
 	}

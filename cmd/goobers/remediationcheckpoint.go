@@ -233,7 +233,7 @@ func renderRemediationComment(state remediationState) string {
 // place instead (#716 AC3: at most one escalation comment per PR per digest;
 // repeated escalations/cycles edit the sticky comment rather than growing a
 // new one every run).
-func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
+func postOrUpdateStickyComment(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
 	if existingCommentID != "" {
 		return provider.UpdateComment(ctx, repo, existingCommentID, body)
 	}
@@ -248,7 +248,7 @@ func postOrUpdateStickyComment(ctx context.Context, provider *providers.GitHubPr
 // A human may delete the sticky comment after ListComments returns. Recreate
 // only that confirmed missing-comment race; every other provider error remains
 // stage-fatal.
-func postOrRecreateRemediationComment(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
+func postOrRecreateRemediationComment(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
 	err := postOrUpdateStickyComment(ctx, provider, repo, prNumber, existingCommentID, body)
 	if existingCommentID == "" || !providers.IsNotFoundError(err) {
 		return err
@@ -287,7 +287,7 @@ func postOrRecreateRemediationComment(ctx context.Context, provider *providers.G
 //
 // Fetches comments (and one ref lookup) only for PRs that carry the label — a
 // small, by-design subset — so this stays cheap for the common unlabeled case.
-func escalationStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+func escalationStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
 		return false, nil
 	}
@@ -442,7 +442,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	provider, err := remediationStageProvider(root, repo, token, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
@@ -891,7 +895,7 @@ func renderRemediationAttempts(attempts remediationAttempts) string {
 
 func knownSiblingOverlapFindings(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	selectedNumber int,
 	base, headPrefix string,
