@@ -12,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/repair"
 )
 
+var newRepairSweeper = repair.New
+
 // startProjector runs the read model's sole writer (#1923, §6.1).
 //
 // # What starting it changes
@@ -69,11 +71,11 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	if cfg != nil {
 		window = readmodel.RetentionDays(cfg.Retention.ProjectionFullFidelityDays)
 	}
-	retention := readmodel.NewRetentionLoop(store, window, readmodel.RetentionOptions{})
+	retention := readmodel.NewRetentionLoop(store, p, window, readmodel.RetentionOptions{})
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	go retention.Run(sweepCtx)
-	sweeper := repair.New(store, watermarks, repair.Options{RunsDirs: runsDirs})
+	sweeper := newRepairSweeper(store, p, watermarks, repair.Options{RunsDirs: runsDirs})
 	go sweeper.Run(sweepCtx)
 
 	// The restart pass runs after Start, so its commits go through the same
