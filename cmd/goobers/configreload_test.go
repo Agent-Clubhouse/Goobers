@@ -272,17 +272,40 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 
 	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
 	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: webhook-reconciled-implement", 1)
+	valid = strings.Replace(
+		valid,
+		"    - type: schedule\n      schedule: \"@every 24h\"\n",
+		"    - type: webhook\n      events: [issues]\n",
+		1,
+	)
 	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runGitT(t, sourceRepo, "add", ".")
-	runGitT(t, sourceRepo, "commit", "-m", "webhook config")
+	runGitT(t, sourceRepo, "commit", "-m", "add first webhook trigger")
 
 	if status := postWebhook(t, webhookAddress, secret, "push", "config-push-1", []byte(`{}`)); status != http.StatusAccepted {
 		t.Fatalf("push webhook status = %d, want %d", status, http.StatusAccepted)
 	}
 	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
 	waitForRunnableWorkflow(t, root, "webhook-reconciled-implement")
+
+	withoutTrigger := strings.Replace(
+		valid,
+		"    - type: webhook\n      events: [issues]\n",
+		"    - type: schedule\n      schedule: \"@every 24h\"\n",
+		1,
+	)
+	if err := os.WriteFile(workflowPath, []byte(withoutTrigger), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "remove last webhook trigger")
+
+	if status := postWebhook(t, webhookAddress, secret, "push", "config-push-2", []byte(`{}`)); status != http.StatusAccepted {
+		t.Fatalf("push webhook status = %d, want %d", status, http.StatusAccepted)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 2)
 }
 
 func TestConfigSourceReconcilerWakesWithoutPolling(t *testing.T) {

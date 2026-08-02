@@ -32,8 +32,13 @@ func hasWebhookTriggers(set *instance.ConfigSet) bool {
 	return false
 }
 
-func webhookListenerTopologyChanged(current, next *instance.ConfigSet) bool {
-	return hasWebhookTriggers(current) != hasWebhookTriggers(next)
+func webhookListenerEnabled(set *instance.ConfigSet, cfg *instance.Config) bool {
+	hasGitSource := cfg.WorkflowSource != nil && cfg.WorkflowSource.Kind == instance.WorkflowSourceKindGit
+	return (hasWebhookTriggers(set) || hasGitSource) && cfg.WebhookSecretConfigured()
+}
+
+func webhookListenerTopologyChanged(current, next *instance.ConfigSet, cfg *instance.Config) bool {
+	return webhookListenerEnabled(current, cfg) != webhookListenerEnabled(next, cfg)
 }
 
 func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) string {
@@ -45,7 +50,7 @@ func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) 
 
 func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, gate *webhookhttp.DispatchGate, errorLog *log.Logger, reconcileHook func(context.Context)) (*httpapi.Server, error) {
 	hasGitSource := setup.Config.WorkflowSource != nil && setup.Config.WorkflowSource.Kind == instance.WorkflowSourceKindGit
-	if (!hasWebhookTriggers(setup.Definitions) && !hasGitSource) || !setup.Config.WebhookSecretConfigured() {
+	if !webhookListenerEnabled(setup.Definitions, setup.Config) {
 		return nil, nil
 	}
 	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
