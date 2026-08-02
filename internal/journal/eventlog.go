@@ -36,16 +36,10 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 
 func marshalEvent(ev Event) ([]byte, error) {
 	type event Event
-	if ev.Type != EventGateOverridden || ev.Target != "" {
-		return json.Marshal(event(ev))
+	if ev.Type == EventGateOverridden && ev.Target == "" {
+		return nil, fmt.Errorf("%s requires a target", EventGateOverridden)
 	}
-	return json.Marshal(struct {
-		event
-		Target string `json:"target"`
-	}{
-		event:  event(ev),
-		Target: ev.Target,
-	})
+	return json.Marshal(event(ev))
 }
 
 // truncateTornTail removes a torn final region from path, sized tornBytes as

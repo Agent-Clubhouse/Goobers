@@ -141,6 +141,7 @@
     "target": {
       "description": "Branch/state selected by a gate or chosen by run.resumed.",
       "type": "string",
+      "minLength": 1,
       "x-conformance": "normative"
     },
     "escalated": {
