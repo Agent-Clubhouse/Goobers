@@ -125,6 +125,85 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	}
 }
 
+func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = 20 * time.Millisecond
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	address := freeLoopbackAddress(t)
+	setAPIListenAddress(t, root, address)
+
+	sourceRepo := filepath.Join(t.TempDir(), "workflow-source")
+	if err := os.CopyFS(sourceRepo, os.DirFS(layout.ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "init", "-b", "main")
+	runGitT(t, sourceRepo, "config", "user.name", "config source")
+	runGitT(t, sourceRepo, "config", "user.email", "config-source@example.test")
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "initial config")
+
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkflowSource = &instance.WorkflowSource{
+		Kind: instance.WorkflowSourceKindGit,
+		Path: sourceRepo,
+	}
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	daemonDone := make(chan int, 1)
+	go func() {
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, io.Discard)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case code := <-daemonDone:
+			if code != 0 {
+				t.Errorf("daemon exit code = %d", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-started.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup with code %d", code)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
+	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reconciled-implement", 1)
+	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "valid config")
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
+	waitForRunnableWorkflow(t, root, "reconciled-implement")
+
+	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "invalid config")
+	rejected := waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloadRejected, 1)
+	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" {
+		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
+	}
+	waitForRunnableWorkflow(t, root, "reconciled-implement")
+}
+
 // TestConfigReloaderPollSerializedAcrossWatchConfigAndApplySweep pins #459's
 // fix for a real concurrency bug QA-2 caught on review of PR #2131:
 // configReloader was only ever safe because exactly one goroutine called

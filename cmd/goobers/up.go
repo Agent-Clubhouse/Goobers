@@ -195,7 +195,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -207,6 +207,11 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
+	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
+	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
+	"is always active. Invalid revisions are rejected with the last-known-good\n" +
+	"definitions left running. --watch-config separately watches direct edits\n" +
+	"to the materialized config directory.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -252,7 +257,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
-	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
+	watchConfig := fs.Bool("watch-config", false, "hot-reload edits to the materialized config directory (Git workflow sources reconcile automatically)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
@@ -706,7 +711,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	var sourceReconcileMu sync.Mutex
+	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		sourceReconcileMu.Lock()
+		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
 			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
@@ -715,6 +724,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return resp
 			}
 			resp.Revision = revision
+			sourceRevision = revision
 		}
 		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
 		resp.Applied = applied
@@ -916,14 +926,40 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
-	// Continuous config hot-reload is opt-in. Off by default, `goobers up`
-	// keeps the V0 load-once-at-startup behavior; with --watch-config the
-	// daemon watches the config dir and swaps validated edits live. This gate
-	// is interim: the Workflow CD config source (#453) replaces both the flag
-	// and this poll loop with an instance-level workflowSource once that epic
-	// lands. reloader itself was already constructed above, unconditionally.
+	// Plain materialized-directory watching remains opt-in. A Git workflow
+	// source reconciles continuously: polling is the availability floor and a
+	// local ref watcher provides low-latency wakeups.
 	configDone := make(chan error, 1)
-	if *watchConfig {
+	configLoopEnabled := *watchConfig
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		configLoopEnabled = true
+		sourceLoop := &configSourceReconciler{
+			source: *source,
+			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			reconcile: func(reconcileCtx context.Context, now time.Time) error {
+				sourceReconcileMu.Lock()
+				defer sourceReconcileMu.Unlock()
+				revision, changed, _, syncErr := instance.SyncGitWorkflowSourceIfChanged(
+					reconcileCtx,
+					root,
+					*source,
+					sourceRevision,
+					setup.SharedRegistry,
+					setup.SecretStores,
+				)
+				if syncErr != nil {
+					return fmt.Errorf("sync workflow source: %w", syncErr)
+				}
+				sourceRevision = revision
+				if !changed {
+					return nil
+				}
+				_, _, _, _, reloadErr := reloader.pollOnce(now)
+				return reloadErr
+			},
+		}
+		go func() { configDone <- sourceLoop.Run(ctx) }()
+	} else if *watchConfig {
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
@@ -1010,7 +1046,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		runErr = <-schedulerDone
 	}
 	stopDaemon()
-	if *watchConfig && !configWatcherDone {
+	if configLoopEnabled && !configWatcherDone {
 		if reloadErr := <-configDone; reloadErr != nil {
 			configFailed = true
 			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
