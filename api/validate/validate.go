@@ -1387,7 +1387,13 @@ func (ix *index) checkGaggleCheckout(r *Report) {
 		}
 		warn("spec.project.checkout", g.Spec.Project.Checkout)
 		for i := range g.Spec.AdditionalRepos {
-			warn(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
+			field := fmt.Sprintf("spec.additionalRepos[%d].checkout", i)
+			checkout := g.Spec.AdditionalRepos[i].Checkout
+			if checkout != nil && checkout.Mode == apiv1.CheckoutModePinned {
+				r.add(errorCheckoutConflict, Error, file, "Gaggle", name,
+					"%s.mode %q is unsupported for read-only reference repositories", field, checkout.Mode)
+			}
+			warn(field, checkout)
 		}
 	}
 }

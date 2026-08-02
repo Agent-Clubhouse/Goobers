@@ -1733,11 +1733,23 @@ spec:
 
 func TestGagglePinnedCheckoutRejectsWorktreeContradictions(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		checkout string
+		name            string
+		checkout        string
+		additionalRepos string
 	}{
 		{name: "pinned sparse", checkout: "mode: pinned\n      sparse: [services/web]"},
 		{name: "worktree clean policy", checkout: "mode: worktree\n      cleanPolicy: full"},
+		{
+			name:     "pinned additional repo",
+			checkout: "mode: worktree",
+			additionalRepos: `
+  additionalRepos:
+    - provider: github
+      owner: acme
+      name: assets
+      checkout:
+        mode: pinned`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := `apiVersion: goobers.dev/v1alpha1
@@ -1751,6 +1763,7 @@ spec:
     name: web
     checkout:
       ` + tc.checkout + `
+` + tc.additionalRepos + `
   backlog:
     provider: github
     project: acme/web

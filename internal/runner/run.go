@@ -3687,6 +3687,14 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
+		in.pinnedStage.Lock()
+		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+			in.pinnedStage.Unlock()
+			return nil, err
+		}
+		return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
+	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
 		if syncBase {

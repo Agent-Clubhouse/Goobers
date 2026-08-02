@@ -502,6 +502,9 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if baseRef == "" {
 		return nil, fmt.Errorf("worktree: Diff requires a baseRef")
 	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
 	args := []string{"diff", baseRef + "...HEAD"}
 	var out []byte
 	var err error

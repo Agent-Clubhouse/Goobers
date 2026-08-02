@@ -61,6 +61,28 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	}
 }
 
+func TestPinnedDiffUsesRefreshedBaseAfterConsecutiveRun(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	first := acquirePinnedFixture(t, manager, repo, "run-one", PinnedCleanNone)
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWriteFile(t, filepath.Join(repo, "base-update.txt"), "latest")
+	runTestGit(t, repo, "add", "base-update.txt")
+	runTestGit(t, repo, "commit", "-m", "advance base")
+
+	second := acquirePinnedFixture(t, manager, repo, "run-two", PinnedCleanNone)
+	defer func() { _ = second.Release() }()
+	diff, err := second.Worktree.Diff(context.Background(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff) != 0 {
+		t.Fatalf("pinned diff includes refreshed base changes:\n%s", diff)
+	}
+}
+
 func TestPreparePinnedSelectsRemoteBranchAndSyncsLatestBase(t *testing.T) {
 	manager, repo := pinnedFixture(t)
 	runTestGit(t, repo, "branch", "goobers/remediation/pr", "main")

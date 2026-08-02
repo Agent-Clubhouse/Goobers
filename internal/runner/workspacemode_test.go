@@ -160,7 +160,7 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	}
 }
 
-func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
+func TestPinnedWorkspaceBacksEveryStageWithoutWorktrees(t *testing.T) {
 	r, in := readOnlyWorkspaceRunner(t)
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
@@ -177,7 +177,7 @@ func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
 	in.pinnedStage = &sync.Mutex{}
 
 	var paths []string
-	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
+	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
 		workspace, err := r.createStageWorkspace(context.Background(), in, string(mode), mode, false, "")
 		if err != nil {
 			t.Fatal(err)
@@ -188,7 +188,7 @@ func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
 		}
 	}
 
-	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path {
+	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path || paths[2] != lease.Worktree.Path {
 		t.Fatalf("stage paths = %v, want shared pin %q", paths, lease.Worktree.Path)
 	}
 	runDirs, err := filepath.Glob(filepath.Join(r.cfg.Worktrees.Root, "*", "runs"))
