@@ -55,7 +55,9 @@ const traceHelp = "Usage: goobers trace [--json] [--follow] [--transcripts | --t
 	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
 	"or --transcript to select one stage. With --follow, stream a live run's\n" +
 	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
-	"\".\"). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
+	"\".\"). Remediation escalations include the typed outcome, attempted flag,\n" +
+	"and attempted causes in the text summary and JSON `escalation.remediation`\n" +
+	"object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
 	"error, 130 = interrupted while following.\n"
 
 func runTraceWithFactories(

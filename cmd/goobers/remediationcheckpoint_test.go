@@ -1470,7 +1470,13 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 
-	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--escalate", "reviewer rejected", instanceRoot)
+	code, stdout, stderr := runArgs(
+		t,
+		"remediation-checkpoint",
+		"--escalate", "finding response repass budget exhausted",
+		"--escalation-outcome", "budget-exhausted",
+		instanceRoot,
+	)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -1480,10 +1486,10 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 		"selectedNumber":       "77",
 		"head":                 "goobers/impl/remediation-364",
 		"headSha":              headSHA,
-		"escalationOutcome":    string(remediationOutcomeDidNotConverge),
+		"escalationOutcome":    string(remediationOutcomeBudgetExhausted),
 		"remediationAttempted": "true",
 		"attemptedCauses":      "",
-		"escalationReason":     "reviewer rejected",
+		"escalationReason":     "finding response repass budget exhausted",
 		"integrity":            string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
@@ -1497,8 +1503,12 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "reviewer rejected") {
-		t.Fatalf("comments = %v, want deleted sticky comment recreated with escalation state", st.comments)
+	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "finding response repass budget exhausted") {
+		t.Fatalf("comments = %v, want deleted sticky comment recreated with budget escalation state", st.comments)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomeBudgetExhausted || !state.RemediationAttempted {
+		t.Fatalf("recreated escalation state = %+v, ok = %v", state, ok)
 	}
 }
 

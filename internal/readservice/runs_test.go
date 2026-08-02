@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1708,30 +1709,61 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 }
 
 func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
-	records := []journal.EventRecord{
-		{Event: journal.Event{
-			Schema: journal.EventSchema, Seq: 4, Type: journal.EventStageFinished,
-			Stage: "remediation-checkpoint", Status: string(apiv1.ResultSuccess),
-			Outputs: map[string]any{
-				"escalationOutcome":    "policy-excluded",
-				"remediationAttempted": "false",
-				"attemptedCauses":      "",
-				"escalationReason":     "declared policy excludes substantive",
-			},
-		}},
-		{Event: journal.Event{
-			Schema: journal.EventSchema, Seq: 5, Type: journal.EventGateEvaluated,
-			Gate: "checkpoint-gate", Verdict: "fail", Target: workflow.TargetEscalate,
-		}},
+	tests := []struct {
+		name, stage, outcome, reason string
+		attempted                    bool
+	}{
+		{
+			name: "policy-excluded before gate", stage: "remediation-checkpoint",
+			outcome: "policy-excluded", reason: "declared policy excludes substantive",
+		},
+		{
+			name: "reviewer rejection after gate", stage: "park-escalated",
+			outcome: "did-not-converge", reason: "reviewer rejected the remediation", attempted: true,
+		},
+		{
+			name: "repass budget exhaustion after gate", stage: "park-invalid-finding-responses",
+			outcome: "budget-exhausted", reason: "finding response repass budget exhausted", attempted: true,
+		},
 	}
-	cause, err := escalationCause(RunSummary{Phase: journal.PhaseEscalated}, records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cause == nil || cause.TerminalReason != "declared policy excludes substantive" ||
-		cause.Remediation == nil || cause.Remediation.Outcome != "policy-excluded" ||
-		cause.Remediation.Attempted || len(cause.Remediation.AttemptedCauses) != 0 {
-		t.Fatalf("escalation cause = %+v", cause)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkpoint := journal.Event{
+				Schema: journal.EventSchema, Type: journal.EventStageFinished,
+				Stage: tc.stage, Status: string(apiv1.ResultSuccess),
+				Outputs: map[string]any{
+					"escalationOutcome":    tc.outcome,
+					"remediationAttempted": strconv.FormatBool(tc.attempted),
+					"attemptedCauses":      "",
+					"escalationReason":     tc.reason,
+				},
+			}
+			gate := journal.Event{
+				Schema: journal.EventSchema, Type: journal.EventGateEvaluated,
+				Gate: "checkpoint-gate", Verdict: "fail",
+			}
+			gate.Target = workflow.TargetEscalate
+			if tc.stage != "remediation-checkpoint" {
+				gate.Target = tc.stage
+			}
+			records := []journal.EventRecord{{Event: checkpoint}, {Event: gate}}
+			if tc.stage != "remediation-checkpoint" {
+				records = []journal.EventRecord{{Event: gate}, {Event: checkpoint}}
+			}
+			for i := range records {
+				records[i].Event.Seq = uint64(i + 4)
+			}
+
+			cause, err := escalationCause(RunSummary{Phase: journal.PhaseEscalated}, records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cause == nil || cause.TerminalReason != tc.reason ||
+				cause.Remediation == nil || cause.Remediation.Outcome != tc.outcome ||
+				cause.Remediation.Attempted != tc.attempted || len(cause.Remediation.AttemptedCauses) != 0 {
+				t.Fatalf("escalation cause = %+v", cause)
+			}
+		})
 	}
 }
 

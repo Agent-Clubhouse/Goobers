@@ -288,11 +288,13 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Errorf("park-invalid-finding-responses next = %q, want release-escalated-claim", invalidResponsesPark.Next)
 	}
 	if invalidResponsesPark.Run == nil ||
-		len(invalidResponsesPark.Run.Command) != 4 ||
+		len(invalidResponsesPark.Run.Command) != 6 ||
 		invalidResponsesPark.Run.Command[0] != "goobers" ||
 		invalidResponsesPark.Run.Command[1] != "remediation-checkpoint" ||
-		invalidResponsesPark.Run.Command[2] != "--escalate" {
-		t.Errorf("park-invalid-finding-responses command = %v, want goobers remediation-checkpoint --escalate <reason>", invalidResponsesPark.Run)
+		invalidResponsesPark.Run.Command[2] != "--escalate" ||
+		invalidResponsesPark.Run.Command[4] != "--escalation-outcome" ||
+		invalidResponsesPark.Run.Command[5] != "budget-exhausted" {
+		t.Errorf("park-invalid-finding-responses command = %v, want forced budget-exhausted checkpoint", invalidResponsesPark.Run)
 	}
 	if len(invalidResponsesPark.PolicyActions) != 2 ||
 		invalidResponsesPark.PolicyActions[0] != "record-remediation-checkpoint" ||
@@ -301,6 +303,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 			"park-invalid-finding-responses policyActions = %v, want [record-remediation-checkpoint escalate-pr]",
 			invalidResponsesPark.PolicyActions,
 		)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(invalidResponsesPark.ExpectedOutputs, output) {
+			t.Errorf("park-invalid-finding-responses expectedOutputs = %v, missing %q", invalidResponsesPark.ExpectedOutputs, output)
+		}
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
@@ -385,6 +392,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if escalatedRelease.Next != TargetEscalate {
 		t.Errorf("release-escalated-claim next = %q, want %q", escalatedRelease.Next, TargetEscalate)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(park.ExpectedOutputs, output) {
+			t.Errorf("park-escalated expectedOutputs = %v, missing %q", park.ExpectedOutputs, output)
+		}
 	}
 }
 

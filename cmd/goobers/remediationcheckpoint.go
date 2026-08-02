@@ -372,7 +372,7 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 // (goobers:merge-escalated, clearing needs-remediation so the machine stops
 // selecting it) when one cause exhausts its own budget or on a byte-identical
 // repeat, or records the advanced state for next cycle.
-const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budget N] [path]\n\n" +
+const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]] [path]\n\n" +
 	"Re-checkout the PR's own branch (this stage gets its own fresh\n" +
 	"worktree), read pr-remediation's durable per-cause attempt counters + last\n" +
 	"diff digest back from a sticky PR comment, compare this cycle's\n" +
@@ -383,7 +383,12 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
 	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
 	"four per-cause budget inputs. --budget overrides every declared cause\n" +
-	"for standalone diagnostics. Exit codes: 0 = checkpoint\n" +
+	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
+	"--escalate as did-not-converge (the default) or budget-exhausted.\n" +
+	"Escalations persist a machine-readable `escalationOutcome`\n" +
+	"(`did-not-converge`, `budget-exhausted`, or `policy-excluded`), whether\n" +
+	"repair was attempted, and the attempted causes in both the sticky comment\n" +
+	"and stage result. Exit codes: 0 = checkpoint\n" +
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
 	"error, 2 = usage/IO error.\n"
 
@@ -397,6 +402,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// a loop-control outcome: escalate unconditionally with the caller's
 	// reason, skipping the budget and same-diff checks entirely. Issue #392.
 	escalateReason := fs.String("escalate", "", "escalate unconditionally with this reason, skipping the D4/D5 checks")
+	escalationOutcome := fs.String(
+		"escalation-outcome",
+		string(remediationOutcomeDidNotConverge),
+		"machine-readable outcome for --escalate (did-not-converge or budget-exhausted)",
+	)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -407,6 +417,17 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	pathArg := ""
 	if fs.NArg() == 1 {
 		pathArg = fs.Arg(0)
+	}
+	forcedOutcome := remediationEscalationOutcome(*escalationOutcome)
+	switch forcedOutcome {
+	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted:
+	default:
+		pf(stderr, "error: --escalation-outcome must be %q or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted)
+		return 2
+	}
+	if *escalateReason == "" && forcedOutcome != remediationOutcomeDidNotConverge {
+		pf(stderr, "error: --escalation-outcome requires --escalate\n")
+		return 2
 	}
 	root := providerStageRoot(pathArg)
 
@@ -738,6 +759,9 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			Outcome:         remediationOutcomeDidNotConverge,
 			Attempted:       true,
 			AttemptedCauses: attemptedRemediationCauses(attemptedCauses),
+		}
+		if forced {
+			escalation.Outcome = forcedOutcome
 		}
 		if exceeded {
 			escalation.Outcome = remediationOutcomeBudgetExhausted

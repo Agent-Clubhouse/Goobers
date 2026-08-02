@@ -1832,6 +1832,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		RepassCount: repasses,
 		RetryCount:  retries,
 	}
+	if remediation := remediationEscalation(records); remediation != nil {
+		cause.Remediation = remediation
+	}
+	remediationReason := remediationEscalationReason(records)
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -1839,11 +1843,8 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
-			if remediation := remediationEscalation(records[:i]); remediation != nil {
-				cause.Remediation = remediation
-				if remediationReason := remediationEscalationReason(records[:i]); remediationReason != "" {
-					cause.TerminalReason = remediationReason
-				}
+			if remediationReason != "" {
+				cause.TerminalReason = remediationReason
 			}
 			cause.CausalEventSeq = event.Seq
 			repasses, err := gateRepassCount(records[:i+1], event.Gate)
@@ -1889,7 +1890,7 @@ func remediationEscalation(records []journal.EventRecord) *RemediationEscalation
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
 		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
-			event.Stage != "remediation-checkpoint" || event.Status != string(apiv1.ResultSuccess) {
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
 			continue
 		}
 		outcome, _ := event.Outputs["escalationOutcome"].(string)
@@ -1914,13 +1915,23 @@ func remediationEscalation(records []journal.EventRecord) *RemediationEscalation
 func remediationEscalationReason(records []journal.EventRecord) string {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventStageFinished || event.Stage != "remediation-checkpoint" {
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
 			continue
 		}
 		reason, _ := event.Outputs["escalationReason"].(string)
 		return strings.TrimSpace(reason)
 	}
 	return ""
+}
+
+func isRemediationCheckpointStage(stage string) bool {
+	switch stage {
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses":
+		return true
+	default:
+		return false
+	}
 }
 
 // runOutcome derives the #851 business-decision axis for a completed run

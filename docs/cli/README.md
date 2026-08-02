@@ -1796,7 +1796,7 @@ $ goobers record-merge-refusal
 durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 
 ~~~text
-Usage: goobers remediation-checkpoint [--budget N] [path]
+Usage: goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]] [path]
 
 Re-checkout the PR's own branch (this stage gets its own fresh
 worktree), read pr-remediation's durable per-cause attempt counters + last
@@ -1808,10 +1808,12 @@ repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
 gather-pr-context's selectedNumber output), remediationCauses, and the
 four per-cause budget inputs. --budget overrides every declared cause
-for standalone diagnostics. Escalations persist a machine-readable
-`escalationOutcome` (`did-not-converge`, `budget-exhausted`, or
-`policy-excluded`), whether repair was attempted, and the attempted causes
-in both the sticky comment and stage result. Exit codes: 0 = checkpoint
+for standalone diagnostics. --escalation-outcome classifies a forced
+--escalate as did-not-converge (the default) or budget-exhausted.
+Escalations persist a machine-readable `escalationOutcome`
+(`did-not-converge`, `budget-exhausted`, or `policy-excluded`), whether
+repair was attempted, and the attempted causes in both the sticky comment
+and stage result. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business
 error, 2 = usage/IO error.
 ~~~
