@@ -301,8 +301,8 @@ func TestKill9MidAppendRecovers(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start child: %v", err)
 		}
-		time.Sleep(50 * time.Millisecond)
-		_ = cmd.Process.Kill() // SIGKILL
+		time.Sleep(50 * time.Millisecond) // Intentional crash delay leaves initialization partially written.
+		_ = cmd.Process.Kill()            // SIGKILL
 		_ = cmd.Wait()
 
 		dir := filepath.Join(root, testIdentity().RunID)

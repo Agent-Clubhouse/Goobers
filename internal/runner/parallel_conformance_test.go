@@ -556,7 +556,7 @@ func (d *retryUntilBudgetExceededDeterministic) Run(_ context.Context, env apiv1
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 	}
 	d.calls++
-	time.Sleep(d.attemptDelay)
+	time.Sleep(d.attemptDelay) // Intentional attempt delay makes parallel retry ordering observable.
 	if d.calls <= d.failAttempts {
 		// A dispatch error (not a ResultFailure status) is what Task.Retry
 		// governs — an executor-level failure, retried up to MaxAttempts;

@@ -410,7 +410,7 @@ func waitFor(t *testing.T, condition func() bool) {
 		if condition() {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the fake store's synchronized in-flight state.
 	}
 	t.Fatal("condition not met within 5s")
 }

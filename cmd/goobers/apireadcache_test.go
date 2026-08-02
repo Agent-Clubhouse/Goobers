@@ -316,7 +316,7 @@ func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Intentionally keeps requests overlapping to exercise cache coalescing.
 		_, _ = io.WriteString(w, body)
 	}))
 	defer srv.Close()

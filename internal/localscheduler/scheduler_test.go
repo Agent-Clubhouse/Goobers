@@ -570,7 +570,7 @@ func waitForRunFinished(t *testing.T, dir, workflow string) journal.Event {
 				return ev
 			}
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval; run completion is exposed only through the journal.
 	}
 	t.Fatalf("timed out waiting for run.finished for workflow %q", workflow)
 	return journal.Event{}
@@ -1473,7 +1473,7 @@ func waitForCount(t *testing.T, count func() int, want int) {
 		if count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for synchronized scheduler counters.
 	}
 	t.Fatalf("timed out waiting for count >= %d, got %d", want, count())
 }

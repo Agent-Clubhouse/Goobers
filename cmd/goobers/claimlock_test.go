@@ -61,7 +61,7 @@ func TestClaimLockDelayedHolderReportsSlowWaitAndOperation(t *testing.T) {
 	)
 	released := make(chan struct{})
 	go func() {
-		time.Sleep(holdFor)
+		time.Sleep(holdFor) // Intentional lock hold verifies that the contender waits.
 		_ = holder.Release()
 		close(released)
 	}()
@@ -93,7 +93,7 @@ func TestClaimLockSlowHoldReportsBothDurations(t *testing.T) {
 		operation = claimLockOperationRunRelease
 	)
 	if err := withClaimLockThreshold(lockPath, operation, threshold, func() error {
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond) // Intentional operation duration exercises slow-lock diagnostics.
 		return nil
 	}); err != nil {
 		t.Fatal(err)

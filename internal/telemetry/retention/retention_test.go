@@ -362,7 +362,7 @@ func waitForRunLock(t *testing.T, runDir string) {
 		if time.Now().After(deadline) {
 			t.Fatal("IngestRun did not acquire the journal lock")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for acquisition of the filesystem journal lock.
 	}
 }
 

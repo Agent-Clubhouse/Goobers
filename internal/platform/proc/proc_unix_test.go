@@ -28,7 +28,7 @@ func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) bool {
 		if cond() {
 			return true
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval for OS process state, which has no portable event hook.
 	}
 	return cond()
 }

@@ -1302,7 +1302,7 @@ func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
 	const holdFor = 150 * time.Millisecond
 	released := make(chan time.Time, 1)
 	go func() {
-		time.Sleep(holdFor)
+		time.Sleep(holdFor) // Intentional lock hold verifies merge waits for the queue lock.
 		released <- time.Now()
 		_ = held.Release()
 	}()

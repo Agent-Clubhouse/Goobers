@@ -440,7 +440,7 @@ func waitForInstanceRunFinished(t *testing.T, schedulerDir, runID string, phase 
 		if time.Now().After(deadline) {
 			t.Fatalf("instance journal did not finish run %s", runID)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; the instance journal has no notification hook.
 	}
 }
 

@@ -110,7 +110,7 @@ func waitGet(ctx context.Context, c client.Client, key types.NamespacedName, obj
 		if err = c.Get(ctx, key, obj); err == nil {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // Polling interval for the external envtest API server.
 	}
 	return err
 }

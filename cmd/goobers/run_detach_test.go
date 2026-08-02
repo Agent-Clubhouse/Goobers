@@ -36,7 +36,7 @@ func TestRunDetachedTriggerHelperProcess(t *testing.T) {
 		return
 	case "async":
 		_, _ = fmt.Fprintln(os.Stdout, "created run async-1 (workflow=demo gaggle=test)")
-		time.Sleep(time.Second)
+		time.Sleep(time.Second) // Intentional child lifetime proves the parent command detaches before completion.
 		if err := os.WriteFile(os.Getenv(detachedRunHelperMarker), nil, 0o600); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
@@ -95,7 +95,7 @@ func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("detached child did not continue after trigger returned")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for the detached process marker.
 	}
 }
 

@@ -146,7 +146,7 @@ func waitForRunPhase(t *testing.T, runsDir, runID string, want journal.RunPhase)
 		if time.Now().After(deadline) {
 			t.Fatalf("run %s did not reach phase %s in time", runID, want)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; run journals have no completion notification hook.
 	}
 }
 
