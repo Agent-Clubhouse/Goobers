@@ -783,6 +783,48 @@ func TestStageRerunRequestReturnsEscalatedRunToRunning(t *testing.T) {
 	}
 }
 
+func TestGateOverrideReturnsEscalatedRunToRunning(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-gate-overridden", machine.Def.Name, "goobers",
+		time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review",
+		Verdict: "fail", Target: "@escalate",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateOverridden, Gate: "review",
+		Verdict: "needs-changes", Target: "implement",
+		Actor: "operator@example.test", Rationale: "The gate requires another implementation pass.",
+		Status:          string(journal.PhaseEscalated),
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-gate-overridden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal || detail.FinishedAt != nil ||
+		detail.CurrentStage != "implement" {
+		t.Fatalf("overridden detail = %+v", detail.RunSummary)
+	}
+}
+
 func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	started := time.Date(2026, 7, 17, 9, 15, 0, 0, time.UTC)

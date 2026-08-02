@@ -238,14 +238,14 @@ func runTransitionsFrom(rows []readmodel.TransitionRow) []RunTransition {
 // propagation and the curated no-work-run disposition are intentionally left
 // as follow-up work — this is the read-model projection only.
 type RunOutcome struct {
-	// Gate is the last gate evaluated before completion. Empty when the run
-	// completed with no gate evaluation.
+	// Gate is the last gate decision before completion. Empty when the run
+	// completed with no gate decision.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is that gate's decision.
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state the gate selected.
 	Target string `json:"target,omitempty"`
-	// CausalEventSeq is the deciding gate.evaluated event's sequence number.
+	// CausalEventSeq is the deciding gate event's sequence number.
 	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
 }
 
@@ -1513,7 +1513,7 @@ func summarizeRunForStage(
 			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
-		case journal.EventRunResumed:
+		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil
 			currentStage = event.Target
@@ -1935,7 +1935,7 @@ func isRemediationCheckpointStage(stage string) bool {
 }
 
 // runOutcome derives the #851 business-decision axis for a completed run
-// from the last gate evaluated before completion — the same "walk backward
+// from the last gate decision before completion — the same "walk backward
 // for the decisive gate" approach escalationCause uses for the escalated
 // case. Returns nil for a non-completed run.
 func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
@@ -1945,7 +1945,8 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 	records = currentLifecycleRecords(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated {
+		if !event.KnownSchema() ||
+			(event.Type != journal.EventGateEvaluated && event.Type != journal.EventGateOverridden) {
 			continue
 		}
 		return &RunOutcome{
@@ -1961,8 +1962,14 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if event.KnownSchema() && event.Type == journal.EventRunResumed {
+		if !event.KnownSchema() {
+			continue
+		}
+		switch event.Type {
+		case journal.EventRunResumed:
 			return records[i+1:]
+		case journal.EventGateOverridden:
+			return records[i:]
 		}
 	}
 	return records
