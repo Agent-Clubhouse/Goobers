@@ -1040,6 +1040,12 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					if finalizeErr != nil {
 						return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
 					}
+					// #2190: a run that resumed here and was already terminal
+					// took a different path than a normal terminal run's
+					// ingestRunTelemetry call below (line ~1080) — it never
+					// recorded its intake watermark, so the read model never
+					// discovered it advanced.
+					recordRunIntake(watermarks, runLayout, id.RunID, log)
 					release(id.RunID, id.Workflow)
 					continue // terminal: nothing to resume
 				}
