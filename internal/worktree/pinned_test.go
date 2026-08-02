@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -220,6 +221,40 @@ func TestAcquirePinnedRefusesStaleLease(t *testing.T) {
 	var stale *StalePinnedLeaseError
 	if !errors.As(err, &stale) || stale.RunID != "crashed-run" {
 		t.Fatalf("AcquirePinned error = %v, want stale lease for crashed-run", err)
+	}
+}
+
+func TestAcquirePinnedRecoversOrphanedWaiterBeforeReportingStaleLease(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	first := acquirePinnedFixture(t, manager, repo, "crashed-holder", PinnedCleanNone)
+	if err := first.handle.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	const deadPID = 999999
+	previousAlive := pinnedQueueProcessAlive
+	pinnedQueueProcessAlive = func(pid int) bool { return pid != deadPID }
+	t.Cleanup(func() { pinnedQueueProcessAlive = previousAlive })
+
+	queueDir := filepath.Join(manager.pinnedRoot, repoKey(repo), "lease.queue")
+	orphanPath := filepath.Join(queueDir, "00000000000000000000-999999-crashed-waiter")
+	orphanRecord, err := json.Marshal(pinnedQueueRecord{RunID: "crashed-waiter", PID: deadPID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphanPath, orphanRecord, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = manager.AcquirePinned(context.Background(), PinnedOptions{
+		RepoURL: repo, RunID: "next-run", BaseRef: "main", Branch: "goobers/test/next-run",
+	})
+	var stale *StalePinnedLeaseError
+	if !errors.As(err, &stale) || stale.RunID != "crashed-holder" {
+		t.Fatalf("AcquirePinned error = %v, want stale lease for crashed-holder", err)
+	}
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("orphaned queue entry was not removed: %v", err)
 	}
 }
 

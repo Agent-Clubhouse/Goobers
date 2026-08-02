@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // PinnedCleanPolicy controls untracked-file cleanup before a pinned run.
@@ -48,6 +50,15 @@ type pinnedLeaseRecord struct {
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
 }
+
+type pinnedQueueRecord struct {
+	RunID        string    `json:"run_id"`
+	PID          int       `json:"pid"`
+	PIDStartedAt time.Time `json:"pid_started_at,omitempty"`
+}
+
+var pinnedQueueProcessAlive = proc.Alive
+var pinnedQueueProcessStartTime = proc.StartTime
 
 // StalePinnedLeaseError requires the operator reset path to recover a workspace
 // whose prior process died while holding it.
@@ -111,6 +122,15 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 		return nil, fmt.Errorf("worktree: enqueue pinned run: %w", err)
 	}
 	queuePath := queueFile.Name()
+	pidStartedAt, _ := pinnedQueueProcessStartTime(os.Getpid())
+	queueRecord, _ := json.Marshal(pinnedQueueRecord{
+		RunID: opts.RunID, PID: os.Getpid(), PIDStartedAt: pidStartedAt,
+	})
+	if _, writeErr := queueFile.Write(queueRecord); writeErr != nil {
+		_ = queueFile.Close()
+		_ = os.Remove(queuePath)
+		return nil, fmt.Errorf("worktree: persist pinned queue entry: %w", writeErr)
+	}
 	if closeErr := queueFile.Close(); closeErr != nil {
 		_ = os.Remove(queuePath)
 		return nil, fmt.Errorf("worktree: close pinned queue entry: %w", closeErr)
@@ -132,9 +152,20 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 		}
 		names := make([]string, 0, len(entries))
 		for _, entry := range entries {
-			if !entry.IsDir() {
-				names = append(names, entry.Name())
+			if entry.IsDir() {
+				continue
 			}
+			orphaned, err := pinnedQueueEntryOrphaned(filepath.Join(queueDir, entry.Name()), entry.Name())
+			if err != nil {
+				return nil, err
+			}
+			if orphaned {
+				if err := os.Remove(filepath.Join(queueDir, entry.Name())); err != nil && !os.IsNotExist(err) {
+					return nil, fmt.Errorf("worktree: remove orphaned pinned queue entry: %w", err)
+				}
+				continue
+			}
+			names = append(names, entry.Name())
 		}
 		sort.Strings(names)
 		position := 0
@@ -206,6 +237,42 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 	}
 	lease.Worktree = wt
 	return lease, nil
+}
+
+func pinnedQueueEntryOrphaned(path, name string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("worktree: read pinned queue entry: %w", err)
+	}
+	var record pinnedQueueRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		parts := strings.SplitN(name, "-", 3)
+		if len(parts) < 3 {
+			return false, fmt.Errorf("worktree: decode pinned queue entry %q: %w", name, err)
+		}
+		record.PID, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return false, fmt.Errorf("worktree: decode pinned queue entry %q: %w", name, err)
+		}
+	}
+	if !pinnedQueueProcessAlive(record.PID) {
+		return true, nil
+	}
+	if record.PIDStartedAt.IsZero() {
+		return false, nil
+	}
+	startedAt, ok := pinnedQueueProcessStartTime(record.PID)
+	if !ok {
+		return false, nil
+	}
+	difference := startedAt.Sub(record.PIDStartedAt)
+	if difference < 0 {
+		difference = -difference
+	}
+	return difference > pidReusedTolerance, nil
 }
 
 func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOptions) (*Worktree, error) {
