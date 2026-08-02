@@ -22,7 +22,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
-import { instanceWarnings } from "./prototypeData";
+import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
