@@ -318,11 +318,11 @@ func seedFailure(fingerprint, signature string) testFailure {
 // duplicate-issue race this ledger is exposed to: publish() lists existing
 // flake issues then creates one for any fingerprint it didn't find, which is
 // not atomic. Two publishers racing on the same repo-wide issue tracker
-// (e.g. the nightly cron and a /stress-labeled PR) can both miss a brand-new
-// fingerprint and file duplicate issues for it. The workflow-level
-// concurrency group in stress.yml is scoped per-PR/ref/run, so it does not
-// prevent that — only a fixed, ref-independent group on the flake-ledger job
-// itself serializes every publisher against the shared issue tracker.
+// (e.g. overlapping scheduled runs) can both miss a brand-new fingerprint and
+// file duplicate issues for it. The workflow-level concurrency group in
+// stress.yml is scoped per-ref/run, so it does not prevent that — only a fixed,
+// ref-independent group on the flake-ledger job itself serializes every
+// publisher against the shared issue tracker.
 func TestFlakeLedgerJobHasRefIndependentConcurrencyGroup(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "stress.yml"))
