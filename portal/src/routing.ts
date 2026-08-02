@@ -1,4 +1,5 @@
 import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
+import { isFactoryLayout, type FactoryLayout } from "./factoryLayout";
 import { isFactoryLens, type FactoryLens } from "./factoryModel";
 
 export type Route =
@@ -27,6 +28,8 @@ export interface FactoryRouteScope {
   gaggle?: string;
   workflow?: string;
   lens?: FactoryLens;
+  /** Presentation only: which layout draws the same floor model. */
+  layout?: FactoryLayout;
 }
 
 export interface ErrorRouteFilters {
@@ -96,6 +99,7 @@ export function parseRoute(hash = window.location.hash): Route {
       gaggle: optionalQuery(search, "gaggle"),
       workflow: optionalQuery(search, "workflow"),
       lens: lensQuery(search),
+      layout: layoutQuery(search),
     };
     return Object.values(scope).some(Boolean) ? { page: "factory", scope } : { page: "factory" };
   }
@@ -186,6 +190,12 @@ function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
 function lensQuery(search: URLSearchParams): FactoryLens | undefined {
   const value = optionalQuery(search, "lens");
   return isFactoryLens(value) ? value : undefined;
+}
+
+/** Same contract for layout: an unknown value falls back to the default. */
+function layoutQuery(search: URLSearchParams): FactoryLayout | undefined {
+  const value = optionalQuery(search, "layout");
+  return isFactoryLayout(value) ? value : undefined;
 }
 
 function populationQuery(search: URLSearchParams): StagePopulationFilter | undefined {

@@ -40,6 +40,45 @@ describe("Factory routing", () => {
       scope: { gaggle: "core", workflow: undefined, lens: "flow" },
     });
   });
+
+  it("round-trips the layout alongside every scope and lens combination", () => {
+    for (const layout of ["lines", "plant"] as const) {
+      for (const lens of [undefined, "world", "flow", "risk"] as const) {
+        const route = {
+          page: "factory" as const,
+          scope: { gaggle: "core tools", workflow: "implementation/v2", lens, layout },
+        };
+        expect(parseRoute(routeHash(route))).toEqual(route);
+      }
+    }
+
+    expect(routeHash({ page: "factory", scope: { layout: "plant" } })).toBe(
+      "#/factory?layout=plant",
+    );
+    expect(parseRoute("#/factory?layout=plant")).toEqual({
+      page: "factory",
+      scope: { gaggle: undefined, workflow: undefined, lens: undefined, layout: "plant" },
+    });
+  });
+
+  it("falls back to the line layout when the layout is unknown or absent", () => {
+    expect(parseRoute("#/factory?layout=hologram")).toEqual({ page: "factory" });
+    expect(parseRoute("#/factory?layout=")).toEqual({ page: "factory" });
+    expect(parseRoute("#/factory?gaggle=core&layout=hologram")).toEqual({
+      page: "factory",
+      scope: { gaggle: "core", workflow: undefined, lens: undefined, layout: undefined },
+    });
+  });
+
+  it("keeps layout and lens independent in the hash", () => {
+    const route = {
+      page: "factory" as const,
+      scope: { lens: "flow" as const, layout: "plant" as const },
+    };
+
+    expect(routeHash(route)).toBe("#/factory?lens=flow&layout=plant");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
 });
 
 describe("Insight routing", () => {

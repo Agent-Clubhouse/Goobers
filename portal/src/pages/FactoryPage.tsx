@@ -1,8 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DaemonClient } from "../api/types";
 import { FactoryFloor } from "../components/FactoryFloor";
 import { FactoryInspector } from "../components/FactoryInspector";
+import { FactoryPlant } from "../components/FactoryPlant";
 import { useFactoryFloor, type FactoryFloorData } from "../factoryData";
+import {
+  DEFAULT_FACTORY_LAYOUT,
+  FACTORY_LAYOUTS,
+  factoryLayoutDescription,
+  factoryLayoutLabel,
+  type FactoryLayout,
+} from "../factoryLayout";
 import { FACTORY_LENSES, type FactoryFloorModel, type FactoryLens } from "../factoryModel";
 import { overviewSelection, type FactorySelection } from "../factorySelection";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
@@ -16,6 +24,12 @@ import type { FactoryRouteScope, Navigate } from "../routing";
  * runs the daemon reports as running are the work carriers standing on those
  * machines, and goobers appear at a stage only when they own it and it is
  * holding work. Nothing is simulated and nothing loops for decoration.
+ *
+ * Two layouts draw that one model. `Lines` is the precise topology and `Plant`
+ * is the isometric hall. The layout lives in the route so a view can be shared,
+ * but it is presentation only: it changes no read, no model, no entity ID and
+ * no selection. The lens is a separate control because it asks a different
+ * question, what to emphasise, and both layouts answer it.
  */
 export function FactoryPage({
   client,
@@ -29,6 +43,7 @@ export function FactoryPage({
   standalone: boolean;
 }) {
   const lens: FactoryLens = scope?.lens ?? "world";
+  const layout: FactoryLayout = scope?.layout ?? DEFAULT_FACTORY_LAYOUT;
   const requested = useMemo(
     () => ({ gaggle: scope?.gaggle, workflow: scope?.workflow }),
     [scope?.gaggle, scope?.workflow],
@@ -36,6 +51,11 @@ export function FactoryPage({
   const query = useFactoryFloor(client, requested);
   const reducedMotion = usePrefersReducedMotion();
   const [selection, setSelection] = useState<FactorySelection>(overviewSelection);
+  const transitionModel =
+    query.state.status === "ready" || query.state.status === "stale"
+      ? query.state.data.model
+      : undefined;
+  const animateTransitions = useTransitionAnimation(transitionModel, layout);
 
   if (query.state.status === "loading") {
     return (
@@ -73,6 +93,7 @@ export function FactoryPage({
     <div className="factory-page">
       <FactoryHeader
         data={data}
+        layout={layout}
         lens={lens}
         navigate={navigate}
         standalone={standalone}
@@ -116,16 +137,28 @@ export function FactoryPage({
                   Plant ready. No active runs are on the floor.
                 </p>
               )}
-              <FactoryFloor
-                lens={lens}
-                model={data.model}
-                onSelect={setSelection}
-                reducedMotion={reducedMotion}
-                selection={selection}
-              />
+              {layout === "plant" ? (
+                <FactoryPlant
+                  animateTransitions={animateTransitions}
+                  lens={lens}
+                  model={data.model}
+                  onSelect={setSelection}
+                  reducedMotion={reducedMotion}
+                  selection={selection}
+                />
+              ) : (
+                <FactoryFloor
+                  animateTransitions={animateTransitions}
+                  lens={lens}
+                  model={data.model}
+                  onSelect={setSelection}
+                  reducedMotion={reducedMotion}
+                  selection={selection}
+                />
+              )}
             </>
           )}
-          <FloorLegend model={data.model} stale={stale} />
+          <FloorLegend layout={layout} model={data.model} stale={stale} />
         </div>
         <FactoryInspector
           data={data}
@@ -229,11 +262,13 @@ function freshnessFor(
 
 function FactoryHeader({
   data,
+  layout,
   lens,
   navigate,
   standalone,
 }: {
   data: FactoryFloorData;
+  layout: FactoryLayout;
   lens: FactoryLens;
   navigate: Navigate;
   standalone: boolean;
@@ -248,6 +283,7 @@ function FactoryHeader({
     gaggle?: string;
     workflow?: string;
     lens?: FactoryLens;
+    layout?: FactoryLayout;
   }) =>
     navigate({
       page: "factory",
@@ -255,6 +291,7 @@ function FactoryHeader({
         gaggle: next.gaggle,
         workflow: next.workflow,
         lens: next.lens === "world" ? undefined : next.lens,
+        layout: next.layout === DEFAULT_FACTORY_LAYOUT ? undefined : next.layout,
       },
     });
 
@@ -275,7 +312,7 @@ function FactoryHeader({
           <span>Gaggle</span>
           <select
             onChange={(event) =>
-              go({ gaggle: event.target.value || undefined, lens })
+              go({ gaggle: event.target.value || undefined, lens, layout })
             }
             value={data.scope.gaggle ?? ""}
           >
@@ -295,6 +332,7 @@ function FactoryHeader({
                 gaggle: data.scope.gaggle,
                 workflow: event.target.value || undefined,
                 lens,
+                layout,
               })
             }
             value={data.scope.workflow ?? ""}
@@ -310,30 +348,62 @@ function FactoryHeader({
               ))}
           </select>
         </label>
-        <div
-          aria-label="Floor lens"
-          className="factory-lens"
-          role="group"
-        >
-          {FACTORY_LENSES.map((candidate) => (
-            <button
-              aria-pressed={candidate === lens}
-              className={
-                candidate === lens ? "factory-lens-button is-active" : "factory-lens-button"
-              }
-              key={candidate}
-              onClick={() =>
-                go({
-                  gaggle: data.scope.gaggle,
-                  workflow: data.scope.workflow,
-                  lens: candidate,
-                })
-              }
-              type="button"
-            >
-              {lensLabel(candidate)}
-            </button>
-          ))}
+        <div className="factory-segmented-control">
+          <span className="factory-control-caption">Layout</span>
+          <div aria-label="Floor layout" className="factory-layout-switch" role="group">
+            {FACTORY_LAYOUTS.map((candidate) => (
+              <button
+                aria-pressed={candidate === layout}
+                className={
+                  candidate === layout
+                    ? "factory-layout-button is-active"
+                    : "factory-layout-button"
+                }
+                key={candidate}
+                onClick={() =>
+                  go({
+                    gaggle: data.scope.gaggle,
+                    workflow: data.scope.workflow,
+                    lens,
+                    layout: candidate,
+                  })
+                }
+                title={factoryLayoutDescription(candidate)}
+                type="button"
+              >
+                {factoryLayoutLabel(candidate)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="factory-segmented-control">
+          <span className="factory-control-caption">Lens</span>
+          <div
+            aria-label="Floor lens"
+            className="factory-lens"
+            role="group"
+          >
+            {FACTORY_LENSES.map((candidate) => (
+              <button
+                aria-pressed={candidate === lens}
+                className={
+                  candidate === lens ? "factory-lens-button is-active" : "factory-lens-button"
+                }
+                key={candidate}
+                onClick={() =>
+                  go({
+                    gaggle: data.scope.gaggle,
+                    workflow: data.scope.workflow,
+                    lens: candidate,
+                    layout,
+                  })
+                }
+                type="button"
+              >
+                {lensLabel(candidate)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </header>
@@ -352,9 +422,11 @@ function lensLabel(lens: FactoryLens): string {
 }
 
 function FloorLegend({
+  layout,
   model,
   stale,
 }: {
+  layout: FactoryLayout;
   model: FactoryFloorModel;
   stale: boolean;
 }) {
@@ -368,15 +440,26 @@ function FloorLegend({
         <span className="factory-legend-item" data-legend="unknown">Signal unread</span>
         <span className="factory-legend-item" data-legend="inbound">Inbound</span>
       </div>
-      <div className="factory-legend-group">
-        <strong>Machines</strong>
-        <span className="factory-legend-item" data-legend="machine-running">Running</span>
-        <span className="factory-legend-item" data-legend="machine-held">Human hold</span>
-        <span className="factory-legend-item" data-legend="machine-blocked">Blocked</span>
-        <span className="factory-legend-item" data-legend="idle">Idle</span>
-        <span className="factory-legend-item" data-legend="gate">Gate</span>
-        <span className="factory-legend-item" data-legend="observed">Observed, order unknown</span>
-      </div>
+      {layout === "plant" ? (
+        <div className="factory-legend-group" data-layout-legend="plant">
+          <strong>Plant</strong>
+          <span className="factory-legend-item" data-legend="beacon">Beacon alarm</span>
+          <span className="factory-legend-item" data-legend="placard">Placard status</span>
+          <span className="factory-legend-item" data-legend="dock">Outcome dock</span>
+          <span className="factory-legend-item" data-legend="commons">Ready commons</span>
+          <span className="factory-legend-item" data-legend="observed">Dashed means order unknown</span>
+        </div>
+      ) : (
+        <div className="factory-legend-group" data-layout-legend="lines">
+          <strong>Machines</strong>
+          <span className="factory-legend-item" data-legend="machine-running">Running</span>
+          <span className="factory-legend-item" data-legend="machine-held">Human hold</span>
+          <span className="factory-legend-item" data-legend="machine-blocked">Blocked</span>
+          <span className="factory-legend-item" data-legend="idle">Idle</span>
+          <span className="factory-legend-item" data-legend="gate">Gate</span>
+          <span className="factory-legend-item" data-legend="observed">Observed, order unknown</span>
+        </div>
+      )}
       <span className="factory-legend-readout">
         {model.counts.activeRuns}{model.runsTruncated ? "+" : ""} active ·{" "}
         {model.counts.blockedRuns} held · {model.counts.blockedStages} blocked ·{" "}
@@ -385,6 +468,59 @@ function FloorLegend({
         {stale ? " · refreshing" : ""}
       </span>
     </div>
+  );
+}
+
+function useTransitionAnimation(
+  model: FactoryFloorModel | undefined,
+  layout: FactoryLayout,
+): boolean {
+  const [state, setState] = useState(() => ({
+    animate: false,
+    layout,
+    model,
+  }));
+
+  if (state.model !== model) {
+    setState({
+      animate:
+        state.model !== undefined &&
+        model !== undefined &&
+        modelHasTransition(model),
+      layout,
+      model,
+    });
+  } else if (state.layout !== layout) {
+    setState({
+      animate: false,
+      layout,
+      model,
+    });
+  }
+
+  useEffect(() => {
+    if (!state.animate) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setState((current) =>
+        current === state ? { ...current, animate: false } : current,
+      );
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  return (
+    model !== undefined &&
+    state.model === model &&
+    state.layout === layout &&
+    state.animate
+  );
+}
+
+function modelHasTransition(model: FactoryFloorModel): boolean {
+  return model.carriers.some(
+    (carrier) => carrier.transition?.kind === "stage-change",
   );
 }
 

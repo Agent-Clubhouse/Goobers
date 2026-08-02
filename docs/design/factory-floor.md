@@ -17,6 +17,108 @@ at least one is hard blocked. An amber alarm means every run is confirmed
 paused at a human gate. The page does not add simulated work, decorative
 traffic, or inferred owners.
 
+## Two layouts, one model
+
+Factory Floor draws the same floor model in two layouts, chosen by a top-level
+toggle:
+
+| Layout | Route value | What it answers |
+|---|---|---|
+| Lines | `lines` (default) | Exactly how a workflow is wired: declared stages in graph order, each edge, each outcome, each terminal |
+| Plant | `plant` | What the whole instance looks like as one working hall: workflow districts, machinery, belts, crates, staff |
+
+Layout is presentation only. Both layouts:
+
+* consume the same `FactoryFloorModel` from the same `useFactoryFloor` hook
+* render the same entities with the same IDs (`lane`, `station`, `run`,
+  `worker`, `gaggle`)
+* share one `FactorySelection` state and one `FactoryInspector`
+* share accessible names, built once in `factoryLabels.ts`
+* honour the same truncation, overflow, alarm, and unknown-topology rules
+
+Switching layout must not trigger a daemon read, rebuild the model, change the
+scope, change the lens, or drop a selection. There is no layout-specific data
+contract and no layout-specific daemon field.
+
+The lens (`world`, `flow`, `risk`) is a separate control. Layout chooses how the
+floor is drawn; the lens chooses what the floor emphasises. Both layouts
+implement all three lenses.
+
+### Route contract
+
+```
+#/factory?gaggle=<name>&workflow=<name>&lens=<world|flow|risk>&layout=<lines|plant>
+```
+
+All four values are optional and independent. `layout=lines` and `lens=world`
+are the defaults and are omitted from the hash. An unrecognised `layout` falls
+back to `lines`, exactly as an unrecognised `lens` falls back to `world`.
+
+### Layout responsibilities
+
+`FactoryFloor.tsx` (lines) reads the model's own floor-space coordinates:
+lane bands, station rectangles, conveyor paths, docks, the inbound yard, and the
+ready commons.
+
+`FactoryPlant.tsx` (plant) reads the model's grid facts instead: which lane a
+stage belongs to, its declared column and row, which runs stand on it, which
+goober owns it, and which pair of stages a belt joins. `factoryPlant.ts`
+projects those facts onto an isometric tile grid. That projection is pure: no
+randomness, no wall clock, no module state, so the same model always yields
+byte-identical geometry and a crate only slides when its run really changed
+stage. The projection uses one fixed 56 pixel tile and a fixed origin. A larger
+plant expands its scrollable scene instead of rescaling or shifting existing
+districts. A later workflow or topology read therefore cannot move geometry
+that was already visible.
+
+Because an isometric scene overlaps rectangles constantly, every machine and
+crate in the plant is clipped to its own silhouette, so a near building cannot
+swallow a click meant for the one behind it. Native focus remains on the HTML
+button, while the inner machine faces and crate faces receive the visible focus
+stroke.
+
+Outcome labels are projected by true polyline arc length near the target side
+of each belt. Sibling branches receive deterministic, outcome-aware offsets.
+Each label and each operational pad label is drawn with a backing plate in a
+dedicated annotation SVG above machinery. Repass edges receive separate,
+deterministic return lanes and label positions.
+
+District floor paint uses the safe gaggle and workflow display identity rather
+than a synthetic line number. The Plant legend explains beacon alarms, placard
+status, outcome docks, ready commons, and the observed-order cue. The Lines
+legend remains limited to concepts used by the line topology layout.
+
+Transition metadata belongs to a newly observed model generation. FactoryPage
+consumes it for the layout that was mounted when the update arrived. Mounting
+another layout, including an immediate toggle after invalidation, renders the
+new confirmed position without replaying crate or belt motion.
+
+### Testing expectations
+
+Any change to either layout must keep these true:
+
+* route parse and hash round-trip for every layout, lens and scope combination,
+  with an unknown layout falling back to the default
+* a layout change performs no new daemon read and preserves scope, lens and
+  selection
+* both layouts expose the same workflow, stage, run and goober entities under
+  the same accessible names
+* a click or keyboard activation in either layout updates the same inspector
+* a real stage change moves that one run in either layout and leaves siblings
+  still
+* a layout toggle never replays a transition from the current model
+* blocked and human-hold alarms carry text as well as colour in both layouts
+* overflow, 50-run truncation, unknown topology and idle states stay honest in
+  both layouts
+* the plant projection stays deterministic, with no random or time-based
+  geometry
+* every outcome label is target-side, visible above machinery, and separated
+  from sibling branch labels
+* multiple repass edges use distinct return lanes
+* adding a district or later topology never changes the tile or existing
+  machine coordinates
+* neither layout renders a field outside the privacy whitelist below
+
 ## Current read composition
 
 The current implementation composes the view in the browser from existing

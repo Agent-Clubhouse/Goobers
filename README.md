@@ -46,10 +46,19 @@ Factory Floor is the portal's operations view. It is under active development. I
 configured workflows, stages, active runs, and goobers into a live plant without
 simulated work.
 
-![Factory Floor showing synthetic workflow activity](docs/images/factory-floor.png)
+It offers two layouts over the same live model, chosen by a toggle on the page.
+**Lines** is the precise topology: declared stages in graph order with every
+edge, outcome, and terminal. **Plant** is the isometric overview: workflow
+districts, stage machinery, belts, work crates, and posted goobers in one hall.
+Switching layout changes only how the floor is drawn, never what is read.
+
+![Factory Floor line layout showing synthetic workflow topology](docs/images/factory-floor-lines.png)
+
+![Factory Floor plant layout showing the same synthetic workflows as an isometric hall](docs/images/factory-floor-plant.png)
 
 See the [Factory Floor read-model design](docs/design/factory-floor.md) for data
-sources, safe fields, failure behavior, and the proposed future read endpoint.
+sources, safe fields, failure behavior, the layout contract, and the proposed
+future read endpoint.
 
 ## Go module
 

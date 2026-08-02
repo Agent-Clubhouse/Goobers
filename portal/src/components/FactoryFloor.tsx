@@ -10,12 +10,14 @@ import type {
   FactoryWorkerPlacement,
 } from "../factoryModel";
 import {
-  capacityLabel,
-  holdReasonLabel,
-  runStateLabel,
-  stageKindLabel,
-  stationStatusLabel,
-} from "../factoryModel";
+  carrierLabel,
+  dockLabel,
+  laneLabel,
+  machineStatusText,
+  shortKind,
+  stationLabel,
+  workerLabel,
+} from "../factoryLabels";
 import type { FactorySelection } from "../factorySelection";
 import { isSelected } from "../factorySelection";
 
@@ -33,12 +35,14 @@ import { isSelected } from "../factorySelection";
  * native rather than simulated on SVG shapes.
  */
 export function FactoryFloor({
+  animateTransitions,
   model,
   lens,
   onSelect,
   reducedMotion,
   selection,
 }: {
+  animateTransitions: boolean;
   model: FactoryFloorModel;
   lens: FactoryLens;
   onSelect: (selection: FactorySelection) => void;
@@ -130,6 +134,7 @@ export function FactoryFloor({
           />
           {model.lanes.map((lane) => (
             <LaneScenery
+              animateTransitions={animateTransitions}
               arrowId={arrowId}
               hazardId={hazardId}
               key={lane.id}
@@ -179,6 +184,7 @@ export function FactoryFloor({
 
         {model.carriers.filter((carrier) => carrier.rendered).map((carrier) => (
           <Carrier
+            animateTransitions={animateTransitions}
             carrier={carrier}
             key={carrier.runId}
             onSelect={onSelect}
@@ -217,10 +223,12 @@ export function FactoryFloor({
 }
 
 function LaneScenery({
+  animateTransitions,
   arrowId,
   hazardId,
   lane,
 }: {
+  animateTransitions: boolean;
   arrowId: string;
   hazardId: string;
   lane: FactoryLane;
@@ -294,7 +302,7 @@ function LaneScenery({
           <path
             className="factory-conveyor-line"
             d={conveyor.path}
-            data-active={conveyor.active ? "true" : "false"}
+            data-active={animateTransitions && conveyor.active ? "true" : "false"}
             data-kind={conveyor.kind}
             markerEnd={`url(#${arrowId})`}
           />
@@ -335,21 +343,10 @@ function Dock({ dock }: { dock: FactoryDock }) {
         x={dock.x + dock.width / 2}
         y={dock.y + dock.height / 2 + 4}
       >
-        {dockLabel(dock)}
+        {dockLabel(dock.terminal)}
       </text>
     </g>
   );
-}
-
-function dockLabel(dock: FactoryDock): string {
-  switch (dock.terminal) {
-    case "complete":
-      return "Shipping";
-    case "escalate":
-      return "Escalation";
-    case "abort":
-      return "Abort";
-  }
 }
 
 function LaneShell({
@@ -434,21 +431,6 @@ function LaneShell({
   );
 }
 
-function laneLabel(lane: FactoryLane, partial: boolean): string {
-  const limit =
-    lane.limit === undefined
-      ? "workflow limit unknown"
-      : `workflow limit ${lane.limit}`;
-  const topology =
-    lane.source === "observed"
-      ? lane.stations.length === 0
-        ? ` Workflow topology was not read in this batch. ${lane.stageCount} stages are configured and none are drawn.`
-        : ` Workflow definition unread; showing ${lane.stations.length} observed stages with order unknown.`
-      : "";
-  const unread =
-    lane.unreadRuns > 0 ? ` ${lane.unreadRuns} run signals unread.` : "";
-  return `Workflow ${lane.displayName}, gaggle ${lane.gaggleDisplayName}. ${lane.activeRuns}${partial ? " or more" : ""} active runs, ${limit}. ${lane.blockedRuns} held.${unread}${topology}`;
-}
 
 function Station({
   onSelect,
@@ -552,85 +534,29 @@ function Station({
   );
 }
 
-function machineStatusText(station: FactoryStation): string {
-  switch (station.status) {
-    case "held":
-      return "HOLD";
-    case "blocked":
-      return "BLOCKED";
-    case "impeded":
-      return "PARTIAL";
-    case "unknown":
-      return "UNREAD";
-    case "running":
-      return "RUNNING";
-    case "idle":
-      return "IDLE";
-  }
-}
 
-function shortKind(station: FactoryStation): string {
-  switch (station.kind) {
-    case "gate":
-      return "gate";
-    case "agentic":
-      return "agentic";
-    case "deterministic":
-      return "deterministic";
-  }
-}
-
-function stationLabel(
-  station: FactoryStation,
-  workers: readonly FactoryWorker[],
-): string {
-  const parts = [
-    `Stage ${station.stageId}`,
-    stageKindLabel(station.kind),
-    `workflow ${station.workflowDisplayName}`,
-    `gaggle ${station.gaggle}`,
-    stationStatusLabel(station.status),
-    capacityLabel(station.wip, station.limit),
-  ];
-  if (station.alarm === "blocked") {
-    parts.push("blocked alarm: every run here is held and hard blocked work is present");
-  }
-  if (station.alarm === "hold") {
-    parts.push("human hold alarm: every run here is paused at a human gate");
-  }
-  if (station.unknownCount > 0) {
-    parts.push(`${station.unknownCount} run signals unread`);
-  }
-  if (workers.length > 0) {
-    parts.push(`staffed by ${workers.map((worker) => worker.displayName).join(", ")}`);
-  } else if (station.owner) {
-    parts.push(`owner ${station.owner.displayName ?? station.owner.name}`);
-  }
-  if (station.source === "observed") {
-    parts.push("stage observed from live runs; workflow definition unread");
-  }
-  return `${parts.join(". ")}.`;
-}
 
 function Carrier({
+  animateTransitions,
   carrier,
   onSelect,
   selected,
 }: {
+  animateTransitions: boolean;
   carrier: FactoryCarrier;
   onSelect: (selection: FactorySelection) => void;
   selected: boolean;
 }) {
+  const moved =
+    animateTransitions && carrier.transition?.kind === "stage-change";
   return (
     <button
       aria-label={carrierLabel(carrier)}
       aria-pressed={selected}
       className={
-        carrier.transition?.kind === "stage-change"
-          ? "factory-carrier is-transitioning"
-          : "factory-carrier"
+        moved ? "factory-carrier is-transitioning" : "factory-carrier"
       }
-      data-moved={carrier.transition?.kind === "stage-change" ? "true" : "false"}
+      data-moved={moved ? "true" : "false"}
       data-state={carrier.state}
       onClick={() => onSelect({ kind: "run", id: carrier.runId })}
       style={{ transform: `translate(${carrier.x}px, ${carrier.y}px)` }}
@@ -644,19 +570,6 @@ function Carrier({
   );
 }
 
-function carrierLabel(carrier: FactoryCarrier): string {
-  const where = carrier.stageId
-    ? `at stage ${carrier.stageId}`
-    : "waiting to enter its first stage";
-  const reason = holdReasonLabel(carrier.reason);
-  const moved =
-    carrier.transition?.kind === "stage-change"
-      ? ` Moved from ${carrier.transition.fromStageId ?? "the inbound yard"}.`
-      : "";
-  return `Run ${carrier.runId}, workflow ${carrier.workflowDisplayName}, ${where}. ${runStateLabel(
-    carrier.state,
-  )}.${reason ? ` ${reason}.` : ""}${moved}`;
-}
 
 function Worker({
   onSelect,
@@ -686,11 +599,4 @@ function Worker({
       </span>
     </button>
   );
-}
-
-function workerLabel(worker: FactoryWorker, placement: FactoryWorkerPlacement): string {
-  if (!placement.active) {
-    return `Goober ${worker.displayName}, gaggle ${worker.gaggleDisplayName}. Idle in the ready commons. Owns ${worker.stages.length} stages.`;
-  }
-  return `Goober ${worker.displayName}, gaggle ${worker.gaggleDisplayName}. Working ${worker.activeRunCount} active runs across ${worker.activeStationIds.length} owned stages.`;
 }
