@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestTaskWorkspaceModeResolution(t *testing.T) {
@@ -152,7 +154,47 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	if _, err := r.createStageWorkspace(ctx, in, "s", apiv1.WorkspaceRepoReadOnly, true, ""); err == nil {
 		t.Error("syncBase must be rejected for a read-only workspace: there is no branch to sync")
 	}
+
 	if _, err := r.createStageWorkspace(ctx, in, "s", apiv1.WorkspaceRepoReadOnly, false, "some-branch"); err == nil {
 		t.Error("a rebound branch must be rejected for a read-only workspace")
+	}
+}
+
+func TestPinnedWorkspaceBacksEveryRepoStageWithoutWorktrees(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+
+	var paths []string
+	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
+		workspace, err := r.createStageWorkspace(context.Background(), in, string(mode), mode, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, workspace.path)
+		if err := workspace.Remove(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path {
+		t.Fatalf("stage paths = %v, want shared pin %q", paths, lease.Worktree.Path)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(r.cfg.Worktrees.Root, "*", "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runDirs) != 0 {
+		t.Fatalf("pinned stages created per-run worktree directories: %v", runDirs)
 	}
 }

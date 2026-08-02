@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -480,6 +481,8 @@ type StartInput struct {
 	// that declares no requirement behaves exactly as before. A resumed run
 	// leaves this nil — it already passed preflight at its original Start.
 	RequiredCapabilities []string
+	pinnedWorkspace      *worktree.Worktree
+	pinnedStage          *sync.Mutex
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -607,6 +610,13 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	defer func() { _ = jr.Close() }()
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+		lease, err := r.acquirePinnedWorkspace(ctx, jr, &in)
+		if err != nil {
+			return Result{}, err
+		}
+		if lease != nil {
+			defer func() { _ = lease.Release() }()
+		}
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
@@ -3566,6 +3576,7 @@ type stageWorkspace struct {
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
 	additional []additionalCheckout
+	release    func()
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -3605,6 +3616,12 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
+	defer func() {
+		if w.release != nil {
+			w.release()
+			w.release = nil
+		}
+	}()
 	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
 	// independent worktrees off their own mirrors, so a failure to remove one must
 	// not block removing the primary worktree. Best-effort: collect the first error.
@@ -3687,6 +3704,15 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return &stageWorkspace{path: path}, nil
 	case apiv1.WorkspaceRepoReadOnly:
+		if in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		// A detached checkout at the pinned base revision: no branch name, so
 		// two of these can coexist for one run. That is the whole point —
 		// every writable repo workspace is created on ONE run branch and git
@@ -3726,10 +3752,20 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	case "", apiv1.WorkspaceRepo:
+		if in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
 			return nil, err
 		}
+
 		baseRef := in.RepoRef.Branch
 		if baseRef == "" {
 			baseRef = "main"
@@ -3764,6 +3800,53 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
+	if in.RepoRef.Checkout == nil || in.RepoRef.Checkout.Mode != apiv1.CheckoutModePinned {
+		return nil, nil
+	}
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		return nil, err
+	}
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	lease, err := r.cfg.Worktrees.AcquirePinned(ctx, worktree.PinnedOptions{
+		RepoURL:     repoURL,
+		RunID:       in.RunID,
+		BaseRef:     baseRef,
+		Branch:      branch,
+		CleanPolicy: worktree.PinnedCleanPolicy(in.RepoRef.Checkout.CleanPolicy),
+		OnQueuePosition: func(position int) error {
+			return jr.Append(journal.Event{
+				Type: journal.EventRunnerAnnotation,
+				Runner: map[string]any{
+					"workspaceMode": "pinned",
+					"queuePosition": position,
+				},
+			})
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runner: acquire pinned workspace for run %q: %w", in.RunID, err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"workspaceMode": "pinned",
+			"queuePosition": 0,
+		},
+	}); err != nil {
+		_ = lease.Release()
+		return nil, fmt.Errorf("runner: journal pinned workspace acquisition for run %q: %w", in.RunID, err)
+	}
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+	return lease, nil
 }
 
 // provisionAdditionalCheckouts materializes a read-only checkout of each of the

@@ -1530,6 +1530,10 @@ func summarizeRunForStage(
 			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
+		case journal.EventRunnerAnnotation:
+			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+				currentStage = queue
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil

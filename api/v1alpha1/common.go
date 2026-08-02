@@ -59,15 +59,44 @@ type RepoRef struct {
 	// this repo. It resolves to a Connection declared in the Manifest.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
-	// Checkout narrows how much of the repository run workspaces materialize
-	// (B2, #649). Accepted but not honored by the local runner yet: declaring
-	// it is inert and surfaces a VER003 compatibility warning at validate time.
+	// Checkout controls how repository run workspaces are materialized.
 	// +optional
 	Checkout *CheckoutSpec `json:"checkout,omitempty" yaml:"checkout,omitempty"`
 }
 
-// CheckoutSpec declares partial-checkout behavior for a repository reference.
+// CheckoutMode selects the repository workspace lifecycle.
+type CheckoutMode string
+
+const (
+	// CheckoutModeWorktree creates a disposable worktree for each stage.
+	CheckoutModeWorktree CheckoutMode = "worktree"
+	// CheckoutModePinned reuses one persistent, serial workspace across runs.
+	CheckoutModePinned CheckoutMode = "pinned"
+)
+
+// CleanPolicy controls which untracked files a pinned workspace removes between runs.
+type CleanPolicy string
+
+const (
+	CleanPolicyNone        CleanPolicy = "none"
+	CleanPolicyIgnoredSafe CleanPolicy = "ignored-safe"
+	CleanPolicyFull        CleanPolicy = "full"
+)
+
+// CheckoutSpec declares workspace materialization behavior for a repository reference.
 type CheckoutSpec struct {
+	// Mode defaults to worktree. Pinned opts into a non-hermetic, whole-run
+	// serialized workspace whose ignored build state persists between runs.
+	// Target-repository .gitignore hygiene is therefore load-bearing.
+	// +kubebuilder:validation:Enum=worktree;pinned
+	// +optional
+	Mode CheckoutMode `json:"mode,omitempty" yaml:"mode,omitempty"`
+	// CleanPolicy applies before each pinned run. None (the default) preserves
+	// ignored and untracked build state; ignored-safe removes untracked but not
+	// ignored files; full removes both.
+	// +kubebuilder:validation:Enum=none;ignored-safe;full
+	// +optional
+	CleanPolicy CleanPolicy `json:"cleanPolicy,omitempty" yaml:"cleanPolicy,omitempty"`
 	// Sparse lists repo-relative path cones a sparse checkout materializes;
 	// paths outside every cone are absent from run workspaces. Empty means a
 	// full checkout.

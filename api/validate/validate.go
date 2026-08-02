@@ -100,6 +100,7 @@ const (
 	errorPreviewAnnotation        WarningCode = "CFG004"
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
+	errorCheckoutConflict         WarningCode = "VER005"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1363,11 +1364,8 @@ func (ix *index) checkGaggleRunControls(r *Report) {
 	}
 }
 
-// checkGaggleCheckout surfaces every declared repo checkout block as a VER003
-// compatibility notice (#649): checkout.sparse is accepted by the schema so a
-// definition can be authored ahead of the runner honoring it, but the local
-// runner still materializes full worktrees. A warning, never an error: deleting
-// the declaration would delete the very cones a sparse-capable runner needs.
+// checkGaggleCheckout rejects mutually exclusive pinned/worktree declarations
+// and preserves the compatibility warning for accepted-but-inert sparse checkout.
 func (ix *index) checkGaggleCheckout(r *Report) {
 	for name, g := range ix.gaggles {
 		file := ix.gaggleFile[name]
@@ -1375,8 +1373,17 @@ func (ix *index) checkGaggleCheckout(r *Report) {
 			if checkout == nil {
 				return
 			}
-			r.addWarning(WarningCompatibility, file, "", "Gaggle", name,
-				"%s.sparse is not honored by the local runner", field)
+			if checkout.Mode == apiv1.CheckoutModePinned && len(checkout.Sparse) > 0 {
+				r.add(errorCheckoutConflict, Error, file, "Gaggle", name,
+					"%s cannot combine mode %q with sparse checkout; pinned mode and worktree-based checkout are mutually exclusive", field, checkout.Mode)
+			} else if len(checkout.Sparse) > 0 {
+				r.addWarning(WarningCompatibility, file, "", "Gaggle", name,
+					"%s.sparse is not honored by the local runner", field)
+			}
+			if checkout.Mode != apiv1.CheckoutModePinned && checkout.CleanPolicy != "" {
+				r.add(errorCheckoutConflict, Error, file, "Gaggle", name,
+					"%s.cleanPolicy requires mode %q", field, apiv1.CheckoutModePinned)
+			}
 		}
 		warn("spec.project.checkout", g.Spec.Project.Checkout)
 		for i := range g.Spec.AdditionalRepos {

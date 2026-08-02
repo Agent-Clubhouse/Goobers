@@ -561,6 +561,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
 	}
+	lease, err := r.acquirePinnedWorkspace(ctx, jr, &startIn)
+	if err != nil {
+		return Result{}, err
+	}
+	if lease != nil {
+		defer func() { _ = lease.Release() }()
+	}
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
 	setStalledAttemptContext(ctx)

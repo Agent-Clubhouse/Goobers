@@ -64,6 +64,9 @@ type Manager struct {
 	// unconfigured Manager, so the default path issues byte-identical git
 	// invocations to previous releases.
 	partialClone bool
+	// pinnedRoot is the node-wide root for persistent pinned workspaces. It may
+	// differ from Root, which remains gaggle-scoped for disposable worktrees.
+	pinnedRoot string
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -148,6 +151,16 @@ func WithPartialClone() ManagerOption {
 	}
 }
 
+// WithPinnedRoot sets the node-wide root shared by pinned workspaces across
+// gaggles targeting the same repository.
+func WithPinnedRoot(root string) ManagerOption {
+	return func(m *Manager) {
+		if root != "" {
+			m.pinnedRoot = root
+		}
+	}
+}
+
 // NewManager returns a Manager rooted at root, creating the directory if it
 // does not already exist. root is resolved to an absolute path immediately
 // (#282): every path this package derives from Root (repoDirForKey,
@@ -186,6 +199,18 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.pinnedRoot == "" {
+		m.pinnedRoot = abs
+	} else {
+		pinnedAbs, err := filepath.Abs(m.pinnedRoot)
+		if err != nil {
+			return nil, fmt.Errorf("worktree: resolve absolute pinned root for %s: %w", m.pinnedRoot, err)
+		}
+		if err := os.MkdirAll(pinnedAbs, 0o755); err != nil {
+			return nil, fmt.Errorf("worktree: create pinned root %s: %w", pinnedAbs, err)
+		}
+		m.pinnedRoot = pinnedAbs
 	}
 	return m, nil
 }
