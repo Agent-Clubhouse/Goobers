@@ -84,7 +84,14 @@ func TestPinnedDiffUsesRefreshedBaseAfterConsecutiveRun(t *testing.T) {
 }
 
 func TestPreparePinnedSelectsRemoteBranchAndSyncsLatestBase(t *testing.T) {
-	manager, repo := pinnedFixture(t)
+	_, repo := pinnedFixture(t)
+	manager, err := NewManager(t.TempDir(), WithPinnedRoot(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Root == manager.pinnedRoot {
+		t.Fatal("test requires distinct disposable and pinned roots")
+	}
 	runTestGit(t, repo, "branch", "goobers/remediation/pr", "main")
 	lease := acquirePinnedFixture(t, manager, repo, "run-one", PinnedCleanNone)
 	defer func() { _ = lease.Release() }()

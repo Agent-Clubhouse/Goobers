@@ -324,7 +324,7 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 	if opts.BaseRef == "" || opts.Branch == "" {
 		return fmt.Errorf("worktree: pinned stage BaseRef and Branch are required")
 	}
-	repoDir := wt.manager.repoDirForKey(wt.key)
+	repoDir := filepath.Join(wt.manager.pinnedRoot, wt.key, "repo.git")
 	refspecs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 	if err := wt.manager.runRemoteGit(ctx, wt.repoURL, repoDir, append([]string{"fetch", "--prune", "origin"}, refspecs...)...); err != nil {
 		return fmt.Errorf("worktree: refresh pinned mirror: %w", err)
