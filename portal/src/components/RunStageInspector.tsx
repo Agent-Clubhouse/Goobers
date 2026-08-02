@@ -131,6 +131,16 @@ export function RunStageInspector({
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const stageId = node?.id;
+  const selectedEvidenceKey = selectedEvidence
+    ? `${selectedEvidence.branch}-${selectedEvidence.seq}`
+    : undefined;
+  useEffect(() => {
+    setAttempts([]);
+    setSelectedId(undefined);
+    setLoadState("idle");
+    setError(undefined);
+  }, [runId, selectedEvidenceKey, stageId]);
+
   // Bumped by a live event for this run, which re-runs the fetch below.
   //
   // #1714: the attempt list was fetched in a plain effect keyed on
@@ -182,7 +192,6 @@ export function RunStageInspector({
       .then((list) => {
         setAttempts(list.attempts);
         setLoadState("idle");
-        setSelectedId(undefined);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
@@ -302,7 +311,7 @@ export function RunStageInspector({
             </div>
           )}
 
-          {loadState === "idle" &&
+          {(loadState === "idle" || visible.length > 0) &&
             (visible.length === 0 ? (
               <div className="not-reached">
                 <span>Not reached at this point</span>

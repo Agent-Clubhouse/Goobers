@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import type {
   AttemptList,
+  ArtifactContent,
   DaemonEventStream,
   DaemonUpdateEvent,
   EventStreamRequest,
@@ -33,8 +34,26 @@ class LiveAttemptsClient extends FixtureDaemonClient {
           startedSeq: 9,
           finishedSeq: index + 1 === this.attemptCount ? undefined : 10,
           durationMillis: 1500,
-          artifacts: [],
+          artifacts: [
+            {
+              name: "result.txt",
+              digest: "sha256:result",
+              size: 15,
+              mediaType: "text/plain",
+              recordedSeq: 9,
+            },
+          ],
         })),
+      }),
+  );
+  readonly getArtifact = vi.fn(
+    (): Promise<ArtifactContent> =>
+      Promise.resolve({
+        digest: "sha256:result",
+        mediaType: "text/plain",
+        size: 15,
+        etag: null,
+        bytes: new TextEncoder().encode("durable content").buffer,
       }),
   );
 
@@ -63,6 +82,17 @@ class LiveAttemptsClient extends FixtureDaemonClient {
         data: { cursor: id, models: ["run"], runIds: [runId], workflows: [] },
       } as unknown as DaemonUpdateEvent,
     });
+  }
+}
+
+async function pushRefreshes(client: LiveAttemptsClient, count: number): Promise<void> {
+  let calls = client.listStageAttempts.mock.calls.length;
+  for (let index = 1; index <= count; index += 1) {
+    client.push("run-1", `session:refresh-${index}`);
+    await waitFor(() =>
+      expect(client.listStageAttempts.mock.calls.length).toBeGreaterThan(calls),
+    );
+    calls = client.listStageAttempts.mock.calls.length;
   }
 }
 
@@ -127,5 +157,31 @@ describe("run stage inspector live refresh", () => {
     });
 
     expect(client.listStageAttempts.mock.calls.length).toBe(before);
+  });
+
+  it("keeps expanded artifact content visible across three live refreshes", async () => {
+    const client = new LiveAttemptsClient(populatedDaemonFixtures());
+    render(wrap(client, <RunStageInspector client={client} node={node} runId="run-1" selectedSeq={9} />));
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    expect(await screen.findByText("durable content")).toBeInTheDocument();
+
+    await pushRefreshes(client, 3);
+
+    expect(screen.getByText("durable content")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View content" })).not.toBeInTheDocument();
+  });
+
+  it("keeps unexpanded artifact content collapsed across three live refreshes", async () => {
+    const client = new LiveAttemptsClient(populatedDaemonFixtures());
+    render(wrap(client, <RunStageInspector client={client} node={node} runId="run-1" selectedSeq={9} />));
+
+    expect(await screen.findByRole("button", { name: "View content" })).toBeInTheDocument();
+
+    await pushRefreshes(client, 3);
+
+    expect(screen.getByRole("button", { name: "View content" })).toBeInTheDocument();
+    expect(screen.queryByText("durable content")).not.toBeInTheDocument();
+    expect(client.getArtifact).not.toHaveBeenCalled();
   });
 });
