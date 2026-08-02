@@ -65,6 +65,7 @@ type Manager struct {
 	// invocations to previous releases.
 	partialClone bool
 
+	pathLengthMu     sync.RWMutex
 	pathLengthLimits map[string]PathLengthLimit
 }
 
@@ -172,6 +173,29 @@ func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
 		}
 		m.pathLengthLimits[repoURL] = limit
 	}
+}
+
+// SetPathLengthLimits atomically replaces the repository path-length policy.
+// Replacing rather than merging ensures repositories disabled or removed by a
+// configuration reload no longer retain their prior limits.
+func (m *Manager) SetPathLengthLimits(limits map[string]PathLengthLimit) {
+	replacement := make(map[string]PathLengthLimit, len(limits))
+	for repoURL, limit := range limits {
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		replacement[repoURL] = limit
+	}
+	m.pathLengthMu.Lock()
+	m.pathLengthLimits = replacement
+	m.pathLengthMu.Unlock()
+}
+
+func (m *Manager) pathLengthLimit(repoURL string) (PathLengthLimit, bool) {
+	m.pathLengthMu.RLock()
+	defer m.pathLengthMu.RUnlock()
+	limit, ok := m.pathLengthLimits[repoURL]
+	return limit, ok
 }
 
 // NewManager returns a Manager rooted at root, creating the directory if it

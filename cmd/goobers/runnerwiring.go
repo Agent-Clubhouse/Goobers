@@ -1801,6 +1801,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
+	pathLimits, pathLimitsErr := pathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
+	if pathLimitsErr != nil {
+		return runner.Config{}, nil, pathLimitsErr
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1811,11 +1815,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 		}
-		pathOptions, pathOptionsErr := pathLengthManagerOptions(cfg, cloneURLFn, runtime.GOOS)
-		if pathOptionsErr != nil {
-			return runner.Config{}, nil, pathOptionsErr
+		for repoURL, limit := range pathLimits {
+			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
 		}
-		managerOptions = append(managerOptions, pathOptions...)
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
@@ -2094,11 +2096,24 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if tel != nil {
 		rc.Telemetry = tel
 	}
+	wtMgr.SetPathLengthLimits(pathLimits)
 	return rc, wtMgr, nil
 }
 
 func pathLengthManagerOptions(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) ([]worktree.ManagerOption, error) {
-	var options []worktree.ManagerOption
+	limits, err := pathLengthManagerLimits(cfg, cloneURL, goos)
+	if err != nil {
+		return nil, err
+	}
+	options := make([]worktree.ManagerOption, 0, len(limits))
+	for repoURL, limit := range limits {
+		options = append(options, worktree.WithPathLengthLimit(repoURL, limit))
+	}
+	return options, nil
+}
+
+func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {
+	limits := make(map[string]worktree.PathLengthLimit)
 	for i, repo := range cfg.Repos {
 		if repo.PathLength != nil && repo.PathLength.Disabled {
 			continue
@@ -2123,9 +2138,9 @@ func pathLengthManagerOptions(cfg *instance.Config, cloneURL func(apiv1.RepoRef)
 			}
 			limit.BuildOutputAllowance = repo.PathLength.BuildOutputAllowance
 		}
-		options = append(options, worktree.WithPathLengthLimit(url, limit))
+		limits[url] = limit
 	}
-	return options, nil
+	return limits, nil
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

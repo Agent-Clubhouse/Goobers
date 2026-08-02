@@ -354,6 +354,39 @@ func TestManagerCreatePathLengthPreflightAllowsFittingCheckout(t *testing.T) {
 	}
 }
 
+func TestManagerSetPathLengthLimitsReplacesPolicy(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: 1},
+	})
+	if _, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "enabled", BaseRef: "main"}); err == nil {
+		t.Fatal("Create succeeded after enabling an exhausted path budget")
+	}
+
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: 1024},
+	})
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "changed", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create after raising path budget: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove changed-policy worktree: %v", err)
+	}
+
+	m.SetPathLengthLimits(nil)
+	wt, err = m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "disabled", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create after disabling path preflight: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove disabled-policy worktree: %v", err)
+	}
+}
+
 // mirrorRefExists reports whether refs/heads/<branch> exists in the managed
 // mirror for repo — used to assert the mirror prune did or did not delete a
 // local-only run branch. Non-fatal (git exits non-zero when the ref is absent),

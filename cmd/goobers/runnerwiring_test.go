@@ -1292,6 +1292,75 @@ func TestPathLengthManagerOptions(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
+	previousCloneURL := repoCloneURL
+	origin := initBareOrigin(t)
+	repoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+
+	layout := instance.NewLayout(t.TempDir())
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	layout = layout.ForGaggle("example")
+	repo := instance.RepoRef{
+		Provider:   "github",
+		Owner:      "acme",
+		Name:       "web",
+		PathLength: &instance.RepoPathLengthConfig{Disabled: true},
+	}
+	build := func(manager *worktree.Manager) *worktree.Manager {
+		t.Helper()
+		_, manager, err := buildRunnerConfig(
+			layout,
+			&instance.Config{Repos: []instance.RepoRef{repo}},
+			map[string]apiv1.GooberSpec{},
+			map[string]string{},
+			nil,
+			journal.NewRegistryScrubber(),
+			manager,
+			nil,
+			apiv1.RepoRef{},
+			nil,
+			harnessPreflightInfo{},
+			nil,
+			instance.SandboxDisabled,
+		)
+		if err != nil {
+			t.Fatalf("buildRunnerConfig: %v", err)
+		}
+		return manager
+	}
+
+	manager := build(nil)
+	repo.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 1}
+	reused := build(manager)
+	if reused != manager {
+		t.Fatal("config reload replaced the worktree manager")
+	}
+	if _, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "enabled-after-reload",
+		BaseRef: "main",
+	}); err == nil {
+		t.Fatal("Create succeeded after reload enabled an exhausted path budget")
+	}
+
+	repo.PathLength.Disabled = true
+	build(manager)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "disabled-after-reload",
+		BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create after reload disabled path preflight: %v", err)
+	}
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	testBin, err := os.Executable()
 	if err != nil {

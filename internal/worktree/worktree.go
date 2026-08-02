@@ -173,7 +173,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}()
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
-	if limit, ok := m.pathLengthLimits[opts.RepoURL]; ok {
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
 		ref := opts.BaseRef
 		if existingBranch {
 			ref = opts.Branch
