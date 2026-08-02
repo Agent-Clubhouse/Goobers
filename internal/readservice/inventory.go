@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
@@ -226,14 +228,26 @@ type WorkflowPage struct {
 	Page  PageInfo          `json:"page"`
 }
 
-// StageDefinition is the display-safe current definition of one graph node.
+// StageDefinition is the display-safe current definition of one graph node. It
+// carries both a curated set of commonly-inspected fields for tabular display
+// and RawYAML, the actual loaded Task/Gate config marshaled back to YAML, so
+// the portal can show ground truth (e.g. an exact timeout value) without a
+// second round trip to the source file (#2185).
 type StageDefinition struct {
-	Name         string                 `json:"name"`
-	Kind         workflow.GraphNodeKind `json:"kind"`
-	Goal         string                 `json:"goal"`
-	Owner        *GooberReference       `json:"owner"`
-	Evaluator    apiv1.EvaluatorKind    `json:"evaluator"`
-	Capabilities []string               `json:"capabilities"`
+	Name                 string                 `json:"name"`
+	Kind                 workflow.GraphNodeKind `json:"kind"`
+	Goal                 string                 `json:"goal"`
+	Owner                *GooberReference       `json:"owner"`
+	Evaluator            apiv1.EvaluatorKind    `json:"evaluator"`
+	Capabilities         []string               `json:"capabilities"`
+	TimeoutSeconds       int32                  `json:"timeoutSeconds,omitempty"`
+	Retry                *apiv1.RetryPolicy     `json:"retry,omitempty"`
+	PolicyActions        []string               `json:"policyActions,omitempty"`
+	OnTimeout            string                 `json:"onTimeout,omitempty"`
+	RequiredCapabilities []string               `json:"requiredCapabilities,omitempty"`
+	Branches             map[string]string      `json:"branches,omitempty"`
+	MaxRepasses          int32                  `json:"maxRepasses,omitempty"`
+	RawYAML              string                 `json:"rawYaml"`
 }
 
 // WorkflowDetail adds the canonical graph and stage definitions to the summary.
@@ -710,11 +724,17 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			owner = &ref
 		}
 		stages = append(stages, StageDefinition{
-			Name:         task.Name,
-			Kind:         workflow.GraphNodeKind(task.Type),
-			Goal:         task.Goal,
-			Owner:        owner,
-			Capabilities: sortedStrings(task.Capabilities),
+			Name:                 task.Name,
+			Kind:                 workflow.GraphNodeKind(task.Type),
+			Goal:                 task.Goal,
+			Owner:                owner,
+			Capabilities:         sortedStrings(task.Capabilities),
+			TimeoutSeconds:       task.TimeoutSeconds,
+			Retry:                task.Retry,
+			PolicyActions:        sortedStrings(task.PolicyActions),
+			OnTimeout:            task.OnTimeout,
+			RequiredCapabilities: sortedStrings(task.RequiredCapabilities),
+			RawYAML:              stageRawYAML(task),
 		})
 	}
 	for _, gate := range def.Spec.Gates {
@@ -723,12 +743,32 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			ref := GooberReference{Gaggle: def.Spec.Gaggle, Name: gate.Agentic.Goober}
 			owner = &ref
 		}
+		var timeoutSeconds int32
+		var retry *apiv1.RetryPolicy
+		var onTimeout string
+		switch {
+		case gate.Automated != nil:
+			timeoutSeconds = gate.Automated.TimeoutSeconds
+			retry = gate.Automated.Retry
+		case gate.Agentic != nil:
+			timeoutSeconds = gate.Agentic.TimeoutSeconds
+			retry = gate.Agentic.Retry
+		case gate.Human != nil:
+			timeoutSeconds = gate.Human.TimeoutSeconds
+			onTimeout = gate.Human.OnTimeout
+		}
 		stages = append(stages, StageDefinition{
-			Name:         gate.Name,
-			Kind:         workflow.GraphNodeGate,
-			Owner:        owner,
-			Evaluator:    gate.Evaluator,
-			Capabilities: []string{},
+			Name:           gate.Name,
+			Kind:           workflow.GraphNodeGate,
+			Owner:          owner,
+			Evaluator:      gate.Evaluator,
+			Capabilities:   []string{},
+			TimeoutSeconds: timeoutSeconds,
+			Retry:          retry,
+			OnTimeout:      onTimeout,
+			Branches:       gate.Branches,
+			MaxRepasses:    gate.MaxRepasses,
+			RawYAML:        stageRawYAML(gate),
 		})
 	}
 	for _, parallel := range def.Spec.Parallels {
@@ -739,6 +779,17 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 		})
 	}
 	return stages
+}
+
+// stageRawYAML marshals a task or gate back to the YAML shape it was loaded
+// from. A marshal failure (not expected for these plain data structs) yields
+// an empty string rather than failing the whole inventory read.
+func stageRawYAML(stage any) string {
+	raw, err := yaml.Marshal(stage)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func workflowWarnings(inventory *inventoryProjection, def *apiv1.Workflow) []validate.CodedWarning {

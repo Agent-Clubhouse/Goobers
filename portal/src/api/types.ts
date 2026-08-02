@@ -296,6 +296,11 @@ export interface WorkflowGraphEdge {
   branch?: string;
 }
 
+export interface RetryPolicy {
+  maxAttempts: number;
+  backoffSeconds?: number;
+}
+
 export interface StageDefinition {
   name: string;
   kind: GraphNodeKind;
@@ -303,6 +308,15 @@ export interface StageDefinition {
   owner: GooberReference | null;
   evaluator: EvaluatorKind | "";
   capabilities: string[];
+  timeoutSeconds?: number;
+  retry?: RetryPolicy | null;
+  policyActions?: string[];
+  onTimeout?: string;
+  requiredCapabilities?: string[];
+  branches?: Record<string, string>;
+  maxRepasses?: number;
+  /** The stage's Task/Gate config as actually loaded, marshaled back to YAML — ground truth for values like timeout (#2185). */
+  rawYaml: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

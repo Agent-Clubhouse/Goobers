@@ -177,6 +177,8 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: null,
         evaluator: "",
         capabilities: ["github:issues:write"],
+        timeoutSeconds: 120,
+        rawYaml: "name: query\ntype: deterministic\ngoal: Claim the next approved backlog item.\ncapabilities:\n- github:issues:write\ntimeoutSeconds: 120\n",
       },
       {
         name: "implement",
@@ -185,6 +187,11 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "",
         capabilities: ["repo:push"],
+        timeoutSeconds: 3600,
+        retry: { maxAttempts: 2, backoffSeconds: 30 },
+        policyActions: ["pr:open"],
+        rawYaml:
+          "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item in an isolated worktree.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n",
       },
       {
         name: "review",
@@ -193,6 +200,9 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "agentic",
         capabilities: ["repo:read"],
+        branches: { pass: "", "needs-changes": "implement" },
+        rawYaml:
+          "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n",
       },
     ],
   };
