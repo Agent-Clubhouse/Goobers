@@ -26,7 +26,7 @@ func (r *configSourceReconciler) Run(ctx context.Context) error {
 	if err != nil {
 		r.errors.report(fmt.Errorf("watch local workflow source: %w", err))
 	} else if watcher != nil {
-		defer watcher.Close()
+		defer func() { _ = watcher.Close() }()
 	}
 
 	ticker := time.NewTicker(configReloadInterval)
