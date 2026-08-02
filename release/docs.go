@@ -16,37 +16,56 @@ const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
 	readmeSourceInstall = "No tagged release exists yet, so build from source with the Go toolchain\n" +
-		"declared in [`go.mod`](go.mod) and run the CLI from `bin/`:\n\n" +
+		"declared in [`go.mod`](go.mod). The fastest first run is the hermetic demo:\n\n" +
 		"```sh\n" +
 		"make build   # or: go build -o bin/goobers ./cmd/goobers\n\n" +
-		"bin/goobers init ./my-instance\n\n"
-	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
+		"bin/goobers init --demo ./demo-instance\n" +
+		"bin/goobers run demo ./demo-instance\n" +
+		"bin/goobers trace <run-id> ./demo-instance\n" +
+		"```\n\n" +
+		"The demo runs the full curate -> implement -> review -> merge-preview loop on\n" +
+		"Linux or macOS with mock providers, no credentials, and no network writes. It\n" +
+		"also shows how a run pauses at a gate before completing.\n\n" +
+		"From there, graduate in this order:\n\n" +
+		"1. Seed the disposable, token-bearing `quickstart@v1` path with\n" +
+		"   `bin/goobers init --template=quickstart ./tutorial-instance`.\n" +
+		"2. Scaffold a regular instance with `bin/goobers init ./my-instance` and run\n" +
+		"   its starter workflow with\n" +
+		"   `bin/goobers run default-implement ./my-instance`.\n" +
+		"3. Adapt the production-oriented definitions under [`config-examples/`](config-examples/),\n" +
+		"   which add review, CI, remediation, escalation, and merge-policy patterns.\n\n" +
+		"The [full quickstart](docs/guides/quickstart.md) walks through that progression\n" +
+		"and the remaining CLI surfaces.\n\n" +
+		"For a regular instance, the core inspection and operator commands are:\n\n" +
+		"```sh\n"
+	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
-	quickstartSourceInit = "## 2. `init` — scaffold an instance root\n\n" +
+	quickstartSourceInit = "## 3. `init` — scaffold a regular instance root\n\n" +
 		"```sh\n" +
 		"bin/goobers init ./my-instance\n" +
 		"```\n\n" +
 		"Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one\n" +
-		"implement-only workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
+		"`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
 		"`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each\n" +
-		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing\n" +
-		"pieces are left untouched.\n\n"
-	quickstartInstalledInit = "## 2. Use or create a guided instance\n\n" +
+		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —\n" +
+		"existing pieces are left untouched.\n\n"
+	quickstartInstalledInit = "## 3. Use or create a guided instance\n\n" +
 		"The release installer already ran guided setup at the requested instance path\n" +
 		"(default `./goobers-instance`). If you used the installer, do not initialize that\n" +
 		"instance again. In the commands below, replace `./my-instance` with that same path,\n" +
 		"quoting it if needed.\n\n" +
 		"If you already followed the bundled README and created `./my-instance`, continue\n" +
-		"with step 3 below. Otherwise, create that guided instance now:\n\n" +
+		"with step 4 below. Otherwise, create that guided instance now:\n\n" +
 		"```sh\n" +
 		"goobers init --guided ./my-instance\n" +
 		"```\n\n" +
 		"Keep the default workflow selection, or explicitly select `implementation`, so\n" +
 		"the first manual run below uses the workflow the guided setup created. Guided\n" +
 		"setup validates the instance and refuses an already configured target.\n\n"
-	quickstartSourceOnboardingAssets = "For a first autonomous run against a disposable tutorial target, seed the\n" +
-		"versioned `quickstart@v1` template and copy its paired sample into a separate\n" +
-		"throwaway directory:\n\n" +
+	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
+		"against a disposable GitHub repository. This path requires a GitHub token and\n" +
+		"an authenticated Copilot CLI. Copy the paired sample into a separate throwaway\n" +
+		"directory:\n\n" +
 		"```sh\n" +
 		"bin/goobers onboarding stub-sample \\\n" +
 		"  --destination ./getting-started-task-api \\\n" +
@@ -60,10 +79,13 @@ const (
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
 		"sample without network access. It never creates or pushes a remote.\n\n"
-	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
-	quickstartSourceStatusWorkflow    = "default-implement         example"
-	quickstartInstalledStatusWorkflow = "implementation            example"
-	linuxQuickstartSourceIntro        = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
+	quickstartSourceGraduationWorkflow = "3. Scaffold a regular instance and run its starter `default-implement`\n" +
+		"   workflow."
+	quickstartInstalledGraduationWorkflow = "3. Use a regular guided instance and run its `implementation` workflow."
+	quickstartSourceRun                   = "bin/goobers run default-implement ./my-instance"
+	quickstartSourceStatusWorkflow        = "default-implement         example"
+	quickstartInstalledStatusWorkflow     = "implementation            example"
+	linuxQuickstartSourceIntro            = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
 		"build, configure credentials, and drive a first run. This is the Linux-specific\n" +
 		"companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI\n" +
 		"surface is identical; this page calls out the few things that are Linux-specific\n" +
@@ -212,6 +234,19 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 						"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
 							"a newer release cannot change this walkthrough:\n\n"+
 							"```sh\n%s --version\n```\n\n"+
+							"The fastest first run is the hermetic demo:\n\n"+
+							"```sh\n"+
+							"%s init --demo ./demo-instance\n"+
+							"%s run demo ./demo-instance\n"+
+							"%s trace <run-id> ./demo-instance\n"+
+							"```\n\n"+
+							"The demo runs the full curate -> implement -> review -> merge-preview loop with\n"+
+							"mock providers, no credentials, and no network writes. From there, graduate to\n"+
+							"the token-bearing `quickstart@v1` template with\n"+
+							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
+							"instance and the\n"+
+							"production-oriented definitions under [`config-examples/`](config-examples/).\n\n"+
+							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
 							"The release installer already ran guided setup at the requested instance path\n"+
 							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
 							"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
@@ -220,6 +255,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"below with `./goobers` and create the guided instance now:\n\n"+
 							"```sh\n%s init --guided ./my-instance\n\n",
 						version,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
 						releaseCommand,
 						releaseCommand,
 						releaseCommand,
@@ -255,12 +294,16 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				{
 					source: quickstartSourceBuild,
 					installed: fmt.Sprintf(
-						"## 1. Confirm the installed binary\n\n"+
+						"## Confirm the installed binary\n\n"+
 							"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
 							"```sh\n%s --version\n```\n\n",
 						version,
 						releaseCommand,
 					),
+				},
+				{
+					source:    quickstartSourceGraduationWorkflow,
+					installed: quickstartInstalledGraduationWorkflow,
 				},
 				{
 					source: quickstartSourceInit,
