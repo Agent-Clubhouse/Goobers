@@ -60,7 +60,7 @@ stage-launch.
 
 | Stack | Tier | Reference | Status |
 |---|---|---|---|
-| Go | First-class — shipped reference + green test | Goobers self-hosting (`selfhost/gaggles/goobers/`) | Shipped, green |
+| Go | First-class — shipped reference + green test | Goobers canonical reference (`reference-workflows/gaggles/goobers/`) | Shipped, green |
 | .NET/C# | First-class — shipped reference + green test | `config-examples/gaggles/dotnet-service/` | Shipped, green |
 | Node/TypeScript | First-class — shipped reference + green test | `config-examples/gaggles/acme-web/` | Shipped, green |
 | Java | Planned | `config-examples/gaggles/java-service/` | Toolchain capability (prober + env allowlist) landed (#2168); reference gaggle open (#2169) |
