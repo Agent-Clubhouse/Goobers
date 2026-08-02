@@ -37,6 +37,9 @@ func renderFeatureMatrix() (string, error) {
 	b.WriteString("the DSL versions declared by this binary. ")
 	b.WriteString("Run `goobers features` to print this table from the running binary, or ")
 	b.WriteString("`goobers features --dsl-version <version>` to scope it to one DSL version.\n\n")
+	b.WriteString("This DSL and the runner that executes it are stack-neutral; see ")
+	b.WriteString("[Stack support](guides/stack-support.md) for which parts of Goobers are ")
+	b.WriteString("generic vs. what a gaggle must declare for its own language/toolchain.\n\n")
 	b.WriteString("| Feature | DSL version | Feature support | Version support | Since app version |\n")
 	b.WriteString("| --- | --- | --- | --- | --- |\n")
 	for _, row := range rows {

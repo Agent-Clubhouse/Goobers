@@ -8,7 +8,7 @@ spec:
   displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
   # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
   # goobers:ready issue, implement it in a worktree, pass it through a
-  # reviewer gate and a local `make ci`-style gate, open a PR, then poll CI
+  # reviewer gate and a local CI gate, open a PR, then poll CI
   # with a bounded repass loop back to implementation on failure. When this
   # closes, the core loop exists: feed issues in, PRs come out.
   triggers:
@@ -99,7 +99,7 @@ spec:
         acceptance criteria, plan, implement, verify with fast, targeted
         tests for what you changed, and commit to the run's branch (push is a
         separate deterministic stage — see push-branch below). Do NOT run the
-        full `make ci` / `go test -race ./...` suite in-session — the
+        full `npm run ci` suite in-session — the
         deterministic local-ci stage below owns that authoritatively; running
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
@@ -151,11 +151,12 @@ spec:
       onTimeout: salvage
       next: review
 
-    # `make ci`-equivalent, run on the implementation branch after syncing base.
-    # This gaggle declares `ciCommand: ["npm", "run", "ci"]` (gaggle.yaml), so at
-    # runtime the deterministic local-ci stage runs that suite instead of the
-    # command declared here (MGV-1/#1009) — this declaration is the fallback for
-    # a gaggle that declares no ciCommand.
+    # The local CI-equivalent gate, run on the implementation branch after
+    # syncing base. This gaggle declares `ciCommand: ["npm", "run", "ci"]`
+    # (gaggle.yaml), so at runtime the deterministic local-ci stage runs that
+    # suite instead of the Go-default command declared here (MGV-1/#1009) —
+    # this declaration is the fallback for a gaggle that declares no
+    # ciCommand.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.

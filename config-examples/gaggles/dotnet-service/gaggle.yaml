@@ -29,7 +29,7 @@ spec:
   # runs this in place of the Go default (`["make","ci"]`) its workflow
   # declares. `dotnet test` builds then runs the test suite, so this single
   # invocation covers `dotnet build && dotnet test`. A non-zero exit fails the
-  # gate exactly as `make ci` does, and only ever fails this gaggle's own PRs.
+  # gate exactly as that Go default does, and only ever fails this gaggle's own PRs.
   ciCommand: ["dotnet", "test"]
   # Runtime requirement (RRQ-1 / #1101): every run of this gaggle needs a runner
   # that claims the .NET toolchain. Toolchains are assumed PREINSTALLED (no

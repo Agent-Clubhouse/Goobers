@@ -4,6 +4,8 @@
 
 Every workflow-DSL feature this build of goobers understands, projected across the DSL versions declared by this binary. Run `goobers features` to print this table from the running binary, or `goobers features --dsl-version <version>` to scope it to one DSL version.
 
+This DSL and the runner that executes it are stack-neutral; see [Stack support](guides/stack-support.md) for which parts of Goobers are generic vs. what a gaggle must declare for its own language/toolchain.
+
 | Feature | DSL version | Feature support | Version support | Since app version |
 | --- | --- | --- | --- | --- |
 | `gaggle.spec.project.checkout.sparse` | 1.4 | preview | supported | dev |
