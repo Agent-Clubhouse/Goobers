@@ -181,7 +181,8 @@ spec:
         scopeGateParked: scopeGateParked
       inputs:
         resultFile: "verdict-result.json"
-        # MUST match elect-lander's electionPolicy below. apply-verdict
+        # MUST match elect-lander's electionPolicy below (see its comment for
+        # the full list of legal values, including "race", #2268). apply-verdict
         # re-derives the election itself rather than receiving it: `elected` is
         # emitted only by elect-lander, and this stage is also reached directly
         # from the review gate (where the preceding task is
@@ -243,8 +244,14 @@ spec:
         # "newest" (highest PR#). Cluster-data (#1028/#1029, opt-in): "most-
         # blockers" (elect the PR the most open siblings are blocked on — drains
         # the cluster fastest) or "fewest-overlaps" (elect the PR sharing the
-        # fewest files with siblings — smallest reconcile surface). An unknown
-        # value falls back to fifo. MUST match apply-verdict's electionPolicy.
+        # fewest files with siblings — smallest reconcile surface). "race"
+        # (#2268, opt-in): thisPR always wins its cluster regardless of sibling
+        # numbering or state — for a dedicated fast-track lane (separate
+        # workflow instance, e.g. a critical/urgent branch prefix) that must
+        # not couple a defect-free PR's landing speed to sibling sequencing at
+        # all; NOT for this shared lane, where fifo's ordering guarantee is the
+        # point. An unknown value falls back to fifo. MUST match apply-verdict's
+        # electionPolicy.
         electionPolicy: "fifo"
       capabilities:
         - github:pr:write
