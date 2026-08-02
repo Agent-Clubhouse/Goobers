@@ -52,6 +52,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'report-pr-status'
         'gate-removal-guard'
         'issue-close-out'
+        'pr-comment-watch'
         'set-milestone'
         'merge-pr'
         'record-merge-refusal'
