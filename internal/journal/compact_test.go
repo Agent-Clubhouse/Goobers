@@ -146,3 +146,82 @@ func TestCompactInstanceEventsPreservesTornTail(t *testing.T) {
 		t.Fatalf("torn tail not preserved: %s", out)
 	}
 }
+
+func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first, _, err := OpenInstanceLog(dir, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	second, _, err := OpenInstanceLog(dir, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+
+	if err := first.Append(Event{Type: EventTickSkipped, Workflow: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(48 * time.Hour)
+	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "recent"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := first.Compact(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if result.Dropped != 1 || result.Kept != 1 {
+		t.Fatalf("compaction = %+v, want one dropped and one kept", result)
+	}
+	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "after"}); err != nil {
+		t.Fatalf("append through independently opened handle after compaction: %v", err)
+	}
+
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Workflow != "recent" || events[1].Workflow != "after" || events[1].Seq != 3 {
+		t.Fatalf("events after live compaction = %#v", events)
+	}
+}
+
+func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	log, _, err := OpenInstanceLog(dir, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+
+	const ticks = 500
+	for i := 0; i < ticks; i++ {
+		now = now.Add(time.Second)
+		if err := log.Append(Event{Type: EventTickSkipped, Workflow: "implement", Reason: "conditions: max-parallel"}); err != nil {
+			t.Fatalf("append tick %d: %v", i, err)
+		}
+		if (i+1)%50 == 0 {
+			if _, err := log.Compact(now.Add(-10 * time.Second)); err != nil {
+				t.Fatalf("compact after tick %d: %v", i, err)
+			}
+		}
+	}
+
+	info, err := os.Stat(filepath.Join(dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 8*1024 {
+		t.Fatalf("steady-state journal grew to %d bytes after %d ticks", info.Size(), ticks)
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) > 11 {
+		t.Fatalf("steady-state journal retained %d events, want at most 11", len(events))
+	}
+}

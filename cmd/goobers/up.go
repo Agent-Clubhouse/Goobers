@@ -535,6 +535,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: prune retained telemetry: %v\n", err)
 		return 1
 	}
+	if err := compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, time.Now()); err != nil {
+		pf(stderr, "error: retain scheduler telemetry: %v\n", err)
+		return 1
+	}
 	for _, result := range telemetryPruned {
 		pf(stdout, "telemetry pruned run=%q reason=%s\n", result.RunID, result.Reason)
 	}
@@ -827,6 +831,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
+				if err == nil {
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+				}
 				telemetryRetentionErrors.report(err)
 			}
 		}

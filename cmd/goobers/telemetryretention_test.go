@@ -93,6 +93,50 @@ func TestConfiguredTelemetryRetentionDefaultsOffThenPrunes(t *testing.T) {
 	}
 }
 
+func TestCompactSchedulerRetentionBoundsLiveJournalAndRollup(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	eventTime := now.Add(-48 * time.Hour)
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time {
+		return eventTime
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = instanceLog.Close() }()
+	if err := instanceLog.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = now
+	if err := instanceLog.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "recent"}); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := compactSchedulerRetention(context.Background(), instance.TelemetryRetentionConfig{Window: "24h"}, db, instanceLog, now); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Workflow != "recent" {
+		t.Fatalf("retained journal events = %#v", events)
+	}
+	rolledUp, err := db.SchedulerEvents(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolledUp) != 1 || rolledUp[0].Workflow != "recent" {
+		t.Fatalf("retained scheduler rows = %#v", rolledUp)
+	}
+}
+
 func createTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID string, startedAt time.Time) string {
 	t.Helper()
 	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {

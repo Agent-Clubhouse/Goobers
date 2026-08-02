@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -47,4 +50,35 @@ func pruneConfiguredTelemetryRetention(
 		return nil, nil
 	}
 	return pruneTelemetryRetention(layout, config, db, now, false)
+}
+
+func compactSchedulerRetention(
+	ctx context.Context,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	instanceLog *journal.InstanceLog,
+	now time.Time,
+) error {
+	window, err := config.WindowDuration()
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-window)
+
+	if db != nil {
+		if instanceLog != nil {
+			if err := db.IngestSchedulerLog(ctx, instanceLog.Dir()); err != nil {
+				return fmt.Errorf("ingest scheduler journal before retention: %w", err)
+			}
+		}
+		if _, err := db.PruneSchedulerBefore(ctx, cutoff); err != nil {
+			return fmt.Errorf("prune scheduler rollup rows: %w", err)
+		}
+	}
+	if instanceLog != nil {
+		if _, err := instanceLog.Compact(cutoff); err != nil {
+			return fmt.Errorf("compact scheduler journal: %w", err)
+		}
+	}
+	return nil
 }

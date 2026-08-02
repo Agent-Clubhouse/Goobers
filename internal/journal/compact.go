@@ -57,13 +57,33 @@ func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (Instan
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
 	}
-	result := InstanceEventsCompaction{BeforeBytes: info.Size(), AfterBytes: info.Size()}
+	result, compacted, err := compactInstanceEventsData(data, info.Size(), keepAfter)
+	if err != nil {
+		return InstanceEventsCompaction{}, err
+	}
+	if result.Dropped == 0 {
+		return result, nil // nothing aged out — leave the file untouched
+	}
+	if dryRun {
+		return result, nil
+	}
+	if err := WriteFileAtomic(path, compacted, 0o644); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: rewrite compacted instance log: %w", err)
+	}
+	if newInfo, statErr := os.Stat(path); statErr == nil {
+		result.AfterBytes = newInfo.Size()
+	}
+	return result, nil
+}
+
+func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Time) (InstanceEventsCompaction, []byte, error) {
+	result := InstanceEventsCompaction{BeforeBytes: beforeBytes, AfterBytes: beforeBytes}
 
 	// Only complete (newline-terminated) records are eligible; anything after
 	// the last newline is a torn in-flight write, kept verbatim as the tail.
 	end := bytes.LastIndexByte(data, '\n')
 	if end < 0 {
-		return result, nil
+		return result, data, nil
 	}
 	complete := data[:end+1]
 	tail := data[end+1:]
@@ -78,7 +98,7 @@ func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (Instan
 			Time time.Time `json:"time"`
 		}
 		if err := json.Unmarshal(bytes.TrimSpace(line), &meta); err != nil {
-			return InstanceEventsCompaction{}, fmt.Errorf("journal: compact decode record: %w", err)
+			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
 		}
 		if !keepAfter.IsZero() && meta.Time.Before(keepAfter) {
 			result.Dropped++
@@ -88,18 +108,53 @@ func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (Instan
 		result.Kept++
 	}
 	if result.Dropped == 0 {
-		return result, nil // nothing aged out — leave the file untouched
+		return result, data, nil
 	}
 	kept.Write(tail)
-	if dryRun {
-		result.AfterBytes = int64(kept.Len())
-		return result, nil
+	result.AfterBytes = int64(kept.Len())
+	return result, kept.Bytes(), nil
+}
+
+// Compact drops records older than keepAfter while the instance log remains
+// open. It rewrites the existing inode under both writer locks so concurrent
+// append handles continue writing to the active journal.
+func (l *InstanceLog) Compact(keepAfter time.Time) (InstanceEventsCompaction, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return InstanceEventsCompaction{}, ErrClosed
 	}
-	if err := WriteFileAtomic(path, kept.Bytes(), 0o644); err != nil {
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: rewrite compacted instance log: %w", err)
+
+	lock, err := acquireJournalLock(l.dir, "instance log")
+	if err != nil {
+		return InstanceEventsCompaction{}, err
 	}
-	if newInfo, statErr := os.Stat(path); statErr == nil {
-		result.AfterBytes = newInfo.Size()
+	defer releaseJournalLock(lock)
+
+	path := filepath.Join(l.dir, fileEvents)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
+	}
+	result, compacted, err := compactInstanceEventsData(data, int64(len(data)), keepAfter)
+	if err != nil || result.Dropped == 0 {
+		return result, err
+	}
+	if err := rewriteOpenInstanceLog(l.file, compacted); err != nil {
+		if restoreErr := rewriteOpenInstanceLog(l.file, data); restoreErr != nil {
+			return InstanceEventsCompaction{}, fmt.Errorf("journal: compact live instance log: %w (restore failed: %v)", err, restoreErr)
+		}
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: compact live instance log: %w", err)
 	}
 	return result, nil
+}
+
+func rewriteOpenInstanceLog(file *os.File, data []byte) error {
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
 }
