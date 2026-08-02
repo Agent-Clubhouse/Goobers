@@ -2184,6 +2184,11 @@ func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (inst
 	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
+	if project.Provider == apiv1.ProviderADO {
+		if repo, ok := adoRepoForGaggle(cfg, project); ok {
+			return repo, true
+		}
+	}
 	for _, repo := range cfg.Repos {
 		if repo.Provider == string(project.Provider) && repo.Owner == project.Owner &&
 			repo.Project == project.Project && repo.Name == project.Name {
