@@ -85,29 +85,47 @@ see.
    if evidence suggests it has (e.g. a sibling merged very recently, or
    your context notes staleness), file a `rebase-needed` finding rather
    than guessing at conflict severity.
-3. **Ordering dependency, and the substantive-vs-sequencing rule** — a
+3. **Actionable finding classes** — classify each concern by the remediation
+   task it requires:
+   - `conflict` — use only when evidence establishes that an attempted rebase
+     does not apply cleanly and specific conflicts require resolution. Do not
+     infer this merely because the base advanced; use `rebase-needed` when a
+     rebase is required but its outcome is unknown.
+   - `substantive` — an actual defect, regression, drift, or unhandled edge
+     case requires a product-code change.
+   - `missing-tests` — the behavior may be correct, but new or changed
+     behavior lacks the tests needed to establish and preserve correctness.
+   - `scope-creep` — unrelated changes exceed the originating issue and must
+     be removed.
+   - `contract-change` — the PR changes a load-bearing contract (for example,
+     a stage envelope, journal schema, or claim ledger) without the issue
+     authorizing that change.
+4. **Ordering dependency, and the code-change-vs-sequencing rule** — a
    logical dependency (the selected PR extends something a still-open
    sibling is introducing) is also `cross-pr-blocked`: name that PR in
    `blockingPrs`. Whether the block is a file overlap (1) or a logical
    dependency, the rule is the same: use `cross-pr-blocked` **only** when
    the selected PR is correct in isolation and is purely waiting on
    ordering. If you also found an actual defect in its own diff, file that
-   as `substantive` — a real defect always takes priority over sequencing
-   and routes to remediation. Never let a pure ordering concern hide a real
-   one, and never file a pure overlap/ordering block as `substantive`.
-4. **General readiness** — same bar as single-diff mode otherwise: is this
-   PR's own state (draft, CI) actually ready, independent of siblings?
-5. Decide `pass`/`needs-changes`/`fail` with the same semantics as
+   with the applicable code-change class from (3) — a real concern always
+   takes priority over sequencing and routes to remediation. Never let a
+   pure ordering concern hide a real one, and never file a pure
+   overlap/ordering block as a code-change class.
+5. **General readiness** — same bar as single-diff mode otherwise. CI is
+   deliberately not a finding: provider check failures travel to remediation
+   through the separate CI evidence channel, so do not invent a CI finding
+   class or use another class as a proxy.
+6. Decide `pass`/`needs-changes`/`fail` with the same semantics as
    single-diff mode (§ above) — `fail` for a fundamentally wrong PR, not a
    `rebase-needed`/`cross-pr-blocked` finding alone (those are routine,
    `needs-changes` outcomes, never `fail`).
-6. **Copy `selectedHeadSha`/`selectedBaseSha` into your verdict's `headSha`/
+7. **Copy `selectedHeadSha`/`selectedBaseSha` into your verdict's `headSha`/
    `baseSha` fields VERBATIM** — do not paraphrase, truncate, or
    reconstruct them from memory. These pin the verdict to the exact state
    you reviewed (design doc §6 D6); a wrong or missing SHA breaks the
    safety check that prevents merging something reviewed against a stale
    diff.
-7. Every finding in holistic mode MUST carry a `class` (see "Done" below)
+8. Every finding in holistic mode MUST carry a `class` (see "Done" below)
    — this is what routes the finding to the right remediation action.
    Single-diff mode findings never carry one.
 
@@ -152,8 +170,9 @@ populate differs.
   - `location` (optional) — the file/line the finding refers to, or (in
     holistic mode) the sibling PR number the finding concerns. Both modes.
   - `class` — **holistic mode only**: exactly one of `rebase-needed`,
-    `conflict`, `substantive`, `cross-pr-blocked` (see "Holistic mode"
-    above). Omit entirely in single-diff mode — do not set it there.
+    `conflict`, `substantive`, `missing-tests`, `scope-creep`,
+    `contract-change`, `cross-pr-blocked` (see "Holistic mode" above). Omit
+    entirely in single-diff mode — do not set it there.
   - `blockingPrs` (optional) — **`cross-pr-blocked` findings only**: the
     sibling PR number(s) this finding names, as an array of integers (e.g.
     `[350]`). REQUIRED whenever `class` is `cross-pr-blocked` — a

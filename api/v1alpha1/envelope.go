@@ -286,7 +286,8 @@ func (s Severity) Rank() int {
 // action (issue #358, design docs/design/v0/pr-lifecycle-loop.md §4 D1).
 // Empty on an ordinary in-run gate Finding (implementation's reviewer gate,
 // etc.) — classes are a PR-lifecycle-altitude concept only merge-review
-// populates.
+// populates. CI failures deliberately do not have a finding class: deterministic
+// provider check evidence reaches remediation through its separate CI channel.
 type FindingClass string
 
 const (
@@ -301,6 +302,15 @@ const (
 	// drift, a regression, a human/other-agent review comment, or a genuine
 	// defect the holistic review caught.
 	FindingSubstantive FindingClass = "substantive"
+	// FindingMissingTests means behavior lacks the tests needed to establish
+	// and preserve its correctness.
+	FindingMissingTests FindingClass = "missing-tests"
+	// FindingScopeCreep means changes unrelated to the requested work must be
+	// removed.
+	FindingScopeCreep FindingClass = "scope-creep"
+	// FindingContractChange means a load-bearing contract was changed without
+	// the requested work authorizing that change.
+	FindingContractChange FindingClass = "contract-change"
 	// FindingCrossPRBlocked means the PR is correct in isolation but must
 	// wait behind another PR (§7 serialization/ordering).
 	FindingCrossPRBlocked FindingClass = "cross-pr-blocked"
@@ -313,7 +323,18 @@ const (
 // to be set.
 func (c FindingClass) IsValid() bool {
 	switch c {
-	case FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked:
+	case FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingMissingTests,
+		FindingScopeCreep, FindingContractChange, FindingCrossPRBlocked:
+		return true
+	}
+	return false
+}
+
+// RequiresCodeChange reports whether resolving the finding belongs in the
+// existing substantive-remediation lane.
+func (c FindingClass) RequiresCodeChange() bool {
+	switch c {
+	case FindingConflict, FindingSubstantive, FindingMissingTests, FindingScopeCreep, FindingContractChange:
 		return true
 	}
 	return false

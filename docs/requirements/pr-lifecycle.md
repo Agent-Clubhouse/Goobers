@@ -128,8 +128,9 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   backstop that does not depend on the LLM reviewer noticing the collision.
 - **PRL-012 (MUST, Shipped):** The holistic review MUST emit a structured
   **Verdict**: `decision` (`pass` | `needs-changes` | `fail`), classed findings
-  (`rebase-needed`, `conflict`, `substantive`, `cross-pr-blocked` — the last
-  carrying `BlockingPRs`), summary/rationale, and a **SHA pin**
+  (`rebase-needed`, `conflict`, `substantive`, `missing-tests`, `scope-creep`,
+  `contract-change`, `cross-pr-blocked` — the last carrying `BlockingPRs`),
+  summary/rationale, and a **SHA pin**
   (`headSha`, `baseSha`) plus review digest and source run id. The prose PR
   comment is a projection of this artifact, never a second source of truth.
 - **PRL-013 (MUST, Shipped):** Every verdict is **SHA-pinned** (design D6): no
@@ -156,7 +157,7 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   pure, deterministic function of `{selected PR, blocker set, policy}` so every
   cluster member independently computes the **same** winner — exactly one
   member is crowned, with no central coordination. A verdict carrying any real
-  defect (substantive/conflict/rebase-needed finding) is **never electable**.
+  defect (any finding other than `cross-pr-blocked`) is **never electable**.
 - **PRL-022 (MUST, Shipped):** The election policy MUST be a **workflow-
   configurable seam** (#834): `fifo` (lowest PR number — default) and `newest`
   ship as pure policies; cluster-data policies (`most-blockers`,

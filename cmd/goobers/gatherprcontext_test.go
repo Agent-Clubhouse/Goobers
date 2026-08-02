@@ -358,6 +358,17 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's substantive finding was not counted")
 	}
+
+	for _, class := range []apiv1.FindingClass{
+		apiv1.FindingMissingTests,
+		apiv1.FindingScopeCreep,
+		apiv1.FindingContractChange,
+	} {
+		verdict.Findings = []apiv1.Finding{{Class: class, Location: "PR #485"}}
+		if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
+			t.Errorf("selected PR #485's %q finding was not routed to substantive remediation", class)
+		}
+	}
 }
 
 // TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor is #941/PRR-6's

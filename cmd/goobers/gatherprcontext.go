@@ -548,7 +548,7 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, min
 }
 
 func substantiveFindingAppliesToPR(finding apiv1.Finding, target string, minSeverity apiv1.Severity) bool {
-	if finding.Class != apiv1.FindingSubstantive {
+	if !finding.Class.RequiresCodeChange() {
 		return false
 	}
 	// An unset Severity (verdicts recorded before this field existed, or
