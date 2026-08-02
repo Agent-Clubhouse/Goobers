@@ -55,6 +55,8 @@ func TestParsers(t *testing.T) {
 		{"node", parseNodeVersion, "v20.11.1\n", "20.11.1"},
 		{"python", parseLastField, "Python 3.11.4\n", "3.11.4"},
 		{"go", parseGoVersion, "go version go1.26.0 darwin/arm64\n", "1.26.0"},
+		{"java-openjdk", parseJavaVersion, "openjdk version \"21.0.2\" 2024-01-16\nOpenJDK Runtime Environment (build 21.0.2+13-58)\n", "21.0.2"},
+		{"java-oracle", parseJavaVersion, "java version \"1.8.0_392\"\nJava(TM) SE Runtime Environment (build 1.8.0_392-b08)\n", "1.8.0_392"},
 	}
 	for _, c := range cases {
 		got, err := c.parse(c.in)
@@ -101,6 +103,7 @@ func newTestVerifier(run ExecFunc, goos string) *Verifier {
 		"node":   commandProber{bin: "node", args: []string{"--version"}, parse: parseNodeVersion},
 		"python": commandProber{bin: pythonProbeBin(v.goos), args: []string{"--version"}, parse: parseLastField},
 		"go":     commandProber{bin: "go", args: []string{"version"}, parse: parseGoVersion},
+		"java":   commandProber{bin: "java", args: []string{"-version"}, parse: parseJavaVersion},
 		"os":     osProber{goos: func() string { return v.goos }},
 	}
 	return v
@@ -118,8 +121,9 @@ func TestVerifySatisfied(t *testing.T) {
 		"dotnet":  "8.0.412\n",
 		"python3": "Python 3.11.4\n",
 		"go":      "go version go1.26.0 linux/amd64\n",
+		"java":    "openjdk version \"21.0.2\" 2024-01-16\nOpenJDK Runtime Environment (build 21.0.2+13-58)\n",
 	}, nil), "linux")
-	if err := v.Verify(context.Background(), []string{"dotnet@8", "python@3.11", "go@1.26", "os=linux"}); err != nil {
+	if err := v.Verify(context.Background(), []string{"dotnet@8", "python@3.11", "go@1.26", "java@21", "os=linux"}); err != nil {
 		t.Errorf("all satisfied, got error: %v", err)
 	}
 }
