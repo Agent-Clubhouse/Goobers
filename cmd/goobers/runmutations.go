@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -172,9 +173,15 @@ func callInterventionAPI(
 		return httpapi.InterventionResult{}, nil, fmt.Errorf("build intervention request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	key, err := newInterventionIdempotencyKey()
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("generate intervention idempotency key: %w", err)
+	}
+	request.Header.Set(httpapi.HeaderIdempotencyKey, key)
 	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
+
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return httpapi.InterventionResult{}, nil, fmt.Errorf("call live daemon API: %w", err)
@@ -193,6 +200,14 @@ func callInterventionAPI(
 		return httpapi.InterventionResult{}, nil, fmt.Errorf("decode daemon intervention result: %w", err)
 	}
 	return result, nil, nil
+}
+
+func newInterventionIdempotencyKey() (string, error) {
+	var key [16]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", key[:]), nil
 }
 
 func defaultInterventionActor() (string, error) {

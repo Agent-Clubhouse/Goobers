@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -114,6 +116,9 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
+	if result, replayed, err := replayIntervention(resolved, "approve", input); replayed || err != nil {
+		return result, err
+	}
 	decision := strings.TrimSpace(input.Decision)
 	if decision == "" {
 		decision = "pass"
@@ -128,7 +133,6 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 		}
 	}
 
-	var result runner.Result
 	switch resolved.phase {
 	case journal.PhaseRunning:
 		if gate.Evaluator != apiv1.EvaluatorHuman {
@@ -144,7 +148,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("run %q is not paused at gate %q", input.RunID, input.Stage),
 			)
 		}
-		result, err = s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+		_, err = s.execute(ctx, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
 			return resolved.runner.Resume(ctx, runner.ResumeInput{
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 				HumanDecision: &runner.HumanGateDecision{
@@ -166,7 +170,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 			)
 		}
 		target, complete := interventionResumeTarget(target)
-		result, err = s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+		_, err = s.execute(ctx, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
 			return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 				Target: target, Complete: complete,
@@ -183,7 +187,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError("approve", err)
 	}
-	return interventionResult(result), nil
+	return interventionResult(resolved)
 }
 
 func (s *runInterventionService) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
@@ -198,6 +202,9 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
+	}
+	if result, replayed, err := replayIntervention(resolved, "override", input); replayed || err != nil {
+		return result, err
 	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -222,7 +229,7 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 		)
 	}
 	target, complete := interventionResumeTarget(target)
-	result, err := s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+	_, err = s.execute(ctx, resolved, true, "override", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Target: target, Complete: complete,
@@ -233,7 +240,7 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError("override", err)
 	}
-	return interventionResult(result), nil
+	return interventionResult(resolved)
 }
 
 func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
@@ -245,13 +252,16 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
+	if result, replayed, err := replayIntervention(resolved, "rerun", input); replayed || err != nil {
+		return result, err
+	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
 			"run_not_escalated",
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
 	}
-	result, err := s.execute(ctx, resolved, true, func(ctx context.Context) (runner.Result, error) {
+	_, err = s.execute(ctx, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
@@ -261,7 +271,7 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 	if err != nil {
 		return httpapi.InterventionResult{}, interventionExecutionError("rerun stage", err)
 	}
-	return interventionResult(result), nil
+	return interventionResult(resolved)
 }
 
 func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun, error) {
@@ -399,6 +409,8 @@ func (s *runInterventionService) execute(
 	ctx context.Context,
 	resolved resolvedInterventionRun,
 	reacquireClaims bool,
+	action string,
+	input httpapi.InterventionRequest,
 	run func(context.Context) (runner.Result, error),
 ) (runner.Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -415,6 +427,9 @@ func (s *runInterventionService) execute(
 		return runner.Result{}, err
 	}
 	defer lease.Close()
+	if err := recordInterventionMarker(resolved, action, input); err != nil {
+		return runner.Result{}, err
+	}
 	result, runErr := run(ctx)
 	phase := result.Phase
 	if phase == "" {
@@ -709,8 +724,146 @@ func gateEvaluatedInCurrentSegment(events []journal.Event, gate string) bool {
 	return false
 }
 
-func interventionResult(result runner.Result) httpapi.InterventionResult {
-	return httpapi.InterventionResult{Phase: string(result.Phase), State: result.FinalState}
+const interventionIdempotencyMarker = "intervention.idempotency"
+
+func interventionFingerprint(action string, input httpapi.InterventionRequest) (string, error) {
+	payload := struct {
+		Action              string `json:"action"`
+		RunID               string `json:"runId"`
+		Stage               string `json:"stage"`
+		Actor               string `json:"actor"`
+		Decision            string `json:"decision"`
+		Rationale           string `json:"rationale"`
+		InstructionAddendum string `json:"instructionAddendum"`
+	}{
+		Action: action, RunID: input.RunID, Stage: input.Stage, Actor: input.Actor,
+		Decision: input.Decision, Rationale: input.Rationale, InstructionAddendum: input.InstructionAddendum,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(encoded)), nil
+}
+
+func recordInterventionMarker(resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest) error {
+	if input.IdempotencyKey == "" {
+		return nil
+	}
+	for _, event := range resolved.events {
+		if interventionMarkerKey(event) == input.IdempotencyKey {
+			return nil
+		}
+	}
+	fingerprint, err := interventionFingerprint(action, input)
+	if err != nil {
+		return fmt.Errorf("fingerprint intervention: %w", err)
+	}
+	_, scrubber := journal.DefaultScrubber()
+	run, _, err := journal.Recover(resolved.runDir, journal.WithScrubber(scrubber))
+	if err != nil {
+		return fmt.Errorf("recover run to record intervention idempotency: %w", err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":           interventionIdempotencyMarker,
+			"idempotencyKey": input.IdempotencyKey,
+			"fingerprint":    fingerprint,
+			"action":         action,
+			"stage":          input.Stage,
+		},
+	}); err != nil {
+		return fmt.Errorf("journal intervention idempotency: %w", err)
+	}
+	return nil
+}
+
+func interventionMarkerKey(event journal.Event) string {
+	if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != interventionIdempotencyMarker {
+		return ""
+	}
+	key, _ := event.Runner["idempotencyKey"].(string)
+	return key
+}
+
+func replayIntervention(resolved resolvedInterventionRun, action string, input httpapi.InterventionRequest) (httpapi.InterventionResult, bool, error) {
+	if input.IdempotencyKey == "" {
+		return httpapi.InterventionResult{}, false, nil
+	}
+	fingerprint, err := interventionFingerprint(action, input)
+	if err != nil {
+		return httpapi.InterventionResult{}, false, fmt.Errorf("fingerprint intervention: %w", err)
+	}
+	for i, event := range resolved.events {
+		if interventionMarkerKey(event) != input.IdempotencyKey {
+			continue
+		}
+		recorded, _ := event.Runner["fingerprint"].(string)
+		if recorded != fingerprint {
+			return httpapi.InterventionResult{}, true, interventionConflict(
+				"idempotency_key_reused",
+				"Idempotency-Key was already used for a different intervention",
+			)
+		}
+		for _, later := range resolved.events[i+1:] {
+			if interventionCompleted(action, input.Stage, later) {
+				result, resultErr := currentInterventionResult(resolved)
+				return result, true, resultErr
+			}
+		}
+		return httpapi.InterventionResult{}, false, nil
+	}
+	return httpapi.InterventionResult{}, false, nil
+}
+
+func interventionCompleted(action, stage string, event journal.Event) bool {
+	switch action {
+	case "rerun":
+		return event.Type == journal.EventStageRerunRequested && event.Stage == stage
+	case "override":
+		return event.Type == journal.EventRunResumed && event.Action == action && event.Gate == stage
+	case "approve":
+		return (event.Type == journal.EventRunResumed && event.Action == action && event.Gate == stage) ||
+			(event.Type == journal.EventGateEvaluated && event.Gate == stage)
+	default:
+		return false
+	}
+}
+
+func interventionResult(resolved resolvedInterventionRun) (httpapi.InterventionResult, error) {
+	return currentInterventionResult(resolved)
+}
+
+func currentInterventionResult(resolved resolvedInterventionRun) (httpapi.InterventionResult, error) {
+	reader, err := journal.OpenRead(resolved.runDir)
+	if err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "intervention result could not be read", err,
+		)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "intervention phase could not be read", err,
+		)
+	}
+	state, err := reader.State()
+	if err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "intervention state could not be read", err,
+		)
+	}
+	events, err := reader.Events()
+	if err != nil || len(events) == 0 {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "intervention journal position could not be read", err,
+		)
+	}
+	return httpapi.InterventionResult{
+		Phase: string(phase), State: state.MachineState, JournalSeq: events[len(events)-1].Seq,
+	}, nil
 }
 
 func interventionBadRequest(code, message string) error {

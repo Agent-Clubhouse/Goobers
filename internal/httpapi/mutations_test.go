@@ -41,7 +41,7 @@ func (b *blockingInterventions) call(ctx context.Context) (InterventionResult, e
 	case <-ctx.Done():
 		return InterventionResult{}, ctx.Err()
 	case <-b.release:
-		return InterventionResult{Phase: "completed"}, nil
+		return InterventionResult{Phase: "completed", JournalSeq: 7}, nil
 	}
 }
 
@@ -78,11 +78,12 @@ func newMutationRequest(method, action, body string) *http.Request {
 	request := httptest.NewRequest(method, stagePath(action), bytes.NewBufferString(body))
 	request.Host = "127.0.0.1:8080"
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(HeaderIdempotencyKey, "mutation-test-key")
 	return request
 }
 
 func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
-	service := &fakeInterventions{result: InterventionResult{Phase: "completed", State: "done"}}
+	service := &fakeInterventions{result: InterventionResult{Phase: "completed", State: "done", JournalSeq: 42}}
 	handler, err := NewHandler(
 		&fakeReader{health: readservice.Health{Ready: true}},
 		AllowAll,
@@ -124,12 +125,18 @@ func TestMutationRoutesInvokeServiceThroughTier1Seam(t *testing.T) {
 			if result != service.result {
 				t.Fatalf("result = %+v, want %+v", result, service.result)
 			}
+			if got := response.Header().Get(HeaderSourceApplied); got != "run-1:42" {
+				t.Fatalf("%s = %q, want run-1:42", HeaderSourceApplied, got)
+			}
+			if call.input.IdempotencyKey != "mutation-test-key" {
+				t.Fatalf("IdempotencyKey = %q", call.input.IdempotencyKey)
+			}
 		})
 	}
 }
 
 func TestMutationRoutesUseAuthenticatedPrincipalAsActor(t *testing.T) {
-	service := &fakeInterventions{}
+	service := &fakeInterventions{result: InterventionResult{Phase: "completed", JournalSeq: 7}}
 	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "operator", Roles: []Role{RoleOperate}}}
 	handler, err := NewHandler(
 		&fakeReader{},
@@ -197,7 +204,7 @@ func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) 
 }
 
 func TestMutationRoutesRequireOperateRole(t *testing.T) {
-	service := &fakeInterventions{}
+	service := &fakeInterventions{result: InterventionResult{Phase: "completed", JournalSeq: 7}}
 	authenticator := &fakeAuthenticator{principal: &Principal{Subject: "viewer", Roles: []Role{RoleView}}}
 	handler, err := NewHandler(
 		&fakeReader{},
@@ -225,6 +232,27 @@ func TestMutationRoutesRequireOperateRole(t *testing.T) {
 	handler.ServeHTTP(response, newMutationRequest(http.MethodPost, "approve", `{"decision":"pass"}`))
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+}
+
+func TestMutationRoutesRequireIdempotencyKey(t *testing.T) {
+	service := &fakeInterventions{}
+	handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := newMutationRequest(http.MethodPost, "approve", `{"actor":"local","decision":"pass"}`)
+	request.Header.Del(HeaderIdempotencyKey)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if code := errorCode(t, response); code != CodeIdempotencyKeyRequired {
+		t.Fatalf("code = %q, want %q", code, CodeIdempotencyKeyRequired)
+	}
+	if len(service.calls) != 0 {
+		t.Fatalf("service calls = %+v, want none", service.calls)
 	}
 }
 
@@ -374,7 +402,7 @@ func TestMutationRoutesAllowSameLoopbackOrigin(t *testing.T) {
 		{name: "HTTP dashboard proxy to TLS daemon", backendTLS: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := &fakeInterventions{}
+			service := &fakeInterventions{result: InterventionResult{Phase: "completed", JournalSeq: 7}}
 			handler, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithInterventions(service))
 			if err != nil {
 				t.Fatal(err)

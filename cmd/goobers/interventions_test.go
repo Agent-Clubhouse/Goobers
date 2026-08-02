@@ -319,6 +319,60 @@ func TestRunInterventionOverrideResumesAndJournalsAction(t *testing.T) {
 	}
 }
 
+func TestRunInterventionIdempotencyReplaysCompletedAction(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, runDir := newInterventionServiceTestRun(t, machine, "run-idempotent", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	input := httpapi.InterventionRequest{
+		RunID: "run-idempotent", Stage: "review", Actor: "operator", Decision: "pass",
+		Rationale: "accepted after manual review", IdempotencyKey: "same-request",
+	}
+	first, err := service.Override(context.Background(), input)
+	if err != nil {
+		t.Fatalf("first Override: %v", err)
+	}
+	second, err := service.Override(context.Background(), input)
+	if err != nil {
+		t.Fatalf("replayed Override: %v", err)
+	}
+	if second != first || first.JournalSeq == 0 {
+		t.Fatalf("results = first %+v, second %+v", first, second)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers, resumed := 0, 0
+	for _, event := range events {
+		if interventionMarkerKey(event) == input.IdempotencyKey {
+			markers++
+		}
+		if event.Type == journal.EventRunResumed && event.Action == "override" {
+			resumed++
+		}
+	}
+	if markers != 1 || resumed != 1 {
+		t.Fatalf("markers = %d, resumed = %d; want one each", markers, resumed)
+	}
+
+	input.Rationale = "different action"
+	_, err = service.Override(context.Background(), input)
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) || interventionErr.Code != "idempotency_key_reused" {
+		t.Fatalf("key reuse error = %#v, want idempotency_key_reused", err)
+	}
+}
+
 func TestRunInterventionApproveResolvesPausedHumanGate(t *testing.T) {
 	machine := interventionTestMachine(t, apiv1.EvaluatorHuman)
 	service, runDir := newInterventionServiceTestRun(t, machine, "run-approve", []journal.Event{
@@ -758,7 +812,7 @@ func TestRunInterventionRejectsDelayedDuplicateFromPriorTerminalSegment(t *testi
 		t.Fatal(err)
 	}
 
-	_, err = service.execute(context.Background(), stale, true, func(ctx context.Context) (runner.Result, error) {
+	_, err = service.execute(context.Background(), stale, true, "override", httpapi.InterventionRequest{}, func(ctx context.Context) (runner.Result, error) {
 		return stale.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: stale.runID, Machine: stale.machine, GooberDigest: stale.gooberDigest, RepoRef: stale.repoRef,
 			Target: "finish", Actor: "delayed-operator", Action: "override", Gate: "review", Decision: "pass",

@@ -87,8 +87,11 @@ func TestInterventionCLICommandsCallDaemonAPI(t *testing.T) {
 					return
 				}
 				test.assertFields(t, input)
+				if request.Header.Get(httpapi.HeaderIdempotencyKey) == "" {
+					t.Error("missing Idempotency-Key")
+				}
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(httpapi.InterventionResult{Phase: "running", State: "finish"})
+				_ = json.NewEncoder(w).Encode(httpapi.InterventionResult{Phase: "running", State: "finish", JournalSeq: 12})
 			})
 			args := append([]string{test.command}, test.flags...)
 			args = append(args, "run-1", "review", root)

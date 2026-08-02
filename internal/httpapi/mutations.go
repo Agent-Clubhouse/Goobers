@@ -23,6 +23,7 @@ const maxInterventionBody = 1 << 20
 type InterventionRequest struct {
 	RunID               string `json:"-"`
 	Stage               string `json:"-"`
+	IdempotencyKey      string `json:"-"`
 	Actor               string `json:"actor,omitempty"`
 	Decision            string `json:"decision,omitempty"`
 	Rationale           string `json:"rationale,omitempty"`
@@ -31,8 +32,9 @@ type InterventionRequest struct {
 
 // InterventionResult reports the durable run position after an action.
 type InterventionResult struct {
-	Phase string `json:"phase"`
-	State string `json:"state,omitempty"`
+	Phase      string `json:"phase"`
+	State      string `json:"state,omitempty"`
+	JournalSeq uint64 `json:"journalSeq"`
 }
 
 // InterventionService is the API-first human-intervention seam shared by the
@@ -81,6 +83,10 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			writeError(w, status, code, message)
 			return
 		}
+		key, ok := requireIdempotencyKey(w, request)
+		if !ok {
+			return
+		}
 		input, err := decodeInterventionRequest(request)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -93,6 +99,7 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			writeError(w, http.StatusBadRequest, "actor_required", "actor is required")
 			return
 		}
+		input.IdempotencyKey = key
 
 		var result InterventionResult
 		switch action {
@@ -130,6 +137,12 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention failed")
 			return
 		}
+		if result.JournalSeq == 0 {
+			errorLog.Printf("%s run intervention returned no journal position", action)
+			writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention returned no journal position")
+			return
+		}
+		w.Header().Set(HeaderSourceApplied, fmt.Sprintf("%s:%d", input.RunID, result.JournalSeq))
 		writeJSON(w, http.StatusOK, result)
 	}
 }
