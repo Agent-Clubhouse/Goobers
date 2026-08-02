@@ -210,6 +210,55 @@ func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incomi
 	return origin
 }
 
+func initPortalDistConflictPRBranch(t *testing.T, prBranch string, sourceConflict bool) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.MkdirAll(filepath.Join(work, "portal", "src"), 0o755); err != nil {
+		t.Fatalf("create portal source directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(work, portalDistPath), 0o755); err != nil {
+		t.Fatalf("create portal bundle directory: %v", err)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("Makefile", "portal-build:\n\trm -rf cmd/goobers/portal-dist\n\tmkdir -p cmd/goobers/portal-dist\n\tprintf '%s+%s\\n' \"$$(cat portal/src/base.txt)\" \"$$(cat portal/src/app.txt)\" > cmd/goobers/portal-dist/index.html\n")
+	write("portal/src/app.txt", "ancestor\n")
+	write("portal/src/base.txt", "ancestor\n")
+	write(portalDistPath+"/index.html", "ancestor\n")
+	runGitT(t, work, "add", ".")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	write("portal/src/app.txt", "from-pr\n")
+	write(portalDistPath+"/index.html", "pr-bundle\n")
+	runGitT(t, work, "commit", "-am", "change portal in PR")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	if sourceConflict {
+		write("portal/src/app.txt", "from-base\n")
+	} else {
+		write("portal/src/base.txt", "from-base\n")
+	}
+	write(portalDistPath+"/index.html", "base-bundle\n")
+	runGitT(t, work, "commit", "-am", "change portal on base")
+	runGitT(t, work, "push", "origin", "main")
+
+	return origin
+}
+
 // initConflictingPRBranch builds a bare origin where the PR branch and main
 // both modify the SAME line inside the SAME Go function after branching — a
 // real same-function rebase conflict, not a synthetic flag.
@@ -976,6 +1025,66 @@ func TestRebasePRResolvesDistinctAdjacentAdditions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) || !strings.Contains(string(data), `"conflict":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false conflict=false", data)
+	}
+}
+
+func TestRebasePRRegeneratesPortalDistConflict(t *testing.T) {
+	const prBranch = "goobers/impl/run-portal-dist"
+	origin := initPortalDistConflictPRBranch(t, prBranch, false)
+	wt := prWorktree(t, origin, prBranch)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 63)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "63",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "clean rebase") {
+		t.Fatalf("stdout = %q, want regenerated bundle to continue through the clean path", stdout)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, portalDistPath, "index.html"))
+	if err != nil {
+		t.Fatalf("read regenerated portal bundle: %v", err)
+	}
+	if want := "from-base+from-pr\n"; string(got) != want {
+		t.Fatalf("regenerated portal bundle = %q, want %q", got, want)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want remediation label cleared", labels)
+	}
+}
+
+func TestRebasePRDoesNotRegenerateMixedPortalConflict(t *testing.T) {
+	const prBranch = "goobers/impl/run-mixed-portal-conflict"
+	origin := initPortalDistConflictPRBranch(t, prBranch, true)
+	wt := prWorktree(t, origin, prBranch)
+
+	conflict, locations, _, err := attemptRebase(wt.Path, "main", "")
+	if err != nil {
+		t.Fatalf("attemptRebase() error = %v", err)
+	}
+	if !conflict {
+		t.Fatal("attemptRebase() conflict = false, want mixed source and generated conflict preserved")
+	}
+	if len(locations) != 2 {
+		t.Fatalf("attemptRebase() locations = %+v, want both mixed conflict paths", locations)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want rebase aborted cleanly", unmerged)
 	}
 }
 
