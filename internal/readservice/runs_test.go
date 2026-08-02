@@ -190,6 +190,59 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	}
 }
 
+// TestListRunsHidesNoWorkByDefault is the regression test for #2188: the
+// portal run list needs to hide routine no-work schedule ticks (a run that
+// touched exactly one stage and that stage's terminal status was no-work) by
+// default, with ShowNoWork as the explicit escape hatch — and the underlying
+// run must remain fully readable by ID, never deleted.
+func TestListRunsHidesNoWorkByDefault(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	base := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+
+	noWorkRun, noWorkClock := createFixtureRun(
+		t, layout, machine, "run-no-work", "implementation", "goobers",
+		base, journal.Trigger{Kind: journal.TriggerSchedule}, false)
+	appendFixtureStageAttempt(t, noWorkRun, noWorkClock, string(apiv1.ResultNoWork))
+	finishFixtureRun(t, noWorkRun, noWorkClock, journal.PhaseCompleted)
+
+	producedRun, producedClock := createFixtureRun(
+		t, layout, machine, "run-produced", "implementation", "goobers",
+		base.Add(time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false)
+	appendFixtureStageAttempt(t, producedRun, producedClock, "success")
+	finishFixtureRun(t, producedRun, producedClock, journal.PhaseCompleted)
+
+	hidden, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden.Runs) != 1 || hidden.Runs[0].ID != "run-produced" {
+		t.Fatalf("default list = %+v, want only run-produced", hidden.Runs)
+	}
+
+	shown, err := service.ListRuns(context.Background(), RunListOptions{ShowNoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown.Runs) != 2 {
+		t.Fatalf("ShowNoWork list = %+v, want both runs", shown.Runs)
+	}
+	var noWorkSummary *RunSummary
+	for i := range shown.Runs {
+		if shown.Runs[i].ID == "run-no-work" {
+			noWorkSummary = &shown.Runs[i]
+		}
+	}
+	if noWorkSummary == nil || !noWorkSummary.NoWork {
+		t.Fatalf("run-no-work summary = %+v, want NoWork = true", noWorkSummary)
+	}
+
+	// The filter hides no-work runs from list pages only; the run itself is
+	// never deleted or otherwise made unreadable.
+	if _, err := service.GetRun(context.Background(), "run-no-work"); err != nil {
+		t.Fatalf("GetRun(run-no-work) = %v, want the no-work run still directly readable", err)
+	}
+}
+
 func TestListRunsCanonicalPhasesFiltersAndCursors(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	base := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)

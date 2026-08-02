@@ -140,6 +140,47 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	}
 }
 
+// singleStageEvents builds a completed run touching exactly one stage, whose
+// terminal status is the given one — the shape a routine backlog-query no-work
+// tick and a genuine single-task success both produce, distinguished only by
+// that status (#2188).
+func singleStageEvents(status string) []journal.Event {
+	return []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "query-backlog" }),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "query-backlog", status
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+}
+
+// TestProjectionClassifiesSingleStageNoWork is the regression test for #2188:
+// the portal's run list needs to tell a routine no-work schedule tick apart
+// from a genuine single-stage success, using only the signal the runner
+// already records (a stage's own terminal status).
+func TestProjectionClassifiesSingleStageNoWork(t *testing.T) {
+	noWork := ProjectRun(testIdentity(), Projection{}, singleStageEvents("no-work"))
+	if noWork.Run.Disposition != DispositionNoWork {
+		t.Errorf("disposition = %q, want %q for a single no-work stage", noWork.Run.Disposition, DispositionNoWork)
+	}
+
+	success := ProjectRun(testIdentity(), Projection{}, singleStageEvents("success"))
+	if success.Run.Disposition != DispositionUnknown {
+		t.Errorf("disposition = %q, want %q for a single successful stage — a real single-task workflow is not no-work",
+			success.Run.Disposition, DispositionUnknown)
+	}
+
+	// completedRunEvents touches two stages (implement, review); even though
+	// "implement" itself succeeds, a multi-stage run must never be classified
+	// no-work regardless of any individual stage's status.
+	multiStage := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
+	if multiStage.Run.Disposition != DispositionUnknown {
+		t.Errorf("disposition = %q, want %q for a multi-stage run", multiStage.Run.Disposition, DispositionUnknown)
+	}
+}
+
 // TestResumeReopensATerminalRun pins the case that would otherwise leave a live
 // run looking finished to every list.
 //

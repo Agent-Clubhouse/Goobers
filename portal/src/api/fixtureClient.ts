@@ -345,6 +345,7 @@ function matchesRunRequest(
   request?: RunListOptions,
 ): boolean {
   if (
+    (!request?.showNoWork && run.noWork) ||
     (request?.gaggle && run.gaggle !== request.gaggle) ||
     (request?.workflow && run.workflow !== request.workflow) ||
     (request?.phase && run.phase !== request.phase) ||

@@ -19,7 +19,14 @@ export function RunsPage({
   standalone: boolean;
 }) {
   const [filter, setFilter] = useState<RunsFilter>("all");
-  const query = useRunsHistory(client, filter, filters);
+  // Hides routine no-work schedule ticks by default (#2188): a run whose only
+  // stage reported no eligible work, on an instance ticking every ~60s, would
+  // otherwise bury the runs an operator actually came here to find. The
+  // toggle is the explicit escape hatch — it never deletes or hides the
+  // underlying run, only this list's default view of it.
+  const [showNoWork, setShowNoWork] = useState(false);
+  const scope = { ...filters, showNoWork };
+  const query = useRunsHistory(client, filter, scope);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -66,6 +73,14 @@ export function RunsPage({
             {option === "all" ? "All runs" : option}
           </button>
         ))}
+        <label className="filter-toggle">
+          <input
+            checked={showNoWork}
+            onChange={(event) => setShowNoWork(event.target.checked)}
+            type="checkbox"
+          />
+          Show no-work runs
+        </label>
       </div>
 
       <section className="content-section">

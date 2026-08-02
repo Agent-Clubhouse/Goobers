@@ -402,7 +402,8 @@ export const goWireFixtures = {
         "repassCount": 2,
         "retryCount": 2,
         "policyRetryCount": 1,
-        "infraRetryCount": 1
+        "infraRetryCount": 1,
+        "noWork": false
       }
     ],
     "workflowActivity": [
@@ -436,6 +437,7 @@ export const goWireFixtures = {
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
+    "noWork": false,
     "graph": {
       "name": "implementation",
       "version": 7,

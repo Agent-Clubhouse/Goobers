@@ -125,15 +125,19 @@ func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, 
 }
 
 func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
+	disposition := row.Disposition
+	if disposition == "" {
+		disposition = DispositionUnknown
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run (
 			run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
 			trigger_kind, trigger_ref, phase, terminal, current_stage,
 			started_at, finished_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
-			outcome_verdict, outcome_target,
+			outcome_verdict, outcome_target, disposition,
 			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -155,6 +159,7 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			infra_retry_count = excluded.infra_retry_count,
 			outcome_verdict = excluded.outcome_verdict,
 			outcome_target = excluded.outcome_target,
+			disposition = excluded.disposition,
 			any_token_measured = excluded.any_token_measured,
 			any_premium_measured = excluded.any_premium_measured,
 			any_cost_measured = excluded.any_cost_measured,
@@ -170,7 +175,7 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		formatTime(row.StartedAt), nullTime(row.FinishedAt), nullTimeValue(row.LastActivity),
 		row.LastSeq,
 		row.RepassCount, row.RetryCount, row.PolicyRetryCount, row.InfraRetryCount,
-		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget),
+		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget), disposition,
 		boolInt(row.AnyTokenMeasured), boolInt(row.AnyPremiumMeasured),
 		boolInt(row.AnyCostMeasured), boolInt(row.AnyRetryWaste),
 	)
