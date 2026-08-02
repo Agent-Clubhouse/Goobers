@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -183,21 +182,6 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
-	// GithubMCPServerCommand runs a separately-provisioned github-mcp-server
-	// binary (github.com/github/github-mcp-server) as an external MCP server
-	// in place of the Copilot CLI's own built-in one, whenever a goober
-	// declares the "github" tool group. #2202: the built-in server
-	// authenticates its GitHub API calls with COPILOT_GITHUB_TOKEN (scoped
-	// only for Copilot model requests, per docs/guides/github-token-scopes.md)
-	// rather than this run's capability-scoped GH_TOKEN — every real write
-	// 403s regardless of GH_TOKEN's actual permissions, since it is never
-	// consulted. Confirmed live: naming the external server exactly
-	// "github-mcp-server" (this field's implicit server name) makes the CLI
-	// defer to it instead of its own built-in — no --disable-builtin-mcps
-	// needed, and tool identifiers stay github-mcp-server-*, so
-	// copilotToolGroups needs no change. Defaults to
-	// defaultGithubMCPServerCommand (the binary resolved from PATH) when nil.
-	GithubMCPServerCommand []string
 
 	modelsMu        sync.Mutex
 	availableModels map[string]copilotModelCapabilities
@@ -503,181 +487,6 @@ func firstOutputLine(output []byte) string {
 	return ""
 }
 
-// copilotToolPreflightTimeout bounds PreflightGithubTools's single probe
-// session — generous enough for a real MCP-server init + one trivial model
-// turn, matching harnessPreflightTimeout's own budget for the same class of
-// startup check.
-const copilotToolPreflightTimeout = 90 * time.Second
-
-// requiredGithubWriteTools maps a declared capability to the concrete
-// github-mcp-server tool literals it needs to be REACHABLE, not merely
-// requested. #2184: copilotToolGroups["github"] and --available-tools=
-// already listed issue_write/add_issue_comment/sub_issue_write correctly,
-// but --add-github-mcp-toolset=issues silently registered only a curated
-// read subset on the live CLI — the write tools were never reachable, and
-// the model correctly never saw them, so it had nothing to self-report.
-// --available-tools= only filters an already-registered set; it cannot
-// resurrect a tool the CLI never registered in the first place.
-var requiredGithubWriteTools = map[string][]string{
-	string(capability.GitHubIssuesWrite): {
-		"github-mcp-server-issue_write",
-		"github-mcp-server-add_issue_comment",
-		"github-mcp-server-sub_issue_write",
-	},
-}
-
-// RequiredGithubTools returns the concrete tool literals that must be
-// registered — not just declared — for the given capabilities to actually be
-// usable by an agentic session. Capabilities with no known tool requirement
-// are ignored, so callers can pass a task's full declared-capability list
-// unfiltered.
-func RequiredGithubTools(capabilities []string) []string {
-	var required []string
-	seen := make(map[string]struct{})
-	for _, declared := range capabilities {
-		for _, tool := range requiredGithubWriteTools[declared] {
-			if _, ok := seen[tool]; ok {
-				continue
-			}
-			seen[tool] = struct{}{}
-			required = append(required, tool)
-		}
-	}
-	return required
-}
-
-// registeredToolPattern matches a genuine tool-schema definition entry in the
-// Copilot CLI's --log-level all debug output — the JSON object's own "name"
-// key, not an incidental mention of a tool's name inside conversational text
-// (which the CLI also logs at this verbosity, and would otherwise false-
-// positive a tool as available because the model merely said its name).
-var registeredToolPattern = regexp.MustCompile(`"name":\s*"(github-mcp-server-[a-z_]+)"`)
-
-// parseRegisteredGithubTools reads every file under logDir (as produced by a
-// Copilot CLI session run with --log-dir) and returns the set of
-// github-mcp-server tool names the CLI's own debug output shows as an actual
-// registered tool-schema entry.
-func parseRegisteredGithubTools(logDir string) (map[string]struct{}, error) {
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: tool preflight: read log dir: %w", err)
-	}
-	registered := make(map[string]struct{})
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(logDir, entry.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("harness: copilot-cli: tool preflight: read log %q: %w", entry.Name(), err)
-		}
-		for _, match := range registeredToolPattern.FindAllStringSubmatch(string(content), -1) {
-			registered[match[1]] = struct{}{}
-		}
-	}
-	return registered, nil
-}
-
-// PreflightGithubTools verifies that every tool in required is actually
-// registered by a live Copilot CLI session declaring the given harness-neutral
-// tools — not merely requested via --available-tools=, which can only filter
-// an already-registered set (#2184). It runs one cheap, no-op session with
-// --log-dir pointed at a scratch directory and parses the CLI's own debug
-// output for each required tool's registered-schema entry, rather than
-// trusting a model's self-report of its own tool list. required empty is a
-// no-op (nil, no probe run) — most goobers declare no write capability this
-// check cares about.
-func (c *CopilotAdapter) PreflightGithubTools(ctx context.Context, tools []string, required []string) error {
-	if len(required) == 0 {
-		return nil
-	}
-	logDir, err := os.MkdirTemp("", "goobers-copilot-tool-preflight-*")
-	if err != nil {
-		return fmt.Errorf("harness: copilot-cli: tool preflight: %w", err)
-	}
-	succeeded := false
-	defer func() {
-		if succeeded {
-			_ = os.RemoveAll(logDir)
-		}
-	}()
-	// A registration-only probe never authenticates to GitHub (MCP servers
-	// register their tool schema at protocol-init time, before any API call
-	// — confirmed live), so a scratch workspace + placeholder token is
-	// enough to exercise the exact mechanism a real run uses (#2202) without
-	// needing this startup-time preflight to resolve a real credential.
-	workspace, err := os.MkdirTemp("", "goobers-copilot-tool-preflight-workspace-*")
-	if err != nil {
-		return fmt.Errorf("harness: copilot-cli: tool preflight: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(workspace) }()
-
-	command := resolveHarnessCommand(c.Command)
-	flag := c.PromptFlag
-	if flag == "" {
-		flag = defaultPromptFlag
-	}
-	argv := append(command, flag, "Reply with a single word: ready. Do not call any tool.")
-	extra := c.ExtraArgs
-	if extra == nil {
-		extra = defaultExtraArgs
-	}
-	argv = append(argv, extra...)
-	argv = append(argv,
-		"--available-tools="+strings.Join(copilotAvailableTools(RunRequest{Tools: tools}), ","),
-		"--silent",
-		"--output-format=text",
-		"--log-dir", logDir,
-	)
-
-	env := baseEnv(c.ExtraEnvAllowlist)
-	if tok := ambientCopilotToken(); tok != "" {
-		env = overrideEnv(env, "COPILOT_GITHUB_TOKEN", tok)
-	}
-	env = overrideEnv(env, "GH_TOKEN", "goobers-preflight-placeholder-token")
-	env, githubMCPArg, err := c.prepareCopilotGithubMCPServer(tools, workspace, env)
-	if err != nil {
-		return err
-	}
-	if githubMCPArg != "" {
-		argv = append(argv, githubMCPArg)
-	}
-	result, err := c.runner().Run(ctx, ProcessRequest{
-		Command: argv,
-		Env:     env,
-		Timeout: copilotToolPreflightTimeout,
-	})
-	if err != nil {
-		return fmt.Errorf("harness: copilot-cli: tool preflight session: %w", err)
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("harness: copilot-cli: tool preflight: probe session exited %d — the CLI itself failed "+
-			"(auth, MCP server startup, or similar), not a missing-registration gap: %s", result.ExitCode, firstOutputLine(result.Transcript))
-	}
-
-	registered, err := parseRegisteredGithubTools(logDir)
-	if err != nil {
-		return err
-	}
-	var missing []string
-	for _, tool := range required {
-		if _, ok := registered[tool]; !ok {
-			missing = append(missing, tool)
-		}
-	}
-	if len(missing) > 0 {
-		var seen []string
-		for tool := range registered {
-			seen = append(seen, tool)
-		}
-		return fmt.Errorf("harness: copilot-cli: tool preflight: declared capability requires %v but the live CLI never registered it "+
-			"(registered instead: %v) — the goober's tools/capabilities are declared correctly; this is a harness/MCP-server registration "+
-			"gap, not a config error; debug log preserved at %s", missing, seen, logDir)
-	}
-	succeeded = true
-	return nil
-}
-
 func copilotAvailableTools(req RunRequest) []string {
 	var tools []string
 	seen := make(map[string]struct{})
@@ -821,6 +630,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	}
 	argv = append(argv, extra...)
 	if completionInResponse {
+		if copilotDeclaresTool(req.Tools, "github") {
+			argv = append(argv, "--add-github-mcp-toolset=issues")
+		}
 		argv = append(argv,
 			"--available-tools="+strings.Join(copilotAvailableTools(req), ","),
 			"--silent",
@@ -831,20 +643,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	env, err := c.credentialEnv(ctx, req)
 	if err != nil {
 		return Outcome{}, err
-	}
-	// #2202: the built-in github-mcp-server authenticates with
-	// COPILOT_GITHUB_TOKEN, not this run's capability-scoped GH_TOKEN, so
-	// every real write 403s. Run a separately-provisioned github-mcp-server
-	// as an external MCP server (named to match, so the CLI defers to it
-	// instead of registering its own built-in) authenticated with the
-	// GH_TOKEN just materialized above. --available-tools= above is the
-	// actual security boundary, unchanged from #2194's reasoning.
-	env, githubMCPArg, err := c.prepareCopilotGithubMCPServer(req.Tools, req.Workspace, env)
-	if err != nil {
-		return Outcome{}, err
-	}
-	if githubMCPArg != "" {
-		argv = append(argv, githubMCPArg)
 	}
 	// Enforced isolation posture (S3/#166): route the CLI's own runtime state
 	// into the workspace so the sandbox policy needs no writable root beyond
