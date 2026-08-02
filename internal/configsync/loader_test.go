@@ -46,9 +46,9 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 	// config-examples ships two Gaggles (acme-web + the dotnet-service polyglot
 	// reference, #1093), eight Goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer), and nine Workflows (acme-web's eight +
+	// dotnet-reviewer), and ten Workflows (acme-web's nine +
 	// dotnet-implementation).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 8, "Workflow": 9}
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 8, "Workflow": 10}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {

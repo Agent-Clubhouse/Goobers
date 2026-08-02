@@ -55,6 +55,12 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
 		},
 	},
+	"backlog-assignment": {
+		ResultFile: "backlog-assignment.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog assignment fails at runtime"),
+		},
+	},
 	"backlog-health": {
 		ResultFile: "backlog-health.json",
 		Capabilities: []CapabilityUse{

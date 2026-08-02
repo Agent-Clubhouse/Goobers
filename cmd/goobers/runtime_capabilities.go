@@ -453,6 +453,10 @@ func init() {
 			withSynopsis(synopsisByID["backlog-dedupe"]).
 			withHelp("surface ranked duplicate candidates for curator judgment (a workflow stage)", backlogDedupeHelp).
 			withExamples("goobers backlog-dedupe"),
+		command("backlog-assignment", apicontract.ActionWorkflowExecution, runBacklogAssignment).
+			withSynopsis(synopsisByID["backlog-assignment"]).
+			withHelp("assign eligible backlog items from a configured roster (a workflow stage)", backlogAssignmentHelp).
+			withExamples("goobers backlog-assignment"),
 		command("backlog-health", apicontract.ActionWorkflowExecution, runBacklogHealth).
 			withSynopsis(synopsisByID["backlog-health"]).
 			withHelp("snapshot ready-pool depth and age (a workflow stage)", backlogHealthHelp).

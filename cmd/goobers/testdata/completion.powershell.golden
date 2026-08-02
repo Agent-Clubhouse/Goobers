@@ -42,6 +42,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'telemetry'
         'journal'
         'backlog-dedupe'
+        'backlog-assignment'
         'backlog-health'
         'backlog-query'
         'reconcile-branches'

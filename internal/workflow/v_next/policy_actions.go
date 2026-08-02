@@ -63,6 +63,7 @@ var policyActionContracts = map[string]policyActionContract{
 
 var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
+	"backlog-assignment":     {"update-issue"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
