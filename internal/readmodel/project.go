@@ -1,6 +1,7 @@
 package readmodel
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -267,6 +268,10 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		}
 
 		switch event.Type {
+		case journal.EventRunnerAnnotation:
+			if queue, ok := RunnerQueueStatus(event); ok {
+				row.CurrentStage = queue
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
@@ -282,6 +287,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				at := event.Time
 				s.StartedAt = &at
 			}
+
 		case journal.EventStageFinished:
 			if row.CurrentStage == event.Stage {
 				row.CurrentStage = ""
@@ -341,6 +347,27 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	}
 
 	return Projection{Run: row, Stages: out}
+}
+
+// RunnerQueueStatus projects pinned-workspace lease bookkeeping into the
+// operator-visible current-stage slot without changing the normative journal.
+func RunnerQueueStatus(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation || event.Runner["workspaceMode"] != "pinned" {
+		return "", false
+	}
+	var position int
+	switch value := event.Runner["queuePosition"].(type) {
+	case int:
+		position = value
+	case float64:
+		position = int(value)
+	default:
+		return "", false
+	}
+	if position <= 0 {
+		return "", true
+	}
+	return fmt.Sprintf("Workspace queue (position %d)", position), true
 }
 
 // countAttempt folds a finished stage attempt into the run's retry counters.

@@ -1704,6 +1704,7 @@ spec:
 	if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	report, err := newV(t).ValidateDir(dir)
 	if err != nil {
 		t.Fatalf("ValidateDir: %v", err)
@@ -1727,5 +1728,77 @@ spec:
 		if issue.Severity == Error && strings.Contains(issue.Message, "checkout") {
 			t.Errorf("checkout declaration must not be an error: %v", issue)
 		}
+	}
+}
+
+func TestGagglePinnedCheckoutRejectsWorktreeContradictions(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		checkout        string
+		additionalRepos string
+	}{
+		{name: "pinned sparse", checkout: "mode: pinned\n      sparse: [services/web]"},
+		{name: "worktree clean policy", checkout: "mode: worktree\n      cleanPolicy: full"},
+		{
+			name:     "pinned additional repo",
+			checkout: "mode: worktree",
+			additionalRepos: `
+  additionalRepos:
+    - provider: github
+      owner: acme
+      name: assets
+      checkout:
+        mode: pinned`,
+		},
+		{
+			name:     "pinned project with additional repo",
+			checkout: "mode: pinned",
+			additionalRepos: `
+  additionalRepos:
+    - provider: github
+      owner: acme
+      name: assets`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    checkout:
+      ` + tc.checkout + `
+` + tc.additionalRepos + `
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-example
+`
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(doc), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !report.HasErrors() {
+				t.Fatalf("checkout contradiction was accepted: %+v", report.Issues)
+			}
+			found := false
+			for _, issue := range report.Issues {
+				if issue.Code == errorCheckoutConflict {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("issues = %+v, want %s", report.Issues, errorCheckoutConflict)
+			}
+		})
 	}
 }

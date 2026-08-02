@@ -38,6 +38,25 @@ func testIdentity() journal.RunIdentity {
 	}
 }
 
+func TestPinnedWorkspaceQueueIsVisibleAsCurrentStage(t *testing.T) {
+	queued := ev(2, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(3)}
+	})
+	acquired := ev(3, 2*time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(0)}
+	})
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, 0, journal.EventRunStarted, nil), queued,
+	}).Run
+	if run.CurrentStage != "Workspace queue (position 3)" {
+		t.Fatalf("current stage = %q, want visible queue position", run.CurrentStage)
+	}
+	run = ProjectRun(testIdentity(), Projection{Run: run}, []journal.Event{acquired}).Run
+	if run.CurrentStage != "" {
+		t.Fatalf("current stage after acquisition = %q, want cleared", run.CurrentStage)
+	}
+}
+
 // completedRunEvents is a run that starts, retries once, and completes.
 func completedRunEvents() []journal.Event {
 	return []journal.Event{
