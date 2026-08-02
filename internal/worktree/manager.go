@@ -65,8 +65,9 @@ type Manager struct {
 	// invocations to previous releases.
 	partialClone bool
 
-	pathLengthMu     sync.RWMutex
-	pathLengthLimits map[string]PathLengthLimit
+	pathLengthMu           sync.RWMutex
+	pathLengthLimits       map[string]PathLengthLimit
+	defaultPathLengthLimit *PathLengthLimit
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -175,6 +176,18 @@ func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
 	}
 }
 
+// WithDefaultPathLengthLimit enables checkout path-length preflight for
+// repositories without an explicit limit. A zero maximum uses
+// DefaultMaxPathLength.
+func WithDefaultPathLengthLimit(limit PathLengthLimit) ManagerOption {
+	return func(m *Manager) {
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		m.defaultPathLengthLimit = &limit
+	}
+}
+
 // SetPathLengthLimits atomically replaces the repository path-length policy.
 // Replacing rather than merging ensures repositories disabled or removed by a
 // configuration reload no longer retain their prior limits.
@@ -195,7 +208,13 @@ func (m *Manager) pathLengthLimit(repoURL string) (PathLengthLimit, bool) {
 	m.pathLengthMu.RLock()
 	defer m.pathLengthMu.RUnlock()
 	limit, ok := m.pathLengthLimits[repoURL]
-	return limit, ok
+	if ok {
+		return limit, true
+	}
+	if m.defaultPathLengthLimit == nil {
+		return PathLengthLimit{}, false
+	}
+	return *m.defaultPathLengthLimit, true
 }
 
 // NewManager returns a Manager rooted at root, creating the directory if it
