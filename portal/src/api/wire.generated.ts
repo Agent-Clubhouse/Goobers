@@ -365,7 +365,16 @@ export const goWireFixtures = {
         "evaluator": "",
         "capabilities": [
           "repo:push"
-        ]
+        ],
+        "timeoutSeconds": 3600,
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSeconds": 30
+        },
+        "policyActions": [
+          "pr:open"
+        ],
+        "rawYaml": "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n"
       },
       {
         "name": "review",
@@ -375,7 +384,12 @@ export const goWireFixtures = {
         "evaluator": "agentic",
         "capabilities": [
           "repo:read"
-        ]
+        ],
+        "branches": {
+          "needs-changes": "implement",
+          "pass": ""
+        },
+        "rawYaml": "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n"
       }
     ]
   },

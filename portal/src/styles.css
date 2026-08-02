@@ -78,7 +78,7 @@ summary:focus-visible {
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
   padding: 18px 14px 14px;
   position: sticky;
   top: 0;
@@ -91,6 +91,7 @@ summary:focus-visible {
   border-radius: 10px;
   cursor: pointer;
   display: flex;
+  flex-shrink: 0;
   gap: 11px;
   padding: 5px;
   text-align: left;
@@ -125,8 +126,12 @@ summary:focus-visible {
 
 .primary-nav {
   display: grid;
+  align-content: start;
+  flex: 1 1 auto;
   gap: 4px;
   margin-top: 28px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -164,6 +169,7 @@ summary:focus-visible {
 
 .sidebar-status {
   border-top: 1px solid var(--line);
+  flex-shrink: 0;
   margin-top: auto;
   padding: 14px 5px 2px;
 }
@@ -180,6 +186,7 @@ summary:focus-visible {
 
 .support-footer {
   display: grid;
+  flex-shrink: 0;
   gap: 6px;
   margin-top: 12px;
   padding: 0 5px;
@@ -2686,6 +2693,30 @@ a.telemetry-error-row:hover {
   border-top: 1px solid var(--line);
 }
 
+.definition-view-toggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.definition-view-toggle button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 5px 10px;
+}
+
+.definition-view-toggle button.active {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+  color: var(--bg);
+}
+
 .code-heading,
 .artifact-heading {
   align-items: center;
@@ -4664,9 +4695,14 @@ a.telemetry-error-row:hover {
     border-right: 0;
     display: grid;
     grid-template-columns: auto 1fr;
-    min-height: auto;
+    height: auto;
     padding: 8px 12px;
     position: static;
+  }
+
+  .primary-nav {
+    flex: none;
+    overflow-y: visible;
   }
 
   .brand img {
