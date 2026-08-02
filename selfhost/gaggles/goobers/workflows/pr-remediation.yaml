@@ -516,6 +516,20 @@ spec:
         - release-pr-claim
       next: local-ci
 
+    # Local CI can run long enough for the PR to merge or close. Re-check before
+    # publishing so a terminal PR releases its claim without pushing or replying.
+    - name: guard-before-push
+      type: deterministic
+      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      run:
+        command: ["goobers", "pr-claim"]
+        workspace: scratch
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      next: push-remediated
+
     # Publish (issue #392, design doc §5's "re-push -> clear label"). The
     # counterpart to implementation's push-branch: force-push-with-lease to
     # the PR's own head instead of a plain push to a fresh run branch, then
@@ -748,6 +762,6 @@ spec:
       automated:
         check: status-equals
       branches:
-        pass: push-remediated
+        pass: guard-before-push
         fail: guard-before-implement
         escalate: park-escalated

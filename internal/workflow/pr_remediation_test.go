@@ -308,7 +308,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Fatal("local-gate not found")
 	}
 	for branch, want := range map[string]string{
-		"pass": "push-remediated",
+		"pass": "guard-before-push",
 		"fail": "guard-before-implement",
 	} {
 		if got := localGate.Branches[branch]; got != want {
@@ -332,6 +332,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		"guard-before-implement":     "implement",
 		"guard-before-review":        "review",
 		"guard-before-local-ci":      "local-ci",
+		"guard-before-push":          "push-remediated",
 	} {
 		guard, ok := m.Task(name)
 		if !ok {
