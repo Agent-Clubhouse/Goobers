@@ -2288,6 +2288,9 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if err := r.recordPinnedOutcome(runID, phase, jr); err != nil {
+		return Result{}, err
+	}
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}
@@ -2300,6 +2303,31 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 		return res, err
 	}
 	return res, nil
+}
+
+func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	r.pinnedMu.Unlock()
+	if lease == nil {
+		return nil
+	}
+	count, err := lease.RecordOutcome(phase == journal.PhaseFailed)
+	if err != nil {
+		return fmt.Errorf("runner: record pinned workspace outcome: %w", err)
+	}
+	if phase != journal.PhaseFailed || count < worktree.PinnedFailureResetThreshold {
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":          "workspace_reset_suggested",
+			"workspaceMode": "pinned",
+			"failureStreak": count,
+			"suggestion":    "Pinned workspace failures are repeating; run `goobers workspace reset <repo>` before retrying.",
+		},
+	})
 }
 
 func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {

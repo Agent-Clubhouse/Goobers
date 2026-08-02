@@ -79,3 +79,7 @@ func alive(pid int) bool {
 		return false
 	}
 }
+
+func killWorkspaceProcesses(string) error {
+	return nil
+}

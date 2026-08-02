@@ -5,8 +5,12 @@ package proc
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -19,6 +23,35 @@ import (
 // accepted edge case here, and it fails toward "alive", the safe direction (see
 // alive and doc.go).
 const stillActive = 259
+
+const (
+	restartManagerSessionKeyLength = 32
+	restartManagerErrorMoreData    = 234
+	restartManagerFileBatchSize    = 512
+)
+
+var (
+	restartManagerDLL               = windows.NewLazySystemDLL("rstrtmgr.dll")
+	restartManagerStartSession      = restartManagerDLL.NewProc("RmStartSession")
+	restartManagerRegisterResources = restartManagerDLL.NewProc("RmRegisterResources")
+	restartManagerGetList           = restartManagerDLL.NewProc("RmGetList")
+	restartManagerEndSession        = restartManagerDLL.NewProc("RmEndSession")
+)
+
+type restartManagerUniqueProcess struct {
+	ProcessID uint32
+	StartTime windows.Filetime
+}
+
+type restartManagerProcessInfo struct {
+	Process          restartManagerUniqueProcess
+	AppName          [256]uint16
+	ServiceShortName [64]uint16
+	ApplicationType  uint32
+	AppStatus        uint32
+	SessionID        uint32
+	Restartable      int32
+}
 
 // Tree on windows is the child pid plus the Job Object the whole descendant
 // tree is terminated through. A zero job handle means no job is owned (a
@@ -211,4 +244,146 @@ func alive(pid int) bool {
 		return true
 	}
 	return code == stillActive
+}
+
+func killWorkspaceProcesses(workspace string) error {
+	locked, err := workspaceLockingProcesses(workspace)
+	if err != nil {
+		return err
+	}
+	if len(locked) == 0 {
+		return nil
+	}
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return fmt.Errorf("proc: snapshot build processes: %w", err)
+	}
+	defer func() { _ = windows.CloseHandle(snapshot) }()
+
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	processes := make(map[uint32]windows.ProcessEntry32)
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		processes[entry.ProcessID] = entry
+	}
+	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		return fmt.Errorf("proc: enumerate build processes: %w", err)
+	}
+
+	targets := make(map[uint32]bool)
+	for pid, process := range processes {
+		name := strings.ToLower(windows.UTF16ToString(process.ExeFile[:]))
+		if locked[pid] && (name == "msbuild.exe" || name == "vbcscompiler.exe") {
+			targets[pid] = true
+		}
+	}
+	for {
+		added := false
+		for pid, process := range processes {
+			if targets[process.ParentProcessID] && !targets[pid] {
+				targets[pid] = true
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+
+	var errs []error
+	for pid := range targets {
+		if err := terminatePID(int(pid)); err != nil && alive(int(pid)) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func workspaceLockingProcesses(workspace string) (map[uint32]bool, error) {
+	if workspace == "" {
+		return nil, fmt.Errorf("proc: workspace path must not be empty")
+	}
+	var session uint32
+	key := make([]uint16, restartManagerSessionKeyLength+1)
+	result, _, _ := restartManagerStartSession.Call(
+		uintptr(unsafe.Pointer(&session)),
+		0,
+		uintptr(unsafe.Pointer(&key[0])),
+	)
+	if result != 0 {
+		return nil, fmt.Errorf("proc: start Restart Manager session: %w", syscall.Errno(result))
+	}
+	defer func() { _, _, _ = restartManagerEndSession.Call(uintptr(session)) }()
+
+	files := make([]*uint16, 0, restartManagerFileBatchSize)
+	register := func() error {
+		if len(files) == 0 {
+			return nil
+		}
+		result, _, _ := restartManagerRegisterResources.Call(
+			uintptr(session),
+			uintptr(len(files)),
+			uintptr(unsafe.Pointer(&files[0])),
+			0, 0, 0, 0,
+		)
+		files = files[:0]
+		if result != 0 {
+			return fmt.Errorf("proc: register workspace files with Restart Manager: %w", syscall.Errno(result))
+		}
+		return nil
+	}
+	err := filepath.WalkDir(workspace, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		name, err := windows.UTF16PtrFromString(path)
+		if err != nil {
+			return fmt.Errorf("proc: encode workspace path %q: %w", path, err)
+		}
+		files = append(files, name)
+		if len(files) == restartManagerFileBatchSize {
+			return register()
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("proc: inspect workspace locks: %w", err)
+	}
+	if err := register(); err != nil {
+		return nil, err
+	}
+
+	var needed, count, rebootReasons uint32
+	result, _, _ = restartManagerGetList.Call(
+		uintptr(session),
+		uintptr(unsafe.Pointer(&needed)),
+		uintptr(unsafe.Pointer(&count)),
+		0,
+		uintptr(unsafe.Pointer(&rebootReasons)),
+	)
+	if result == 0 && needed == 0 {
+		return nil, nil
+	}
+	if result != restartManagerErrorMoreData {
+		return nil, fmt.Errorf("proc: query workspace lock holders: %w", syscall.Errno(result))
+	}
+	processes := make([]restartManagerProcessInfo, needed)
+	count = needed
+	result, _, _ = restartManagerGetList.Call(
+		uintptr(session),
+		uintptr(unsafe.Pointer(&needed)),
+		uintptr(unsafe.Pointer(&count)),
+		uintptr(unsafe.Pointer(&processes[0])),
+		uintptr(unsafe.Pointer(&rebootReasons)),
+	)
+	if result != 0 {
+		return nil, fmt.Errorf("proc: list workspace lock holders: %w", syscall.Errno(result))
+	}
+	locked := make(map[uint32]bool, count)
+	for _, process := range processes[:count] {
+		locked[process.Process.ProcessID] = true
+	}
+	return locked, nil
 }

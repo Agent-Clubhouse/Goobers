@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // Manager owns managed working copies under Root — one mirror clone per
@@ -66,7 +67,8 @@ type Manager struct {
 	partialClone bool
 	// pinnedRoot is the node-wide root for persistent pinned workspaces. It may
 	// differ from Root, which remains gaggle-scoped for disposable worktrees.
-	pinnedRoot string
+	pinnedRoot          string
+	pinnedProcessKiller func(string) error
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -161,6 +163,15 @@ func WithPinnedRoot(root string) ManagerOption {
 	}
 }
 
+// WithPinnedProcessKiller overrides pinned-workspace lock-holder termination.
+func WithPinnedProcessKiller(kill func(string) error) ManagerOption {
+	return func(m *Manager) {
+		if kill != nil {
+			m.pinnedProcessKiller = kill
+		}
+	}
+}
+
 // NewManager returns a Manager rooted at root, creating the directory if it
 // does not already exist. root is resolved to an absolute path immediately
 // (#282): every path this package derives from Root (repoDirForKey,
@@ -196,6 +207,7 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 		symlinkFallback:     runtime.GOOS == "windows",
 		lstat:               os.Lstat,
 		diskUsage:           apparentDiskUsage,
+		pinnedProcessKiller: proc.KillWorkspaceProcesses,
 	}
 	for _, opt := range opts {
 		opt(m)

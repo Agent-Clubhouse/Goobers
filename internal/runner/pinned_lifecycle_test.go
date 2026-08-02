@@ -2,11 +2,14 @@ package runner
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -17,6 +20,7 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	repo := newFixtureRepo(t)
 	r, err := New(Config{
 		Worktrees: manager,
@@ -67,6 +71,7 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 					goto queued
 				}
 			}
+
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("second run did not report waiting for the pinned lease")
@@ -124,5 +129,92 @@ queued:
 	}
 	if second.Phase != journal.PhaseCompleted {
 		t.Fatalf("second Resume phase = %s, want completed", second.Phase)
+	}
+}
+
+func TestPinnedFailureStreakSuggestsResetWithoutResetting(t *testing.T) {
+	root := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := newFixtureRepo(t)
+	byTask := make(map[string]stubTaskResult)
+	for i := 1; i <= worktree.PinnedFailureResetThreshold; i++ {
+		runID := "pinned-failure-" + string(rune('0'+i))
+		byTask[runID+":implement"] = stubTaskResult{
+			status: apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{
+				Code:    "build_failed",
+				Message: "build failed",
+			},
+		}
+	}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: byTask}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(),
+		Worktrees: manager,
+		RunsDir:   filepath.Join(root, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
+			return repo, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "web",
+		Branch:   "main",
+		Checkout: &apiv1.CheckoutSpec{Mode: apiv1.CheckoutModePinned},
+	}
+
+	var markerPath string
+	for i := 1; i <= worktree.PinnedFailureResetThreshold; i++ {
+		runID := "pinned-failure-" + string(rune('0'+i))
+		result, err := r.Start(context.Background(), StartInput{
+			RunID: runID, Machine: terminalFailMachine(t), Gaggle: "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: ref,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Phase != journal.PhaseFailed {
+			t.Fatalf("%s phase = %s, want failed", runID, result.Phase)
+		}
+		rd, err := journal.OpenRead(filepath.Join(root, "runs", runID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := rd.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		suggested := false
+		for _, event := range events {
+			if event.Type == journal.EventRunnerAnnotation &&
+				event.Runner["kind"] == "workspace_reset_suggested" {
+				suggested = true
+			}
+		}
+		if suggested != (i == worktree.PinnedFailureResetThreshold) {
+			t.Fatalf("%s reset suggestion = %v", runID, suggested)
+		}
+		if i == 1 {
+			pins, err := filepath.Glob(filepath.Join(root, "workcopies", "*", "pin"))
+			if err != nil || len(pins) != 1 {
+				t.Fatalf("find pinned workspace: paths=%v err=%v", pins, err)
+			}
+			markerPath = filepath.Join(pins[0], "persistent-build-state")
+			if err := os.WriteFile(markerPath, []byte("warm"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("pinned workspace was automatically reset: %v", err)
 	}
 }

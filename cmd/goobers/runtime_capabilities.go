@@ -334,6 +334,16 @@ func init() {
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
 			withExamples("goobers reset-rate-limit"),
 		groupCommand(
+			"workspace",
+			runWorkspace,
+			subcommand("workspace reset", "reset", apicontract.ActionMaintenance, runWorkspaceReset).
+				withHelp("tear down and re-materialize a pinned repository workspace", workspaceResetHelp).
+				withExamples("goobers workspace reset my-repo", "goobers workspace reset acme/my-repo ./instance"),
+		).
+			withSynopsis(synopsisByID["workspace"]).
+			withHelp("explicitly recover pinned repository workspaces", workspaceHelp).
+			withExamples("goobers workspace reset my-repo"),
+		groupCommand(
 			"blocked",
 			runBlocked,
 			subcommand("blocked list", "list", apicontract.ActionReadOnlyNavigation, runBlockedList).

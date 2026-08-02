@@ -34,6 +34,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'schema'
         'explain'
         'reset-rate-limit'
+        'workspace'
         'blocked'
         'claims'
         'trace'

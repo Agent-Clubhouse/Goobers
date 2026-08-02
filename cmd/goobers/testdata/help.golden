@@ -60,6 +60,7 @@ Usage:
   goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
   goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
+  goobers workspace reset <repo> [path]  explicitly re-materialize a pinned workspace
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
   goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
@@ -202,6 +203,7 @@ Usage:
   goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
   goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
   goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
+  goobers workspace reset <repo> [path]  explicitly re-materialize a pinned workspace
   goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
   goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
   goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
@@ -1788,4 +1790,20 @@ Usage: goobers workflow show [--dot] <name> [path]
 Load the named workflow from the instance config and show its stages,
 kinds, and transition targets as a text DAG or Graphviz DOT
 (default path ".").
+
+### workspace
+Usage: goobers workspace reset <repo> [path]
+
+Explicitly recover a configured pinned workspace. Reset refuses a live
+lease, terminates lingering build processes, deletes the workspace, and
+performs a full checkout at the same stable path. It never runs
+automatically. Default instance path ".".
+
+### workspace reset
+Usage: goobers workspace reset <repo> [path]
+
+Tear down and re-materialize the pinned workspace for <repo>. The repo may
+be selected by name, owner/name, or (for ADO) owner/project/name. A live
+run lease makes the command fail without changing the workspace.
+Exit codes: 0 = reset complete, 1 = reset refused/failed, 2 = usage error.
 

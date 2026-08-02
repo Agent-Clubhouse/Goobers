@@ -26,6 +26,9 @@ const (
 	PinnedCleanIgnoredSafe PinnedCleanPolicy = "ignored-safe"
 	// PinnedCleanFull removes ignored and untracked files.
 	PinnedCleanFull PinnedCleanPolicy = "full"
+	// PinnedFailureResetThreshold is the consecutive-failure count at which the
+	// runner starts suggesting explicit workspace recovery.
+	PinnedFailureResetThreshold = 3
 )
 
 // PinnedOptions configures one whole-run pinned-workspace lease.
@@ -47,6 +50,16 @@ type PinnedPrepareOptions struct {
 	Branch                string
 	RequireExistingBranch bool
 	SyncBase              bool
+}
+
+// PinnedResetOptions identifies the workspace to tear down and re-materialize.
+type PinnedResetOptions struct {
+	RepoURL string
+	BaseRef string
+}
+
+type pinnedFailureState struct {
+	Count int `json:"count"`
 }
 
 type pinnedLeaseRecord struct {
@@ -80,6 +93,7 @@ type PinnedLease struct {
 	handle   *lock.Handle
 	queue    string
 	record   string
+	root     string
 }
 
 // Release relinquishes the whole-run lease without removing the workspace.
@@ -213,7 +227,7 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 		}
 	}
 
-	lease := &PinnedLease{handle: handle, queue: queuePath, record: recordPath}
+	lease := &PinnedLease{handle: handle, queue: queuePath, record: recordPath, root: root}
 	defer func() {
 		if retErr != nil {
 			_ = lease.Release()
@@ -244,6 +258,83 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 	}
 	lease.Worktree = wt
 	return lease, nil
+}
+
+// RecordOutcome updates the consecutive terminal-failure count while the
+// caller still owns the workspace lease.
+func (l *PinnedLease) RecordOutcome(failed bool) (int, error) {
+	if l == nil || l.root == "" {
+		return 0, nil
+	}
+	path := filepath.Join(l.root, "failure-streak.json")
+	state := pinnedFailureState{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &state); err != nil {
+			return 0, fmt.Errorf("worktree: decode pinned failure streak: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return 0, fmt.Errorf("worktree: read pinned failure streak: %w", err)
+	}
+	if failed {
+		state.Count++
+	} else {
+		state.Count = 0
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return 0, fmt.Errorf("worktree: encode pinned failure streak: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return 0, fmt.Errorf("worktree: write pinned failure streak: %w", err)
+	}
+	return state.Count, nil
+}
+
+// ResetPinned exclusively tears down and immediately re-materializes a pinned
+// workspace. A live run's lease makes the reset fail rather than race it.
+func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (string, error) {
+	if opts.RepoURL == "" || opts.BaseRef == "" {
+		return "", fmt.Errorf("worktree: pinned reset RepoURL and BaseRef are required")
+	}
+	key := repoKey(opts.RepoURL)
+	root := filepath.Join(m.pinnedRoot, key)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("worktree: create pinned reset root: %w", err)
+	}
+	handle, err := lock.TryAcquire(filepath.Join(root, "pin.lock"))
+	if err != nil {
+		if errors.Is(err, lock.ErrHeld) {
+			return "", fmt.Errorf("worktree: pinned workspace is leased by a live run")
+		}
+		return "", fmt.Errorf("worktree: acquire pinned reset lock: %w", err)
+	}
+	defer func() { _ = handle.Release() }()
+
+	pinDir := filepath.Join(root, "pin")
+	if err := m.pinnedProcessKiller(pinDir); err != nil {
+		return "", fmt.Errorf("worktree: terminate pinned workspace processes: %w", err)
+	}
+	if err := os.RemoveAll(pinDir); err != nil {
+		return "", fmt.Errorf("worktree: remove pinned workspace: %w", err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "pin.lease.json"),
+		filepath.Join(root, "failure-streak.json"),
+	} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("worktree: clear pinned reset state: %w", err)
+		}
+	}
+	workspace, err := m.preparePinned(ctx, key, PinnedOptions{
+		RepoURL: opts.RepoURL,
+		RunID:   "workspace-reset",
+		BaseRef: opts.BaseRef,
+	})
+	if err != nil {
+		_ = os.RemoveAll(pinDir)
+		return "", fmt.Errorf("worktree: re-materialize pinned workspace: %w", err)
+	}
+	return workspace.Path, nil
 }
 
 func pinnedQueueEntryOrphaned(path, name string) (bool, error) {

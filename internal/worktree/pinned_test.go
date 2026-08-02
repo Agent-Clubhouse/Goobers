@@ -43,6 +43,7 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	if origin := strings.TrimSpace(runTestGit(t, pinPath, "remote", "get-url", "origin")); origin != repo {
 		t.Fatalf("pinned origin = %q, want push remote %q", origin, repo)
 	}
+
 	mustWriteFile(t, filepath.Join(pinPath, "build", "incremental.obj"), "warm")
 	runTestGit(t, pinPath, "push", "origin", "HEAD")
 	if err := first.Release(); err != nil {
@@ -59,6 +60,94 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(manager.pinnedRoot, repoKey(repo), "runs")); !os.IsNotExist(err) {
 		t.Fatalf("pinned mode created a per-run worktree directory: %v", err)
+	}
+}
+
+func TestResetPinnedKillsLockHoldersAndRematerializes(t *testing.T) {
+	_, repo := pinnedFixture(t)
+	var killedPath string
+	manager, err := NewManager(t.TempDir(), WithPinnedProcessKiller(func(path string) error {
+		killedPath = path
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := acquirePinnedFixture(t, manager, repo, "run-before-reset", PinnedCleanNone)
+	pinPath := lease.Worktree.Path
+	mustWriteFile(t, filepath.Join(pinPath, "build", "locked.obj"), "poisoned")
+	if _, err := lease.RecordOutcome(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(manager.pinnedRoot, repoKey(repo))
+	stale, err := json.Marshal(pinnedLeaseRecord{RunID: "dead-run", PID: 999999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pin.lease.json"), stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resetPath, err := manager.ResetPinned(context.Background(), PinnedResetOptions{
+		RepoURL: repo,
+		BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if killedPath != pinPath {
+		t.Fatalf("process killer path = %q, want %q", killedPath, pinPath)
+	}
+	if resetPath != pinPath {
+		t.Fatalf("reset path = %q, want stable path %q", resetPath, pinPath)
+	}
+	if _, err := os.Stat(filepath.Join(pinPath, "build", "locked.obj")); !os.IsNotExist(err) {
+		t.Fatalf("poisoned build output survived reset: %v", err)
+	}
+	for _, name := range []string{"pin.lease.json", "failure-streak.json"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived reset: %v", name, err)
+		}
+	}
+}
+
+func TestPinnedFailureStreakCountsOnlyConsecutiveFailures(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	lease := acquirePinnedFixture(t, manager, repo, "run-streak", PinnedCleanNone)
+	defer func() { _ = lease.Release() }()
+
+	for _, step := range []struct {
+		failed bool
+		want   int
+	}{
+		{failed: true, want: 1},
+		{failed: true, want: 2},
+		{failed: false, want: 0},
+		{failed: true, want: 1},
+	} {
+		got, err := lease.RecordOutcome(step.failed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != step.want {
+			t.Fatalf("RecordOutcome(%v) = %d, want %d", step.failed, got, step.want)
+		}
+	}
+}
+
+func TestResetPinnedRefusesLiveLease(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	lease := acquirePinnedFixture(t, manager, repo, "run-live", PinnedCleanNone)
+	defer func() { _ = lease.Release() }()
+
+	if _, err := manager.ResetPinned(context.Background(), PinnedResetOptions{
+		RepoURL: repo,
+		BaseRef: "main",
+	}); err == nil || !strings.Contains(err.Error(), "leased by a live run") {
+		t.Fatalf("ResetPinned error = %v, want live-lease refusal", err)
 	}
 }
 
