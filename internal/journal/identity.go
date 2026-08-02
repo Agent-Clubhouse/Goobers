@@ -71,7 +71,7 @@ type RunIdentity struct {
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.
 	Inputs []InputRef `json:"inputs,omitempty"`
-	// StartedAt is when the run was created. Informational (not conformance).
+	// StartedAt is when the run was created and anchors maxRunDuration.
 	StartedAt time.Time `json:"startedAt"`
 }
 

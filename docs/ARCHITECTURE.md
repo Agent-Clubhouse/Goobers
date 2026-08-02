@@ -246,8 +246,10 @@ Contract rules:
 - **Run-control inheritance is explicit:** `runConditions` supplies instance
   defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
   `Workflow.spec.runControls` overrides them for one definition. The resolved
-  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
-  starts, so config reloads cannot retune a run in flight. An automated or
+  `maxRepasses`, `stalledRunTimeout`, and optional `maxRunDuration` are pinned
+  in `run.yaml` when a run starts, so config reloads cannot retune a run in
+  flight. `maxRunDuration` bounds total wall-clock age independently of journal
+  activity and is disabled when omitted. An automated or
   agentic gate may override `maxRepasses` because separate review loops in one
   definition can legitimately need different budgets. Stall detection does not
   have a task-level override: task/gate `timeoutSeconds` and retry policies

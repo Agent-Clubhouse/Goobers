@@ -20,6 +20,7 @@ const DefaultStalledRunTimeout = 45 * time.Minute
 type Effective struct {
 	MaxRepasses       int
 	StalledRunTimeout time.Duration
+	MaxRunDuration    time.Duration
 }
 
 // Resolve applies instance defaults, then gaggle and workflow overrides.
@@ -48,6 +49,9 @@ func Resolve(instance apiv1.RunControls, gaggle, workflow *apiv1.RunControls) (E
 		if scope.controls.StalledRunTimeout != "" {
 			effective.StalledRunTimeout, _ = time.ParseDuration(scope.controls.StalledRunTimeout)
 		}
+		if scope.controls.MaxRunDuration != "" {
+			effective.MaxRunDuration, _ = time.ParseDuration(scope.controls.MaxRunDuration)
+		}
 	}
 	return effective, nil
 }
@@ -57,15 +61,23 @@ func Validate(path string, controls apiv1.RunControls) error {
 	if controls.MaxRepasses < 0 {
 		return fmt.Errorf("%s.maxRepasses must be positive, got %d", path, controls.MaxRepasses)
 	}
-	if controls.StalledRunTimeout == "" {
-		return nil
-	}
-	timeout, err := time.ParseDuration(controls.StalledRunTimeout)
-	if err != nil {
-		return fmt.Errorf("%s.stalledRunTimeout %q: %w", path, controls.StalledRunTimeout, err)
-	}
-	if timeout <= 0 {
-		return fmt.Errorf("%s.stalledRunTimeout must be positive, got %s", path, timeout)
+	for _, duration := range []struct {
+		name  string
+		value string
+	}{
+		{name: "stalledRunTimeout", value: controls.StalledRunTimeout},
+		{name: "maxRunDuration", value: controls.MaxRunDuration},
+	} {
+		if duration.value == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(duration.value)
+		if err != nil {
+			return fmt.Errorf("%s.%s %q: %w", path, duration.name, duration.value, err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("%s.%s must be positive, got %s", path, duration.name, parsed)
+		}
 	}
 	return nil
 }
@@ -90,7 +102,15 @@ func (effective Effective) Overrides() apiv1.RunControls {
 	return apiv1.RunControls{
 		MaxRepasses:       int32(effective.MaxRepasses),
 		StalledRunTimeout: effective.StalledRunTimeout.String(),
+		MaxRunDuration:    durationString(effective.MaxRunDuration),
 	}
+}
+
+func durationString(duration time.Duration) string {
+	if duration <= 0 {
+		return ""
+	}
+	return duration.String()
 }
 
 // MaxRepassesForGate applies the optional per-gate leaf override.
