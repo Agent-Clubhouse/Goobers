@@ -1,3 +1,4 @@
+// Package testgit provides isolated Git commands for repository fixtures.
 package testgit
 
 import (

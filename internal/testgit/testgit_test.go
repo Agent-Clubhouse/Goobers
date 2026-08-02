@@ -2,6 +2,7 @@ package testgit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,8 @@ func TestCommandIgnoresHostGitConfig(t *testing.T) {
 	if err == nil {
 		t.Fatalf("host git config leaked into command: %q", output)
 	}
-	if exitError, ok := err.(*exec.ExitError); !ok || exitError.ExitCode() != 1 {
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
 		t.Fatalf("git config: %v\n%s", err, output)
 	}
 }
