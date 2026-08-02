@@ -102,7 +102,7 @@ func (f *fakeAppAPI) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := f.requests.Add(1)
 		if f.sleep > 0 {
-			time.Sleep(f.sleep)
+			time.Sleep(f.sleep) // Intentional server latency exercises concurrent token request coalescing.
 		}
 		wantPath := "/app/installations/" + f.installationID + "/access_tokens"
 		if r.Method != http.MethodPost || r.URL.Path != wantPath {

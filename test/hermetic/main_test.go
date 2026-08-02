@@ -79,7 +79,7 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 				t.Errorf("remove configured Go executable: %v", err)
 				return
 			}
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond) // Polling interval for the external test process result.
 		}
 	})
 	goroot, err := exec.Command(ambientGo, "env", "GOROOT").Output()

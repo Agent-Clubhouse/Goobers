@@ -141,7 +141,7 @@ func TestPriorityTriggerDispatchesExactWorkflowWithoutResponse(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for starter.count() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the test starter's synchronized call count.
 	}
 	if starter.count() != 1 {
 		t.Fatalf("start calls = %d, want 1", starter.count())
@@ -642,7 +642,7 @@ func TestPollTriggerResponseToleratesTornWrite(t *testing.T) {
 
 	// Give the poller time to observe the torn file at least once, then complete
 	// the write. A correct poller re-polls and only consumes a parseable file.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // Intentional torn-write window verifies parse errors are retried.
 	data, err := json.Marshal(triggerResponse{RunID: "run-xyz"})
 	if err != nil {
 		t.Fatal(err)
@@ -762,7 +762,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("requeued request was never dispatched after the slot freed")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for the requeued request's journal event.
 	}
 	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, testResponseWait)
 	if err != nil {

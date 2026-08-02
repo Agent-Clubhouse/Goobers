@@ -50,6 +50,33 @@ func (r *progressingGateReviewer) Review(ctx context.Context, _ apiv1.Invocation
 	}
 }
 
+func waitForRunEvent(t *testing.T, runDir, description string, matches func(journal.Event) bool) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	for {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, readErr := reader.Events()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			for _, event := range events {
+				if matches(event) {
+					return
+				}
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", description)
+		}
+	}
+}
+
 func TestEscalateStalledUsesTerminalPath(t *testing.T) {
 	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
 	eventTime := now.Add(-2 * time.Hour)
@@ -227,30 +254,9 @@ func TestEscalateStalledInterruptsRetryBackoff(t *testing.T) {
 	}()
 
 	runDir := filepath.Join(runsDir, "stalled-backoff")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		reader, err := journal.OpenRead(runDir)
-		if err == nil {
-			events, readErr := reader.Events()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			found := false
-			for _, event := range events {
-				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run did not enter retry backoff")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
 
 	start := time.Now()
 	result, escalated, err := r.EscalateStalled("stalled-backoff", time.Now().Add(2*time.Hour), 45*time.Minute)
@@ -312,30 +318,9 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 	}()
 
 	runDir := filepath.Join(runsDir, "cancel-live")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		reader, err := journal.OpenRead(runDir)
-		if err == nil {
-			events, readErr := reader.Events()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			found := false
-			for _, event := range events {
-				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run did not enter retry backoff")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
 
 	start := time.Now()
 	result, cancelled, err := r.CancelRun("cancel-live", time.Now())
@@ -440,6 +425,8 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	r.stalledCancelGrace = 20 * time.Millisecond
 	r.stalledTerminalGrace = time.Second
 	handlerStarted := make(chan struct{})
+	prepareStarted := make(chan struct{})
+	releasePrepare := make(chan struct{})
 	r.cfg.Blocked = func(ctx context.Context, _ BlockedOutcome) error {
 		close(handlerStarted)
 		<-ctx.Done()
@@ -448,7 +435,8 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	var prepareCalls int
 	r.cfg.PrepareTerminal = func(string, journal.RunPhase, *journal.Run) error {
 		prepareCalls++
-		time.Sleep(100 * time.Millisecond)
+		close(prepareStarted)
+		<-releasePrepare
 		return nil
 	}
 
@@ -481,10 +469,27 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 		t.Fatal("run did not enter blocked handler")
 	}
 
-	result, escalated, err := r.EscalateStalled(runID, time.Now().Add(2*time.Hour), 45*time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	type escalationOutcome struct {
+		result    Result
+		escalated bool
+		err       error
 	}
+	escalationDone := make(chan escalationOutcome, 1)
+	go func() {
+		result, escalated, err := r.EscalateStalled(runID, time.Now().Add(2*time.Hour), 45*time.Minute)
+		escalationDone <- escalationOutcome{result: result, escalated: escalated, err: err}
+	}()
+	select {
+	case <-prepareStarted:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("stalled takeover did not enter terminal preparation")
+	}
+	close(releasePrepare)
+	escalation := <-escalationDone
+	if escalation.err != nil {
+		t.Fatal(escalation.err)
+	}
+	result, escalated := escalation.result, escalation.escalated
 	if !escalated || result.Phase != journal.PhaseEscalated {
 		t.Fatalf("escalated=%v result=%+v", escalated, result)
 	}
@@ -558,7 +563,11 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 		escalationDone <- escalationOutcome{result: result, escalated: escalated, err: err}
 	}()
 
-	time.Sleep(4 * r.stalledCancelGrace)
+	select {
+	case escalation := <-escalationDone:
+		t.Fatalf("EscalateStalled returned before normal terminal preparation completed: %+v", escalation)
+	case <-time.After(4 * r.stalledCancelGrace):
+	}
 	if got := prepareCalls.Load(); got != 1 {
 		t.Fatalf("terminal preparation calls before release = %d, want 1", got)
 	}
@@ -733,7 +742,11 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 		t.Fatal("agentic reviewer did not start")
 	}
 	timeout := 20 * time.Millisecond
-	time.Sleep(2 * timeout)
+	select {
+	case <-time.After(2 * timeout):
+	case <-done:
+		t.Fatal("run finished before reviewer progress")
+	}
 	reviewer.progress <- struct{}{}
 	select {
 	case <-reviewer.reported:
@@ -754,31 +767,9 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	case <-time.After(time.Second):
 		t.Fatal("gate heartbeat goroutine did not receive tick")
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		reader, err := journal.OpenRead(filepath.Join(r.cfg.RunsDir, runID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		events, err := reader.Events()
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, event := range events {
-			if event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1 {
-				found = true
-				break
-			}
-		}
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("agentic gate progress did not emit a heartbeat")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForRunEvent(t, filepath.Join(r.cfg.RunsDir, runID), "agentic gate progress heartbeat", func(event journal.Event) bool {
+		return event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1
+	})
 
 	close(reviewer.release)
 	released = true

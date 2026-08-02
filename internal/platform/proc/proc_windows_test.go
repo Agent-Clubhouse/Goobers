@@ -26,7 +26,7 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // Intentional pre-resume window proves suspended child containment.
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("child executed before Job Object attachment: %v", err)
 	}
@@ -53,6 +53,6 @@ func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("child did not execute after Job Object attachment and resume")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for the child process marker.
 	}
 }

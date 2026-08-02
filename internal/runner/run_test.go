@@ -471,7 +471,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 		if time.Now().After(deadline) {
 			t.Fatal("heartbeat was not journaled while task was in flight")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval; heartbeat persistence is observable only in the journal.
 	}
 
 	releaseOnce.Do(func() { close(blocker.release) })
@@ -5942,7 +5942,7 @@ func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("reviewer heartbeat was not journaled while the gate was in flight")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval; gate heartbeat persistence is observable only in the journal.
 	}
 
 heartbeatObserved:

@@ -71,7 +71,7 @@ func TestIntegrationShellExecutor_DistinguishesCancelFromTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // Intentional delayed cancellation exercises shell process termination.
 		cancel()
 	}()
 

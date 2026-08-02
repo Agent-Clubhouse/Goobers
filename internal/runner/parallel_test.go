@@ -765,7 +765,7 @@ func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("queued branch was not cancelled after first branch failed")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for cancellation observed by the queued branch.
 	}
 	close(det.releaseB)
 	select {
@@ -1088,7 +1088,7 @@ type slowThenFastDeterministic struct {
 func (s *slowThenFastDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	switch {
 	case strings.HasSuffix(env.TaskID, ":"+s.slowFirstTask):
-		time.Sleep(s.delay)
+		time.Sleep(s.delay) // Intentional branch delay exercises timeout and completion ordering.
 	case strings.HasSuffix(env.TaskID, ":slow-b"):
 		s.secondRan.Store(true)
 	case strings.HasSuffix(env.TaskID, ":fast"):

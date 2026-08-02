@@ -657,18 +657,30 @@ func readDaemonHealth(t *testing.T, address string) readservice.Health {
 	return health
 }
 
+func waitForConfigValue[T any](t *testing.T, description string, read func() (T, bool)) T {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for {
+		if value, ready := read(); ready {
+			return value
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", description)
+		}
+	}
+}
+
 func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.Environment) readservice.Health {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	return waitForConfigValue(t, "health identity "+name+"/"+string(environment), func() (readservice.Health, bool) {
 		health := readDaemonHealth(t, address)
-		if health.Instance.Name == name && health.Instance.Environment == environment {
-			return health
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for health identity %s/%s", name, environment)
-	return readservice.Health{}
+		return health, health.Instance.Name == name && health.Instance.Environment == environment
+	})
 }
 
 // waitForRunnableWorkflow runs a workflow by name, retrying only while the
@@ -689,32 +701,23 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 // until the deadline.
 func waitForRunnableWorkflow(t *testing.T, root, workflow string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitForConfigValue(t, workflow+" to become runnable", func() (struct{}, bool) {
 		code, stdout, stderr := runArgs(t, "run", workflow, root)
 		if code == 0 {
-			return
+			return struct{}{}, true
 		}
 		if !strings.Contains(stderr, "unknown workflow") {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("timed out waiting for %s to become runnable: stderr=%q", workflow, stderr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return struct{}{}, false
+	})
 }
 
 func waitForDefinitionsReload(t *testing.T, address string, loadedAt time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if readDaemonHealth(t, address).Freshness.DefinitionsLoadedAt.After(loadedAt) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for definitions loaded after %s", loadedAt)
+	waitForConfigValue(t, "definitions loaded after "+loadedAt.String(), func() (struct{}, bool) {
+		return struct{}{}, readDaemonHealth(t, address).Freshness.DefinitionsLoadedAt.After(loadedAt)
+	})
 }
 
 func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
@@ -748,8 +751,7 @@ func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
 
 func waitForConfigEvent(t *testing.T, schedulerDir string, eventType journal.EventType, count int) journal.Event {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	return waitForConfigValue(t, string(eventType)+" event", func() (journal.Event, bool) {
 		events, err := journal.ReadInstanceLog(schedulerDir)
 		if err != nil {
 			t.Fatal(err)
@@ -761,13 +763,11 @@ func waitForConfigEvent(t *testing.T, schedulerDir string, eventType journal.Eve
 			}
 			seen++
 			if seen == count {
-				return event
+				return event, true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s event %d", eventType, count)
-	return journal.Event{}
+		return journal.Event{}, false
+	})
 }
 
 func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {

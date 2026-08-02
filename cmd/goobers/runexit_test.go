@@ -151,7 +151,7 @@ func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
 			responseDone <- err
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond) // Intentionally lets the concurrent runner win the create race.
 		run, err := journal.Create(l.ForGaggle("example").RunsDir(), journal.RunIdentity{
 			RunID:     runID,
 			Workflow:  "default-implement",
