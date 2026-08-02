@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -349,6 +350,16 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	// #2191: an aborted run advanced its journal just like a normal terminal
+	// run, but unlike the daemon's ingestRunTelemetry call this one-shot CLI
+	// path never opens the intake store — so the dashboard never learns the
+	// abort happened until the repair sweep eventually finds it.
+	if watermarks, err := intake.Open(runLayout.IntakeDB()); err != nil {
+		pf(stderr, "warning: open intake store for run %s: %v\n", runID, err)
+	} else {
+		recordRunIntake(watermarks, runLayout, runID, nil)
+		_ = watermarks.Close()
 	}
 	if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
