@@ -35,6 +35,14 @@ const (
 	remediationCauseSiblingOverlap remediationCause = remediateCauseSiblingOverlap
 )
 
+type remediationEscalationOutcome string
+
+const (
+	remediationOutcomeDidNotConverge  remediationEscalationOutcome = "did-not-converge"
+	remediationOutcomeBudgetExhausted remediationEscalationOutcome = "budget-exhausted"
+	remediationOutcomePolicyExcluded  remediationEscalationOutcome = "policy-excluded"
+)
+
 var remediationCauseOrder = []remediationCause{
 	remediationCauseConflict,
 	remediationCauseSubstantive,
@@ -153,6 +161,11 @@ type remediationState struct {
 	// exhaustion or a byte-identical repeat), carried so a later sticky-
 	// comment edit can still render it without re-deriving it.
 	EscalatedReason string `json:"escalatedReason,omitempty"`
+	// EscalationOutcome and AttemptedCauses make the operational distinction
+	// between failed repair, exhausted allowance, and policy exclusion durable.
+	EscalationOutcome    remediationEscalationOutcome `json:"escalationOutcome,omitempty"`
+	RemediationAttempted bool                         `json:"remediationAttempted"`
+	AttemptedCauses      []remediationCause           `json:"attemptedCauses,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
 	// moment of escalation — the self-heal comparison snapshot (#716).
 	EscalatedHeadSHA           string `json:"escalatedHeadSha,omitempty"`
@@ -454,7 +467,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	moot := func() int {
 		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
-		if err := writeCheckpointResult(stderr, false, selectedNumber, "", ""); err != nil {
+		if err := writeCheckpointResult(stderr, false, selectedNumber, "", "", remediationEscalation{}); err != nil {
 			return 1
 		}
 		return 0
@@ -529,9 +542,14 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// no-progress checks would just delay the same inevitable outcome.
 	// *escalateReason (the reviewer-fail path, §4 D2) wins if somehow both
 	// are set — it is the more specific, caller-supplied terminal reason.
+	policyExcluded, err := strconv.ParseBool(providerInput("policyExcluded", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid policyExcluded input: %v\n", err)
+		return 1
+	}
 	escalateReasonValue := *escalateReason
 	if escalateReasonValue == "" {
-		if excluded, err := strconv.ParseBool(providerInput("policyExcluded", "false")); err == nil && excluded {
+		if policyExcluded {
 			escalateReasonValue = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
 		}
 	}
@@ -710,7 +728,13 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	var state remediationState
 	if exceeded || stalled || structuralCollision || forced {
 		reason := ""
+		escalation := remediationEscalation{
+			Outcome:         remediationOutcomeDidNotConverge,
+			Attempted:       true,
+			AttemptedCauses: attemptedRemediationCauses(prior.AttemptsByCause),
+		}
 		if exceeded {
+			escalation.Outcome = remediationOutcomeBudgetExhausted
 			reason = fmt.Sprintf(
 				"remediation cause %q exhausted its budget after %d/%d attempts",
 				exhaustedCause,
@@ -735,6 +759,12 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if forced {
 			reason = escalateReasonValue
 		}
+		if policyExcluded {
+			escalation.Outcome = remediationOutcomePolicyExcluded
+			escalation.Attempted = false
+			escalation.AttemptedCauses = nil
+		}
+		escalation.Reason = reason
 		var overlaps []siblingOverlapFinding
 		if exceeded || stalled {
 			overlaps, err = knownSiblingOverlapFindings(
@@ -760,6 +790,8 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
 			Escalated: true, EscalatedReason: reason,
+			EscalationOutcome: escalation.Outcome, RemediationAttempted: escalation.Attempted,
+			AttemptedCauses:  escalation.AttemptedCauses,
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: escalatedBaseTip,
 			SiblingOverlapContext:      renderSiblingOverlapContext(overlaps),
 			StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
@@ -775,7 +807,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err := postOrRecreateRemediationComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
 		}
-		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA); err != nil {
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, escalation); err != nil {
 			return 1
 		}
 		pf(stdout, "escalated PR #%d: %s\n", selectedNumber, reason)
@@ -804,7 +836,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	if err := postOrRecreateRemediationComment(ctx, provider, repo, selectedNumber, priorCommentID, renderRemediationComment(state)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
 	}
-	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA); err != nil {
+	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
 		return 1
 	}
 
@@ -891,6 +923,23 @@ func renderRemediationAttempts(attempts remediationAttempts) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", cause, attempts.forCause(cause)))
 	}
 	return strings.Join(parts, ", ")
+}
+
+type remediationEscalation struct {
+	Outcome         remediationEscalationOutcome
+	Attempted       bool
+	AttemptedCauses []remediationCause
+	Reason          string
+}
+
+func attemptedRemediationCauses(attempts remediationAttempts) []remediationCause {
+	var causes []remediationCause
+	for _, cause := range remediationCauseOrder {
+		if attempts.forCause(cause) > 0 {
+			causes = append(causes, cause)
+		}
+	}
+	return causes
 }
 
 func knownSiblingOverlapFindings(
@@ -1031,13 +1080,21 @@ func renderSiblingOverlapContext(overlaps []siblingOverlapFinding) string {
 //
 // The default matches the shipped workflow so standalone invocations preserve
 // the same routing output contract.
-func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedNumber int, head, headSHA string) error {
+func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedNumber int, head, headSHA string, escalation remediationEscalation) error {
 	resultFile := providerInput("resultFile", "checkpoint-result.json")
+	attemptedCauses := make([]string, 0, len(escalation.AttemptedCauses))
+	for _, cause := range escalation.AttemptedCauses {
+		attemptedCauses = append(attemptedCauses, string(cause))
+	}
 	data, err := json.Marshal(map[string]string{
-		"continueRemediation": strconv.FormatBool(continueRemediation),
-		"selectedNumber":      strconv.Itoa(selectedNumber),
-		"head":                head,
-		"headSha":             headSHA,
+		"continueRemediation":  strconv.FormatBool(continueRemediation),
+		"selectedNumber":       strconv.Itoa(selectedNumber),
+		"head":                 head,
+		"headSha":              headSHA,
+		"escalationOutcome":    string(escalation.Outcome),
+		"remediationAttempted": strconv.FormatBool(escalation.Attempted),
+		"attemptedCauses":      strings.Join(attemptedCauses, ","),
+		"escalationReason":     escalation.Reason,
 	})
 	if err != nil {
 		pf(stderr, "error: marshal checkpoint result: %v\n", err)

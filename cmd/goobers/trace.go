@@ -391,10 +391,11 @@ func printTranscripts(stdout io.Writer, transcripts []readservice.TranscriptCont
 }
 
 type escalationSummary struct {
-	Stage                  string `json:"stage"`
-	Gate                   string `json:"gate"`
-	RepassCount            int    `json:"repassCount"`
-	LastNeedsChangesReason string `json:"lastNeedsChangesReason"`
+	Stage                  string                             `json:"stage"`
+	Gate                   string                             `json:"gate"`
+	RepassCount            int                                `json:"repassCount"`
+	LastNeedsChangesReason string                             `json:"lastNeedsChangesReason"`
+	Remediation            *readservice.RemediationEscalation `json:"remediation,omitempty"`
 }
 
 func traceEscalation(
@@ -411,6 +412,7 @@ func traceEscalation(
 		Gate:                   notRecorded,
 		RepassCount:            detail.Escalation.RepassCount,
 		LastNeedsChangesReason: notRecorded,
+		Remediation:            detail.Escalation.Remediation,
 	}
 	if traceDetail != nil {
 		summary.RepassCount = traceDetail.RepassCount
@@ -445,6 +447,13 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 	pf(stdout, "  stage: %s\n", summary.Stage)
 	pf(stdout, "  gate: %s\n", summary.Gate)
 	pf(stdout, "  repass count: %d\n", summary.RepassCount)
+	if summary.Remediation != nil {
+		pf(stdout, "  remediation outcome: %s\n", summary.Remediation.Outcome)
+		pf(stdout, "  repair attempted: %t\n", summary.Remediation.Attempted)
+		if len(summary.Remediation.AttemptedCauses) > 0 {
+			pf(stdout, "  attempted causes: %s\n", strings.Join(summary.Remediation.AttemptedCauses, ", "))
+		}
+	}
 	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
 }
 

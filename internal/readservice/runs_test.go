@@ -1684,6 +1684,7 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 				Escalated: !tc.legacy,
 				Runner:    map[string]any{"repassAttempt": 4},
 			}
+
 			if tc.legacy {
 				event.Runner["escalated"] = true
 			}
@@ -1703,6 +1704,34 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 				t.Fatalf("escalation cause = %+v", cause)
 			}
 		})
+	}
+}
+
+func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
+	records := []journal.EventRecord{
+		{Event: journal.Event{
+			Schema: journal.EventSchema, Seq: 4, Type: journal.EventStageFinished,
+			Stage: "remediation-checkpoint", Status: string(apiv1.ResultSuccess),
+			Outputs: map[string]any{
+				"escalationOutcome":    "policy-excluded",
+				"remediationAttempted": "false",
+				"attemptedCauses":      "",
+				"escalationReason":     "declared policy excludes substantive",
+			},
+		}},
+		{Event: journal.Event{
+			Schema: journal.EventSchema, Seq: 5, Type: journal.EventGateEvaluated,
+			Gate: "checkpoint-gate", Verdict: "fail", Target: workflow.TargetEscalate,
+		}},
+	}
+	cause, err := escalationCause(RunSummary{Phase: journal.PhaseEscalated}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cause == nil || cause.TerminalReason != "declared policy excludes substantive" ||
+		cause.Remediation == nil || cause.Remediation.Outcome != "policy-excluded" ||
+		cause.Remediation.Attempted || len(cause.Remediation.AttemptedCauses) != 0 {
+		t.Fatalf("escalation cause = %+v", cause)
 	}
 }
 

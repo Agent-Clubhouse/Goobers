@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +39,7 @@ func TestRenderRemediationStateCommentRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatalf("parseRemediationStateComment did not find a payload in: %q", comment)
 	}
-	if got != s {
+	if !reflect.DeepEqual(got, s) {
 		t.Fatalf("parsed state = %+v, want %+v", got, s)
 	}
 }
@@ -521,6 +522,15 @@ func TestRemediationCheckpointEscalatesExhaustedConflictCause(t *testing.T) {
 	if !ok || state.AttemptsByCause.Conflict != 2 || state.AttemptsByCause.FailingCI != 0 {
 		t.Fatalf("escalated state = %+v, ok = %v, want only two conflict attempts consumed", state, ok)
 	}
+	if state.EscalationOutcome != remediationOutcomeBudgetExhausted || !state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseConflict}) {
+		t.Fatalf("escalation evidence = outcome %q, attempted %t, causes %v", state.EscalationOutcome, state.RemediationAttempted, state.AttemptedCauses)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomeBudgetExhausted) ||
+		result["remediationAttempted"] != "true" || result["attemptedCauses"] != "conflict" {
+		t.Fatalf("checkpoint result escalation evidence = %v", result)
+	}
 }
 
 func TestRemediationCheckpointClearsSelfHealedEscalationForIndependentCause(t *testing.T) {
@@ -621,6 +631,16 @@ func TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded(t *testing.T)
 	}
 	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "excludes the only detected cause") {
 		t.Fatalf("comments = %v, want the escalation reason to name the policy exclusion", st.comments)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomePolicyExcluded ||
+		state.RemediationAttempted || len(state.AttemptedCauses) != 0 {
+		t.Fatalf("policy-excluded escalation state = %+v, ok = %v", state, ok)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomePolicyExcluded) ||
+		result["remediationAttempted"] != "false" || result["attemptedCauses"] != "" {
+		t.Fatalf("policy-excluded checkpoint result = %v", result)
 	}
 }
 
@@ -788,6 +808,12 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labels = %v, want goobers:merge-escalated added on the same-diff repeat", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomeDidNotConverge ||
+		!state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseSubstantive}) {
+		t.Fatalf("same-diff escalation evidence = %+v, ok = %v", state, ok)
 	}
 }
 
@@ -1440,11 +1466,15 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 	}
 	result := readCheckpointResult(t, "checkpoint-result.json")
 	want := map[string]string{
-		"continueRemediation": "false",
-		"selectedNumber":      "77",
-		"head":                "goobers/impl/remediation-364",
-		"headSha":             headSHA,
-		"integrity":           string(apiv1.IntegrityUnapproved),
+		"continueRemediation":  "false",
+		"selectedNumber":       "77",
+		"head":                 "goobers/impl/remediation-364",
+		"headSha":              headSHA,
+		"escalationOutcome":    string(remediationOutcomeDidNotConverge),
+		"remediationAttempted": "true",
+		"attemptedCauses":      "",
+		"escalationReason":     "reviewer rejected",
+		"integrity":            string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want classified result %v", result, want)
@@ -1466,11 +1496,15 @@ func assertTerminalCheckpointResult(t *testing.T, path string, selectedNumber in
 	t.Helper()
 	result := readCheckpointResult(t, path)
 	want := map[string]string{
-		"continueRemediation": "false",
-		"selectedNumber":      strconv.Itoa(selectedNumber),
-		"head":                "",
-		"headSha":             "",
-		"integrity":           string(apiv1.IntegrityUnapproved),
+		"continueRemediation":  "false",
+		"selectedNumber":       strconv.Itoa(selectedNumber),
+		"head":                 "",
+		"headSha":              "",
+		"escalationOutcome":    "",
+		"remediationAttempted": "false",
+		"attemptedCauses":      "",
+		"escalationReason":     "",
+		"integrity":            string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want complete terminal result %v", result, want)

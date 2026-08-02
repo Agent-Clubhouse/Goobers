@@ -307,9 +307,8 @@ spec:
         - record-remediation-checkpoint
         - escalate-pr
       expectedOutputs:
-        # What checkpoint-gate branches on: "false" when this cycle escalated
-        # (a cause budget exhausted / no-progress repeat) or the PR is no longer
-        # open, "true" when the agentic chain may proceed.
+        # What checkpoint-continue-gate branches on after checkpoint-gate has
+        # separated escalations from ordinary/moot outcomes.
         - continueRemediation
         # Echoed forward for push-remediated, which sits past the agentic
         # chain: a gate never updates the InputsFrom chain, and implement/
@@ -320,6 +319,10 @@ spec:
         - selectedNumber
         - head
         - headSha
+        - escalationOutcome
+        - remediationAttempted
+        - attemptedCauses
+        - escalationReason
       next: checkpoint-gate
 
     # PRR-3 / design doc D1: replace only the review-thread section of the
@@ -638,6 +641,8 @@ spec:
             "--escalate",
             "the in-run reviewer returned a terminal `fail` verdict on this remediation attempt — the approach itself was rejected, not just its details (design doc §4 D2)",
           ]
+      inputs:
+        resultFile: "reviewer-escalation-result.json"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -645,6 +650,11 @@ spec:
       policyActions:
         - record-remediation-checkpoint
         - escalate-pr
+      expectedOutputs:
+        - escalationOutcome
+        - remediationAttempted
+        - attemptedCauses
+        - escalationReason
       # @escalate, not @abort, for the same reason implementation.yaml's own
       # park-escalated is: every escalation surface (`goobers run` exit 3,
       # the read API's escalationCause, `goobers trace`) keys on
@@ -663,7 +673,11 @@ spec:
             "remediation-checkpoint",
             "--escalate",
             "the implementer exhausted the in-run repass budget without producing a complete response for every original merge-review finding",
+            "--escalation-outcome",
+            "budget-exhausted",
           ]
+      inputs:
+        resultFile: "finding-response-escalation-result.json"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -671,6 +685,11 @@ spec:
       policyActions:
         - record-remediation-checkpoint
         - escalate-pr
+      expectedOutputs:
+        - escalationOutcome
+        - remediationAttempted
+        - attemptedCauses
+        - escalationReason
       next: release-escalated-claim
 
   gates:
@@ -706,9 +725,27 @@ spec:
     # Loop-control decision (#392): remediation-checkpoint runs BEFORE the
     # agentic chain so an exhausted cause budget or a no-progress repeat escalates
     # without first spending an agentic session on a PR that cannot advance.
-    # Its "false" branch is terminal — the PR now carries
-    # goobers:merge-escalated and a human takes it from here.
+    # A non-empty typed escalation outcome reaches @escalate so the run-level
+    # read API and trace can project the checkpoint's machine-readable reason.
+    # Routes through release-escalated-claim (not directly to @escalate) so
+    # this escalation path releases the run's PR claim exactly like every
+    # other terminal/escalate path in this workflow (#1860) — otherwise a
+    # policy-excluded/budget-exhausted escalation here would strand the claim
+    # the same way the pre-#1860 workflow did.
     - name: checkpoint-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: escalationOutcome
+          equals: ""
+      branches:
+        pass: checkpoint-continue-gate
+        fail: release-escalated-claim
+
+    # Preserve the existing moot/no-cause behavior: an empty escalation outcome
+    # with continueRemediation=false finishes normally rather than escalating.
+    - name: checkpoint-continue-gate
       evaluator: automated
       automated:
         check: output-equals
