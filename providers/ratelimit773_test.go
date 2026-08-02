@@ -79,17 +79,22 @@ func TestADORateLimitHonorsRetryAfter(t *testing.T) {
 }
 
 func TestADOProviderObservesQuotaHeaders(t *testing.T) {
-	resetAt := time.Now().Add(time.Hour).Truncate(time.Second)
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	const resetSeconds = 300
+	resetAt := now.Add(resetSeconds * time.Second)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "17")
-		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetSeconds))
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 
 	observer := &recordingQuotaObserver{}
 	provider := NewADOProvider("org", "project", "token",
-		func(p *ADOProvider) { p.BaseURL = server.URL },
+		func(p *ADOProvider) {
+			p.BaseURL = server.URL
+			p.now = func() time.Time { return now }
+		},
 		WithADOQuotaObserver(observer),
 	)
 	resp, err := provider.send(context.Background(), http.MethodGet, server.URL, nil, "")

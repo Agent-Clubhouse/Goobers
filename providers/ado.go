@@ -611,10 +611,10 @@ func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	}
 	observation := QuotaObservation{Provider: ProviderADO}
 	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")))
-	resetUnix, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
-	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetUnix > 0 {
+	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetSeconds > 0 {
 		observation.Remaining = remaining
-		observation.Reset = time.Unix(resetUnix, 0)
+		observation.Reset = p.now().Add(time.Duration(resetSeconds) * time.Second)
 		observation.Known = true
 	} else if resp.StatusCode == http.StatusTooManyRequests {
 		now := p.now()
