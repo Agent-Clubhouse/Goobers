@@ -12,7 +12,7 @@ one of these dedicated settings is absent:
 
 - repository variable `PROVIDER_FIXTURE_REPOSITORY` (`owner/name`);
 - repository variable `PROVIDER_FIXTURE_ISSUE` (the stable seeded issue);
-- Actions secret `PROVIDER_FIXTURE_TOKEN` (read-only access to that repository).
+- Actions secret `GH_READONLY_VALIDATION_PAT` (read-only access to that repository).
 
 Do not substitute the ambient Actions token. Provision the designated fixture
 repository and least-privilege credential, reconcile the first candidate, then

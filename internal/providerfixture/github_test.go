@@ -176,7 +176,6 @@ func TestProviderFixtureWorkflowIsInertAndSeparatesOutcomes(t *testing.T) {
 	workflow := string(raw)
 	for _, want := range []string{
 		"workflow_dispatch:",
-		"PROVIDER_FIXTURE_TOKEN",
 		"Verify explicit provisioning",
 		"Provider contract assertions",
 		"Normalized fixture drift",
@@ -185,6 +184,12 @@ func TestProviderFixtureWorkflowIsInertAndSeparatesOutcomes(t *testing.T) {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("provider fixture workflow does not contain %q", want)
 		}
+	}
+	if got := strings.Count(workflow, "secrets.GH_READONLY_VALIDATION_PAT"); got != 2 {
+		t.Errorf("provider fixture workflow contains %d GH_READONLY_VALIDATION_PAT references, want 2", got)
+	}
+	if strings.Contains(workflow, "secrets.PROVIDER_FIXTURE_TOKEN") {
+		t.Fatal("provider fixture workflow references the obsolete PROVIDER_FIXTURE_TOKEN secret")
 	}
 	if strings.Contains(workflow, "pull_request:") {
 		t.Fatal("provider fixture workflow must not run in pull-request CI")
