@@ -103,6 +103,10 @@ const minPoll = time.Second
 // count that often.
 const backlogPollInterval = 30 * time.Second
 
+// demandPollTimeout bounds provider-backed demand checks while Tick holds
+// tickMu so signals and configuration reloads cannot stall indefinitely.
+const demandPollTimeout = 45 * time.Second
+
 const starvationSkipThreshold = 3
 
 // newRunID is the run-id generator; swappable in tests for determinism.
@@ -127,6 +131,7 @@ type Scheduler struct {
 	after             func(d time.Duration) <-chan time.Time
 	telemetry         SpanStarter
 	providerQuota     ProviderQuotaGate
+	demandPollTimeout time.Duration
 	afterTick         func(context.Context)
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
@@ -274,6 +279,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		log:                   log,
 		now:                   time.Now,
 		after:                 time.After,
+		demandPollTimeout:     demandPollTimeout,
 		triggers:              make(map[WorkflowIdentity]TriggerState),
 		reconciledRuns:        make(map[string]WorkflowIdentity),
 		admittedRuns:          make(map[string]WorkflowIdentity),
@@ -999,7 +1005,9 @@ func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding
 }
 
 func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {
-	ready, err := poll.counter.EligibleCount(ctx)
+	pollCtx, cancel := context.WithTimeout(ctx, s.demandPollTimeout)
+	defer cancel()
+	ready, err := poll.counter.EligibleCount(pollCtx)
 	if err != nil {
 		var budgetErr *ProviderPollBudgetError
 		if errors.As(err, &budgetErr) {
