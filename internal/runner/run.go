@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -336,6 +337,11 @@ type Config struct {
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
+	// PinnedWorkspace runs every repository-backed stage in one persistent
+	// checkout protected by a whole-run lease.
+	PinnedWorkspace bool
+	// PinnedCleanPolicy is none, ignored-safe, or full. Empty means none.
+	PinnedCleanPolicy string
 	// ScratchDir contains disposable workspaces for deterministic commands that
 	// declare run.workspace=scratch. Required only when such a task executes.
 	ScratchDir string
@@ -408,6 +414,7 @@ type Runner struct {
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
+	pinnedRuns           sync.Map
 	toolchains           ToolchainVerifier
 	lookPath             func(string) (string, error)
 }
@@ -606,7 +613,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveWorkspaceRun(ctx, jr, in.RunID, in.RepoRef, func(ctx context.Context) (Result, error) {
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
@@ -3568,6 +3575,11 @@ type stageWorkspace struct {
 	additional []additionalCheckout
 }
 
+type pinnedRunWorkspace struct {
+	mu sync.Mutex
+	wt *worktree.Worktree
+}
+
 // additionalWorkspaces projects a stage workspace's provisioned reference
 // checkouts into the invocation envelope's AdditionalWorkspaces (MGV-11 #1286).
 func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
@@ -3670,11 +3682,59 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if r.cfg.PinnedWorkspace {
+		if mode == apiv1.WorkspaceScratch {
+			return nil, fmt.Errorf("VER: scratch workspace is incompatible with pinned repository mode")
+		}
+		value, ok := r.pinnedRuns.Load(in.RunID)
+		if !ok {
+			return nil, fmt.Errorf("runner: pinned workspace lease is not held for run %q", in.RunID)
+		}
+		runWorkspace := value.(*pinnedRunWorkspace)
+		runWorkspace.mu.Lock()
+		defer runWorkspace.mu.Unlock()
+		baseRef := in.RepoRef.Branch
+		if baseRef == "" {
+			baseRef = "main"
+		}
+		branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+		if workspaceBranch != "" {
+			branch = workspaceBranch
+		}
+		if runWorkspace.wt == nil {
+			repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+			if err != nil {
+				return nil, err
+			}
+			wt, err := r.cfg.Worktrees.PreparePinned(
+				ctx, repoURL, in.RunID, baseRef, branch,
+				syncBase,
+				worktree.CleanPolicy(r.cfg.PinnedCleanPolicy),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("prepare pinned workspace: %w", err)
+			}
+			runWorkspace.wt = wt
+		} else {
+			if runWorkspace.wt.Branch != branch {
+				if err := runWorkspace.wt.SwitchPinnedBranch(ctx, branch); err != nil {
+					return nil, err
+				}
+			}
+			if syncBase {
+				if err := runWorkspace.wt.SyncPinnedBase(ctx, baseRef); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return &stageWorkspace{path: runWorkspace.wt.Path, worktree: runWorkspace.wt}, nil
+	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
 		if syncBase {
 			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
 		}
+
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}
@@ -3764,6 +3824,56 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func (r *Runner) withWorkspaceLease(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, run func(context.Context) (Result, error)) (Result, error) {
+	if !r.cfg.PinnedWorkspace {
+		return run(ctx)
+	}
+
+	repoURL, err := r.cfg.RepoCloneURL(repoRef)
+	if err != nil {
+		return Result{}, err
+	}
+	var queueErr error
+	release, err := r.cfg.Worktrees.AcquirePinnedLease(ctx, repoURL, runID, func(position int) {
+		queueErr = jr.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation,
+			Runner: map[string]any{
+				"kind":          "workspace.queued",
+				"queuePosition": position,
+			},
+		})
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: acquire pinned workspace lease: %w", err)
+	}
+	if queueErr != nil {
+		_ = release()
+		return Result{}, fmt.Errorf("runner: record pinned workspace queue position: %w", queueErr)
+	}
+	if err := jr.Append(journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Runner: map[string]any{"kind": "workspace.acquired"},
+	}); err != nil {
+		return Result{}, errors.Join(
+			fmt.Errorf("runner: record pinned workspace acquisition: %w", err),
+			release(),
+		)
+	}
+	r.pinnedRuns.Store(runID, &pinnedRunWorkspace{})
+	defer r.pinnedRuns.Delete(runID)
+	result, runErr := run(ctx)
+	if releaseErr := release(); releaseErr != nil {
+		return result, errors.Join(runErr, releaseErr)
+	}
+	return result, runErr
+}
+
+func (r *Runner) withActiveWorkspaceRun(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, run func(context.Context) (Result, error)) (Result, error) {
+	return r.withWorkspaceLease(ctx, jr, runID, repoRef, func(ctx context.Context) (Result, error) {
+		return r.withActiveRun(ctx, runID, jr, run)
+	})
 }
 
 // provisionAdditionalCheckouts materializes a read-only checkout of each of the

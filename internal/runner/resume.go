@@ -144,7 +144,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveWorkspaceRun(ctx, jr, in.RunID, in.RepoRef, func(ctx context.Context) (Result, error) {
 		return r.resumeOwned(ctx, in, jr, registrar, dir)
 	})
 }
@@ -178,7 +178,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveWorkspaceRun(ctx, jr, in.RunID, in.RepoRef, func(ctx context.Context) (Result, error) {
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: open run %q for terminal resume: %w", in.RunID, err)

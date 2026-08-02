@@ -1250,6 +1250,32 @@ credentials:
 	}
 }
 
+func TestConfigValidatePinnedWorkspace(t *testing.T) {
+	base := RepoRef{
+		Provider: "github", Owner: "acme", Name: "large",
+		Token: TokenRef{Env: "GITHUB_TOKEN"},
+	}
+	valid := base
+	valid.Workspace = &RepoWorkspaceConfig{Pinned: true}
+	if err := (&Config{Repos: []RepoRef{valid}}).Validate(); err != nil {
+		t.Fatalf("valid pinned workspace: %v", err)
+	}
+
+	contradictory := base
+	contradictory.Workspace = &RepoWorkspaceConfig{Pinned: true, Worktrees: true}
+	if err := (&Config{Repos: []RepoRef{contradictory}}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "VER:") || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("contradictory workspace error = %v", err)
+	}
+
+	badPolicy := base
+	badPolicy.Workspace = &RepoWorkspaceConfig{Pinned: true, CleanPolicy: "sometimes"}
+	if err := (&Config{Repos: []RepoRef{badPolicy}}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "cleanPolicy") {
+		t.Fatalf("invalid clean policy error = %v", err)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string

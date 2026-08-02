@@ -21,7 +21,7 @@ import (
 
 // runColumns is the complete projected row, in scan order.
 const runColumns = `r.run_id, r.gaggle, r.workflow, r.workflow_version, r.workflow_digest,
-	r.goober_digest, r.trigger_kind, r.trigger_ref, r.phase, r.terminal, r.current_stage,
+	r.goober_digest, r.trigger_kind, r.trigger_ref, r.phase, r.terminal, r.current_stage, r.queue_position,
 	r.started_at, r.finished_at, r.last_activity_at, r.last_seq,
 	r.repass_count, r.retry_count, r.policy_retry_count, r.infra_retry_count,
 	r.outcome_verdict, r.outcome_target, r.disposition,
@@ -51,7 +51,7 @@ func runScanTargets(out *RunRow) []any {
 	n := out.scratch
 	return []any{
 		&out.RunID, &out.Gaggle, &out.Workflow, &out.WorkflowVersion, &n.digest,
-		&n.gooberDigest, &n.triggerKind, &n.triggerRef, &n.phase, &n.terminal, &n.currentStage,
+		&n.gooberDigest, &n.triggerKind, &n.triggerRef, &n.phase, &n.terminal, &n.currentStage, &out.QueuePosition,
 		&n.startedAt, &n.finishedAt, &n.lastActivity, &out.LastSeq,
 		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
 		&n.verdict, &n.target, &out.Disposition,

@@ -62,13 +62,14 @@ type RunRow struct {
 	TriggerKind     string
 	TriggerRef      string
 
-	Phase        journal.RunPhase
-	Terminal     bool
-	CurrentStage string
-	StartedAt    time.Time
-	FinishedAt   *time.Time
-	LastActivity time.Time
-	LastSeq      uint64
+	Phase         journal.RunPhase
+	Terminal      bool
+	CurrentStage  string
+	QueuePosition int
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	LastActivity  time.Time
+	LastSeq       uint64
 
 	RepassCount      int
 	RetryCount       int
@@ -267,6 +268,13 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		}
 
 		switch event.Type {
+		case journal.EventRunnerAnnotation:
+			switch event.Runner["kind"] {
+			case "workspace.queued":
+				row.QueuePosition = runnerInt(event.Runner["queuePosition"])
+			case "workspace.acquired":
+				row.QueuePosition = 0
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
@@ -341,6 +349,17 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	}
 
 	return Projection{Run: row, Stages: out}
+}
+
+func runnerInt(value any) int {
+	switch value := value.(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 // countAttempt folds a finished stage attempt into the run's retry counters.

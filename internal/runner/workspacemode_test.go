@@ -152,7 +152,37 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	if _, err := r.createStageWorkspace(ctx, in, "s", apiv1.WorkspaceRepoReadOnly, true, ""); err == nil {
 		t.Error("syncBase must be rejected for a read-only workspace: there is no branch to sync")
 	}
+
 	if _, err := r.createStageWorkspace(ctx, in, "s", apiv1.WorkspaceRepoReadOnly, false, "some-branch"); err == nil {
 		t.Error("a rebound branch must be rejected for a read-only workspace")
+	}
+}
+
+func TestPinnedWorkspaceIsReusedAcrossRepoStageModes(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	r.cfg.PinnedWorkspace = true
+	r.cfg.PinnedCleanPolicy = "none"
+	r.pinnedRuns.Store(in.RunID, &pinnedRunWorkspace{})
+	defer r.pinnedRuns.Delete(in.RunID)
+
+	first, err := r.createStageWorkspace(context.Background(), in, "write", apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatalf("writable pinned workspace: %v", err)
+	}
+	second, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
+	if err != nil {
+		t.Fatalf("read-only pinned workspace: %v", err)
+	}
+	if first.path != second.path || filepath.Base(first.path) != "pin" {
+		t.Fatalf("repo stages used paths %q and %q, want one stable pin", first.path, second.path)
+	}
+	if err := first.Remove(context.Background()); err != nil {
+		t.Fatalf("stage teardown touched pinned workspace: %v", err)
+	}
+	if _, err := os.Stat(first.path); err != nil {
+		t.Fatalf("stage teardown removed pinned workspace: %v", err)
+	}
+	if _, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, ""); err == nil {
+		t.Fatal("pinned mode accepted a contradictory scratch workspace")
 	}
 }
