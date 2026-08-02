@@ -1927,9 +1927,13 @@ escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
-`run cancel` instead asks a live daemon to stop a run it is actively
-executing (active-stage cancel + worktree/claim teardown + aborted) — the
-live counterpart to `run abort`'s daemon-down journal repair.
+If a live `goobers up` daemon already holds that run's journal lock, abort
+delegates to it instead of failing (#2270), the same way `run <workflow>`
+delegates triggering (#343) — dispatched through the live-cancel path
+either way. `run cancel` instead asks a live daemon to stop a run it is
+actively executing (active-stage cancel + worktree/claim teardown +
+aborted) — the live counterpart to `run abort`'s daemon-down journal
+repair.
 ~~~
 
 **Examples**
