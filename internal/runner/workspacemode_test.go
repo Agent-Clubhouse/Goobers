@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestTaskWorkspaceModeResolution(t *testing.T) {
@@ -158,7 +160,7 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	}
 }
 
-func TestPinnedWorkspaceIsReusedAcrossRepoStageModes(t *testing.T) {
+func TestPinnedWorkspaceSerializesAllStageModes(t *testing.T) {
 	r, in := readOnlyWorkspaceRunner(t)
 	r.cfg.PinnedWorkspace = true
 	r.cfg.PinnedCleanPolicy = "none"
@@ -169,12 +171,22 @@ func TestPinnedWorkspaceIsReusedAcrossRepoStageModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writable pinned workspace: %v", err)
 	}
-	second, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
-	if err != nil {
+	secondReady := make(chan *stageWorkspace, 1)
+	secondErr := make(chan error, 1)
+	go func() {
+		second, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
+		if err != nil {
+			secondErr <- err
+			return
+		}
+		secondReady <- second
+	}()
+	select {
+	case <-secondReady:
+		t.Fatal("read-only stage entered the pinned workspace before the writable stage exited")
+	case err := <-secondErr:
 		t.Fatalf("read-only pinned workspace: %v", err)
-	}
-	if first.path != second.path || filepath.Base(first.path) != "pin" {
-		t.Fatalf("repo stages used paths %q and %q, want one stable pin", first.path, second.path)
+	case <-time.After(50 * time.Millisecond):
 	}
 	if err := first.Remove(context.Background()); err != nil {
 		t.Fatalf("stage teardown touched pinned workspace: %v", err)
@@ -182,7 +194,96 @@ func TestPinnedWorkspaceIsReusedAcrossRepoStageModes(t *testing.T) {
 	if _, err := os.Stat(first.path); err != nil {
 		t.Fatalf("stage teardown removed pinned workspace: %v", err)
 	}
-	if _, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, ""); err == nil {
-		t.Fatal("pinned mode accepted a contradictory scratch workspace")
+	var second *stageWorkspace
+	select {
+	case second = <-secondReady:
+	case err := <-secondErr:
+		t.Fatalf("read-only pinned workspace: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("read-only stage did not enter after writable stage exited")
+	}
+	if first.path != second.path || filepath.Base(first.path) != "pin" {
+		t.Fatalf("repo stages used paths %q and %q, want one stable pin", first.path, second.path)
+	}
+	if err := second.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	scratch, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, "")
+	if err != nil {
+		t.Fatalf("scratch stage was not routed to pinned workspace: %v", err)
+	}
+	if scratch.path != first.path {
+		t.Fatalf("scratch stage path = %q, want pin %q", scratch.path, first.path)
+	}
+	if err := scratch.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPinnedLeaseSurvivesWatchdogTakeoverUntilOwnerExits(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	r.cfg.PinnedWorkspace = true
+	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{RunID: in.RunID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	ownerStarted := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	returned := make(chan error, 1)
+	go func() {
+		_, err := r.withActiveWorkspaceRun(context.Background(), jr, in.RunID, in.RepoRef, func(context.Context) (Result, error) {
+			close(ownerStarted)
+			<-releaseOwner
+			return Result{}, nil
+		})
+		returned <- err
+	}()
+	<-ownerStarted
+	active := r.activeRun(in.RunID)
+	if active == nil {
+		t.Fatal("run owner was not registered")
+	}
+	if _, claim := active.claimTakeover(); claim != takeoverClaimed {
+		t.Fatalf("takeover claim = %v, want claimed", claim)
+	}
+	active.completeTakeover(activeRunResult{})
+	if err := <-returned; err != nil {
+		t.Fatalf("takeover return: %v", err)
+	}
+
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := make(chan int, 1)
+	acquired := make(chan func() error, 1)
+	go func() {
+		release, acquireErr := r.cfg.Worktrees.AcquirePinnedLease(context.Background(), repoURL, "next-run", func(position int) {
+			queued <- position
+		})
+		if acquireErr == nil {
+			acquired <- release
+		}
+	}()
+	select {
+	case <-queued:
+	case <-time.After(time.Second):
+		t.Fatal("next run did not queue behind taken-over owner")
+	}
+	select {
+	case <-acquired:
+		t.Fatal("next run acquired pinned workspace while taken-over owner was still running")
+	default:
+	}
+	close(releaseOwner)
+	select {
+	case release := <-acquired:
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next run did not acquire after original owner exited")
 	}
 }

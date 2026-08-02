@@ -95,6 +95,10 @@ type activeRunSet struct {
 type activeRunContextKey struct{}
 
 func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Run, run func(context.Context) (Result, error)) (Result, error) {
+	return r.withActiveRunCleanup(ctx, runID, jr, run, nil)
+}
+
+func (r *Runner) withActiveRunCleanup(ctx context.Context, runID string, jr *journal.Run, run func(context.Context) (Result, error), ownerCleanup func() error) (Result, error) {
 	attemptCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	active := &activeRun{
 		attemptCtx:   attemptCtx,
@@ -112,7 +116,11 @@ func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Ru
 	if _, exists := r.active.runs[runID]; exists {
 		r.active.mu.Unlock()
 		cancel(nil)
-		return Result{}, fmt.Errorf("runner: run %q already has an active owner", runID)
+		err := fmt.Errorf("runner: run %q already has an active owner", runID)
+		if ownerCleanup != nil {
+			err = errors.Join(err, ownerCleanup())
+		}
+		return Result{}, err
 	}
 	r.active.runs[runID] = active
 	r.active.mu.Unlock()
@@ -122,6 +130,9 @@ func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Ru
 	ownedCtx := context.WithValue(ctx, activeRunContextKey{}, active)
 	go func() {
 		result, err := run(ownedCtx)
+		if ownerCleanup != nil {
+			err = errors.Join(err, ownerCleanup())
+		}
 		active.mu.Lock()
 		active.ownerFinished = true
 		active.ownerOutcome = activeRunResult{result: result, err: err}

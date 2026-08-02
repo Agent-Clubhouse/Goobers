@@ -3569,6 +3569,7 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
+	release  func()
 	// additional are read-only reference-repo checkouts (MGV-11 #1286) provisioned
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
@@ -3617,6 +3618,10 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
+	if w.release != nil {
+		defer w.release()
+		w.release = nil
+	}
 	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
 	// independent worktrees off their own mirrors, so a failure to remove one must
 	// not block removing the primary worktree. Best-effort: collect the first error.
@@ -3683,16 +3688,18 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
 	if r.cfg.PinnedWorkspace {
-		if mode == apiv1.WorkspaceScratch {
-			return nil, fmt.Errorf("VER: scratch workspace is incompatible with pinned repository mode")
-		}
 		value, ok := r.pinnedRuns.Load(in.RunID)
 		if !ok {
 			return nil, fmt.Errorf("runner: pinned workspace lease is not held for run %q", in.RunID)
 		}
 		runWorkspace := value.(*pinnedRunWorkspace)
 		runWorkspace.mu.Lock()
-		defer runWorkspace.mu.Unlock()
+		release := true
+		defer func() {
+			if release {
+				runWorkspace.mu.Unlock()
+			}
+		}()
 		baseRef := in.RepoRef.Branch
 		if baseRef == "" {
 			baseRef = "main"
@@ -3727,7 +3734,11 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 				}
 			}
 		}
-		return &stageWorkspace{path: runWorkspace.wt.Path, worktree: runWorkspace.wt}, nil
+		release = false
+		return &stageWorkspace{
+			path: runWorkspace.wt.Path, worktree: runWorkspace.wt,
+			release: runWorkspace.mu.Unlock,
+		}, nil
 	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
@@ -3826,14 +3837,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	}
 }
 
-func (r *Runner) withWorkspaceLease(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, run func(context.Context) (Result, error)) (Result, error) {
-	if !r.cfg.PinnedWorkspace {
-		return run(ctx)
-	}
-
+func (r *Runner) acquireWorkspaceLease(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef) (func() error, error) {
 	repoURL, err := r.cfg.RepoCloneURL(repoRef)
 	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
 	var queueErr error
 	release, err := r.cfg.Worktrees.AcquirePinnedLease(ctx, repoURL, runID, func(position int) {
@@ -3846,33 +3853,36 @@ func (r *Runner) withWorkspaceLease(ctx context.Context, jr *journal.Run, runID 
 		})
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("runner: acquire pinned workspace lease: %w", err)
+		return nil, fmt.Errorf("runner: acquire pinned workspace lease: %w", err)
 	}
 	if queueErr != nil {
 		_ = release()
-		return Result{}, fmt.Errorf("runner: record pinned workspace queue position: %w", queueErr)
+		return nil, fmt.Errorf("runner: record pinned workspace queue position: %w", queueErr)
 	}
 	if err := jr.Append(journal.Event{
 		Type:   journal.EventRunnerAnnotation,
 		Runner: map[string]any{"kind": "workspace.acquired"},
 	}); err != nil {
-		return Result{}, errors.Join(
+		return nil, errors.Join(
 			fmt.Errorf("runner: record pinned workspace acquisition: %w", err),
 			release(),
 		)
 	}
-	r.pinnedRuns.Store(runID, &pinnedRunWorkspace{})
-	defer r.pinnedRuns.Delete(runID)
-	result, runErr := run(ctx)
-	if releaseErr := release(); releaseErr != nil {
-		return result, errors.Join(runErr, releaseErr)
-	}
-	return result, runErr
+	return release, nil
 }
 
 func (r *Runner) withActiveWorkspaceRun(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, run func(context.Context) (Result, error)) (Result, error) {
-	return r.withWorkspaceLease(ctx, jr, runID, repoRef, func(ctx context.Context) (Result, error) {
+	if !r.cfg.PinnedWorkspace {
 		return r.withActiveRun(ctx, runID, jr, run)
+	}
+	release, err := r.acquireWorkspaceLease(ctx, jr, runID, repoRef)
+	if err != nil {
+		return Result{}, err
+	}
+	r.pinnedRuns.Store(runID, &pinnedRunWorkspace{})
+	return r.withActiveRunCleanup(ctx, runID, jr, run, func() error {
+		r.pinnedRuns.Delete(runID)
+		return release()
 	})
 }
 
