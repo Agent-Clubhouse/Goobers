@@ -95,6 +95,9 @@ func (l *InstanceLog) Append(ev Event) error {
 	defer releaseJournalLock(lock)
 
 	path := filepath.Join(l.dir, fileEvents)
+	if err := l.ensureActiveFile(path); err != nil {
+		return err
+	}
 
 	// Allocate the sequence from a BOUNDED read of the journal's tail rather than
 	// a full re-read (#1914). The read stays under the same cross-process lock,
@@ -128,6 +131,34 @@ func (l *InstanceLog) Append(ev Event) error {
 	}
 	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
 	return err
+}
+
+func (l *InstanceLog) ensureActiveFile(path string) error {
+	current, err := l.file.Stat()
+	if err != nil {
+		return fmt.Errorf("journal: stat open instance log: %w", err)
+	}
+	active, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("journal: stat active instance log: %w", err)
+	}
+	if os.SameFile(current, active) {
+		return nil
+	}
+	return l.reopenFile(path)
+}
+
+func (l *InstanceLog) reopenFile(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("journal: reopen active instance log: %w", err)
+	}
+	old := l.file
+	l.file = f
+	if err := old.Close(); err != nil {
+		return fmt.Errorf("journal: close rotated instance log: %w", err)
+	}
+	return nil
 }
 
 // allocateSeqFromTail reads the journal's tail to find the highest committed

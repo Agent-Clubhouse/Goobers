@@ -645,6 +645,18 @@ func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, las
 	return nil
 }
 
+// ResetSchedulerIngestCursor makes the next scheduler ingest re-read the
+// journal from its head while preserving the sequence watermark.
+func (db *DB) ResetSchedulerIngestCursor(ctx context.Context) error {
+	if _, err := db.sql.ExecContext(ctx, `
+		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
+		VALUES (1, 0, (SELECT COALESCE(MAX(seq), 0) FROM scheduler_events))
+		ON CONFLICT(id) DO UPDATE SET byte_offset = 0`); err != nil {
+		return fmt.Errorf("rollup: reset scheduler ingest cursor: %w", err)
+	}
+	return nil
+}
+
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
 // scheduler decisions, starvation and error signals) and its rolling scheduler
 // spans. It is incremental (#1411): a per-tick call reads only the journal tail

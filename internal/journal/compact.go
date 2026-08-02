@@ -18,15 +18,13 @@ type InstanceEventsCompaction struct {
 }
 
 // CompactInstanceEvents rewrites the instance journal at <dir>/events.jsonl in
-// place, keeping only complete records whose event time is at or after
-// keepAfter. A zero keepAfter keeps every record (a no-op on the journal — used
-// when the caller only wants the surrounding db-vacuum maintenance). Records
-// are preserved as their ORIGINAL raw line bytes, never re-marshaled, so any
-// forward-compatible unknown fields survive compaction unchanged; only seq and
-// time are parsed, and only to decide what to keep. Kept records retain their
-// original seq, so the journal stays seq-monotonic and a consumer resuming by
-// seq or byte offset (the rollup's incremental scheduler ingest, #1411) simply
-// re-reads the now-shorter file.
+// place, keeping complete records whose event time is at or after keepAfter,
+// plus the latest scheduled trigger per workflow as a restart checkpoint. A
+// zero keepAfter keeps every record (a no-op on the journal — used when the
+// caller only wants the surrounding db-vacuum maintenance). Records are
+// preserved as their ORIGINAL raw line bytes, never re-marshaled, so any
+// forward-compatible unknown fields survive compaction unchanged. Kept records
+// retain their original seq, so the journal stays seq-monotonic.
 //
 // The caller MUST ensure no daemon is appending: a live InstanceLog holds an
 // O_APPEND handle, and replacing the file out from under it would strand its
@@ -88,23 +86,45 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 	complete := data[:end+1]
 	tail := data[end+1:]
 
-	var kept bytes.Buffer
+	type record struct {
+		line       []byte
+		time       time.Time
+		triggerKey string
+	}
+	var records []record
+	latestTrigger := make(map[string]int)
 	for _, line := range bytes.SplitAfter(complete, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var meta struct {
-			Seq  uint64    `json:"seq"`
-			Time time.Time `json:"time"`
+			Seq      uint64    `json:"seq"`
+			Time     time.Time `json:"time"`
+			Type     EventType `json:"type"`
+			Gaggle   string    `json:"gaggle"`
+			Workflow string    `json:"workflow"`
+			Reason   string    `json:"reason"`
 		}
 		if err := json.Unmarshal(bytes.TrimSpace(line), &meta); err != nil {
 			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
 		}
-		if !keepAfter.IsZero() && meta.Time.Before(keepAfter) {
+		rec := record{line: line, time: meta.Time}
+		if meta.Type == EventTriggerFired && meta.Workflow != "" &&
+			(meta.Reason == "" || meta.Reason == "scheduled" || bytes.HasPrefix([]byte(meta.Reason), []byte("catch-up "))) {
+			rec.triggerKey = meta.Gaggle + "\x00" + meta.Workflow
+			latestTrigger[rec.triggerKey] = len(records)
+		}
+		records = append(records, rec)
+	}
+
+	var kept bytes.Buffer
+	for i, rec := range records {
+		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
+		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint {
 			result.Dropped++
 			continue
 		}
-		kept.Write(line)
+		kept.Write(rec.line)
 		result.Kept++
 	}
 	if result.Dropped == 0 {
@@ -115,9 +135,9 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 	return result, kept.Bytes(), nil
 }
 
-// Compact drops records older than keepAfter while the instance log remains
-// open. It rewrites the existing inode under both writer locks so concurrent
-// append handles continue writing to the active journal.
+// Compact atomically checkpoints records at or after keepAfter while the
+// instance log remains open. The latest scheduled trigger per workflow is also
+// retained so restart reconciliation preserves low-frequency schedules.
 func (l *InstanceLog) Compact(keepAfter time.Time) (InstanceEventsCompaction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -140,21 +160,11 @@ func (l *InstanceLog) Compact(keepAfter time.Time) (InstanceEventsCompaction, er
 	if err != nil || result.Dropped == 0 {
 		return result, err
 	}
-	if err := rewriteOpenInstanceLog(l.file, compacted); err != nil {
-		if restoreErr := rewriteOpenInstanceLog(l.file, data); restoreErr != nil {
-			return InstanceEventsCompaction{}, fmt.Errorf("journal: compact live instance log: %w (restore failed: %v)", err, restoreErr)
-		}
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: compact live instance log: %w", err)
+	if err := WriteFileAtomic(path, compacted, 0o644); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: checkpoint live instance log: %w", err)
+	}
+	if err := l.reopenFile(path); err != nil {
+		return InstanceEventsCompaction{}, err
 	}
 	return result, nil
-}
-
-func rewriteOpenInstanceLog(file *os.File, data []byte) error {
-	if err := file.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	return file.Sync()
 }

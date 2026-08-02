@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -164,6 +165,11 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	if err := first.Append(Event{Type: EventTickSkipped, Workflow: "old"}); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Open(filepath.Join(dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = before.Close() }()
 	now = now.Add(48 * time.Hour)
 	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "recent"}); err != nil {
 		t.Fatal(err)
@@ -175,6 +181,20 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	if result.Dropped != 1 || result.Kept != 1 {
 		t.Fatalf("compaction = %+v, want one dropped and one kept", result)
 	}
+	sealed, err := os.ReadFile(before.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(sealed), `"workflow":"old"`) {
+		t.Fatalf("active journal still contains aged event: %s", sealed)
+	}
+	oldData, err := io.ReadAll(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(oldData), `"workflow":"old"`) {
+		t.Fatalf("sealed journal was destructively truncated: %s", oldData)
+	}
 	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "after"}); err != nil {
 		t.Fatalf("append through independently opened handle after compaction: %v", err)
 	}
@@ -185,6 +205,29 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Workflow != "recent" || events[1].Workflow != "after" || events[1].Seq != 3 {
 		t.Fatalf("events after live compaction = %#v", events)
+	}
+}
+
+func TestInstanceLogCompactPreservesLatestScheduledTriggerPerWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	writeRawInstanceLog(t, dir,
+		eventLine(1, old, `"gaggle":"g","workflow":"monthly","reason":"scheduled"`),
+		eventLine(2, old.Add(time.Hour), `"gaggle":"g","workflow":"monthly","reason":"catch-up (missed 2)"`),
+		eventLine(3, old, `"gaggle":"g","workflow":"manual","reason":"manual"`),
+		eventLine(4, recent, `"workflow":"recent","reason":"scheduled"`),
+	)
+
+	if _, err := CompactInstanceEvents(dir, recent.Add(-time.Hour), false); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Seq != 2 || events[1].Seq != 4 {
+		t.Fatalf("retained trigger checkpoints = %#v, want seq 2 and 4", events)
 	}
 }
 
