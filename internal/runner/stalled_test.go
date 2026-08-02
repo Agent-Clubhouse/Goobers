@@ -359,6 +359,62 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 	}
 }
 
+func TestExpireRunAbortsLiveRunDespiteActivity(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 100}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "duration-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "duration-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, expired, err := r.ExpireRun("duration-live", identity.StartedAt.Add(2*time.Hour), identity.StartedAt, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expired || result.Phase != journal.PhaseAborted {
+		t.Fatalf("expired=%v result=%+v, want aborted", expired, result)
+	}
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseAborted {
+		t.Fatalf("Start() = %+v, %v, want aborted", outcome.result, outcome.err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[len(events)-2].Error == nil ||
+		events[len(events)-2].Error.Code != RunDurationExceededErrorCode {
+		t.Fatalf("terminal events = %+v, want duration-exceeded + run.finished(aborted)", events)
+	}
+}
+
 // TestCancelRunReportsNoLiveOwner covers the daemon-sweep discriminator: a
 // running run this Runner does not actively own is not cancelled here (the
 // caller reports "not currently running by this daemon" rather than editing the

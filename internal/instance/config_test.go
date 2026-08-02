@@ -811,9 +811,26 @@ func TestStalledRunTimeout(t *testing.T) {
 	}
 }
 
+func TestMaxRunDuration(t *testing.T) {
+	if got, err := (RunConditions{}).MaxRunDurationDuration(); err != nil || got != 0 {
+		t.Fatalf("default MaxRunDurationDuration = %s, %v; want disabled", got, err)
+	}
+	if got, err := (RunConditions{MaxRunDuration: "6h"}).MaxRunDurationDuration(); err != nil || got != 6*time.Hour {
+		t.Fatalf("MaxRunDurationDuration = %s, %v; want 6h", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{RunConditions: RunConditions{MaxRunDuration: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "maxRunDuration") {
+				t.Fatalf("Validate() error = %v, want maxRunDuration error", err)
+			}
+		})
+	}
+}
+
 func TestRunConditionsExposeRunControlDefaults(t *testing.T) {
-	conditions := RunConditions{MaxRepasses: 6, StalledRunTimeout: "3h"}
-	if got := conditions.RunControls(); got.MaxRepasses != 6 || got.StalledRunTimeout != "3h" {
+	conditions := RunConditions{MaxRepasses: 6, StalledRunTimeout: "3h", MaxRunDuration: "8h"}
+	if got := conditions.RunControls(); got.MaxRepasses != 6 || got.StalledRunTimeout != "3h" || got.MaxRunDuration != "8h" {
 		t.Fatalf("RunControls = %+v", got)
 	}
 	if err := (&Config{RunConditions: RunConditions{MaxRepasses: -1}}).Validate(); err == nil ||

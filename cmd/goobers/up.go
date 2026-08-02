@@ -593,6 +593,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	maxRunDuration, err := setup.RunConditions.MaxRunDurationDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
@@ -607,6 +612,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
+			maxRunDuration,
 		)
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
