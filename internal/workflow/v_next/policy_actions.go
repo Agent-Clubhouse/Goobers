@@ -44,6 +44,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"record-merge-refusal":          {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"record-remediation-checkpoint": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	// report-pr-status publishes goobers' own evidence (reviewer verdict +
 	// local-CI result) as a provider-native, policy-gate-able pull-request
 	// status. Unlike the backlog/PR actions above — whose canonical capability
@@ -71,6 +72,7 @@ var commandPolicyActions = map[string][]string{
 	"open-pr":                {"open-or-update-pr"},
 	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
+	"pr-claim":               {"release-pr-claim"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},

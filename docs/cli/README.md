@@ -67,6 +67,7 @@
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
+| [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
@@ -1565,6 +1566,30 @@ errors), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers post-merge
+~~~
+
+## `goobers pr-claim`
+
+check PR liveness or release its remediation claim (a workflow stage)
+
+~~~text
+Usage: goobers pr-claim [--release] [path]
+
+At a pr-remediation stage boundary, verify that this run's claimed pull
+request is still open. If it has merged or closed, release the claim and
+return a structured no-work result so the runner stops the workflow.
+With --release, explicitly release the run's PR claim without querying the
+provider. Releasing an already-released claim is an idempotent success.
+
+Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
+2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers pr-claim
+$ goobers pr-claim --release
 ~~~
 
 ## `goobers pr-select`
