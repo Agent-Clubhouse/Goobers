@@ -986,14 +986,15 @@ func checkByLabel(t *testing.T, all []check, label string) check {
 	return found[0]
 }
 
-// TestLintPinsAPerWorkdirGolangciCache proves the lint check never inherits the
-// ambient golangci-lint cache. Sharing one cache across concurrent worktrees
-// produces two failures that no diff can fix — an exit-3 "parallel golangci-lint
-// is running" lock collision, and a cached diagnostic naming a file in a sibling
-// worktree — so isolation is a correctness property, not a tuning choice.
-func TestLintPinsAPerWorkdirGolangciCache(t *testing.T) {
+// TestLintIsSafeAcrossConcurrentWorktrees proves concurrent local CI runs queue
+// on golangci-lint's process lock and never share its path-sensitive cache.
+func TestLintIsSafeAcrossConcurrentWorktrees(t *testing.T) {
 	t.Parallel()
 	lint := checkByLabel(t, mergeGateChecks(), "lint")
+
+	if !slices.Contains(lint.args, "--allow-serial-runners") {
+		t.Fatalf("lint args = %q, want --allow-serial-runners to queue concurrent local CI runs", lint.args)
+	}
 
 	var cache string
 	for _, variable := range lint.env {
