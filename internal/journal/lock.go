@@ -86,6 +86,17 @@ func acquireJournalLockPath(path, location, target string) (*journalLock, error)
 	}
 }
 
+// SetLockTimeoutForTest overrides journalLockTimeout/journalLockPollInterval
+// for the duration of a test, returning a restore func. Exported so callers
+// outside this package (e.g. cmd/goobers, exercising `run abort` against a
+// run a real daemon holds the lock for) can shrink the 30s bound instead of
+// waiting it out for real; production code never calls this.
+func SetLockTimeoutForTest(timeout, poll time.Duration) (restore func()) {
+	prevTimeout, prevPoll := journalLockTimeout, journalLockPollInterval
+	journalLockTimeout, journalLockPollInterval = timeout, poll
+	return func() { journalLockTimeout, journalLockPollInterval = prevTimeout, prevPoll }
+}
+
 func releaseJournalLock(held *journalLock) {
 	if held == nil {
 		return

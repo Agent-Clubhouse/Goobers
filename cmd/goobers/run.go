@@ -54,9 +54,13 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"available) exits 0 because it does not observe a terminal phase.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
 	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
-	"`run cancel` instead asks a live daemon to stop a run it is actively\n" +
-	"executing (active-stage cancel + worktree/claim teardown + aborted) — the\n" +
-	"live counterpart to `run abort`'s daemon-down journal repair.\n"
+	"If a live `goobers up` daemon already holds that run's journal lock, abort\n" +
+	"delegates to it instead of failing (#2270), the same way `run <workflow>`\n" +
+	"delegates triggering (#343) — dispatched through the live-cancel path\n" +
+	"either way. `run cancel` instead asks a live daemon to stop a run it is\n" +
+	"actively executing (active-stage cancel + worktree/claim teardown +\n" +
+	"aborted) — the live counterpart to `run abort`'s daemon-down journal\n" +
+	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -339,6 +343,11 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	registrar, scrubber := journal.DefaultScrubber()
 	run, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
 	if err != nil {
+		if errors.Is(err, journal.ErrLockTimeout) {
+			if code, handled := delegateAbortToLiveDaemon(l, runID, identity, stdout, stderr); handled {
+				return code
+			}
+		}
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -357,6 +366,60 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "aborted run %s\n", runID)
 	return 0
+}
+
+// delegateAbortToLiveDaemon is invoked when journal.Recover fails because a
+// live `goobers up` daemon already holds the run's journal lock (#2270):
+// without this, abort would surface a confusing 30s lock-timeout error
+// instead of doing what the operator actually wants. It routes the request
+// through the same live-cancel protocol `run cancel` uses, mirroring
+// `run <workflow>`'s existing trigger-delegation pattern (#343) — the
+// mechanisms stay separate, only the CLI's choice of which one to use
+// becomes automatic. handled is false when there turns out to be no live
+// daemon after all (a stale/contended lock some other way, or the daemon
+// released the run between the failed Recover and this check), in which case
+// the caller should fall back to reporting the original journal error
+// unchanged.
+func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal.RunIdentity, stdout, stderr io.Writer) (code int, handled bool) {
+	running, _, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil || !running {
+		return 0, false
+	}
+
+	requestID, err := writeCancelRequest(l.SchedulerDir(), cancelRequest{
+		RunID:    runID,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Actor:    "cli",
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	resp, err := pollCancelResponse(context.Background(), l.SchedulerDir(), requestID, cancelDelegationTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	switch {
+	case resp.Error != "":
+		pf(stderr, "error: %s\n", resp.Error)
+		return 1, true
+	case resp.Code == cancelCodeAborted:
+		pf(stdout, "aborted run %s (delegated to live daemon)\n", runID)
+		return 0, true
+	case resp.Code == cancelCodeTerminal:
+		pf(stderr, "error: run %s finished before it could be aborted (phase=%s)\n", runID, resp.Phase)
+		return 1, true
+	case resp.Code == cancelCodeNotRunning:
+		// The daemon was live when we inspected the lock but no longer owns
+		// this run by the time the sweep picked up the request — fall back to
+		// the original journal error rather than claiming success.
+		return 0, false
+	default:
+		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
+		return 1, true
+	}
 }
 
 const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
