@@ -182,7 +182,7 @@ func TestPreflightAgenticHarnessesChecksGithubWriteTools(t *testing.T) {
 		"github-mcp-server-sub_issue_write",
 	}}
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner}, nil
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}, nil
 	}
 	if _, err := preflightAgenticHarnesses(goobers, agentic); err != nil {
 		t.Fatalf("expected the write-tool preflight to pass: %v", err)
@@ -212,7 +212,7 @@ func TestPreflightAgenticHarnessesFailsClosedOnMissingWriteTool(t *testing.T) {
 		"github-mcp-server-sub_issue_write",
 	}}
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner}, nil
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}, nil
 	}
 	_, err := preflightAgenticHarnesses(goobers, agentic)
 	if err == nil {
@@ -239,7 +239,7 @@ func TestPreflightAgenticHarnessesSkipsWriteToolCheckWithoutCapability(t *testin
 
 	runner := &toolPreflightFakeRunner{}
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner}, nil
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}, nil
 	}
 	if _, err := preflightAgenticHarnesses(goobers, agentic); err != nil {
 		t.Fatalf("preflight: %v", err)
@@ -271,7 +271,7 @@ func TestPreflightAgenticHarnessesDedupsWriteToolCheckBySignature(t *testing.T) 
 		"github-mcp-server-sub_issue_write",
 	}}
 	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
-		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner}, nil
+		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}, nil
 	}
 	if _, err := preflightAgenticHarnesses(goobers, agentic); err != nil {
 		t.Fatalf("preflight: %v", err)

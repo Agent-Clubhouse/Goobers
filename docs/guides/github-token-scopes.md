@@ -141,6 +141,33 @@ before that stage; token-backed preflight validation requires the change
 documented in the
 [hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md).
 
+### A `github` tool group needs the `github-mcp-server` binary too
+
+Any goober declaring `tools: [github, ...]` needs a second binary alongside
+`copilot` on `PATH`: [`github-mcp-server`](https://github.com/github/github-mcp-server).
+
+```
+go install github.com/github/github-mcp-server/cmd/github-mcp-server@v1.8.0
+```
+
+**Why a second binary at all.** The Copilot CLI ships its own built-in
+`github-mcp-server`, but it authenticates GitHub API calls with
+`COPILOT_GITHUB_TOKEN` — the narrow, model-only `agent:model` token described
+above — never with the capability-scoped `GH_TOKEN` a `github:issues:write`
+(or similar) grant resolves to (`#2202`). Every real write through the
+built-in server 403s regardless of how well-scoped `GH_TOKEN` actually is,
+since it's never consulted; reads happen to work on a public repo because
+public issue/PR reads don't require a scoped token at all, which is what let
+this go unnoticed until a write was actually attempted. The harness instead
+runs a separately-provisioned `github-mcp-server` as an external MCP server,
+explicitly authenticated with the same `GH_TOKEN` value the run already
+resolved — the fix is the binary, not a config flag.
+
+This applies to `tools: [github]` specifically; it does not change how
+`agent:model`, `github:milestones:write` (routed through the deterministic
+`set-milestone` CLI, never through MCP), or any repository-capability token
+above are configured.
+
 ## GitHub App installation tokens (`auth.kind: github-app`)
 
 Instead of a static PAT, a repo can authenticate through a **GitHub App
