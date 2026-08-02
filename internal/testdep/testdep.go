@@ -39,6 +39,10 @@ var declared = map[string]Dependency{
 		Name:        "dotnet",
 		InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)",
 	},
+	"git": {
+		Name:        "git",
+		InstallHint: "install Git (Debian/Ubuntu: apt-get install git)",
+	},
 	"head": {
 		Name:        "head",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
