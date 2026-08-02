@@ -728,10 +728,16 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	var state remediationState
 	if exceeded || stalled || structuralCollision || forced {
 		reason := ""
+		attemptedCauses := prior.AttemptsByCause
+		if structuralCollision {
+			for _, cause := range causes {
+				attemptedCauses.increment(cause)
+			}
+		}
 		escalation := remediationEscalation{
 			Outcome:         remediationOutcomeDidNotConverge,
 			Attempted:       true,
-			AttemptedCauses: attemptedRemediationCauses(prior.AttemptsByCause),
+			AttemptedCauses: attemptedRemediationCauses(attemptedCauses),
 		}
 		if exceeded {
 			escalation.Outcome = remediationOutcomeBudgetExhausted

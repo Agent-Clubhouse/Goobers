@@ -878,6 +878,16 @@ func TestRemediationCheckpointHydratesMissingSiblingPatchAndEscalatesFirstStruct
 	if !ok || !state.Escalated || state.Cycles != 1 {
 		t.Fatalf("first checkpoint state = %+v, ok = %v, want an escalation on cycle 1", state, ok)
 	}
+	if state.EscalationOutcome != remediationOutcomeDidNotConverge ||
+		!state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseConflict}) {
+		t.Fatalf("structural-collision escalation evidence = %+v", state)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomeDidNotConverge) ||
+		result["remediationAttempted"] != "true" || result["attemptedCauses"] != "conflict" {
+		t.Fatalf("structural-collision checkpoint result = %v", result)
+	}
 	for _, want := range []string{
 		"Same-function structural collision",
 		"PR #77 relevant hunk",
