@@ -28,7 +28,13 @@ func TestNoDirectGitCommandsInTests(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, "_test.go") || filepath.Base(path) == filepath.Base(file) {
+		base := filepath.Base(path)
+		// Test-support files that generate fixtures for tests (e.g.
+		// fixture.go under test/<pkg>) aren't named *_test.go — they're
+		// ordinary package files imported by the test binary — but they
+		// still must route git through the isolated helper.
+		isTestSupport := base == "fixture.go"
+		if (!strings.HasSuffix(path, "_test.go") && !isTestSupport) || base == filepath.Base(file) {
 			return nil
 		}
 		fset := token.NewFileSet()

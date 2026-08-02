@@ -144,11 +144,7 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
-github.com/goobers/goobers/internal/testgit.CommandContext # Context-aware isolated git command constructor used by repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
-github.com/goobers/goobers/internal/testgit.Environment # Isolated git environment used by subprocess fixture tests (#1811).
-github.com/goobers/goobers/internal/testgit.IsolateEnvironment # Isolates fixture-specific subprocess environments from host git configuration (#1811).
-github.com/goobers/goobers/internal/testgit.appendArgs # Adds maintenance-suppression arguments for test-only git commands (#1811).
 
 # Read-model conformance contract (#1921): a backend-neutral suite imported by
 # each backend's _test.go, so it is unreachable from any main by construction.

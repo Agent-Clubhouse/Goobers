@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"os/exec"
 	"strings"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // fixtureSpec parameterizes the synthetic bare-repo fixture. Identical specs
@@ -89,7 +90,7 @@ func generateFixture(ctx context.Context, spec fixtureSpec, dir string) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "fast-import", "--quiet")
+	cmd := testgit.CommandContext(ctx, "fast-import", "--quiet")
 	cmd.Dir = dir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -116,7 +117,7 @@ func generateFixture(ctx context.Context, spec fixtureSpec, dir string) error {
 }
 
 func runFixtureGit(ctx context.Context, dir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := testgit.CommandContext(ctx, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
