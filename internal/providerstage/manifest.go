@@ -74,6 +74,12 @@ var commands = map[string]Command{
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
 		},
 	},
+	"select-source": {
+		ResultFile: "selection.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"),
+		},
+	},
 	"elect-lander": {
 		ResultFile: "election.json",
 		Capabilities: []CapabilityUse{
