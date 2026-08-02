@@ -3891,6 +3891,7 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 				},
 			})
 		},
+		OnQueueWait: jr.ObserveActivity,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("runner: acquire pinned workspace for run %q: %w", in.RunID, err)

@@ -80,6 +80,13 @@ queued:
 		t.Fatal("second run entered the pinned workspace while the first was paused")
 	default:
 	}
+	const stalledTimeout = 250 * time.Millisecond
+	time.Sleep(2 * stalledTimeout)
+	if result, escalated, err := r.EscalateStalled("pinned-paused-2", time.Now(), stalledTimeout); err != nil {
+		t.Fatal(err)
+	} else if escalated || result.Phase != journal.PhaseRunning {
+		t.Fatalf("queued run after stall timeout: escalated=%v result=%+v", escalated, result)
+	}
 
 	resumed, err := r.Resume(context.Background(), ResumeInput{
 		RunID: "pinned-paused-1", Machine: machine, RepoRef: ref,

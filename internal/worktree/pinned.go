@@ -35,6 +35,7 @@ type PinnedOptions struct {
 	SyncBase              bool
 	CleanPolicy           PinnedCleanPolicy
 	OnQueuePosition       func(int) error
+	OnQueueWait           func()
 }
 
 // PinnedPrepareOptions selects the branch exposed to one serialized stage.
@@ -189,6 +190,9 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 				return nil, err
 			}
 			lastPosition = visiblePosition
+		}
+		if opts.OnQueueWait != nil {
+			opts.OnQueueWait()
 		}
 		if position == 1 {
 			handle, err = lock.TryAcquire(lockPath)
