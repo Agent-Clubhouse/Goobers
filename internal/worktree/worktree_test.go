@@ -354,6 +354,55 @@ func TestManagerCreatePathLengthPreflightAllowsFittingCheckout(t *testing.T) {
 	}
 }
 
+func TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	root := t.TempDir()
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "goobers/wf/path-budget"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "path-budget-implement", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	mustWriteFile(t, filepath.Join(repo, deepest), "content")
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "add deep base path")
+
+	runID := "path-budget-local-ci"
+	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
+	available := len(filepath.FromSlash(deepest)) - 1
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: len(checkoutPath) + 1 + available},
+	})
+
+	_, err = m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "main", Branch: branch, SyncBase: true,
+	})
+	if err == nil {
+		t.Fatal("SyncBase Create succeeded despite base ref exhausting path budget")
+	}
+	if !strings.Contains(err.Error(), deepest) {
+		t.Fatalf("Create error %q does not name base ref path %q", err, deepest)
+	}
+	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout path exists after preflight failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(m.markerPath(repoKey(repo), runID)); !os.IsNotExist(statErr) {
+		t.Fatalf("marker exists after preflight failure: %v", statErr)
+	}
+}
+
 func TestManagerSetPathLengthLimitsReplacesPolicy(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

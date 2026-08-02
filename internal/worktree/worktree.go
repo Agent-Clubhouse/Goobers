@@ -174,12 +174,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
-		ref := opts.BaseRef
+		refs := []string{opts.BaseRef}
 		if existingBranch {
-			ref = opts.Branch
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
 		}
-		if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
-			return nil, err
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+				return nil, err
+			}
 		}
 	}
 
