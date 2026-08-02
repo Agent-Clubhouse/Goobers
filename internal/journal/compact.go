@@ -169,11 +169,28 @@ func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (Instance
 	if err != nil || result.Dropped == 0 {
 		return result, err
 	}
-	if err := WriteFileAtomic(path, compacted, 0o644); err != nil {
+	if err := writeCompactedInstanceLog(path, compacted, 0o644); err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: checkpoint live instance log: %w", err)
 	}
 	if err := l.reopenFile(path); err != nil {
 		return InstanceEventsCompaction{}, err
 	}
 	return result, nil
+}
+
+// writeCompactedInstanceLog atomically replaces path's content with data via
+// a sibling temp file, fsync, and compactReplaceFile — the same temp+fsync
+// discipline WriteFileAtomic uses, but with a replace primitive that
+// tolerates a reader already holding path open (see compactreplace_windows.go
+// for why this compactor needs that and the shared WriteFileAtomic/
+// durability.ReplaceFile path does not).
+func writeCompactedInstanceLog(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".compact.tmp"
+	if err := writeFileSynced(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := compactReplaceFile(tmp, path); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(path))
 }
