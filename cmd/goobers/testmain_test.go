@@ -80,6 +80,9 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
 func TestMain(m *testing.M) {
+	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
+		os.Exit(runPortalBuildMake())
+	}
 	if os.Getenv(docsDryRunMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runDocsDryRunMake())
 	}
