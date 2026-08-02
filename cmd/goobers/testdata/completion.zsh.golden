@@ -55,6 +55,7 @@ _goobers_completion()
             'backlog-health:snapshot ready-pool depth and age (a workflow stage)'
             'backlog-query:query/claim one eligible backlog item (a workflow stage)'
             'select-source:select and claim an unconsumed L6 decomposition disposition (a workflow stage)'
+            'validate-plan:validate a decomposition plan against its selector artifact and the live parent (a workflow stage)'
             'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
             'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'
             'check-fail-first:enforce fail-first evidence for a new workflow gate (a workflow stage)'
