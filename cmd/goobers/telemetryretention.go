@@ -64,32 +64,26 @@ func compactSchedulerRetention(
 		return err
 	}
 	cutoff := now.Add(-window)
+	budgetCutoff := now.Add(-24 * time.Hour)
 
-	if db != nil {
-		if instanceLog != nil {
-			if err := db.IngestSchedulerLog(ctx, instanceLog.Dir()); err != nil {
-				return fmt.Errorf("ingest scheduler journal before retention: %w", err)
-			}
+	if db != nil && instanceLog != nil {
+		err := db.MaintainSchedulerRetention(ctx, instanceLog.Dir(), cutoff, func() error {
+			_, err := instanceLog.Compact(cutoff, budgetCutoff)
+			return err
+		})
+		if err != nil {
+			return err
 		}
+		return nil
+	}
+	if db != nil {
 		if _, err := db.PruneSchedulerBefore(ctx, cutoff); err != nil {
 			return fmt.Errorf("prune scheduler rollup rows: %w", err)
 		}
-		if instanceLog != nil {
-			// Reset before rotation for crash safety; reset again afterward in
-			// case an in-flight tick ingest advanced it during compaction.
-			if err := db.ResetSchedulerIngestCursor(ctx); err != nil {
-				return fmt.Errorf("reset scheduler rollup cursor: %w", err)
-			}
-		}
 	}
 	if instanceLog != nil {
-		if _, err := instanceLog.Compact(cutoff); err != nil {
+		if _, err := instanceLog.Compact(cutoff, budgetCutoff); err != nil {
 			return fmt.Errorf("compact scheduler journal: %w", err)
-		}
-		if db != nil {
-			if err := db.ResetSchedulerIngestCursor(ctx); err != nil {
-				return fmt.Errorf("reset scheduler rollup cursor after compaction: %w", err)
-			}
 		}
 	}
 	return nil

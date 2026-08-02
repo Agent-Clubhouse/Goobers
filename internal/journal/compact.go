@@ -19,12 +19,13 @@ type InstanceEventsCompaction struct {
 
 // CompactInstanceEvents rewrites the instance journal at <dir>/events.jsonl in
 // place, keeping complete records whose event time is at or after keepAfter,
-// plus the latest scheduled trigger per workflow as a restart checkpoint. A
-// zero keepAfter keeps every record (a no-op on the journal — used when the
-// caller only wants the surrounding db-vacuum maintenance). Records are
-// preserved as their ORIGINAL raw line bytes, never re-marshaled, so any
-// forward-compatible unknown fields survive compaction unchanged. Kept records
-// retain their original seq, so the journal stays seq-monotonic.
+// run.started records at or after keepRunStartsAfter, plus the latest scheduled
+// trigger per workflow as restart checkpoints. A zero keepAfter keeps every
+// record (a no-op on the journal — used when the caller only wants the
+// surrounding db-vacuum maintenance). Records are preserved as their ORIGINAL
+// raw line bytes, never re-marshaled, so any forward-compatible unknown fields
+// survive compaction unchanged. Kept records retain their original seq, so the
+// journal stays seq-monotonic.
 //
 // The caller MUST ensure no daemon is appending: a live InstanceLog holds an
 // O_APPEND handle, and replacing the file out from under it would strand its
@@ -35,7 +36,7 @@ type InstanceEventsCompaction struct {
 //
 // dryRun computes what would be dropped (Kept/Dropped and the projected
 // AfterBytes) without rewriting the file.
-func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (InstanceEventsCompaction, error) {
+func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, dryRun bool) (InstanceEventsCompaction, error) {
 	path := filepath.Join(dir, fileEvents)
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -55,7 +56,7 @@ func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (Instan
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
 	}
-	result, compacted, err := compactInstanceEventsData(data, info.Size(), keepAfter)
+	result, compacted, err := compactInstanceEventsData(data, info.Size(), keepAfter, keepRunStartsAfter)
 	if err != nil {
 		return InstanceEventsCompaction{}, err
 	}
@@ -74,7 +75,11 @@ func CompactInstanceEvents(dir string, keepAfter time.Time, dryRun bool) (Instan
 	return result, nil
 }
 
-func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Time) (InstanceEventsCompaction, []byte, error) {
+func compactInstanceEventsData(
+	data []byte,
+	beforeBytes int64,
+	keepAfter, keepRunStartsAfter time.Time,
+) (InstanceEventsCompaction, []byte, error) {
 	result := InstanceEventsCompaction{BeforeBytes: beforeBytes, AfterBytes: beforeBytes}
 
 	// Only complete (newline-terminated) records are eligible; anything after
@@ -90,6 +95,7 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 		line       []byte
 		time       time.Time
 		triggerKey string
+		runStarted bool
 	}
 	var records []record
 	latestTrigger := make(map[string]int)
@@ -109,6 +115,7 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
 		}
 		rec := record{line: line, time: meta.Time}
+		rec.runStarted = meta.Type == EventRunStarted
 		if meta.Type == EventTriggerFired && meta.Workflow != "" &&
 			(meta.Reason == "" || meta.Reason == "scheduled" || bytes.HasPrefix([]byte(meta.Reason), []byte("catch-up "))) {
 			rec.triggerKey = meta.Gaggle + "\x00" + meta.Workflow
@@ -120,7 +127,9 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 	var kept bytes.Buffer
 	for i, rec := range records {
 		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
-		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint {
+		keepBudgetHistory := rec.runStarted &&
+			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
+		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint && !keepBudgetHistory {
 			result.Dropped++
 			continue
 		}
@@ -136,9 +145,9 @@ func compactInstanceEventsData(data []byte, beforeBytes int64, keepAfter time.Ti
 }
 
 // Compact atomically checkpoints records at or after keepAfter while the
-// instance log remains open. The latest scheduled trigger per workflow is also
-// retained so restart reconciliation preserves low-frequency schedules.
-func (l *InstanceLog) Compact(keepAfter time.Time) (InstanceEventsCompaction, error) {
+// instance log remains open. Scheduled trigger and recent run-start checkpoints
+// are also retained so restart reconciliation preserves scheduler state.
+func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (InstanceEventsCompaction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
@@ -156,7 +165,7 @@ func (l *InstanceLog) Compact(keepAfter time.Time) (InstanceEventsCompaction, er
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
 	}
-	result, compacted, err := compactInstanceEventsData(data, int64(len(data)), keepAfter)
+	result, compacted, err := compactInstanceEventsData(data, int64(len(data)), keepAfter, keepRunStartsAfter)
 	if err != nil || result.Dropped == 0 {
 		return result, err
 	}

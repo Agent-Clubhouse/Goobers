@@ -1078,6 +1078,58 @@ func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
 	}
 }
 
+func TestReconcileRestoresDailyBudgetAfterShortWindowCompaction(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+	eventTime := now.Add(-48 * time.Hour)
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "curate"}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = now.Add(-12 * time.Hour)
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := journal.CompactInstanceEvents(
+		dir,
+		now.Add(-time.Hour),
+		now.Add(-24*time.Hour),
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	sched := New([]WorkflowEntry{{
+		Workflow: "curate",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 100,
+			MaxRunsPerHour:    100,
+			MaxRunsPerDay:     1,
+		},
+		Starter: &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}},
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: daily budget history must survive compaction")
+	} else if !strings.Contains(err.Error(), ReasonDailyBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonDailyBudget)
+	}
+}
+
 // TestReconcileRateResetClearsBudgetWindow is #315's core: a rate-limit reset
 // marker (written by `goobers reset-rate-limit`) raises the budget window's
 // floor to the reset moment, so run.started history at or before it stops

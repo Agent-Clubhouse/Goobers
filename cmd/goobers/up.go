@@ -536,6 +536,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	if err := compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, time.Now()); err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return 0
+		}
 		pf(stderr, "error: retain scheduler telemetry: %v\n", err)
 		return 1
 	}

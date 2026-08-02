@@ -41,7 +41,7 @@ func TestCompactInstanceEventsDropsAgedRecords(t *testing.T) {
 	)
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	result, err := CompactInstanceEvents(dir, cutoff, false)
+	result, err := CompactInstanceEvents(dir, cutoff, cutoff, false)
 	if err != nil {
 		t.Fatalf("CompactInstanceEvents: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	}
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	result, err := CompactInstanceEvents(dir, cutoff, true)
+	result, err := CompactInstanceEvents(dir, cutoff, cutoff, true)
 	if err != nil {
 		t.Fatalf("CompactInstanceEvents dry-run: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCompactInstanceEventsKeepsAllWhenNothingAged(t *testing.T) {
 	writeRawInstanceLog(t, dir, eventLine(1, recent, ""), eventLine(2, recent, ""))
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	result, err := CompactInstanceEvents(dir, cutoff, false)
+	result, err := CompactInstanceEvents(dir, cutoff, cutoff, false)
 	if err != nil {
 		t.Fatalf("CompactInstanceEvents: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestCompactInstanceEventsKeepsAllWhenNothingAged(t *testing.T) {
 
 func TestCompactInstanceEventsMissingJournal(t *testing.T) {
 	dir := t.TempDir()
-	result, err := CompactInstanceEvents(dir, time.Now(), false)
+	result, err := CompactInstanceEvents(dir, time.Now(), time.Now(), false)
 	if err != nil {
 		t.Fatalf("CompactInstanceEvents on missing journal: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCompactInstanceEventsPreservesTornTail(t *testing.T) {
 	}
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, err := CompactInstanceEvents(dir, cutoff, false); err != nil {
+	if _, err := CompactInstanceEvents(dir, cutoff, cutoff, false); err != nil {
 		t.Fatalf("CompactInstanceEvents: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, fileEvents))
@@ -174,7 +174,7 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "recent"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := first.Compact(now.Add(-24 * time.Hour))
+	result, err := first.Compact(now.Add(-24*time.Hour), now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestInstanceLogCompactPreservesLatestScheduledTriggerPerWorkflow(t *testing
 		eventLine(4, recent, `"workflow":"recent","reason":"scheduled"`),
 	)
 
-	if _, err := CompactInstanceEvents(dir, recent.Add(-time.Hour), false); err != nil {
+	if _, err := CompactInstanceEvents(dir, recent.Add(-time.Hour), recent.Add(-time.Hour), false); err != nil {
 		t.Fatal(err)
 	}
 	events, err := ReadInstanceLog(dir)
@@ -247,7 +247,7 @@ func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
 			t.Fatalf("append tick %d: %v", i, err)
 		}
 		if (i+1)%50 == 0 {
-			if _, err := log.Compact(now.Add(-10 * time.Second)); err != nil {
+			if _, err := log.Compact(now.Add(-10*time.Second), now.Add(-10*time.Second)); err != nil {
 				t.Fatalf("compact after tick %d: %v", i, err)
 			}
 		}
