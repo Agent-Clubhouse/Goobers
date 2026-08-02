@@ -20,9 +20,12 @@ import (
 type PinnedCleanPolicy string
 
 const (
-	PinnedCleanNone        PinnedCleanPolicy = "none"
+	// PinnedCleanNone preserves ignored and untracked files.
+	PinnedCleanNone PinnedCleanPolicy = "none"
+	// PinnedCleanIgnoredSafe removes untracked files but preserves ignored files.
 	PinnedCleanIgnoredSafe PinnedCleanPolicy = "ignored-safe"
-	PinnedCleanFull        PinnedCleanPolicy = "full"
+	// PinnedCleanFull removes ignored and untracked files.
+	PinnedCleanFull PinnedCleanPolicy = "full"
 )
 
 // PinnedOptions configures one whole-run pinned-workspace lease.

@@ -78,9 +78,12 @@ const (
 type CleanPolicy string
 
 const (
-	CleanPolicyNone        CleanPolicy = "none"
+	// CleanPolicyNone preserves ignored and untracked files.
+	CleanPolicyNone CleanPolicy = "none"
+	// CleanPolicyIgnoredSafe removes untracked files but preserves ignored files.
 	CleanPolicyIgnoredSafe CleanPolicy = "ignored-safe"
-	CleanPolicyFull        CleanPolicy = "full"
+	// CleanPolicyFull removes ignored and untracked files.
+	CleanPolicyFull CleanPolicy = "full"
 )
 
 // CheckoutSpec declares workspace materialization behavior for a repository reference.
