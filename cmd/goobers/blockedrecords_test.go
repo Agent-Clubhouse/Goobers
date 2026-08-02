@@ -425,6 +425,49 @@ func TestFilterBlockedEligibilityUsesMigratedLegacyRecords(t *testing.T) {
 	}
 }
 
+func TestSnapshotBlockedRecordsRepairsCompositeItemIDs(t *testing.T) {
+	l := layoutFor(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	issueKey := blockedRecordKey(repo, "102")
+	prKey := blockedRecordKey(repo, "pr/1058")
+	if err := saveBlockedRecords(blockedRecordsPath(l), map[string]blockedRecord{
+		issueKey: {
+			Repository: repo,
+			ItemID:     issueKey,
+			Blockers:   []string{"441"},
+		},
+		prKey: {
+			Repository: repo,
+			ItemID:     prKey,
+			Blockers:   []string{"442"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := snapshotBlockedRecordsForRepository(l, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recs[issueKey].ItemID; got != "102" {
+		t.Fatalf("repaired issue item ID = %q, want 102", got)
+	}
+	if got := recs[prKey].ItemID; got != "pr/1058" {
+		t.Fatalf("repaired PR item ID = %q, want pr/1058", got)
+	}
+
+	persisted, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted[issueKey].ItemID != "102" || persisted[prKey].ItemID != "pr/1058" {
+		t.Fatalf("persisted records = %+v, want repaired bare item IDs", persisted)
+	}
+}
+
 // TestFilterBlockedEligibilityScopesByProject is the bug-7 regression: an ADO
 // backlog lives in a different project than its code repo, so a blocked record
 // must be stored under the backlog project to be honored by a backlog-scoped

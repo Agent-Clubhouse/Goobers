@@ -397,7 +397,11 @@ func snapshotBlockedRecordsForRepository(l instance.Layout, repo providers.Repos
 		if err != nil {
 			return err
 		}
-		if migrateLegacyBlockedRecords(recs, repo) {
+		changed := migrateLegacyBlockedRecords(recs, repo)
+		if repairMalformedBlockedRecordItemIDs(recs) {
+			changed = true
+		}
+		if changed {
 			return saveBlockedRecords(blockedRecordsPath(l), recs)
 		}
 		return nil
@@ -428,6 +432,27 @@ func migrateLegacyBlockedRecords(recs map[string]blockedRecord, repo providers.R
 			recs[scopedKey] = rec
 		}
 		delete(recs, key)
+		changed = true
+	}
+	return changed
+}
+
+func repairMalformedBlockedRecordItemIDs(recs map[string]blockedRecord) bool {
+	changed := false
+	for key, rec := range recs {
+		if blockedRepositoryEmpty(rec.Repository) || rec.ItemID != key {
+			continue
+		}
+		prefix := blockedRepositoryIdentity(rec.Repository) + "#"
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		itemID, err := url.PathUnescape(strings.TrimPrefix(key, prefix))
+		if err != nil || itemID == "" {
+			continue
+		}
+		rec.ItemID = itemID
+		recs[key] = rec
 		changed = true
 	}
 	return changed
