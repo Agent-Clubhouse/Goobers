@@ -113,7 +113,7 @@ func localGitDir(repository string) (string, error) {
 	dotGit := filepath.Join(repository, ".git")
 	info, err := os.Stat(dotGit)
 	if err == nil && info.IsDir() {
-		return dotGit, nil
+		return commonGitDir(dotGit)
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -128,12 +128,39 @@ func localGitDir(repository string) (string, error) {
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(repository, gitDir)
 		}
-		return filepath.Clean(gitDir), nil
+		return commonGitDir(filepath.Clean(gitDir))
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return "", readErr
 	}
 	if _, err := os.Stat(filepath.Join(repository, "HEAD")); err == nil {
-		return repository, nil
+		return commonGitDir(repository)
 	}
 	return "", fmt.Errorf("%s is not a Git repository", repository)
+}
+
+// commonGitDir resolves gitDir to the repository's common Git directory.
+// For a linked worktree, gitDir is the per-worktree admin directory
+// (.git/worktrees/<name>) — HEAD and the index live there, but branch refs
+// (refs/heads/..., packed-refs) live in the common directory recorded in its
+// "commondir" file. Watching the per-worktree admin directory alone observes
+// staging (e.g. "git add") but misses the ref update a commit finalizes, so
+// callers that need to react to new commits must watch the common directory
+// instead. Ordinary (non-worktree) repositories have no "commondir" file and
+// are already their own common directory, so they pass through unchanged.
+func commonGitDir(gitDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return gitDir, nil
+		}
+		return "", err
+	}
+	common := strings.TrimSpace(string(data))
+	if common == "" {
+		return gitDir, nil
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitDir, common)
+	}
+	return filepath.Clean(common), nil
 }

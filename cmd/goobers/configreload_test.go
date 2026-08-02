@@ -345,6 +345,105 @@ func TestConfigSourceReconcilerWakesWithoutPolling(t *testing.T) {
 	}
 }
 
+// TestConfigSourceReconcilerObservesLinkedWorktreeCommit pins the fix for a
+// bug in watchGitRef: for a linked worktree, ".git" is a file pointing at the
+// per-worktree admin directory (.git/worktrees/<name>), which holds HEAD and
+// the index, but branch refs (refs/heads/..., packed-refs) live in the
+// common Git directory recorded by that admin directory's "commondir" file.
+// Watching only the per-worktree admin directory can observe "git add"
+// staging but misses the ref update a commit finalizes there. configReloadInterval
+// is pinned to an hour so the ticker cannot be the one driving reconciliation:
+// the only way this test's reconcile can fire before it times out is the
+// fsnotify watcher correctly resolving and watching the common directory.
+func TestConfigSourceReconcilerObservesLinkedWorktreeCommit(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	mainRepo := t.TempDir()
+	runGitT(t, mainRepo, "init", "-b", "main")
+	runGitT(t, mainRepo, "config", "user.name", "config source")
+	runGitT(t, mainRepo, "config", "user.email", "config-source@example.test")
+	if err := os.WriteFile(filepath.Join(mainRepo, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, mainRepo, "add", "README.md")
+	runGitT(t, mainRepo, "commit", "-m", "seed")
+
+	worktree := filepath.Join(t.TempDir(), "linked-worktree")
+	runGitT(t, mainRepo, "worktree", "add", "-b", "tracked", worktree, "main")
+
+	// A single commit can fan out into many inotify events on Linux (index
+	// lock create/rename, packed-refs rewrite, loose-ref create, etc. —
+	// macOS's FSEvents backend coalesces far more aggressively), so the
+	// reconcile hook must never block Run's event loop: a blocking send
+	// here deadlocks Run inside the select case that called it, and cancel
+	// can't unstick it because ctx.Done() is only observed back at the
+	// select. Use a generously buffered channel plus a non-blocking send
+	// and drain-then-wait on the receive side instead of counting exact
+	// reconcile calls.
+	reconciled := make(chan struct{}, 64)
+	loop := &configSourceReconciler{
+		source: instance.WorkflowSource{
+			Kind: instance.WorkflowSourceKindGit,
+			Path: worktree,
+			Ref:  "tracked",
+		},
+		errors: &sweepErrorReporter{},
+		wake:   make(chan struct{}),
+		reconcile: func(context.Context, time.Time) error {
+			select {
+			case reconciled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("reconciler did not stop after cancel")
+		}
+	})
+
+	drainReconciled := func() {
+		for {
+			select {
+			case <-reconciled:
+			default:
+				return
+			}
+		}
+	}
+
+	select {
+	case <-reconciled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial reconcile did not run")
+	}
+	// The initial reconcile can be followed by extra watcher-driven signals
+	// from setup (e.g. the watcher's own directory Add calls). Drain them so
+	// the wait below only observes signals caused by the commit itself.
+	drainReconciled()
+
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, worktree, "add", "README.md")
+	runGitT(t, worktree, "commit", "-m", "update in linked worktree")
+
+	select {
+	case <-reconciled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("commit in linked worktree did not trigger a watcher-driven reconcile")
+	}
+}
+
 // TestConfigReloaderPollSerializedAcrossWatchConfigAndApplySweep pins #459's
 // fix for a real concurrency bug QA-2 caught on review of PR #2131:
 // configReloader was only ever safe because exactly one goroutine called
