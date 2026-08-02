@@ -2,12 +2,12 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // gitRepoWithRunBranchChanges builds a temp git repo — a base commit on main,
@@ -19,7 +19,7 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

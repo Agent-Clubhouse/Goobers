@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -20,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -347,7 +347,7 @@ func runDocsDryRunMake() int {
 		fmt.Fprintf(os.Stderr, "make fixture: args = %q, want [ci]\n", os.Args[1:])
 		return 2
 	}
-	cmd := exec.Command("git", "cat-file", "-e", "HEAD:"+docsDryRunFile)
+	cmd := testgit.Command("cat-file", "-e", "HEAD:"+docsDryRunFile)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

@@ -3,12 +3,12 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const gateRemovalGuardWorkflowBase = `apiVersion: goobers.dev/v1alpha1
@@ -48,7 +48,7 @@ func gitRepoWithGateChange(t *testing.T, path, workflowYAML, newWorkflowYAML str
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // tutorWorkflowYAML mirrors the real selfhost Tutor control flow while
@@ -345,7 +345,7 @@ func tutorFixtureCommit(workspace string, mode tutorDraftMode) error {
 	}
 	commitArgs = append(commitArgs, []string{"commit", "-m", "tutor: fixture config change"})
 	for _, args := range commitArgs {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = workspace
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out

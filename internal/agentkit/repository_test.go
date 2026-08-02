@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestInstallAllHarnessesIsIdempotent(t *testing.T) {
@@ -883,7 +884,7 @@ func runTestGit(t *testing.T, root string, args ...string) {
 		"-c", "user.name=Agent Kit Test",
 		"-c", "user.email=agent-kit@example.invalid",
 	}
-	command := exec.Command("git", append(gitArgs, args...)...)
+	command := testgit.Command(append(gitArgs, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}

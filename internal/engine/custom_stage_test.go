@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -73,8 +73,8 @@ func customStageWorkspace(t *testing.T, fixture string) string {
 		{"init", "--quiet", workspace},
 		{"-C", workspace, "add", "fixture.go"},
 	} {
-		command := exec.Command("git", args...)
-		command.Env = append(os.Environ(),
+		command := testgit.Command(args...)
+		command.Env = append(command.Env,
 			"GIT_CONFIG_COUNT=2",
 			"GIT_CONFIG_KEY_0=core.autocrlf",
 			"GIT_CONFIG_VALUE_0=false",
