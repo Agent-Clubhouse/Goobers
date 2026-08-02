@@ -61,6 +61,10 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 	if !ok {
 		return Result{}, fmt.Errorf("runner: verdict %q has no configured branch on gate %q", in.Verdict, in.Gate)
 	}
+	journalTarget := target
+	if journalTarget == workflow.TerminalComplete {
+		journalTarget = journal.TargetComplete
+	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
@@ -105,7 +109,7 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 			Type:            journal.EventGateOverridden,
 			Gate:            in.Gate,
 			Verdict:         in.Verdict,
-			Target:          target,
+			Target:          journalTarget,
 			Actor:           in.Actor,
 			Rationale:       in.Rationale,
 			Status:          string(phase),

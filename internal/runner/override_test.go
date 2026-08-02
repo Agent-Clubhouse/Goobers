@@ -121,11 +121,15 @@ func TestOverrideGateAdvancesConfiguredBranchAndJournalsRationale(t *testing.T) 
 					override = event
 				}
 			}
+			wantTarget := machine.Def.Spec.Gates[0].Branches[test.verdict]
+			if wantTarget == workflow.TerminalComplete {
+				wantTarget = journal.TargetComplete
+			}
 			if override.Gate != "review" || override.Verdict != test.verdict ||
 				override.Actor != "maintainer@example.test" ||
 				override.Rationale != "The reviewer finding was manually resolved." ||
 				override.Status != string(journal.PhaseEscalated) ||
-				override.Target != machine.Def.Spec.Gates[0].Branches[test.verdict] {
+				override.Target != wantTarget {
 				t.Fatalf("gate.overridden = %+v", override)
 			}
 		})

@@ -298,7 +298,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	}
 	if override, ok := latestActiveGateOverride(events); ok {
 		switch override.Target {
-		case workflow.TerminalComplete:
+		case journal.TargetComplete, workflow.TerminalComplete:
 			return r.finish(in.RunID, jr, journal.PhaseCompleted, override.Gate, 0)
 		case workflow.TargetAbort:
 			return r.finish(in.RunID, jr, journal.PhaseAborted, override.Gate, 0)

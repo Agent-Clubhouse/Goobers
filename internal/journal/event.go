@@ -150,6 +150,10 @@ const (
 	EventDaemonUpdateEscalated EventType = "daemon.update.escalated"
 )
 
+// TargetComplete is the explicit journal representation of the workflow
+// engine's empty-string successful terminal target.
+const TargetComplete = "@complete"
+
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human
 // attempts are conformance-normative; infra attempts (an infrastructure
 // failure retried by the runner) are excluded from the conformance set
