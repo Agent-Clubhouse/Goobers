@@ -78,6 +78,7 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
+  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health                 snapshot ready-pool depth and age (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
@@ -216,6 +217,7 @@ Usage:
   goobers journal redact --run <id> --path <blob> --reason <text> [path]
                                 remove a leaked secret from a stored blob (SEC-041)
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
+  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health                 snapshot ready-pool depth and age (a workflow stage)
   goobers backlog-query [--claim]        query/claim one eligible backlog item (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
@@ -353,6 +355,17 @@ cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
+
+### backlog-assignment
+Usage: goobers backlog-assignment [path]
+
+Assign eligible, open, unassigned backlog items using the configured
+strategy and JSON roster. Supported strategies are constant-cap and
+round-robin. The trustLabel input and a valid, non-empty roster are
+required; invalid configuration fails before any provider mutation.
+
+Exit codes: 0 = assignment pass completed, 1 = configuration/provider/IO
+error, 2 = usage error.
 
 ### backlog-dedupe
 Usage: goobers backlog-dedupe [path]

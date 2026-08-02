@@ -14,6 +14,7 @@
 | [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply`](#goobers-apply) | reconcile a live daemon's workflow definitions now |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
+| [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
@@ -268,6 +269,28 @@ voided), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers apply-verdict
+~~~
+
+## `goobers backlog-assignment`
+
+assign eligible backlog items from a configured roster (a workflow stage)
+
+~~~text
+Usage: goobers backlog-assignment [path]
+
+Assign eligible, open, unassigned backlog items using the configured
+strategy and JSON roster. Supported strategies are constant-cap and
+round-robin. The trustLabel input and a valid, non-empty roster are
+required; invalid configuration fails before any provider mutation.
+
+Exit codes: 0 = assignment pass completed, 1 = configuration/provider/IO
+error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers backlog-assignment
 ~~~
 
 ## `goobers backlog-dedupe`
