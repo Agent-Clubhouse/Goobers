@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workerhost"
 )
 
@@ -86,7 +86,7 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 		{"add", "."},
 		{"commit", "-m", "initial"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = src
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
