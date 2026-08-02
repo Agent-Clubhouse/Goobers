@@ -687,17 +687,32 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				},
 			}
 			adapter := &CopilotAdapter{
-				Command:         []string{"copilot"},
-				Runner:          runner,
-				EnvCapabilities: map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+				Command:                []string{"copilot"},
+				Runner:                 runner,
+				GithubMCPServerCommand: []string{"echo", "stdio"},
+				EnvCapabilities: map[string]string{
+					"agent:model":         "COPILOT_GITHUB_TOKEN",
+					"github:issues:write": "GH_TOKEN",
+				},
 			}
 			envelope := testEnvelope(workspace)
 			var mcpServers []apiv1.MCPServer
 			var creds *credentials.Set
+			capabilityTokens := []string{}
+			if slices.Contains(tc.tools, "github") {
+				capabilityTokens = append(capabilityTokens, "github:issues:write", "gh-test-token")
+			}
 			if tc.externalMCP {
-				envelope = testEnvelope(workspace, "agent:model")
 				mcpServers = []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
-				creds = mcpTestCredentials(t, "agent:model", "model-token")
+				capabilityTokens = append(capabilityTokens, "agent:model", "model-token")
+			}
+			if len(capabilityTokens) > 0 {
+				capabilities := make([]string, 0, len(capabilityTokens)/2)
+				for i := 0; i < len(capabilityTokens); i += 2 {
+					capabilities = append(capabilities, capabilityTokens[i])
+				}
+				envelope = testEnvelope(workspace, capabilities...)
+				creds = mcpTestCredentials(t, capabilityTokens...)
 			}
 
 			out, err := adapter.Run(context.Background(), RunRequest{
@@ -757,8 +772,14 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				!slices.Contains(runner.lastReq.Command, "--output-format=text") {
 				t.Fatalf("response completion flags missing: %v", runner.lastReq.Command)
 			}
-			if got := slices.Contains(runner.lastReq.Command, "--enable-all-github-mcp-tools"); got != tc.wantAllGithubMCP {
-				t.Fatalf("GitHub MCP tool catalog enabled = %t, want %t: %v", got, tc.wantAllGithubMCP, runner.lastReq.Command)
+			gotMCPConfig := false
+			for _, arg := range runner.lastReq.Command {
+				if strings.HasPrefix(arg, "--additional-mcp-config=@") {
+					gotMCPConfig = true
+				}
+			}
+			if gotMCPConfig != tc.wantAllGithubMCP {
+				t.Fatalf("external github-mcp-server configured = %t, want %t: %v", gotMCPConfig, tc.wantAllGithubMCP, runner.lastReq.Command)
 			}
 			if tc.externalMCP && slices.Contains(runner.lastReq.Command, "--disable-builtin-mcps") {
 				t.Fatalf("declared GitHub group was disabled by external MCP isolation: %v", runner.lastReq.Command)
@@ -1029,13 +1050,105 @@ func TestCopilotAdapterPreflightGithubToolsPasses(t *testing.T) {
 			return os.WriteFile(filepath.Join(logDir, "process-1.log"), []byte(content), 0o644)
 		},
 	}
-	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}
 	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
 	if err != nil {
 		t.Fatalf("PreflightGithubTools: %v", err)
 	}
-	if !slices.Contains(runner.lastReq.Command, "--enable-all-github-mcp-tools") {
-		t.Fatalf("probe command missing --enable-all-github-mcp-tools: %v", runner.lastReq.Command)
+	gotMCPConfig := false
+	for _, arg := range runner.lastReq.Command {
+		if strings.HasPrefix(arg, "--additional-mcp-config=@") {
+			gotMCPConfig = true
+		}
+	}
+	if !gotMCPConfig {
+		t.Fatalf("probe command missing --additional-mcp-config=@...: %v", runner.lastReq.Command)
+	}
+}
+
+// TestCopilotAdapterPreflightGithubToolsMissingBinaryIsActionable is #2202's
+// new failure class: the built-in github-mcp-server fix moved to a
+// separately-provisioned binary, so a run/preflight must fail closed with an
+// install hint rather than a generic "tool not registered" message when that
+// binary isn't on PATH.
+func TestCopilotAdapterPreflightGithubToolsMissingBinaryIsActionable(t *testing.T) {
+	runner := &fakeProcessRunner{result: ProcessResult{ExitCode: 0}}
+	adapter := &CopilotAdapter{
+		Command:                []string{"copilot"},
+		Runner:                 runner,
+		GithubMCPServerCommand: []string{"definitely-not-a-real-github-mcp-server-binary"},
+	}
+	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
+	if err == nil {
+		t.Fatal("expected PreflightGithubTools to fail closed when the github-mcp-server binary is missing")
+	}
+	if !strings.Contains(err.Error(), "not found on PATH") || !strings.Contains(err.Error(), "go install") {
+		t.Fatalf("error = %v, want an actionable install hint", err)
+	}
+	if runner.lastReq.Command != nil {
+		t.Fatalf("expected no probe session when the binary can't be found, got: %v", runner.lastReq.Command)
+	}
+}
+
+// TestCopilotAdapterPrepareGithubMCPServerNeverWritesRawToken confirms the
+// generated config references the token via ${...} env expansion (matching
+// prepareCopilotMCP's own credential-ref convention) rather than embedding
+// the raw GH_TOKEN value in a file on disk.
+func TestCopilotAdapterPrepareGithubMCPServerNeverWritesRawToken(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{GithubMCPServerCommand: []string{"echo", "stdio"}}
+	env, arg, err := adapter.prepareCopilotGithubMCPServer([]string{"github"}, workspace, []string{"GH_TOKEN=super-secret-value"})
+	if err != nil {
+		t.Fatalf("prepareCopilotGithubMCPServer: %v", err)
+	}
+	if !strings.HasPrefix(arg, "--additional-mcp-config=@") {
+		t.Fatalf("arg = %q, want --additional-mcp-config=@...", arg)
+	}
+	path := strings.TrimPrefix(arg, "--additional-mcp-config=@")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if strings.Contains(string(data), "super-secret-value") {
+		t.Fatalf("generated config embeds the raw token instead of an env expansion: %s", data)
+	}
+	if !strings.Contains(string(data), "${"+githubMCPServerTokenEnv+"}") {
+		t.Fatalf("generated config missing ${%s} expansion: %s", githubMCPServerTokenEnv, data)
+	}
+	if value, ok := lookupEnv(env, githubMCPServerTokenEnv); !ok || value != "super-secret-value" {
+		t.Fatalf("%s = %q, %v, want the GH_TOKEN value carried into the subprocess env", githubMCPServerTokenEnv, value, ok)
+	}
+}
+
+// TestCopilotAdapterPrepareGithubMCPServerNoOpWithoutGithubTool confirms no
+// config is written and env is untouched for a goober that never declares
+// the github tool group.
+func TestCopilotAdapterPrepareGithubMCPServerNoOpWithoutGithubTool(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{}
+	env, arg, err := adapter.prepareCopilotGithubMCPServer([]string{"shell"}, workspace, []string{"GH_TOKEN=irrelevant"})
+	if err != nil {
+		t.Fatalf("prepareCopilotGithubMCPServer: %v", err)
+	}
+	if arg != "" {
+		t.Fatalf("arg = %q, want empty for a goober without the github tool group", arg)
+	}
+	if len(env) != 1 || env[0] != "GH_TOKEN=irrelevant" {
+		t.Fatalf("env = %v, want untouched", env)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".goobers", "mcp", "github-mcp-server.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no config file written, stat err = %v", err)
+	}
+}
+
+// TestCopilotAdapterPrepareGithubMCPServerFailsClosedWithoutToken confirms a
+// goober that declares github but has no GH_TOKEN materialized fails closed
+// rather than silently running an unauthenticated MCP server.
+func TestCopilotAdapterPrepareGithubMCPServerFailsClosedWithoutToken(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &CopilotAdapter{GithubMCPServerCommand: []string{"echo", "stdio"}}
+	if _, _, err := adapter.prepareCopilotGithubMCPServer([]string{"github"}, workspace, nil); err == nil {
+		t.Fatal("expected an error when no GH_TOKEN is materialized")
 	}
 }
 
@@ -1051,7 +1164,7 @@ func TestCopilotAdapterPreflightGithubToolsFailsClosedOnMissingTool(t *testing.T
 			return os.WriteFile(filepath.Join(logDir, "process-1.log"), []byte(content), 0o644)
 		},
 	}
-	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}
 	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
 	if err == nil {
 		t.Fatal("expected PreflightGithubTools to fail closed on a missing registered tool")
