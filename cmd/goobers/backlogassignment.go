@@ -50,6 +50,14 @@ type backlogAssignmentReport struct {
 }
 
 func runBacklogAssignment(args []string, stdout, stderr io.Writer) int {
+	return runBacklogAssignmentWithMutationHook(args, stdout, stderr, nil)
+}
+
+func runBacklogAssignmentWithMutationHook(
+	args []string,
+	stdout, stderr io.Writer,
+	beforeMutation func(assignmentPlanEntry),
+) int {
 	fs := flag.NewFlagSet("backlog-assignment", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "backlog-assignment")
@@ -117,13 +125,37 @@ func runBacklogAssignment(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list backlog for assignment", err, "backlog-assignment.json")
 	}
+	allFields, err := fieldpredicate.Compile("")
+	if err != nil {
+		pf(stderr, "error: compile assignment load filter: %v\n", err)
+		return 1
+	}
+	scopedItems, _, err := listBacklogScanWindow(
+		ctx, assigner, backlogRepo, []string{trustLabel}, "", allFields, 0, backlogScanCursor{}, true,
+	)
+	if err != nil {
+		return failProviderStage(stderr, "list backlog assignment load", err, "backlog-assignment.json")
+	}
 	eligible, err := assignmentEligibleItems(items, trustLabel, labelFilter, fieldFilter)
 	if err != nil {
 		pf(stderr, "error: filter backlog for assignment: %v\n", err)
 		return 1
 	}
-	plan := planBacklogAssignments(strategy, roster, eligible, maxItems)
+	plan := planBacklogAssignments(strategy, roster, eligible, scopedItems, maxItems)
+	applied := make([]assignmentPlanEntry, 0, len(plan))
+	concurrentlyAssigned := 0
 	for _, assignment := range plan {
+		if beforeMutation != nil {
+			beforeMutation(assignment)
+		}
+		current, err := assigner.GetWorkItem(ctx, backlogRepo, assignment.ItemID)
+		if err != nil {
+			return failProviderStage(stderr, "recheck backlog item "+assignment.ItemID, err, "backlog-assignment.json")
+		}
+		if current.Assignee != "" {
+			concurrentlyAssigned++
+			continue
+		}
 		assignee := assignment.Assignee
 		if _, err := assigner.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: backlogRepo,
@@ -132,6 +164,7 @@ func runBacklogAssignment(args []string, stdout, stderr io.Writer) int {
 		}); err != nil {
 			return failProviderStage(stderr, "assign backlog item "+assignment.ItemID, err, "backlog-assignment.json")
 		}
+		applied = append(applied, assignment)
 	}
 
 	unassigned := 0
@@ -143,9 +176,9 @@ func runBacklogAssignment(args []string, stdout, stderr io.Writer) int {
 	report := backlogAssignmentReport{
 		Strategy:    strategy,
 		Eligible:    len(eligible),
-		Unassigned:  unassigned - len(plan),
-		Assignments: plan,
-		NoWork:      len(plan) == 0,
+		Unassigned:  unassigned - len(applied) - concurrentlyAssigned,
+		Assignments: applied,
+		NoWork:      len(applied) == 0,
 	}
 	data, err := json.Marshal(report)
 	if err != nil {
@@ -157,7 +190,7 @@ func runBacklogAssignment(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "assigned %d backlog item(s); %d remain unassigned\n", len(plan), report.Unassigned)
+	pf(stdout, "assigned %d backlog item(s); %d remain unassigned\n", len(applied), report.Unassigned)
 	return 0
 }
 
@@ -277,7 +310,8 @@ func assignmentEligibleItems(
 func planBacklogAssignments(
 	strategy string,
 	roster []assignmentRosterEntry,
-	items []providers.WorkItem,
+	eligible []providers.WorkItem,
+	scopedItems []providers.WorkItem,
 	maxItems int,
 ) []assignmentPlanEntry {
 	load := make([]int, len(roster))
@@ -285,11 +319,13 @@ func planBacklogAssignments(
 	for i, entry := range roster {
 		indexByAssignee[entry.Assignee] = i
 	}
-	var unassigned []providers.WorkItem
-	for _, item := range items {
+	for _, item := range scopedItems {
 		if i, ok := indexByAssignee[item.Assignee]; ok {
 			load[i]++
 		}
+	}
+	var unassigned []providers.WorkItem
+	for _, item := range eligible {
 		if item.Assignee == "" {
 			unassigned = append(unassigned, item)
 		}

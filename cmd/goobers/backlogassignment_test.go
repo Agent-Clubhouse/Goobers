@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -49,6 +50,61 @@ func TestBacklogAssignmentRoundRobinBalancesWithRosterTieOrder(t *testing.T) {
 	}
 }
 
+func TestBacklogAssignmentConstantCapCountsExcludedOpenAssignments(t *testing.T) {
+	root, server := assignmentCommandFixture(t)
+	setFakeIssueLabels(server, 1, "goobers:approved", "goobers:ready", "goobers/status:in-review")
+	setFakeIssueAssignee(server, 1, "alice")
+	server.addIssue(2, "Ready item", "goobers:approved", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyConstantCap)
+	t.Setenv("GOOBERS_INPUT_ROSTER", `[{"assignee":"alice","maxOpen":1}]`)
+
+	code, stdout, stderr := runArgs(t, "backlog-assignment", root)
+	if code != 0 {
+		t.Fatalf("backlog-assignment: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := fakeIssueAssignees(server, 1, 2); strings.Join(got, ",") != "alice," {
+		t.Fatalf("assignees = %v, want excluded open assignment to consume capacity", got)
+	}
+}
+
+func TestBacklogAssignmentRoundRobinCountsExcludedOpenAssignments(t *testing.T) {
+	root, server := assignmentCommandFixture(t)
+	setFakeIssueLabels(server, 1, "goobers:approved", "goobers:ready", "goobers/status:in-review")
+	setFakeIssueAssignee(server, 1, "alice")
+	server.addIssue(2, "Ready item", "goobers:approved", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyRoundRobin)
+	t.Setenv("GOOBERS_INPUT_ROSTER", `[{"assignee":"alice"},{"assignee":"bob"}]`)
+
+	code, stdout, stderr := runArgs(t, "backlog-assignment", root)
+	if code != 0 {
+		t.Fatalf("backlog-assignment: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := fakeIssueAssignees(server, 1, 2); strings.Join(got, ",") != "alice,bob" {
+		t.Fatalf("assignees = %v, want assignment to least-loaded bob", got)
+	}
+}
+
+func TestBacklogAssignmentSkipsConcurrentlyAssignedItem(t *testing.T) {
+	root, server := assignmentCommandFixture(t)
+	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyRoundRobin)
+	t.Setenv("GOOBERS_INPUT_ROSTER", `[{"assignee":"alice"}]`)
+
+	var stdout, stderr bytes.Buffer
+	code := runBacklogAssignmentWithMutationHook([]string{root}, &stdout, &stderr, func(assignment assignmentPlanEntry) {
+		setFakeIssueAssignee(server, 1, "human")
+	})
+	if code != 0 {
+		t.Fatalf("backlog-assignment: code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if got := fakeIssueAssignees(server, 1); got[0] != "human" {
+		t.Fatalf("assignee = %q, want concurrent human assignment preserved", got[0])
+	}
+	report := readAssignmentReport(t)
+	if len(report.Assignments) != 0 || report.Unassigned != 0 || !report.NoWork {
+		t.Fatalf("report = %+v, want skipped concurrent assignment excluded from mutations and remainder", report)
+	}
+}
+
 func TestBacklogAssignmentInvalidRosterFailsBeforeMutation(t *testing.T) {
 	root, server := assignmentCommandFixture(t)
 	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyConstantCap)
@@ -85,6 +141,12 @@ func setFakeIssueAssignee(server *fakeGitHubServer, number int, assignee string)
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	server.issues[number].assignee = assignee
+}
+
+func setFakeIssueLabels(server *fakeGitHubServer, number int, labels ...string) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.issues[number].labels = append([]string(nil), labels...)
 }
 
 func fakeIssueAssignees(server *fakeGitHubServer, numbers ...int) []string {
