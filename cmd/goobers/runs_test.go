@@ -46,8 +46,11 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 	// start the output with no preceding newline.
 	statusRunTableAt := strings.LastIndex(statusStdout, "RUN ID")
 	runsRunTableAt := strings.LastIndex(runsStdout, "RUN ID")
+	// Each invocation samples now independently, so compare every column except
+	// the relative LAST ACTIVITY values.
 	if statusRunTableAt == -1 || runsRunTableAt == -1 ||
-		runsStdout[runsRunTableAt:] != statusStdout[statusRunTableAt:] {
+		runTableWithoutActivityAges(runsStdout[runsRunTableAt:]) !=
+			runTableWithoutActivityAges(statusStdout[statusRunTableAt:]) {
 		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
 	}
 	if !reflect.DeepEqual(warningLines(runsStdout), warningLines(statusStdout)) {
@@ -83,6 +86,16 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 		!reflect.DeepEqual(runsOutput.Runs, statusOutput.Runs) {
 		t.Fatalf("runs list output = %+v, want status warnings/runs %+v", runsOutput, statusOutput)
 	}
+}
+
+func runTableWithoutActivityAges(table string) string {
+	lines := strings.Split(table, "\n")
+	for i := 1; i < len(lines); i++ {
+		if column := strings.LastIndex(lines[i], "  "); column >= 0 {
+			lines[i] = lines[i][:column]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestRunsCommandUsage(t *testing.T) {

@@ -59,6 +59,23 @@ describe("workflow detail page", () => {
     );
   });
 
+  it("surfaces stage timeout/retry in fields and the full config in raw YAML (#2185)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: /^implement,/ }));
+    const panel = screen.getByRole("complementary", { name: "implement definition" });
+
+    expect(panel).toHaveTextContent("3600s");
+    expect(panel).toHaveTextContent("2 attempts, 30s backoff");
+    expect(panel).toHaveTextContent("pr:open");
+    expect(within(panel).queryByText(/goober: implementer/)).not.toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("tab", { name: "Raw YAML" }));
+    expect(within(panel).getByText(/goober: implementer/)).toBeInTheDocument();
+    expect(panel).toHaveTextContent("timeoutSeconds: 3600");
+  });
+
   it("navigates from recent history to run detail", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
