@@ -35,7 +35,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 	}
 	// config-examples ships eight goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and nine workflows (acme-web's eight + the
+	// dotnet-reviewer) and ten workflows (acme-web's nine + the
 	// dotnet-service reference's dotnet-implementation, #1093); check
 	// membership, not order.
 	gotGoobers := map[string]bool{}
@@ -60,7 +60,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
