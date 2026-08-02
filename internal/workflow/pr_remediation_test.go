@@ -108,14 +108,34 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "guard-before-agent-context" {
-		t.Errorf("checkpoint-gate pass -> %q, want guard-before-agent-context", got)
+	if got := checkpointGate.Branches["pass"]; got != "checkpoint-continue-gate" {
+		t.Errorf("checkpoint-gate pass -> %q, want checkpoint-continue-gate", got)
 	}
-	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "continueRemediation" {
-		t.Errorf("checkpoint-gate input = %+v, want continueRemediation", checkpointGate.Automated)
+	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "escalationOutcome" {
+		t.Errorf("checkpoint-gate input = %+v, want escalationOutcome", checkpointGate.Automated)
 	}
-	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "release-claim" {
-		t.Errorf("checkpoint-gate fail -> %q, want release-claim: an escalated PR must stop, not loop", got)
+	// #1860: this escalation path must release the run's PR claim like every
+	// other terminal/escalate path in this workflow, not reach @escalate
+	// directly — a policy-excluded/budget-exhausted escalation here would
+	// otherwise strand the claim the same way the pre-#1860 workflow did.
+	if got := checkpointGate.Branches["fail"]; got != "release-escalated-claim" {
+		t.Errorf("checkpoint-gate fail -> %q, want release-escalated-claim", got)
+	}
+	continueGate, ok := m.Gate("checkpoint-continue-gate")
+	if !ok {
+		t.Fatal("checkpoint-continue-gate not found")
+	}
+	if continueGate.Automated == nil || continueGate.Automated.Params["key"] != "continueRemediation" {
+		t.Errorf("checkpoint-continue-gate input = %+v, want continueRemediation", continueGate.Automated)
+	}
+	// checkpoint-continue-gate is the original checkpoint-gate (#1860), so it
+	// keeps #1860's claim-guard routing rather than the pre-#1860
+	// gather-review-threads/"" destinations.
+	if got, ok := continueGate.Branches["pass"]; !ok || got != "guard-before-agent-context" {
+		t.Errorf("checkpoint-continue-gate pass -> %q, want guard-before-agent-context", got)
+	}
+	if got, ok := continueGate.Branches["fail"]; !ok || got != "release-claim" {
+		t.Errorf("checkpoint-continue-gate fail -> %q, want release-claim: an escalated PR must stop, not loop", got)
 	}
 
 	siblings, ok := m.Task("gather-sibling-context")
@@ -268,11 +288,16 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Errorf("park-invalid-finding-responses next = %q, want release-escalated-claim", invalidResponsesPark.Next)
 	}
 	if invalidResponsesPark.Run == nil ||
-		len(invalidResponsesPark.Run.Command) != 4 ||
+		len(invalidResponsesPark.Run.Command) != 6 ||
 		invalidResponsesPark.Run.Command[0] != "goobers" ||
 		invalidResponsesPark.Run.Command[1] != "remediation-checkpoint" ||
-		invalidResponsesPark.Run.Command[2] != "--escalate" {
-		t.Errorf("park-invalid-finding-responses command = %v, want goobers remediation-checkpoint --escalate <reason>", invalidResponsesPark.Run)
+		invalidResponsesPark.Run.Command[2] != "--escalate" ||
+		invalidResponsesPark.Run.Command[4] != "--escalation-outcome" ||
+		invalidResponsesPark.Run.Command[5] != "budget-exhausted" {
+		t.Errorf("park-invalid-finding-responses command = %v, want forced budget-exhausted checkpoint", invalidResponsesPark.Run)
+	}
+	if got := invalidResponsesPark.Inputs["resultFile"]; got != "finding-response-escalation-result.json" {
+		t.Errorf("park-invalid-finding-responses resultFile = %q, want finding-response-escalation-result.json", got)
 	}
 	if len(invalidResponsesPark.PolicyActions) != 2 ||
 		invalidResponsesPark.PolicyActions[0] != "record-remediation-checkpoint" ||
@@ -281,6 +306,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 			"park-invalid-finding-responses policyActions = %v, want [record-remediation-checkpoint escalate-pr]",
 			invalidResponsesPark.PolicyActions,
 		)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(invalidResponsesPark.ExpectedOutputs, output) {
+			t.Errorf("park-invalid-finding-responses expectedOutputs = %v, missing %q", invalidResponsesPark.ExpectedOutputs, output)
+		}
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
@@ -365,6 +395,14 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if escalatedRelease.Next != TargetEscalate {
 		t.Errorf("release-escalated-claim next = %q, want %q", escalatedRelease.Next, TargetEscalate)
+	}
+	if got := park.Inputs["resultFile"]; got != "reviewer-escalation-result.json" {
+		t.Errorf("park-escalated resultFile = %q, want reviewer-escalation-result.json", got)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(park.ExpectedOutputs, output) {
+			t.Errorf("park-escalated expectedOutputs = %v, missing %q", park.ExpectedOutputs, output)
+		}
 	}
 }
 
@@ -619,7 +657,10 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 	for _, out := range checkpoint.ExpectedOutputs {
 		declared[out] = true
 	}
-	for _, want := range []string{"continueRemediation", "selectedNumber", "head", "headSha"} {
+	for _, want := range []string{
+		"continueRemediation", "selectedNumber", "head", "headSha",
+		"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason",
+	} {
 		if !declared[want] {
 			t.Errorf("remediation-checkpoint expectedOutputs = %v, missing %q", checkpoint.ExpectedOutputs, want)
 		}
