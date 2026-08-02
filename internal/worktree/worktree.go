@@ -130,7 +130,7 @@ func validRunID(id string) bool {
 // needed) and adds a new worktree off it for opts.BaseRef, keyed by
 // opts.RunID. Two calls with different RunIDs against the same repo may run
 // concurrently and never observe each other's worktree contents.
-func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, error) {
+func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, retErr error) {
 	if opts.RunID == "" {
 		return nil, fmt.Errorf("worktree: RunID is required")
 	}
@@ -241,6 +241,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		_ = os.Remove(ownershipPath)
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if err := m.forceClear(context.WithoutCancel(ctx), key, path, opts.RunID); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("worktree: clean up failed create for run %s: %w", opts.RunID, err))
+		}
+	}()
 
 	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
 	if partialMirror {
@@ -257,8 +265,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
-		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
-		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
+		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
 
 	// A bot identity local to THIS worktree's own .git/config (`git config`
@@ -287,8 +294,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 		if mergeErr != nil {
 			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
-			cleanupErr := m.forceClear(ctx, key, path, opts.RunID)
-			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, cleanupErr)
+			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, nil)
 		}
 	}
 
@@ -298,15 +304,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// no-op on darwin/linux, where symlinks check out natively.
 	warnings, err := m.checkSymlinkSupport(ctx, path)
 	if err != nil {
-		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 		return nil, fmt.Errorf("worktree: inspect symlinks for run %s: %w", opts.RunID, err)
 	}
 
 	mk.StartRef = startRef
 	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
-		// Do not expose a worktree whose complete marker could not be
-		// persisted. The pre-provision ownership records remain recoverable.
-		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 

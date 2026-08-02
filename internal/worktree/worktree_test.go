@@ -693,6 +693,40 @@ func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T)
 	}
 }
 
+func TestManager_CreateProvisionFailureRemovesOwnershipRecords(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	runID := "run-failed-provision"
+	key := repoKey(repo)
+	directory := worktreeDirectoryName(runID)
+
+	if _, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "missing-ref",
+	}); err == nil {
+		t.Fatal("Create with missing base ref unexpectedly succeeded")
+	}
+	for _, path := range []string{
+		filepath.Join(m.runsDirForKey(key), directory),
+		m.markerPath(key, runID),
+		m.ownershipPath(key, directory),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed provision left %s behind: %v", path, err)
+		}
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("retry Create after failed provision: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove retry worktree: %v", err)
+	}
+}
+
 func TestManager_CreateRetryRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
