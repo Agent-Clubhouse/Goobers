@@ -23,6 +23,10 @@ Install or build:
 - `gh` for the label and test-issue commands below.
 - The target repository's build, test, and lint tools on the daemon's `PATH`.
 
+See [Stack support](stack-support.md) for which languages have a shipped reference gaggle
+today, and how a gaggle declares its own toolchain requirement (`ciCommand`,
+`requiredCapabilities`) for any other stack.
+
 The target repository needs:
 
 - An enabled Issues backlog.

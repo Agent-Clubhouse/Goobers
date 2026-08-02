@@ -209,7 +209,10 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
 	// opening, since the claim was only validated once at query-backlog.
-	const wantDigest = "sha256:a0df472a9988d83446665e169d398ef5a6134d11ff69c9e4ba7851605fd01010"
+	// #2174: reworded leftover Go-specific prose (`make ci`/`go test`) in the
+	// implement task's goal to describe this gaggle's actual `npm run ci`
+	// stack; no structural/behavioral change, but the goal text is hashed.
+	const wantDigest = "sha256:42fbae3d3a08335c51bc11bd65a8b91463ce394a924c1707dcce335115044bf5"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
