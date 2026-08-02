@@ -209,6 +209,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
+		r.observedDigest = r.appliedDigest
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
@@ -218,6 +219,7 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
+		r.observedDigest = r.appliedDigest
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
 	if r.readModel != nil {

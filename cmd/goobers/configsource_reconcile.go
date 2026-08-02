@@ -18,6 +18,7 @@ type configSourceReconciler struct {
 	source    instance.WorkflowSource
 	reconcile func(context.Context, time.Time) error
 	errors    *sweepErrorReporter
+	wake      <-chan struct{}
 }
 
 func (r *configSourceReconciler) Run(ctx context.Context) error {
@@ -45,6 +46,8 @@ func (r *configSourceReconciler) Run(ctx context.Context) error {
 			return nil
 		case now := <-ticker.C:
 			reconcile(now)
+		case <-r.wake:
+			reconcile(time.Now())
 		case _, ok := <-watchEvents:
 			if !ok {
 				watchEvents = nil

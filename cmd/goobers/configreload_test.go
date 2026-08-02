@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -127,7 +128,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 
 func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 	previousReloadInterval := configReloadInterval
-	configReloadInterval = 20 * time.Millisecond
+	configReloadInterval = time.Hour
 	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
 
 	root := initDeterministicDemo(t)
@@ -202,6 +203,123 @@ func TestUpReconcilesGitWorkflowSourceAndRetainsLastKnownGood(t *testing.T) {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
 	waitForRunnableWorkflow(t, root, "reconciled-implement")
+}
+
+func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	setAPIListenAddress(t, root, freeLoopbackAddress(t))
+
+	sourceRepo := filepath.Join(t.TempDir(), "workflow-source")
+	if err := os.CopyFS(sourceRepo, os.DirFS(layout.ConfigDir())); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "init", "-b", "main")
+	runGitT(t, sourceRepo, "config", "user.name", "config source")
+	runGitT(t, sourceRepo, "config", "user.email", "config-source@example.test")
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "initial config")
+
+	const (
+		secretEnv = "GOOBERS_TEST_CONFIG_RECONCILE_WEBHOOK_SECRET"
+		secret    = "config-reconcile-webhook-secret"
+	)
+	webhookAddress := freeLoopbackAddress(t)
+	t.Setenv(secretEnv, secret)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WorkflowSource = &instance.WorkflowSource{
+		Kind: instance.WorkflowSourceKindGit,
+		Path: sourceRepo,
+	}
+	cfg.Webhook.Listen = webhookAddress
+	cfg.Webhook.Secret.Env = secretEnv
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	daemonDone := make(chan int, 1)
+	var stderr bytes.Buffer
+	go func() {
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case code := <-daemonDone:
+			if code != 0 {
+				t.Errorf("daemon exit code = %d", code)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-started.started:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before startup with code %d: %s", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for daemon startup")
+	}
+
+	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")
+	valid := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: webhook-reconciled-implement", 1)
+	if err := os.WriteFile(workflowPath, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, sourceRepo, "add", ".")
+	runGitT(t, sourceRepo, "commit", "-m", "webhook config")
+
+	if status := postWebhook(t, webhookAddress, secret, "push", "config-push-1", []byte(`{}`)); status != http.StatusAccepted {
+		t.Fatalf("push webhook status = %d, want %d", status, http.StatusAccepted)
+	}
+	waitForConfigEvent(t, layout.SchedulerDir(), journal.EventConfigReloaded, 1)
+	waitForRunnableWorkflow(t, root, "webhook-reconciled-implement")
+}
+
+func TestConfigSourceReconcilerWakesWithoutPolling(t *testing.T) {
+	previousReloadInterval := configReloadInterval
+	configReloadInterval = time.Hour
+	t.Cleanup(func() { configReloadInterval = previousReloadInterval })
+
+	wake := make(chan struct{}, 1)
+	reconciled := make(chan struct{}, 2)
+	loop := &configSourceReconciler{
+		source: instance.WorkflowSource{Kind: instance.WorkflowSourceKindLocalDir},
+		errors: &sweepErrorReporter{},
+		wake:   wake,
+		reconcile: func(context.Context, time.Time) error {
+			reconciled <- struct{}{}
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("initial reconcile did not run")
+	}
+
+	wake <- struct{}{}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("hook wake did not reconcile")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("reconciler stopped with error: %v", err)
+	}
 }
 
 // TestConfigReloaderPollSerializedAcrossWatchConfigAndApplySweep pins #459's

@@ -157,6 +157,37 @@ func TestHandlerRoutesGitHubEventNames(t *testing.T) {
 	}
 }
 
+func TestHandlerWakesPushHookAfterAuthentication(t *testing.T) {
+	const secret = "webhook-test-secret"
+	var pushes int
+	handler, err := NewHandler(
+		[]byte(secret),
+		&recordingSignaler{},
+		&recordingJournal{},
+		startedDispatchGate(t, context.Background()),
+		WithPushHook(func(context.Context) { pushes++ }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if response := deliver(t, handler, secret, "issues", "issues-1", []byte(`{}`)); response.Code != http.StatusAccepted {
+		t.Fatalf("issues status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+	if response := deliver(t, handler, "wrong-secret", "push", "push-invalid", []byte(`{}`)); response.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid push status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if response := deliver(t, handler, secret, "push", "push-1", []byte(`{}`)); response.Code != http.StatusAccepted {
+		t.Fatalf("push status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+	if response := deliver(t, handler, secret, "push", "push-1", []byte(`{}`)); response.Code != http.StatusAccepted {
+		t.Fatalf("duplicate push status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+	if pushes != 1 {
+		t.Fatalf("push hook calls = %d, want 1", pushes)
+	}
+}
+
 func TestHandlerRejectsUnusablePullRequestPayloadAndJournalsFallbackCause(t *testing.T) {
 	const secret = "webhook-test-secret"
 	signaler := &recordingSignaler{}

@@ -24,9 +24,10 @@ errors. --skip-preflight bypasses that refusal with a prominent warning.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling
-is always active. Invalid revisions are rejected with the last-known-good
-definitions left running. --watch-config separately watches direct edits
-to the materialized config directory.
+is always active, and authenticated GitHub push deliveries wake it when
+webhook.secret is configured. Invalid revisions are rejected with the
+last-known-good definitions left running. --watch-config separately watches
+direct edits to the materialized config directory.
 
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a

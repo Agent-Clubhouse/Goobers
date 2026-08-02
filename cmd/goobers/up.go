@@ -209,9 +209,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
-	"is always active. Invalid revisions are rejected with the last-known-good\n" +
-	"definitions left running. --watch-config separately watches direct edits\n" +
-	"to the materialized config directory.\n\n" +
+	"is always active, and authenticated GitHub push deliveries wake it when\n" +
+	"webhook.secret is configured. Invalid revisions are rejected with the\n" +
+	"last-known-good definitions left running. --watch-config separately watches\n" +
+	"direct edits to the materialized config directory.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -565,8 +566,15 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
 		return daemonstate.Refresh(lockPath, tickAt)
 	}))
+	sourceReconcileWake := make(chan struct{}, 1)
+	wakeSourceReconcile := func(context.Context) {
+		select {
+		case sourceReconcileWake <- struct{}{}:
+		default:
+		}
+	}
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
-	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -724,7 +732,6 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return resp
 			}
 			resp.Revision = revision
-			sourceRevision = revision
 		}
 		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
 		resp.Applied = applied
@@ -733,6 +740,8 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		resp.Rejected = rejected
 		if reloadErr != nil {
 			resp.Error = reloadErr.Error()
+		} else if resp.Revision != "" {
+			sourceRevision = resp.Revision
 		}
 		return resp
 	}
@@ -936,6 +945,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		sourceLoop := &configSourceReconciler{
 			source: *source,
 			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			wake:   sourceReconcileWake,
 			reconcile: func(reconcileCtx context.Context, now time.Time) error {
 				sourceReconcileMu.Lock()
 				defer sourceReconcileMu.Unlock()
@@ -950,12 +960,15 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				if syncErr != nil {
 					return fmt.Errorf("sync workflow source: %w", syncErr)
 				}
-				sourceRevision = revision
 				if !changed {
 					return nil
 				}
 				_, _, _, _, reloadErr := reloader.pollOnce(now)
-				return reloadErr
+				if reloadErr != nil {
+					return reloadErr
+				}
+				sourceRevision = revision
+				return nil
 			},
 		}
 		go func() { configDone <- sourceLoop.Run(ctx) }()
