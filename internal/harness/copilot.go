@@ -595,7 +595,12 @@ func (c *CopilotAdapter) PreflightGithubTools(ctx context.Context, tools []strin
 	if err != nil {
 		return fmt.Errorf("harness: copilot-cli: tool preflight: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(logDir) }()
+	succeeded := false
+	defer func() {
+		if succeeded {
+			_ = os.RemoveAll(logDir)
+		}
+	}()
 	// A registration-only probe never authenticates to GitHub (MCP servers
 	// register their tool schema at protocol-init time, before any API call
 	// — confirmed live), so a scratch workspace + placeholder token is
@@ -637,12 +642,17 @@ func (c *CopilotAdapter) PreflightGithubTools(ctx context.Context, tools []strin
 	if githubMCPArg != "" {
 		argv = append(argv, githubMCPArg)
 	}
-	if _, err := c.runner().Run(ctx, ProcessRequest{
+	result, err := c.runner().Run(ctx, ProcessRequest{
 		Command: argv,
 		Env:     env,
 		Timeout: copilotToolPreflightTimeout,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("harness: copilot-cli: tool preflight session: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("harness: copilot-cli: tool preflight: probe session exited %d — the CLI itself failed "+
+			"(auth, MCP server startup, or similar), not a missing-registration gap: %s", result.ExitCode, firstOutputLine(result.Transcript))
 	}
 
 	registered, err := parseRegisteredGithubTools(logDir)
@@ -656,9 +666,15 @@ func (c *CopilotAdapter) PreflightGithubTools(ctx context.Context, tools []strin
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("harness: copilot-cli: tool preflight: declared capability requires %v but the live CLI never registered it — "+
-			"the goober's tools/capabilities are declared correctly; this is a harness/MCP-server registration gap, not a config error", missing)
+		var seen []string
+		for tool := range registered {
+			seen = append(seen, tool)
+		}
+		return fmt.Errorf("harness: copilot-cli: tool preflight: declared capability requires %v but the live CLI never registered it "+
+			"(registered instead: %v) — the goober's tools/capabilities are declared correctly; this is a harness/MCP-server registration "+
+			"gap, not a config error; debug log preserved at %s", missing, seen, logDir)
 	}
+	succeeded = true
 	return nil
 }
 

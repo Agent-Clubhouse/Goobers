@@ -1174,6 +1174,28 @@ func TestCopilotAdapterPreflightGithubToolsFailsClosedOnMissingTool(t *testing.T
 	}
 }
 
+// TestCopilotAdapterPreflightGithubToolsSurfacesNonZeroExit confirms a probe
+// session that exits non-zero (auth failure, crashed MCP server, etc.) is
+// reported as what it is, not silently treated as "zero tools registered"
+// and misreported as a registration gap — a real bug this test would have
+// caught (the exit code was never checked before this fix).
+func TestCopilotAdapterPreflightGithubToolsSurfacesNonZeroExit(t *testing.T) {
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 1, Transcript: []byte("Error: Authentication failed\n")},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner, GithubMCPServerCommand: []string{"echo", "stdio"}}
+	err := adapter.PreflightGithubTools(context.Background(), []string{"github"}, RequiredGithubTools([]string{"github:issues:write"}))
+	if err == nil {
+		t.Fatal("expected PreflightGithubTools to fail on a non-zero probe exit")
+	}
+	if !strings.Contains(err.Error(), "exited 1") || !strings.Contains(err.Error(), "Authentication failed") {
+		t.Fatalf("error = %v, want it to surface the probe session's own failure, not a generic registration-gap message", err)
+	}
+	if strings.Contains(err.Error(), "never registered") {
+		t.Fatalf("error = %v, misreported a CLI-level failure as a registration gap", err)
+	}
+}
+
 // logDirFromCommand extracts the --log-dir value PreflightGithubTools passed
 // to the probe session, so a scripted fakeProcessRunner can drop its fixture
 // log content exactly where the real code will read it back from.
