@@ -489,6 +489,13 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 			return readservice.RunListOptions{}, fmt.Errorf("%w: latestPerWorkflow must be a boolean", readservice.ErrInvalidArgument)
 		}
 	}
+	showNoWork := false
+	if value := query.Get("showNoWork"); value != "" {
+		showNoWork, err = strconv.ParseBool(value)
+		if err != nil {
+			return readservice.RunListOptions{}, fmt.Errorf("%w: showNoWork must be a boolean", readservice.ErrInvalidArgument)
+		}
+	}
 	options := readservice.RunListOptions{
 		Gaggle:            query.Get("gaggle"),
 		Workflow:          query.Get("workflow"),
@@ -501,6 +508,7 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 		Until:             until,
 		Cursor:            query.Get("cursor"),
 		LatestPerWorkflow: latestPerWorkflow,
+		ShowNoWork:        showNoWork,
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

@@ -190,6 +190,48 @@ func TestListServesEveryContractField(t *testing.T) {
 	}
 }
 
+// TestListExcludesNoWorkByDefault is the regression test for #2188: the
+// default run list must hide routine no-work schedule ticks, but only when
+// IncludeNoWork is left false — nothing here should ever be silently dropped
+// from the underlying store, only from what a plain list page returns.
+func TestListExcludesNoWorkByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	noWorkID := testIdentity()
+	noWorkID.RunID = "run-no-work"
+	if err := store.UpsertRun(ctx, ProjectRun(noWorkID, Projection{}, singleStageEvents("no-work"))); err != nil {
+		t.Fatalf("upsert no-work run: %v", err)
+	}
+	producedID := testIdentity()
+	producedID.RunID = "run-produced"
+	if err := store.UpsertRun(ctx, ProjectRun(producedID, Projection{}, completedRunEvents())); err != nil {
+		t.Fatalf("upsert produced run: %v", err)
+	}
+
+	hidden, err := store.ListRuns(ctx, ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(hidden.Runs) != 1 || hidden.Runs[0].RunID != producedID.RunID {
+		t.Fatalf("default list = %+v, want only %q", hidden.Runs, producedID.RunID)
+	}
+
+	shown, err := store.ListRuns(ctx, ListOptions{Limit: 10, IncludeNoWork: true})
+	if err != nil {
+		t.Fatalf("list with IncludeNoWork: %v", err)
+	}
+	if len(shown.Runs) != 2 {
+		t.Fatalf("IncludeNoWork list = %+v, want both runs", shown.Runs)
+	}
+
+	// GetRun (used by run detail) must still answer for the no-work run — the
+	// filter hides it from LIST pages only, never the store itself.
+	if _, ok, err := store.GetRun(ctx, noWorkID.RunID); err != nil || !ok {
+		t.Fatalf("GetRun(%q) = ok=%v err=%v, want the no-work run still readable directly", noWorkID.RunID, ok, err)
+	}
+}
+
 // TestRunningRunKeepsAgeing pins the other half of that decision.
 func TestRunningRunKeepsAgeing(t *testing.T) {
 	ctx := context.Background()

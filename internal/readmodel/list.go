@@ -55,6 +55,13 @@ type ListOptions struct {
 	Stage      string
 	Population Population
 
+	// IncludeNoWork includes runs whose disposition is DispositionNoWork
+	// (#2188). False (the default) excludes them via a plain WHERE term
+	// alongside whatever covering index the other dims choose — not yet a
+	// dedicated covering index of its own, since that indexed contract is
+	// #1429/#1439's to design; see disposition's doc comment in schema.go.
+	IncludeNoWork bool
+
 	// OrderBy selects the recency axis (#1777).
 	//
 	// Two axes, not one, because they answer different operator questions. The
@@ -300,6 +307,10 @@ func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 		// from runColumn's closed switch over four constants.
 		where = append(where, column+" = 1")
 	}
+	if !options.IncludeNoWork {
+		where = append(where, "disposition != ?")
+		args = append(args, DispositionNoWork)
+	}
 	// The filter, the cursor, and the ORDER BY all use the SAME column (#1777).
 	//
 	// That is not a tidiness preference. Keyset pagination works by asking for
@@ -363,6 +374,10 @@ func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 	if column, ok := options.Population.stageColumn(); ok {
 		// Literal for the same partial-index reason as the run-scoped path.
 		where = append(where, "s."+column+" = 1")
+	}
+	if !options.IncludeNoWork {
+		where = append(where, "r.disposition != ?")
+		args = append(args, DispositionNoWork)
 	}
 	if !options.Since.IsZero() {
 		where = append(where, "s.run_started_at >= ?")

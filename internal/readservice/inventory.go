@@ -702,7 +702,7 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 }
 
 func workflowStages(def *apiv1.Workflow) []StageDefinition {
-	stages := make([]StageDefinition, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	stages := make([]StageDefinition, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	for _, task := range def.Spec.Tasks {
 		var owner *GooberReference
 		if task.Goober != "" {
@@ -728,6 +728,13 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			Kind:         workflow.GraphNodeGate,
 			Owner:        owner,
 			Evaluator:    gate.Evaluator,
+			Capabilities: []string{},
+		})
+	}
+	for _, parallel := range def.Spec.Parallels {
+		stages = append(stages, StageDefinition{
+			Name:         parallel.Name,
+			Kind:         workflow.GraphNodeParallel,
 			Capabilities: []string{},
 		})
 	}

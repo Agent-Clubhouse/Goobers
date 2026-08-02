@@ -1197,6 +1197,17 @@ summary:focus-visible {
   font-weight: 680;
 }
 
+.filter-toggle {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+  margin-left: auto;
+  padding-bottom: 10px;
+}
+
 .run-scope-strip {
   align-items: center;
   background: var(--panel);

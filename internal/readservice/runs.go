@@ -115,6 +115,15 @@ type RunListOptions struct {
 	Cursor            string
 	LatestPerWorkflow bool
 
+	// ShowNoWork includes routine no-work completions (#2188) — a run that
+	// touched exactly one stage and that stage's terminal status was
+	// apiv1.ResultNoWork. False (the default) hides them, since a live instance
+	// on a ~60s schedule cadence produces far more of these than runs an
+	// operator actually cares about; explicitly setting this to true is the
+	// escape hatch, not a second filter value, so there is no way to ask for
+	// no-work runs ONLY.
+	ShowNoWork bool
+
 	// OrderByActivity sorts and filters on the run's last journal event rather
 	// than its start (#1777).
 	//
@@ -166,8 +175,13 @@ type RunSummary struct {
 	RetryCount       int              `json:"retryCount"`
 	PolicyRetryCount int              `json:"policyRetryCount"`
 	InfraRetryCount  int              `json:"infraRetryCount"`
-	Stages           []string         `json:"-"`
-	stageAttempts    map[string][]StageAttempt
+	// NoWork is true for a completed run that touched exactly one stage and
+	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
+	// schedule tick that found nothing to do, as opposed to a genuine
+	// single-stage workflow that did real work.
+	NoWork        bool     `json:"noWork"`
+	Stages        []string `json:"-"`
+	stageAttempts map[string][]StageAttempt
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -677,6 +691,8 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		journalPopulation = ""
 	}
 	switch {
+	case !options.ShowNoWork && summary.NoWork:
+		return false
 	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
 		return false
 	case options.Workflow != "" && summary.Workflow != options.Workflow:
@@ -1495,6 +1511,7 @@ func summarizeRunForStage(
 	var lastActivityAt time.Time
 	currentStage := ""
 	seenStages := make(map[string]struct{})
+	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
 
 	for _, record := range run.records {
@@ -1523,6 +1540,7 @@ func summarizeRunForStage(
 			if currentStage == event.Stage {
 				currentStage = ""
 			}
+			lastStageStatus[event.Stage] = event.Status
 		case journal.EventGateStarted:
 			currentStage = event.Gate
 		case journal.EventGateEvaluated:
@@ -1562,6 +1580,16 @@ func summarizeRunForStage(
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
+	// A routine no-work tick is a completed run that touched exactly one
+	// stage, and that stage's own terminal status was no-work — as opposed to
+	// a multi-stage run that hit no-work partway, or a genuinely single-stage
+	// workflow that succeeded.
+	noWork := phase == journal.PhaseCompleted && len(lastStageStatus) == 1
+	if noWork {
+		for _, status := range lastStageStatus {
+			noWork = status == string(apiv1.ResultNoWork)
+		}
+	}
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
@@ -1586,6 +1614,7 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		NoWork:           noWork,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil

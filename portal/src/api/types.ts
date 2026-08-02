@@ -328,6 +328,8 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
+  showNoWork?: boolean;
 }
 
 export interface RunList {
@@ -361,6 +363,8 @@ export interface RunSummary {
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
+  noWork: boolean;
 }
 
 export interface RunDetail extends RunSummary {

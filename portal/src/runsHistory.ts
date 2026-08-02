@@ -36,7 +36,7 @@ export interface RunsHistoryQuery {
 
 export type RunHistoryScope = Pick<
   RunListOptions,
-  "gaggle" | "workflow" | "stage" | "outcome" | "population" | "since" | "until"
+  "gaggle" | "workflow" | "stage" | "outcome" | "population" | "since" | "until" | "showNoWork"
 >;
 
 interface RunsStream {
@@ -149,7 +149,7 @@ export function useRunsHistory(
         return false;
       },
     );
-  }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
   // Merge the newest page into the loaded window, preserving pagination.
   //
@@ -222,7 +222,7 @@ export function useRunsHistory(
         return false;
       },
     );
-  }, [cache, cacheKey, client, filter, isFresh, publish, reload, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [cache, cacheKey, client, filter, isFresh, publish, reload, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
   const loadMore = useCallback(() => {
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
@@ -251,7 +251,7 @@ export function useRunsHistory(
         }
       },
     );
-  }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow]);
+  }, [client, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
   refreshLoader.current = refreshWindow;
 
@@ -327,6 +327,7 @@ function runsHistoryCacheKey(filter: RunsFilter, scope: RunHistoryScope): string
     scope.population ?? "",
     scope.since ?? "",
     scope.until ?? "",
+    scope.showNoWork ? "1" : "0",
   );
 }
 

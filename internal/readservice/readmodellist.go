@@ -58,7 +58,8 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		// Population is validated by canonicalStagePopulation upstream, and the
 		// read model refuses any value its own switch does not recognise, so a
 		// bad value cannot reach the query as a column name.
-		Population: readmodel.Population(options.StagePopulation),
+		Population:    readmodel.Population(options.StagePopulation),
+		IncludeNoWork: options.ShowNoWork,
 	}
 	if options.OrderByActivity {
 		request.OrderBy = readmodel.OrderLastActivity
@@ -120,6 +121,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		RetryCount:       row.RetryCount,
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
+		NoWork:           row.Disposition == readmodel.DispositionNoWork,
 		Stages:           row.Stages,
 	}
 }

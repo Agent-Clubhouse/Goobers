@@ -140,6 +140,7 @@ function run(
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
+    noWork: false,
   };
 }
 
