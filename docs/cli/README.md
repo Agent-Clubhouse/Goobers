@@ -118,6 +118,7 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
+| [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
@@ -2764,6 +2765,32 @@ a repository is larger than the checkout-size threshold. Exit codes:
 $ goobers validate
 $ goobers validate --json
 $ goobers validate --check-harness --check-repos
+~~~
+
+## `goobers validate-plan`
+
+validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+
+~~~text
+Usage: goobers validate-plan [path]
+
+validate-plan is the decomposition workflow's `validate-plan` stage
+(docs/design/decomposition-workflow.md §3.2/§4, DEC-2). It reads the
+decomposition plan design-slices produced and the selection artifact
+select-source produced, checks the plan's schema version, its binding to
+the selector artifact, every child's shape, the dependency graph, and the
+label allowlist, then re-fetches the live parent to detect whether it
+changed since selection. It never mutates the provider.
+
+Exit codes: 0 = the plan is valid, or invalid/conflicting (the result file
+reports which — not a business error) / 1 = business error (provider/
+credential/config/IO error) / 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers validate-plan
 ~~~
 
 ## `goobers version`
