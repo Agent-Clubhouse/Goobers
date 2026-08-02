@@ -131,7 +131,7 @@ func runBacklogAssignmentWithMutationHook(
 		return 1
 	}
 	scopedItems, _, err := listBacklogScanWindow(
-		ctx, assigner, backlogRepo, []string{trustLabel}, "", allFields, 0, backlogScanCursor{}, true,
+		ctx, assigner, backlogRepo, nil, "", allFields, 0, backlogScanCursor{}, true,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list backlog assignment load", err, "backlog-assignment.json")

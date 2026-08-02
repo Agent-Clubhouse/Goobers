@@ -84,6 +84,40 @@ func TestBacklogAssignmentRoundRobinCountsExcludedOpenAssignments(t *testing.T) 
 	}
 }
 
+func TestBacklogAssignmentConstantCapCountsUntrustedOpenAssignments(t *testing.T) {
+	root, server := assignmentCommandFixture(t)
+	setFakeIssueLabels(server, 1, "goobers:ready")
+	setFakeIssueAssignee(server, 1, "alice")
+	server.addIssue(2, "Ready item", "goobers:approved", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyConstantCap)
+	t.Setenv("GOOBERS_INPUT_ROSTER", `[{"assignee":"alice","maxOpen":1}]`)
+
+	code, stdout, stderr := runArgs(t, "backlog-assignment", root)
+	if code != 0 {
+		t.Fatalf("backlog-assignment: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := fakeIssueAssignees(server, 1, 2); strings.Join(got, ",") != "alice," {
+		t.Fatalf("assignees = %v, want untrusted open assignment to consume capacity", got)
+	}
+}
+
+func TestBacklogAssignmentRoundRobinCountsUntrustedOpenAssignments(t *testing.T) {
+	root, server := assignmentCommandFixture(t)
+	setFakeIssueLabels(server, 1, "goobers:ready")
+	setFakeIssueAssignee(server, 1, "alice")
+	server.addIssue(2, "Ready item", "goobers:approved", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyRoundRobin)
+	t.Setenv("GOOBERS_INPUT_ROSTER", `[{"assignee":"alice"},{"assignee":"bob"}]`)
+
+	code, stdout, stderr := runArgs(t, "backlog-assignment", root)
+	if code != 0 {
+		t.Fatalf("backlog-assignment: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := fakeIssueAssignees(server, 1, 2); strings.Join(got, ",") != "alice,bob" {
+		t.Fatalf("assignees = %v, want assignment to least-loaded bob", got)
+	}
+}
+
 func TestBacklogAssignmentSkipsConcurrentlyAssignedItem(t *testing.T) {
 	root, server := assignmentCommandFixture(t)
 	t.Setenv("GOOBERS_INPUT_STRATEGY", assignmentStrategyRoundRobin)
