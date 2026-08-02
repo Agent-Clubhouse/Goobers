@@ -130,7 +130,15 @@ correctly and the machine is *aware* when a PR only needs a rebase:
 - `conflict` — rebase does not apply cleanly; needs resolution.
 - `substantive` — a code change is required (cross-PR drift, regression, human comment,
   a real defect).
+- `missing-tests` — new or changed behavior lacks required test coverage.
+- `scope-creep` — unrelated changes must be removed.
+- `contract-change` — an unauthorized load-bearing contract change requires correction
+  or escalation.
 - `cross-pr-blocked` — correct in isolation but must wait behind another PR (§7).
+
+CI failure is deliberately not a finding class. Deterministic provider check failures
+reach remediation through the separate CI evidence channel, where their check output
+and annotations remain actionable without asking the reviewer to evaluate CI.
 
 The verdict is a **checklist**: `pr-remediation` must clear *every* item and
 `merge-review` re-verifies (SHA-pinned) that *every* item is cleared before

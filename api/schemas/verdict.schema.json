@@ -78,7 +78,7 @@
         },
         "class": {
           "type": "string",
-          "enum": ["rebase-needed", "conflict", "substantive", "cross-pr-blocked"],
+          "enum": ["rebase-needed", "conflict", "substantive", "missing-tests", "scope-creep", "contract-change", "cross-pr-blocked"],
           "description": "PR-lifecycle only (#358): routes this finding to the right pr-remediation action. Absent on an ordinary in-run gate finding."
         },
         "blockingPrs": {
