@@ -25,8 +25,8 @@ import (
 
 const applyHelp = "Usage: goobers apply [path]\n\n" +
 	"Ask a live `goobers up` daemon to reconcile its workflow definitions\n" +
-	"now, instead of waiting for --watch-config's poll interval (or running\n" +
-	"one at all if it's off). For a git-tracked workflowSource, first pulls\n" +
+	"now, instead of waiting for the configured source's poll interval. For\n" +
+	"a git-tracked workflowSource, first pulls\n" +
 	"the tracked ref's latest commit; for a local-dir source, just forces an\n" +
 	"immediate validate-and-reload of the config directory as it stands.\n\n" +
 	"On success the daemon's live definitions swap to the new commit/edit\n" +

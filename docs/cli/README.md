@@ -224,8 +224,8 @@ reconcile a live daemon's workflow definitions now
 Usage: goobers apply [path]
 
 Ask a live `goobers up` daemon to reconcile its workflow definitions
-now, instead of waiting for --watch-config's poll interval (or running
-one at all if it's off). For a git-tracked workflowSource, first pulls
+now, instead of waiting for the configured source's poll interval. For
+a git-tracked workflowSource, first pulls
 the tracked ref's latest commit; for a local-dir source, just forces an
 immediate validate-and-reload of the config directory as it stands.
 
@@ -2614,7 +2614,7 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
@@ -2629,6 +2629,13 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
+
+A Git workflowSource continuously reconciles its tracked ref. Local Git
+ref changes wake the loop immediately; periodic fetch-and-compare polling
+is always active, and authenticated GitHub push deliveries wake it when
+webhook.secret is configured. Invalid revisions are rejected with the
+last-known-good definitions left running. --watch-config separately watches
+direct edits to the materialized config directory.
 
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a
