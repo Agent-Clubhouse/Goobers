@@ -652,6 +652,81 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	}
 }
 
+func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	runIDs := []string{
+		"short-stage",
+		strings.Repeat("a", 80) + "-ref-" + strings.Repeat("reference", 10),
+	}
+
+	var directories []string
+	for _, runID := range runIDs {
+		wt, err := m.Create(ctx, CreateOptions{
+			RepoURL: repo, RunID: runID, OwnerRunID: "full-owner-run-id", BaseRef: "main",
+		})
+		if err != nil {
+			t.Fatalf("Create(%q): %v", runID, err)
+		}
+		directory := filepath.Base(wt.Path)
+		if len(directory) != len("wt-")+worktreeDirectoryHashBytes*2 {
+			t.Fatalf("worktree directory %q has length %d", directory, len(directory))
+		}
+		if directory != worktreeDirectoryName(runID) {
+			t.Fatalf("worktree directory = %q, want hash of full ID", directory)
+		}
+		mk, err := readMarker(m.markerPath(wt.key, runID))
+		if err != nil {
+			t.Fatalf("read marker for %q: %v", runID, err)
+		}
+		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory {
+			t.Fatalf("marker lost ownership identity: %+v", mk)
+		}
+		directories = append(directories, directory)
+		if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+			t.Fatalf("Remove(%q): %v", runID, err)
+		}
+	}
+	if directories[0] == directories[1] {
+		t.Fatalf("distinct worktree IDs collided at %q", directories[0])
+	}
+}
+
+func TestManager_CreateProvisionFailureRemovesOwnershipRecords(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	runID := "run-failed-provision"
+	key := repoKey(repo)
+	directory := worktreeDirectoryName(runID)
+
+	if _, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "missing-ref",
+	}); err == nil {
+		t.Fatal("Create with missing base ref unexpectedly succeeded")
+	}
+	for _, path := range []string{
+		filepath.Join(m.runsDirForKey(key), directory),
+		m.markerPath(key, runID),
+		m.ownershipPath(key, directory),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed provision left %s behind: %v", path, err)
+		}
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("retry Create after failed provision: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove retry worktree: %v", err)
+	}
+}
+
 func TestManager_CreateRetryRestoresGuardedBranchWithCorruptMetadata(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
