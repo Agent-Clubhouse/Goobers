@@ -1,8 +1,13 @@
 # Test timing artifacts and budgets
 
-The Linux and macOS platform gates capture the unit test tier's wall-clock,
-package, and test durations. Each job uploads `test-timings-<OS>`, containing
-`unit-<OS>.json`. The report step compares the test tier with
+The macOS behavioral unit job captures the unit test tier's wall-clock,
+package, and test durations and uploads `test-timings-macOS`, containing
+`unit-macOS.json`. That job runs for merge validation and again on the landed
+main SHA so successful main pushes continue to provide the canonical artifact
+for trend comparisons without rerunning the full merge-gate matrix. The
+post-merge lane also retains the platform-independent `checks` job as a safety
+smoke for the exact landed tree; all other merge-gate jobs run only for pull
+requests and merge groups. The report step compares the test tier with
 `.github/test-timing-budgets.json`, appends actual-versus-budget data to the
 workflow summary, and compares with the latest successful `main` artifact when
 one is available. Capture runs inside `test/hermetic`, preserving the unit
