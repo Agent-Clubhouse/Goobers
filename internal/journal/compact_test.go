@@ -21,6 +21,18 @@ func writeRawInstanceLog(t *testing.T, dir string, lines ...string) {
 	}
 }
 
+// currentInstanceEventsPath resolves dir's current-generation events file,
+// the same way ReadInstanceLog/Append/Compact do, for tests that need to
+// inspect the file directly rather than through the journal API.
+func currentInstanceEventsPath(t *testing.T, dir string) string {
+	t.Helper()
+	path, _, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		t.Fatalf("resolveInstanceEventsPath: %v", err)
+	}
+	return path
+}
+
 func eventLine(seq int, t time.Time, extra string) string {
 	base := `{"schema":"goobers.dev/journal/event/v1","seq":` +
 		strconv.Itoa(seq) + `,"time":"` + t.UTC().Format(time.RFC3339Nano) + `","type":"trigger.fired"`
@@ -48,7 +60,7 @@ func TestCompactInstanceEventsDropsAgedRecords(t *testing.T) {
 	if result.Dropped != 2 || result.Kept != 1 {
 		t.Fatalf("compaction = %+v, want Dropped 2 Kept 1", result)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, fileEvents))
+	data, err := os.ReadFile(currentInstanceEventsPath(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +147,7 @@ func TestCompactInstanceEventsPreservesTornTail(t *testing.T) {
 	if _, err := CompactInstanceEvents(dir, cutoff, cutoff, false); err != nil {
 		t.Fatalf("CompactInstanceEvents: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, fileEvents))
+	data, err := os.ReadFile(currentInstanceEventsPath(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +160,15 @@ func TestCompactInstanceEventsPreservesTornTail(t *testing.T) {
 	}
 }
 
+// TestInstanceLogCompactKeepsOpenWritersOnActiveJournal pins #2265's
+// generation scheme: compaction never rewrites a path any reader might have
+// open (see instancegen.go). `before` models exactly that — an ordinary
+// os.Open handle on the pre-compaction generation, held open across
+// Compact() — the scenario that deadlocked both a MoveFileEx-based and a
+// ReplaceFile-based in-place rewrite on real Windows CI, since neither API
+// can act on a path with an open handle lacking FILE_SHARE_DELETE regardless
+// of how "tolerant" it claims to be. The generation scheme sidesteps the
+// restriction entirely: `before`'s path is never touched again, by anyone.
 func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -165,7 +186,11 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	if err := first.Append(Event{Type: EventTickSkipped, Workflow: "old"}); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Open(filepath.Join(dir, fileEvents))
+	preCompactPath := currentInstanceEventsPath(t, dir)
+	// An ordinary reader, exactly the way the portal/CLI/anything outside
+	// this package would open events.jsonl — no special sharing flags, held
+	// open across the compaction below.
+	before, err := os.Open(preCompactPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,20 +206,44 @@ func TestInstanceLogCompactKeepsOpenWritersOnActiveJournal(t *testing.T) {
 	if result.Dropped != 1 || result.Kept != 1 {
 		t.Fatalf("compaction = %+v, want one dropped and one kept", result)
 	}
-	sealed, err := os.ReadFile(before.Name())
+
+	// The pre-compaction generation is never touched again: even a brand-new
+	// open of its path (not just the already-open `before` handle) still
+	// sees the frozen pre-compaction content.
+	sealed, err := os.ReadFile(preCompactPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(sealed), `"workflow":"old"`) {
-		t.Fatalf("active journal still contains aged event: %s", sealed)
+	if !strings.Contains(string(sealed), `"workflow":"old"`) {
+		t.Fatalf("previous generation was modified after compaction: %s", sealed)
 	}
 	oldData, err := io.ReadAll(before)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(oldData), `"workflow":"old"`) {
-		t.Fatalf("sealed journal was destructively truncated: %s", oldData)
+		t.Fatalf("already-open reader lost its content: %s", oldData)
 	}
+
+	// The current generation reflects the compacted state.
+	postCompactPath := currentInstanceEventsPath(t, dir)
+	if postCompactPath == preCompactPath {
+		t.Fatalf("compaction did not advance the generation: still %s", postCompactPath)
+	}
+	current, err := os.ReadFile(postCompactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(current), `"workflow":"old"`) {
+		t.Fatalf("current generation still contains the aged-out event: %s", current)
+	}
+	if !strings.Contains(string(current), `"workflow":"recent"`) {
+		t.Fatalf("current generation lost the kept event: %s", current)
+	}
+
+	// A writer opened before the compaction keeps working transparently —
+	// ensureActiveFile resolves the pointer fresh on every Append and
+	// reopens when it has moved.
 	if err := second.Append(Event{Type: EventTickSkipped, Workflow: "after"}); err != nil {
 		t.Fatalf("append through independently opened handle after compaction: %v", err)
 	}
@@ -253,7 +302,7 @@ func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
 		}
 	}
 
-	info, err := os.Stat(filepath.Join(dir, fileEvents))
+	info, err := os.Stat(currentInstanceEventsPath(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,5 +315,22 @@ func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
 	}
 	if len(events) > 11 {
 		t.Fatalf("steady-state journal retained %d events, want at most 11", len(events))
+	}
+
+	// 10 compactions (500 ticks / 50) advance the generation 10 times;
+	// cleanupStaleInstanceEventsGeneration must keep this bounded rather than
+	// accumulating one file per compaction forever.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsFiles := 0
+	for _, entry := range entries {
+		if entry.Name() == fileEvents || strings.HasPrefix(entry.Name(), fileEvents+".gen-") {
+			eventsFiles++
+		}
+	}
+	if eventsFiles > 2 {
+		t.Fatalf("dir retained %d events-file generations after sustained compaction, want at most 2: %v", eventsFiles, entries)
 	}
 }

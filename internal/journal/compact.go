@@ -17,27 +17,38 @@ type InstanceEventsCompaction struct {
 	Dropped     int
 }
 
-// CompactInstanceEvents rewrites the instance journal at <dir>/events.jsonl in
-// place, keeping complete records whose event time is at or after keepAfter,
-// run.started records at or after keepRunStartsAfter, plus the latest scheduled
-// trigger per workflow as restart checkpoints. A zero keepAfter keeps every
-// record (a no-op on the journal — used when the caller only wants the
-// surrounding db-vacuum maintenance). Records are preserved as their ORIGINAL
-// raw line bytes, never re-marshaled, so any forward-compatible unknown fields
-// survive compaction unchanged. Kept records retain their original seq, so the
-// journal stays seq-monotonic.
+// CompactInstanceEvents rewrites the instance journal at dir, keeping complete
+// records whose event time is at or after keepAfter, run.started records at
+// or after keepRunStartsAfter, plus the latest scheduled trigger per workflow
+// as restart checkpoints. A zero keepAfter keeps every record (a no-op on the
+// journal — used when the caller only wants the surrounding db-vacuum
+// maintenance). Records are preserved as their ORIGINAL raw line bytes, never
+// re-marshaled, so any forward-compatible unknown fields survive compaction
+// unchanged. Kept records retain their original seq, so the journal stays
+// seq-monotonic.
 //
-// The caller MUST ensure no daemon is appending: a live InstanceLog holds an
-// O_APPEND handle, and replacing the file out from under it would strand its
-// writes on the unlinked inode. CompactInstanceEvents takes the journal lock
-// defensively, but the lock cannot close another process's open handle. A
-// missing journal is not an error. A torn final record (crash mid-append) is
+// Compaction never rewrites dir's current events file in place: it writes the
+// compacted content to a new generation (see instancegen.go) and advances the
+// generation pointer, so a live InstanceLog (or any other reader with an
+// already-open handle on the previous generation) is never disturbed — safe
+// even while a daemon is appending, unlike an in-place rewrite. A missing
+// journal is not an error. A torn final record (crash mid-append) is
 // preserved verbatim so the next OpenInstanceLog repairs it as usual.
 //
 // dryRun computes what would be dropped (Kept/Dropped and the projected
-// AfterBytes) without rewriting the file.
+// AfterBytes) without writing anything.
 func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, dryRun bool) (InstanceEventsCompaction, error) {
-	path := filepath.Join(dir, fileEvents)
+	lock, err := acquireJournalLock(dir, "instance log")
+	if err != nil {
+		return InstanceEventsCompaction{}, err
+	}
+	defer releaseJournalLock(lock)
+
+	currentGen, err := resolveInstanceEventsGeneration(dir)
+	if err != nil {
+		return InstanceEventsCompaction{}, err
+	}
+	path := filepath.Join(dir, instanceEventsFilename(currentGen))
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return InstanceEventsCompaction{}, nil
@@ -45,12 +56,6 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: stat instance log: %w", err)
 	}
-
-	lock, err := acquireJournalLock(dir, "instance log")
-	if err != nil {
-		return InstanceEventsCompaction{}, err
-	}
-	defer releaseJournalLock(lock)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -61,17 +66,26 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 		return InstanceEventsCompaction{}, err
 	}
 	if result.Dropped == 0 {
-		return result, nil // nothing aged out — leave the file untouched
+		return result, nil // nothing aged out — leave the journal untouched
 	}
 	if dryRun {
 		return result, nil
 	}
-	if err := WriteFileAtomic(path, compacted, 0o644); err != nil {
-		return InstanceEventsCompaction{}, fmt.Errorf("journal: rewrite compacted instance log: %w", err)
+	nextGen := currentGen + 1
+	nextPath := filepath.Join(dir, instanceEventsFilename(nextGen))
+	if err := writeFileSynced(nextPath, compacted, 0o644); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: write next-generation instance log: %w", err)
 	}
-	if newInfo, statErr := os.Stat(path); statErr == nil {
+	if err := fsyncDir(dir); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: fsync instance log dir: %w", err)
+	}
+	if err := advanceInstanceEventsPointer(dir, nextGen); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: advance instance log pointer: %w", err)
+	}
+	if newInfo, statErr := os.Stat(nextPath); statErr == nil {
 		result.AfterBytes = newInfo.Size()
 	}
+	cleanupStaleInstanceEventsGeneration(dir, nextGen)
 	return result, nil
 }
 
@@ -145,8 +159,11 @@ func compactInstanceEventsData(
 }
 
 // Compact atomically checkpoints records at or after keepAfter while the
-// instance log remains open. Scheduled trigger and recent run-start checkpoints
-// are also retained so restart reconciliation preserves scheduler state.
+// instance log remains open — including by other independently-opened
+// InstanceLog handles or unrelated readers, which never see this rewrite at
+// all: it never touches the generation they have open (see instancegen.go).
+// Scheduled trigger and recent run-start checkpoints are also retained so
+// restart reconciliation preserves scheduler state.
 func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (InstanceEventsCompaction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -160,7 +177,11 @@ func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (Instance
 	}
 	defer releaseJournalLock(lock)
 
-	path := filepath.Join(l.dir, fileEvents)
+	currentGen, err := resolveInstanceEventsGeneration(l.dir)
+	if err != nil {
+		return InstanceEventsCompaction{}, err
+	}
+	path := filepath.Join(l.dir, instanceEventsFilename(currentGen))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
@@ -169,28 +190,20 @@ func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (Instance
 	if err != nil || result.Dropped == 0 {
 		return result, err
 	}
-	if err := writeCompactedInstanceLog(path, compacted, 0o644); err != nil {
+	nextGen := currentGen + 1
+	nextPath := filepath.Join(l.dir, instanceEventsFilename(nextGen))
+	if err := writeFileSynced(nextPath, compacted, 0o644); err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: checkpoint live instance log: %w", err)
 	}
-	if err := l.reopenFile(path); err != nil {
+	if err := fsyncDir(l.dir); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: fsync instance log dir: %w", err)
+	}
+	if err := advanceInstanceEventsPointer(l.dir, nextGen); err != nil {
+		return InstanceEventsCompaction{}, fmt.Errorf("journal: advance instance log pointer: %w", err)
+	}
+	if err := l.reopenFile(nextPath); err != nil {
 		return InstanceEventsCompaction{}, err
 	}
+	cleanupStaleInstanceEventsGeneration(l.dir, nextGen)
 	return result, nil
-}
-
-// writeCompactedInstanceLog atomically replaces path's content with data via
-// a sibling temp file, fsync, and compactReplaceFile — the same temp+fsync
-// discipline WriteFileAtomic uses, but with a replace primitive that
-// tolerates a reader already holding path open (see compactreplace_windows.go
-// for why this compactor needs that and the shared WriteFileAtomic/
-// durability.ReplaceFile path does not).
-func writeCompactedInstanceLog(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".compact.tmp"
-	if err := writeFileSynced(tmp, data, perm); err != nil {
-		return err
-	}
-	if err := compactReplaceFile(tmp, path); err != nil {
-		return err
-	}
-	return fsyncDir(filepath.Dir(path))
 }

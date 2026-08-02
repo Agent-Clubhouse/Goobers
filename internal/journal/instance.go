@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -47,7 +46,10 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	}
 	defer releaseJournalLock(lock)
 
-	path := filepath.Join(dir, fileEvents)
+	path, _, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		return nil, RecoverReport{}, err
+	}
 	events, tornBytes, err := readEvents(path)
 	if err != nil {
 		return nil, RecoverReport{}, err
@@ -58,7 +60,7 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 		return nil, RecoverReport{}, err
 	}
 
-	f, err := openInstanceLogAppend(path, true)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, RecoverReport{}, fmt.Errorf("journal: open instance log: %w", err)
 	}
@@ -94,7 +96,10 @@ func (l *InstanceLog) Append(ev Event) error {
 	}
 	defer releaseJournalLock(lock)
 
-	path := filepath.Join(l.dir, fileEvents)
+	path, _, err := resolveInstanceEventsPath(l.dir)
+	if err != nil {
+		return err
+	}
 	if err := l.ensureActiveFile(path); err != nil {
 		return err
 	}
@@ -149,7 +154,7 @@ func (l *InstanceLog) ensureActiveFile(path string) error {
 }
 
 func (l *InstanceLog) reopenFile(path string) error {
-	f, err := openInstanceLogAppend(path, false)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("journal: reopen active instance log: %w", err)
 	}
@@ -209,7 +214,11 @@ func (l *InstanceLog) Close() error {
 // ReadInstanceLog returns every durably-committed event in the instance journal
 // at dir, in seq order — the same read semantics as Reader.Events for a run.
 func ReadInstanceLog(dir string) ([]Event, error) {
-	events, _, err := readEvents(filepath.Join(dir, fileEvents))
+	path, _, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	events, _, err := readEvents(path)
 	return events, err
 }
 
