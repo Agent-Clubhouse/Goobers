@@ -47,6 +47,42 @@ to verify the two-token boundary against disposable repositories.
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
 
+### `daemonIdentity`: one distinct bot identity for authored PRs/reviews/merges
+
+The `github:pr:review` row above already recommends sourcing that one
+capability from a second identity so GitHub's self-review refusal never
+degrades a native Review into a comment/label handoff (#870). `daemonIdentity`
+(UNOP-7/#1295, #1780) generalizes that: one `instance.yaml` block backs the
+*whole* daemon-mutation capability set — `repo:push`, `github:issues:write`,
+`github:pr:write`, `github:pr:review`, `github:branch:delete`,
+`github:pr:merge` — with one distinct machine-account identity, instead of
+repeating a `credentials:` entry per capability:
+
+```yaml
+daemonIdentity:
+  kind: pat
+  token:
+    env: DAEMON_GITHUB_TOKEN
+```
+
+Mint the machine account's fine-grained PAT with the union of the permissions
+those capabilities need (the rows above), never the operator's own token.
+Every daemon-authored PR, review, and merge then carries that account's
+login — GitHub's own attribution — instead of being indistinguishable from
+the operator's own manual activity. `merge-review`'s PR-selection stages
+(`pr-select`/`gather-sibling-context`) use this to recognize "our" PRs by
+login instead of the branch-name-prefix heuristic once configured; an
+instance that configures nothing here is completely unaffected (the
+heuristic remains exactly as before).
+
+`kind: github-app` reuses the same GitHub App installation-token minting a
+repo's own `auth.kind: github-app` uses (`appId`/`installationId`/
+`privateKey`), for consumers who provision a dedicated App instead of a
+machine-account PAT — see #1779. An explicit `credentials:` entry for any one
+of the six capabilities still overrides `daemonIdentity` for that capability
+alone, so a mixed setup (e.g. a distinct App for reviews, the daemon identity
+for everything else) is still possible.
+
 ### Agentic (Copilot-harness) stages: stored login or `agent:model` token
 
 The permissions above cover the ordinary GitHub API — issues, pull requests,
