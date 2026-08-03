@@ -312,7 +312,13 @@ spec:
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
-        status: "needs-human"
+        # #2028: every route into this stage (repass-budget exhaustion,
+        # identical-diff loop, an infra/executor failure, a CI-poll timeout)
+        # is a mechanical failure someone needs to act on, not a policy
+        # question — so it parks goobers:needs-remediation, not
+        # goobers:needs-human. A genuine policy decision (the reviewer's
+        # explicit "fail" verdict) parks through park-needs-human instead.
+        status: "needs-remediation"
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
@@ -415,7 +421,7 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it escalates for a human decision
+        # didn't finish in time — so it parks for remediation/investigation
         # instead of spending an agentic repass re-implementing a change
         # that was never actually reviewed as failing.
         #
@@ -424,7 +430,8 @@ spec:
         # but the issue-side bookkeeping only runs if the stage does. Routing
         # timeout directly at the terminal state left the driving issue
         # permanently orphaned: still goobers:ready, still goobers:claimed,
-        # never goobers:needs-human. Still claimed means query-backlog will
-        # not re-offer it, and no needs-human means no human sees it either,
-        # so it silently left the workable backlog with no signal at all.
+        # never parked at all (#2028: goobers:needs-remediation here). Still
+        # claimed means query-backlog will not re-offer it, and no park label
+        # means no one sees it either, so it silently left the workable
+        # backlog with no signal at all.
         timeout: park-escalated

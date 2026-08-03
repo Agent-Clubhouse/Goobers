@@ -265,7 +265,13 @@ spec:
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
-        status: "needs-human"
+        # #2028: every route into this stage (repass-budget exhaustion,
+        # identical-diff loop, an infra/executor failure, a CI-poll timeout)
+        # is a mechanical failure someone needs to act on, not a policy
+        # question — so it parks goobers:needs-remediation, not
+        # goobers:needs-human. A genuine policy decision (the reviewer's
+        # explicit "fail" verdict) parks through park-needs-human instead.
+        status: "needs-remediation"
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
@@ -362,12 +368,13 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it escalates for a human decision
+        # didn't finish in time — so it parks for remediation/investigation
         # instead of spending an agentic repass re-implementing a change
         # that was never actually reviewed as failing.
         #
         # Via park-escalated, NOT straight to "@escalate" (#929): both reach
         # the same terminal phase, but routing at the terminal state directly
-        # skips the stage that releases the issue's claim and applies
-        # goobers:needs-human, orphaning it silently.
+        # skips the stage that releases the issue's claim and applies the
+        # park label (#2028: goobers:needs-remediation here), orphaning it
+        # silently.
         timeout: park-escalated
