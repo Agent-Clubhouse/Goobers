@@ -149,6 +149,38 @@ describe("runs history pagination under live events", () => {
     expect(getRun).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps refreshing stage updates after selecting the active filter", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 1,
+      running: 1,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const affected = fixtures.runs.runs.find((run) => run.phase === "running");
+    expect(affected).toBeDefined();
+    if (!affected) {
+      return;
+    }
+    affected.currentStage = "query-backlog";
+    const client = new PushableClient(fixtures);
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "active" }));
+    const row = await screen.findByRole("link", { name: `Open run ${affected.id}` });
+    expect(within(row).getByText("query-backlog")).toBeInTheDocument();
+
+    affected.currentStage = "implement";
+    affected.lastSeq += 1;
+    act(() => {
+      client.push(runEvent("session:active-stage", [affected.id]));
+    });
+
+    await waitFor(() => expect(within(row).getByText("implement")).toBeInTheDocument());
+  });
+
   it("refreshes an invalidated paged-in row after an overlapping load-more", async () => {
     const fixtures = largeJournalFixtures({
       completed: 0,

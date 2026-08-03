@@ -69,21 +69,15 @@ export function useRunsHistory(
     return cached ? { status: "ready", data: cached.data } : { status: "loading" };
   });
   const request = useRef<AbortController | undefined>(undefined);
-  // The coalescing family (#1930). Held in a ref rather than recreated per
-  // render: its whole job is to remember what is in flight, and a family that
-  // was rebuilt on every render would remember nothing — which is how the
-  // pile-up got in.
+  // The coalescing family (#1930). Held in a ref and recreated only when the
+  // subscription scope changes: its whole job is to remember what is in flight,
+  // and a family that was rebuilt on every render would remember nothing —
+  // which is how the pile-up got in.
   //
-  // The loader is read from a ref at call time so the family never has to be
-  // rebuilt when `refreshWindow` changes identity, which happens on every scope
-  // change and would otherwise drop the in-flight request it is tracking.
+  // The loader is read from a ref at call time so ordinary renders do not
+  // rebuild the family merely because `refreshWindow` changes identity.
   const refreshLoader = useRef<() => Promise<unknown>>(() => Promise.resolve());
   const family = useRef<QueryFamily | undefined>(undefined);
-  if (!family.current) {
-    family.current = new QueryFamily(async () => {
-      await refreshLoader.current();
-    });
-  }
   const streams = useRef<RunsStream[]>(
     initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
   );
@@ -274,6 +268,10 @@ export function useRunsHistory(
   refreshLoader.current = refreshWindow;
 
   useEffect(() => {
+    const owned = new QueryFamily(async () => {
+      await refreshLoader.current();
+    });
+    family.current = owned;
     const unsubscribe = subscribe(
       ["run"],
       (_models, reason, invalidations) => {
@@ -305,13 +303,15 @@ export function useRunsHistory(
       },
       { gaggle: scope.gaggle, workflow: scope.workflow },
     );
-    const owned = family.current;
     return () => {
       unsubscribe();
       // Unmount IS a legitimate reason to abort: nobody is waiting for the
       // answer. It is counted as a scope abort rather than an event abort, so
       // the two cannot be confused when reading the stats.
-      owned?.close();
+      owned.close();
+      if (family.current === owned) {
+        family.current = undefined;
+      }
       request.current?.abort();
     };
   }, [cache, cacheKey, isFresh, publish, reload, subscribe]);
