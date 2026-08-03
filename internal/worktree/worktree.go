@@ -114,6 +114,8 @@ type Worktree struct {
 	// failure classification, exactly like Create's own checkout.
 	partialMirror bool
 	pinned        bool
+	repoDir       string
+	assetGuard    bool
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -407,6 +409,7 @@ func baseSyncFailure(opts CreateOptions, mergeErr error, conflictingFiles []stri
 // the same path is ordinary repository content.
 func (wt *Worktree) ActivateAssetPathGuard() error {
 	if wt.pinned {
+		wt.assetGuard = true
 		return nil
 	}
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
@@ -425,6 +428,9 @@ func (wt *Worktree) ActivateAssetPathGuard() error {
 // directory into the index or any commit it added, rewinding those commits so
 // the reserved content cannot cross the shared run-branch boundary.
 func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
+	if wt.pinned && !wt.assetGuard {
+		return nil
+	}
 	collision := fmt.Errorf("%w: %s must not be tracked on the run branch", gooberassets.ErrWorkspaceCollision, gooberassets.WorkspaceDir)
 	branchRef, branchCommitted, err := wt.inspectReservedBranch(ctx)
 	if err != nil {
@@ -465,10 +471,7 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 	if wt.Branch == "" {
 		return "", false, nil
 	}
-	repoDir := wt.manager.repoDirForKey(wt.key)
-	if wt.pinned {
-		repoDir = wt.Path
-	}
+	repoDir := wt.backingRepoDir()
 	refName := "refs/heads/" + wt.Branch
 	currentRef, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", refName)
 	if err != nil {
@@ -482,18 +485,21 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 }
 
 func (wt *Worktree) rollbackBranch(ctx context.Context, currentRef string) error {
-	repoDir := wt.manager.repoDirForKey(wt.key)
-	if wt.pinned {
-		repoDir = wt.Path
-	}
 	return runGit(
 		ctx,
-		repoDir,
+		wt.backingRepoDir(),
 		"update-ref",
 		"refs/heads/"+wt.Branch,
 		wt.startRef,
 		currentRef,
 	)
+}
+
+func (wt *Worktree) backingRepoDir() string {
+	if wt.repoDir != "" {
+		return wt.repoDir
+	}
+	return wt.manager.repoDirForKey(wt.key)
 }
 
 func (wt *Worktree) restoreReservedBranch(ctx context.Context) error {
@@ -535,6 +541,9 @@ func (m *Manager) restoreReservedBranchFromMarker(ctx context.Context, key, path
 func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if baseRef == "" {
 		return nil, fmt.Errorf("worktree: Diff requires a baseRef")
+	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
 	}
 	args := []string{"diff", baseRef + "...HEAD"}
 	var out []byte
@@ -608,6 +617,7 @@ type RemoveOptions struct {
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if wt.pinned {
+		wt.assetGuard = false
 		return nil
 	}
 	repoDir := wt.manager.repoDirForKey(wt.key)

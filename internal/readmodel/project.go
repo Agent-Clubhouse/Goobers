@@ -1,7 +1,9 @@
 package readmodel
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -62,14 +64,13 @@ type RunRow struct {
 	TriggerKind     string
 	TriggerRef      string
 
-	Phase         journal.RunPhase
-	Terminal      bool
-	CurrentStage  string
-	QueuePosition int
-	StartedAt     time.Time
-	FinishedAt    *time.Time
-	LastActivity  time.Time
-	LastSeq       uint64
+	Phase        journal.RunPhase
+	Terminal     bool
+	CurrentStage string
+	StartedAt    time.Time
+	FinishedAt   *time.Time
+	LastActivity time.Time
+	LastSeq      uint64
 
 	RepassCount      int
 	RetryCount       int
@@ -269,11 +270,11 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 
 		switch event.Type {
 		case journal.EventRunnerAnnotation:
-			switch event.Runner["kind"] {
-			case "workspace.queued":
-				row.QueuePosition = runnerInt(event.Runner["queuePosition"])
-			case "workspace.acquired":
-				row.QueuePosition = 0
+			if queue, ok := RunnerQueueStatus(event); ok {
+				row.CurrentStage = queue
+			}
+			if suggestion, ok := RunnerResetSuggestion(event); ok {
+				row.CurrentStage = suggestion
 			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
@@ -290,6 +291,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				at := event.Time
 				s.StartedAt = &at
 			}
+
 		case journal.EventStageFinished:
 			if row.CurrentStage == event.Stage {
 				row.CurrentStage = ""
@@ -325,7 +327,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.Phase = phase
 			finished := event.Time
 			row.FinishedAt = &finished
-			row.CurrentStage = ""
+			if !strings.HasPrefix(row.CurrentStage, workspaceResetSuggestionPrefix) {
+				row.CurrentStage = ""
+			}
 		}
 	}
 
@@ -351,15 +355,42 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	return Projection{Run: row, Stages: out}
 }
 
-func runnerInt(value any) int {
-	switch value := value.(type) {
-	case int:
-		return value
-	case float64:
-		return int(value)
-	default:
-		return 0
+const workspaceResetSuggestionPrefix = "Workspace reset suggested:"
+
+// RunnerResetSuggestion projects pinned-workspace recovery guidance into the
+// run summary field rendered by portal run lists.
+func RunnerResetSuggestion(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation ||
+		event.Runner["kind"] != "workspace_reset_suggested" ||
+		event.Runner["workspaceMode"] != "pinned" {
+		return "", false
 	}
+	suggestion, ok := event.Runner["suggestion"].(string)
+	if !ok || suggestion == "" {
+		return "", false
+	}
+	return workspaceResetSuggestionPrefix + " " + suggestion, true
+}
+
+// RunnerQueueStatus projects pinned-workspace lease bookkeeping into the
+// operator-visible current-stage slot without changing the normative journal.
+func RunnerQueueStatus(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation || event.Runner["workspaceMode"] != "pinned" {
+		return "", false
+	}
+	var position int
+	switch value := event.Runner["queuePosition"].(type) {
+	case int:
+		position = value
+	case float64:
+		position = int(value)
+	default:
+		return "", false
+	}
+	if position <= 0 {
+		return "", true
+	}
+	return fmt.Sprintf("Workspace queue (position %d)", position), true
 }
 
 // countAttempt folds a finished stage attempt into the run's retry counters.

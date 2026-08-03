@@ -1858,6 +1858,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
+			worktree.WithPinnedRoot(instance.NewLayout(l.Root).WorkcopiesDir()),
 		}
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))

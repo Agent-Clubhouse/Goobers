@@ -38,20 +38,44 @@ func testIdentity() journal.RunIdentity {
 	}
 }
 
-func TestProjectionTracksPinnedWorkspaceQueuePosition(t *testing.T) {
-	queued := ev(1, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
-		e.Runner = map[string]any{"kind": "workspace.queued", "queuePosition": float64(2)}
+func TestPinnedWorkspaceQueueIsVisibleAsCurrentStage(t *testing.T) {
+	queued := ev(2, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(3)}
 	})
-	projection := ProjectRun(testIdentity(), Projection{}, []journal.Event{queued})
-	if projection.Run.QueuePosition != 2 {
-		t.Fatalf("queue position = %d, want 2", projection.Run.QueuePosition)
+	acquired := ev(3, 2*time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(0)}
+	})
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, 0, journal.EventRunStarted, nil), queued,
+	}).Run
+	if run.CurrentStage != "Workspace queue (position 3)" {
+		t.Fatalf("current stage = %q, want visible queue position", run.CurrentStage)
 	}
-	acquired := ev(2, 2*time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
-		e.Runner = map[string]any{"kind": "workspace.acquired"}
-	})
-	projection = ProjectRun(testIdentity(), projection, []journal.Event{acquired})
-	if projection.Run.QueuePosition != 0 {
-		t.Fatalf("queue position after acquisition = %d, want 0", projection.Run.QueuePosition)
+	run = ProjectRun(testIdentity(), Projection{Run: run}, []journal.Event{acquired}).Run
+	if run.CurrentStage != "" {
+		t.Fatalf("current stage after acquisition = %q, want cleared", run.CurrentStage)
+	}
+}
+
+func TestPinnedWorkspaceResetSuggestionRemainsVisibleAfterFailure(t *testing.T) {
+	suggestion := "Run `goobers workspace reset <repo>` before retrying."
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+			e.Runner = map[string]any{
+				"kind":          "workspace_reset_suggested",
+				"workspaceMode": "pinned",
+				"failureStreak": float64(3),
+				"suggestion":    suggestion,
+			}
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}).Run
+
+	want := workspaceResetSuggestionPrefix + " " + suggestion
+	if run.CurrentStage != want {
+		t.Fatalf("terminal current stage = %q, want portal-visible suggestion %q", run.CurrentStage, want)
 	}
 }
 

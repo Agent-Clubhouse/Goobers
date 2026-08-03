@@ -414,7 +414,8 @@ type Runner struct {
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
-	pinnedRuns           sync.Map
+	pinnedMu             sync.Mutex
+	pinnedRuns           map[string]*worktree.PinnedLease
 	toolchains           ToolchainVerifier
 	lookPath             func(string) (string, error)
 }
@@ -449,6 +450,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 	}, nil
 }
 
@@ -487,6 +489,8 @@ type StartInput struct {
 	// that declares no requirement behaves exactly as before. A resumed run
 	// leaves this nil — it already passed preflight at its original Start.
 	RequiredCapabilities []string
+	pinnedWorkspace      *worktree.Worktree
+	pinnedStage          *sync.Mutex
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -613,7 +617,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveWorkspaceRun(ctx, jr, in.RunID, in.RepoRef, func(ctx context.Context) (Result, error) {
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (result Result, retErr error) {
+		_, err := r.acquirePinnedWorkspace(ctx, jr, &in)
+		if err != nil {
+			if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, in.Machine.Def.Spec.Start, 0); ok {
+				return interrupted, interruptErr
+			}
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, "workspace-lease", 0, err)
+		}
+		defer func() {
+			if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+				retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+			}
+		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
@@ -657,7 +673,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			seed.branchRecorded = true
 		}
 
-		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
+		result, err = r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -2277,6 +2293,9 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if err := r.recordPinnedOutcome(runID, phase, jr); err != nil {
+		return Result{}, err
+	}
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}
@@ -2289,6 +2308,31 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 		return res, err
 	}
 	return res, nil
+}
+
+func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	r.pinnedMu.Unlock()
+	if lease == nil {
+		return nil
+	}
+	count, err := lease.RecordOutcome(phase == journal.PhaseFailed)
+	if err != nil {
+		return fmt.Errorf("runner: record pinned workspace outcome: %w", err)
+	}
+	if phase != journal.PhaseFailed || count < worktree.PinnedFailureResetThreshold {
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":          "workspace_reset_suggested",
+			"workspaceMode": "pinned",
+			"failureStreak": count,
+			"suggestion":    "Pinned workspace failures are repeating; run `goobers workspace reset <repo>` before retrying.",
+		},
+	})
 }
 
 func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
@@ -3569,16 +3613,11 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 type stageWorkspace struct {
 	path     string
 	worktree *worktree.Worktree
-	release  func()
 	// additional are read-only reference-repo checkouts (MGV-11 #1286) provisioned
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
 	additional []additionalCheckout
-}
-
-type pinnedRunWorkspace struct {
-	mu sync.Mutex
-	wt *worktree.Worktree
+	release    func()
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -3618,10 +3657,12 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
-	if w.release != nil {
-		defer w.release()
-		w.release = nil
-	}
+	defer func() {
+		if w.release != nil {
+			w.release()
+			w.release = nil
+		}
+	}()
 	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
 	// independent worktrees off their own mirrors, so a failure to remove one must
 	// not block removing the primary worktree. Best-effort: collect the first error.
@@ -3687,58 +3728,13 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
-	if r.cfg.PinnedWorkspace {
-		value, ok := r.pinnedRuns.Load(in.RunID)
-		if !ok {
-			return nil, fmt.Errorf("runner: pinned workspace lease is not held for run %q", in.RunID)
+	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
+		in.pinnedStage.Lock()
+		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+			in.pinnedStage.Unlock()
+			return nil, err
 		}
-		runWorkspace := value.(*pinnedRunWorkspace)
-		runWorkspace.mu.Lock()
-		release := true
-		defer func() {
-			if release {
-				runWorkspace.mu.Unlock()
-			}
-		}()
-		baseRef := in.RepoRef.Branch
-		if baseRef == "" {
-			baseRef = "main"
-		}
-		branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
-		if workspaceBranch != "" {
-			branch = workspaceBranch
-		}
-		if runWorkspace.wt == nil {
-			repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
-			if err != nil {
-				return nil, err
-			}
-			wt, err := r.cfg.Worktrees.PreparePinned(
-				ctx, repoURL, in.RunID, baseRef, branch,
-				syncBase,
-				worktree.CleanPolicy(r.cfg.PinnedCleanPolicy),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("prepare pinned workspace: %w", err)
-			}
-			runWorkspace.wt = wt
-		} else {
-			if runWorkspace.wt.Branch != branch {
-				if err := runWorkspace.wt.SwitchPinnedBranch(ctx, branch); err != nil {
-					return nil, err
-				}
-			}
-			if syncBase {
-				if err := runWorkspace.wt.SyncPinnedBase(ctx, baseRef); err != nil {
-					return nil, err
-				}
-			}
-		}
-		release = false
-		return &stageWorkspace{
-			path: runWorkspace.wt.Path, worktree: runWorkspace.wt,
-			release: runWorkspace.mu.Unlock,
-		}, nil
+		return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
 	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
@@ -3758,6 +3754,25 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return &stageWorkspace{path: path}, nil
 	case apiv1.WorkspaceRepoReadOnly:
+		if in.pinnedWorkspace != nil {
+			if syncBase {
+				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
+			}
+			if workspaceBranch != "" {
+				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+			}
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		// A detached checkout at the pinned base revision: no branch name, so
 		// two of these can coexist for one run. That is the whole point —
 		// every writable repo workspace is created on ONE run branch and git
@@ -3797,10 +3812,24 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
 	case "", apiv1.WorkspaceRepo:
+		if in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
 			return nil, err
 		}
+
 		baseRef := in.RepoRef.Branch
 		if baseRef == "" {
 			baseRef = "main"
@@ -3837,53 +3866,94 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	}
 }
 
-func (r *Runner) acquireWorkspaceLease(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef) (func() error, error) {
-	repoURL, err := r.cfg.RepoCloneURL(repoRef)
+func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase bool, workspaceBranch string) error {
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	if workspaceBranch != "" {
+		branch = workspaceBranch
+	}
+	if err := in.pinnedWorkspace.PreparePinned(ctx, worktree.PinnedPrepareOptions{
+		BaseRef:               baseRef,
+		Branch:                branch,
+		SyncBase:              syncBase,
+		RequireExistingBranch: workspaceBranch != "",
+	}); err != nil {
+		return fmt.Errorf("prepare pinned workspace: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
+	if !r.cfg.PinnedWorkspace {
+		return nil, nil
+	}
+	if len(r.cfg.AdditionalRepos) > 0 {
+		return nil, fmt.Errorf("runner: pinned project workspaces cannot provision additional repository worktrees")
+	}
+	r.pinnedMu.Lock()
+	owned := r.pinnedRuns[in.RunID]
+	r.pinnedMu.Unlock()
+	if owned != nil {
+		in.pinnedWorkspace = owned.Worktree
+		in.pinnedStage = &sync.Mutex{}
+		return owned, nil
+	}
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
 		return nil, err
 	}
-	var queueErr error
-	release, err := r.cfg.Worktrees.AcquirePinnedLease(ctx, repoURL, runID, func(position int) {
-		queueErr = jr.Append(journal.Event{
-			Type: journal.EventRunnerAnnotation,
-			Runner: map[string]any{
-				"kind":          "workspace.queued",
-				"queuePosition": position,
-			},
-		})
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	lease, err := r.cfg.Worktrees.AcquirePinned(stalledAttemptContext(ctx), worktree.PinnedOptions{
+		RepoURL:     repoURL,
+		RunID:       in.RunID,
+		BaseRef:     baseRef,
+		Branch:      branch,
+		CleanPolicy: worktree.PinnedCleanPolicy(r.cfg.PinnedCleanPolicy),
+		OnQueuePosition: func(position int) error {
+			return jr.Append(journal.Event{
+				Type: journal.EventRunnerAnnotation,
+				Runner: map[string]any{
+					"workspaceMode": "pinned",
+					"queuePosition": position,
+				},
+			})
+		},
+		OnQueueWait: jr.ObserveActivity,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("runner: acquire pinned workspace lease: %w", err)
-	}
-	if queueErr != nil {
-		_ = release()
-		return nil, fmt.Errorf("runner: record pinned workspace queue position: %w", queueErr)
+		return nil, fmt.Errorf("runner: acquire pinned workspace for run %q: %w", in.RunID, err)
 	}
 	if err := jr.Append(journal.Event{
-		Type:   journal.EventRunnerAnnotation,
-		Runner: map[string]any{"kind": "workspace.acquired"},
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"workspaceMode": "pinned",
+			"queuePosition": 0,
+		},
 	}); err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("runner: record pinned workspace acquisition: %w", err),
-			release(),
-		)
+		_ = lease.Release()
+		return nil, fmt.Errorf("runner: journal pinned workspace acquisition for run %q: %w", in.RunID, err)
 	}
-	return release, nil
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+	r.pinnedMu.Lock()
+	r.pinnedRuns[in.RunID] = lease
+	r.pinnedMu.Unlock()
+	return lease, nil
 }
 
-func (r *Runner) withActiveWorkspaceRun(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, run func(context.Context) (Result, error)) (Result, error) {
-	if !r.cfg.PinnedWorkspace {
-		return r.withActiveRun(ctx, runID, jr, run)
-	}
-	release, err := r.acquireWorkspaceLease(ctx, jr, runID, repoRef)
-	if err != nil {
-		return Result{}, err
-	}
-	r.pinnedRuns.Store(runID, &pinnedRunWorkspace{})
-	return r.withActiveRunCleanup(ctx, runID, jr, run, func() error {
-		r.pinnedRuns.Delete(runID)
-		return release()
-	})
+func (r *Runner) releasePinnedWorkspace(runID string) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	delete(r.pinnedRuns, runID)
+	r.pinnedMu.Unlock()
+	return lease.Release()
 }
 
 // provisionAdditionalCheckouts materializes a read-only checkout of each of the

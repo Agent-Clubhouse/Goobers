@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // Manager owns managed working copies under Root — one mirror clone per
@@ -65,6 +66,10 @@ type Manager struct {
 	// unconfigured Manager, so the default path issues byte-identical git
 	// invocations to previous releases.
 	partialClone bool
+	// pinnedRoot is the node-wide root for persistent pinned workspaces. It may
+	// differ from Root, which remains gaggle-scoped for disposable worktrees.
+	pinnedRoot          string
+	pinnedProcessKiller func(string) error
 
 	pathLengthMu           sync.RWMutex
 	pathLengthLimits       map[string]PathLengthLimit
@@ -171,6 +176,25 @@ func WithPartialClone() ManagerOption {
 	}
 }
 
+// WithPinnedRoot sets the node-wide root shared by pinned workspaces across
+// gaggles targeting the same repository.
+func WithPinnedRoot(root string) ManagerOption {
+	return func(m *Manager) {
+		if root != "" {
+			m.pinnedRoot = root
+		}
+	}
+}
+
+// WithPinnedProcessKiller overrides pinned-workspace lock-holder termination.
+func WithPinnedProcessKiller(kill func(string) error) ManagerOption {
+	return func(m *Manager) {
+		if kill != nil {
+			m.pinnedProcessKiller = kill
+		}
+	}
+}
+
 // WithPathLengthLimit enables checkout path-length preflight for repoURL. A
 // zero maximum uses DefaultMaxPathLength.
 func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
@@ -261,9 +285,22 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 		symlinkFallback:     runtime.GOOS == "windows",
 		lstat:               os.Lstat,
 		diskUsage:           apparentDiskUsage,
+		pinnedProcessKiller: proc.KillWorkspaceProcesses,
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.pinnedRoot == "" {
+		m.pinnedRoot = abs
+	} else {
+		pinnedAbs, err := filepath.Abs(m.pinnedRoot)
+		if err != nil {
+			return nil, fmt.Errorf("worktree: resolve absolute pinned root for %s: %w", m.pinnedRoot, err)
+		}
+		if err := os.MkdirAll(pinnedAbs, 0o755); err != nil {
+			return nil, fmt.Errorf("worktree: create pinned root %s: %w", pinnedAbs, err)
+		}
+		m.pinnedRoot = pinnedAbs
 	}
 	return m, nil
 }
@@ -292,10 +329,6 @@ func (m *Manager) repoDirForKey(key string) string {
 
 func (m *Manager) runsDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "runs")
-}
-
-func (m *Manager) pinDirForKey(key string) string {
-	return filepath.Join(m.Root, key, "pin")
 }
 
 func (m *Manager) markersDirForKey(key string) string {

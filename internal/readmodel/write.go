@@ -132,12 +132,12 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run (
 			run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
-			trigger_kind, trigger_ref, phase, terminal, current_stage, queue_position,
+			trigger_kind, trigger_ref, phase, terminal, current_stage,
 			started_at, finished_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
 			outcome_verdict, outcome_target, disposition,
 			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -149,7 +149,6 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			phase = excluded.phase,
 			terminal = excluded.terminal,
 			current_stage = excluded.current_stage,
-			queue_position = excluded.queue_position,
 			started_at = excluded.started_at,
 			finished_at = excluded.finished_at,
 			last_activity_at = excluded.last_activity_at,
@@ -172,7 +171,7 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		row.RunID, row.Gaggle, row.Workflow, row.WorkflowVersion,
 		nullString(row.WorkflowDigest), nullString(row.GooberDigest),
 		nullString(row.TriggerKind), nullString(row.TriggerRef),
-		string(row.Phase), boolInt(row.Terminal), nullString(row.CurrentStage), row.QueuePosition,
+		string(row.Phase), boolInt(row.Terminal), nullString(row.CurrentStage),
 		formatTime(row.StartedAt), nullTime(row.FinishedAt), nullTimeValue(row.LastActivity),
 		row.LastSeq,
 		row.RepassCount, row.RetryCount, row.PolicyRetryCount, row.InfraRetryCount,

@@ -43,6 +43,7 @@ _goobers_completion()
             'schema:emit a JSON Schema embedded in this build'
             'explain:project field facts from an embedded JSON Schema'
             'reset-rate-limit:clear the hourly run-rate budget without deleting runs/'
+            'workspace:explicitly recover pinned repository workspaces'
             'blocked:inspect and clear the learned blocked-item ledger'
             'claims:inspect and force-release claim leases'
             'trace:show a run'\''s journal events, follow a live run, or show transcripts'
@@ -315,6 +316,13 @@ _goobers_completion()
         runs)
             if (( CURRENT == 3 )); then
                 candidates=(list du)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        workspace)
+            if (( CURRENT == 3 )); then
+                candidates=(reset)
                 _describe -V 'command' candidates
                 return
             fi

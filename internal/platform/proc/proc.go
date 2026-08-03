@@ -71,3 +71,9 @@ func (t *Tree) RequestDump() (supported bool, err error) {
 func Alive(pid int) bool {
 	return alive(pid)
 }
+
+// KillWorkspaceProcesses terminates lingering build servers that can retain
+// file locks beneath workspace after their invoking build has exited.
+func KillWorkspaceProcesses(workspace string) error {
+	return killWorkspaceProcesses(workspace)
+}

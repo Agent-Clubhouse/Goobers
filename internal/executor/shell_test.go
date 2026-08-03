@@ -594,12 +594,13 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
-	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+	env.Inputs = map[string]interface{}{InputTimeout: "500ms"}
 
 	const marker = "__SIGQUIT_DUMP_MARKER__"
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		// Trap SIGQUIT -> print the marker and exit; otherwise block forever.
-		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do sleep 0.05; done`},
+		// Trap SIGQUIT -> print the marker and exit; otherwise block without a
+		// child process that could defer the shell's trap handling.
+		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do :; done`},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

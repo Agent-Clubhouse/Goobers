@@ -476,9 +476,4 @@ CREATE INDEX IF NOT EXISTS idx_run_phase_activity
 CREATE INDEX IF NOT EXISTS idx_run_gaggle_phase_activity
 	ON run(gaggle, phase, last_activity_at DESC, run_id ASC);
 `,
-
-	// v8: visible pinned-workspace queue position.
-	`
-ALTER TABLE run ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0;
-`,
 }

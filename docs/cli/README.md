@@ -124,6 +124,8 @@
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workflow`](#goobers-workflow) | inspect workflows |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+| [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
+| [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
 
 ## `goobers agent-kit`
 
@@ -2921,4 +2923,43 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 ~~~console
 $ goobers workflow show default-implement
 $ goobers workflow show default-implement --dot
+~~~
+
+## `goobers workspace`
+
+explicitly recover pinned repository workspaces
+
+~~~text
+Usage: goobers workspace reset <repo> [path]
+
+Explicitly recover a configured pinned workspace. Reset refuses a live
+lease, terminates lingering build processes, deletes the workspace, and
+performs a full checkout at the same stable path. It never runs
+automatically. Default instance path ".".
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workspace reset my-repo
+~~~
+
+## `goobers workspace reset`
+
+tear down and re-materialize a pinned repository workspace
+
+~~~text
+Usage: goobers workspace reset <repo> [path]
+
+Tear down and re-materialize the pinned workspace for <repo>. The repo may
+be selected by name, owner/name, or (for ADO) owner/project/name. A live
+run lease makes the command fail without changing the workspace.
+Exit codes: 0 = reset complete, 1 = reset refused/failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workspace reset my-repo
+$ goobers workspace reset acme/my-repo ./instance
 ~~~

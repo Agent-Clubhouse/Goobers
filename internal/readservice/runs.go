@@ -166,7 +166,6 @@ type RunSummary struct {
 	Phase            journal.RunPhase `json:"phase"`
 	Terminal         bool             `json:"terminal"`
 	CurrentStage     string           `json:"currentStage,omitempty"`
-	QueuePosition    int              `json:"queuePosition,omitempty"`
 	StartedAt        time.Time        `json:"startedAt"`
 	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
 	DurationMillis   int64            `json:"durationMillis"`
@@ -1511,7 +1510,6 @@ func summarizeRunForStage(
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
-	queuePosition := 0
 	seenStages := make(map[string]struct{})
 	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
@@ -1533,11 +1531,11 @@ func summarizeRunForStage(
 		}
 		switch event.Type {
 		case journal.EventRunnerAnnotation:
-			switch event.Runner["kind"] {
-			case "workspace.queued":
-				queuePosition = readmodelQueuePosition(event.Runner["queuePosition"])
-			case "workspace.acquired":
-				queuePosition = 0
+			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+				currentStage = queue
+			}
+			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+				currentStage = suggestion
 			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
@@ -1567,7 +1565,9 @@ func summarizeRunForStage(
 			phase = journal.RunPhase(event.Status)
 			finished := event.Time
 			finishedAt = &finished
-			currentStage = ""
+			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+				currentStage = ""
+			}
 		}
 	}
 
@@ -1614,7 +1614,6 @@ func summarizeRunForStage(
 		Phase:            phase,
 		Terminal:         phase != journal.PhaseRunning,
 		CurrentStage:     currentStage,
-		QueuePosition:    queuePosition,
 		StartedAt:        run.identity.StartedAt,
 		FinishedAt:       finishedAt,
 		DurationMillis:   duration,
@@ -1628,17 +1627,6 @@ func summarizeRunForStage(
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
-}
-
-func readmodelQueuePosition(value any) int {
-	switch value := value.(type) {
-	case int:
-		return value
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {

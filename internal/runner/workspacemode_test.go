@@ -4,13 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestTaskWorkspaceModeResolution(t *testing.T) {
@@ -160,130 +160,118 @@ func TestReadOnlyWorkspaceRejectsSyncBaseAndReboundBranch(t *testing.T) {
 	}
 }
 
-func TestPinnedWorkspaceSerializesAllStageModes(t *testing.T) {
+func TestPinnedWorkspaceBacksEveryStageWithoutWorktrees(t *testing.T) {
 	r, in := readOnlyWorkspaceRunner(t)
-	r.cfg.PinnedWorkspace = true
-	r.cfg.PinnedCleanPolicy = "none"
-	r.pinnedRuns.Store(in.RunID, &pinnedRunWorkspace{})
-	defer r.pinnedRuns.Delete(in.RunID)
-
-	first, err := r.createStageWorkspace(context.Background(), in, "write", apiv1.WorkspaceRepo, false, "")
-	if err != nil {
-		t.Fatalf("writable pinned workspace: %v", err)
-	}
-	secondReady := make(chan *stageWorkspace, 1)
-	secondErr := make(chan error, 1)
-	go func() {
-		second, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
-		if err != nil {
-			secondErr <- err
-			return
-		}
-		secondReady <- second
-	}()
-	select {
-	case <-secondReady:
-		t.Fatal("read-only stage entered the pinned workspace before the writable stage exited")
-	case err := <-secondErr:
-		t.Fatalf("read-only pinned workspace: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	if err := first.Remove(context.Background()); err != nil {
-		t.Fatalf("stage teardown touched pinned workspace: %v", err)
-	}
-	if _, err := os.Stat(first.path); err != nil {
-		t.Fatalf("stage teardown removed pinned workspace: %v", err)
-	}
-	var second *stageWorkspace
-	select {
-	case second = <-secondReady:
-	case err := <-secondErr:
-		t.Fatalf("read-only pinned workspace: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("read-only stage did not enter after writable stage exited")
-	}
-	if first.path != second.path || filepath.Base(first.path) != "pin" {
-		t.Fatalf("repo stages used paths %q and %q, want one stable pin", first.path, second.path)
-	}
-	if err := second.Remove(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	scratch, err := r.createStageWorkspace(context.Background(), in, "scratch", apiv1.WorkspaceScratch, false, "")
-	if err != nil {
-		t.Fatalf("scratch stage was not routed to pinned workspace: %v", err)
-	}
-	if scratch.path != first.path {
-		t.Fatalf("scratch stage path = %q, want pin %q", scratch.path, first.path)
-	}
-	if err := scratch.Remove(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPinnedLeaseSurvivesWatchdogTakeoverUntilOwnerExits(t *testing.T) {
-	r, in := readOnlyWorkspaceRunner(t)
-	r.cfg.PinnedWorkspace = true
-	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{RunID: in.RunID}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = jr.Close() }()
-
-	ownerStarted := make(chan struct{})
-	releaseOwner := make(chan struct{})
-	returned := make(chan error, 1)
-	go func() {
-		_, err := r.withActiveWorkspaceRun(context.Background(), jr, in.RunID, in.RepoRef, func(context.Context) (Result, error) {
-			close(ownerStarted)
-			<-releaseOwner
-			return Result{}, nil
-		})
-		returned <- err
-	}()
-	<-ownerStarted
-	active := r.activeRun(in.RunID)
-	if active == nil {
-		t.Fatal("run owner was not registered")
-	}
-	if _, claim := active.claimTakeover(); claim != takeoverClaimed {
-		t.Fatalf("takeover claim = %v, want claimed", claim)
-	}
-	active.completeTakeover(activeRunResult{})
-	if err := <-returned; err != nil {
-		t.Fatalf("takeover return: %v", err)
-	}
-
 	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 	if err != nil {
 		t.Fatal(err)
 	}
-	queued := make(chan int, 1)
-	acquired := make(chan func() error, 1)
-	go func() {
-		release, acquireErr := r.cfg.Worktrees.AcquirePinnedLease(context.Background(), repoURL, "next-run", func(position int) {
-			queued <- position
-		})
-		if acquireErr == nil {
-			acquired <- release
-		}
-	}()
-	select {
-	case <-queued:
-	case <-time.After(time.Second):
-		t.Fatal("next run did not queue behind taken-over owner")
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-acquired:
-		t.Fatal("next run acquired pinned workspace while taken-over owner was still running")
-	default:
-	}
-	close(releaseOwner)
-	select {
-	case release := <-acquired:
-		if err := release(); err != nil {
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+
+	var paths []string
+	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepo, apiv1.WorkspaceRepoReadOnly} {
+		workspace, err := r.createStageWorkspace(context.Background(), in, string(mode), mode, false, "")
+		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("next run did not acquire after original owner exited")
+		paths = append(paths, workspace.path)
+		if err := workspace.Remove(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if paths[0] != lease.Worktree.Path || paths[1] != lease.Worktree.Path || paths[2] != lease.Worktree.Path {
+		t.Fatalf("stage paths = %v, want shared pin %q", paths, lease.Worktree.Path)
+	}
+	runDirs, err := filepath.Glob(filepath.Join(r.cfg.Worktrees.Root, "*", "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runDirs) != 0 {
+		t.Fatalf("pinned stages created per-run worktree directories: %v", runDirs)
+	}
+}
+
+func TestPinnedWorkspaceHonorsReboundBranchAndSyncBase(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updater := filepath.Join(t.TempDir(), "updater")
+	runGit(t, "", "clone", repoURL, updater)
+	runGit(t, updater, "config", "user.name", "test")
+	runGit(t, updater, "config", "user.email", "test@example.com")
+	runGit(t, updater, "checkout", "-b", "goobers/remediation/pr")
+	if err := os.WriteFile(filepath.Join(updater, "pr-marker.txt"), []byte("pr"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "pr-marker.txt")
+	runGit(t, updater, "commit", "-m", "add PR marker")
+	runGit(t, updater, "push", "origin", "goobers/remediation/pr")
+
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: in.RunID, BaseRef: "main", Branch: "goobers/test/" + in.RunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+
+	baseline, err := r.createStageWorkspace(context.Background(), in, "implement", apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseline.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rebound, err := r.createStageWorkspace(context.Background(), in, "remediate", apiv1.WorkspaceRepo, false, "goobers/remediation/pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(rebound.path, "pr-marker.txt")); err != nil || string(got) != "pr" {
+		t.Fatalf("rebound marker = %q, %v", got, err)
+	}
+	if err := rebound.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := r.createStageWorkspace(context.Background(), in, "inspect", apiv1.WorkspaceRepoReadOnly, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(readOnly.path, "pr-marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("read-only stage remained on rebound branch: %v", err)
+	}
+	if err := readOnly.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	runGit(t, updater, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(updater, "base-update.txt"), []byte("latest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "base-update.txt")
+	runGit(t, updater, "commit", "-m", "advance base")
+	runGit(t, updater, "push", "origin", "main")
+
+	synced, err := r.createStageWorkspace(context.Background(), in, "local-ci", apiv1.WorkspaceRepo, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = synced.Remove(context.Background()) }()
+	if got, err := os.ReadFile(filepath.Join(synced.path, "base-update.txt")); err != nil || string(got) != "latest" {
+		t.Fatalf("synced base file = %q, %v", got, err)
 	}
 }
