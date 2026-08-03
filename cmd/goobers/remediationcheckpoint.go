@@ -121,7 +121,9 @@ type siblingOverlapFinding struct {
 // PR comment the same way, and for the same reason: gather-pr-context
 // already established that a PR comment is the only durable cross-run
 // channel available at this altitude (neither workflow shares a journal/
-// runID with the other's runs, or across its own runs).
+// runID with the other's runs, or across its own runs). Implementation's
+// initial escalation marker lives in the PR body so parking still posts only
+// one human-facing comment; remediation then adopts it into this sticky state.
 //
 // It is ALSO the escalation-livelock breaker's (#716) self-heal snapshot: on
 // an escalation, EscalatedHeadSHA/EscalatedBaseSHA record the PR's head/base
@@ -185,12 +187,24 @@ type implementationEscalationState struct {
 	Cause      map[string]any `json:"cause,omitempty"`
 }
 
-func implementationEscalationComment(state implementationEscalationState) (string, error) {
+func implementationEscalationMarker(state implementationEscalationState) (string, error) {
 	data, err := json.Marshal(state)
 	if err != nil {
 		return "", fmt.Errorf("marshal implementation escalation: %w", err)
 	}
-	return fmt.Sprintf("Implementation parked for human review: %s\n\n<!-- implementation-escalation: %s -->", state.Reason, data), nil
+	return fmt.Sprintf("<!-- implementation-escalation: %s -->", data), nil
+}
+
+func withImplementationEscalationMarker(body string, state implementationEscalationState) (string, error) {
+	marker, err := implementationEscalationMarker(state)
+	if err != nil {
+		return "", err
+	}
+	body = strings.TrimSpace(implementationEscalationPattern.ReplaceAllString(body, ""))
+	if body == "" {
+		return marker, nil
+	}
+	return body + "\n\n" + marker, nil
 }
 
 // remediationStateComment marshals s into the HTML-comment payload a
@@ -385,6 +399,16 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 		}
 	}
 	return remediationState{}, "", false
+}
+
+func latestRemediationStateForPR(body string, comments []providers.Comment) (state remediationState, commentID string, found bool) {
+	if s, ok := parseRemediationStateComment(body); ok {
+		state, found = s, true
+	}
+	if s, id, ok := latestRemediationState(comments); ok {
+		return s, id, true
+	}
+	return state, "", found
 }
 
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
@@ -744,7 +768,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// checkpoint state is still actionable. Its comment ID (if any) is the
 	// sticky comment this cycle edits in place (#716 AC3), rather than
 	// posting a new one.
-	prior, priorCommentID, _ := latestRemediationState(rawComments)
+	prior, priorCommentID, _ := latestRemediationStateForPR(current.Body, rawComments)
 
 	// #1808: the escalation comment advertises three unpark paths, one of which
 	// is "a human removes goobers:merge-escalated". That path did not work. The

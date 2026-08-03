@@ -1679,9 +1679,9 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
-	// A configured parking stage owns the single human-facing comment. Posting
-	// here as well would duplicate the same escalation moments before close-out.
-	if gr.Escalated && gr.Target != workflow.TargetEscalate {
+	// The shipped parking stage owns the single human-facing comment. Other
+	// named targets are not guaranteed to notify, so they retain this fallback.
+	if gr.Escalated && gr.Target == "park-escalated" {
 		return "", false
 	}
 	if gr.Escalated {

@@ -246,7 +246,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// spending a cycle (worktree provision, checkout, potential agentic
 	// work) reproducing the exact escalation remediation-checkpoint already
 	// recorded.
-	if remState, _, ok := latestRemediationState(rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
+	if remState, _, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
 		digest, derr := diffDigest(".", selected.BaseSHA)
 		if derr != nil {
 			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)

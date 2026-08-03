@@ -4988,6 +4988,16 @@ func TestTerminalGateNotificationDefersToParkingStage(t *testing.T) {
 	}
 }
 
+func TestTerminalGateNotificationRetainedForArbitraryStage(t *testing.T) {
+	reason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
+		Escalated: true, DuplicateDiff: true,
+	})
+	if !notify || reason == "" {
+		t.Fatalf("terminalGateNotificationReason = %q,%t, want runner fallback for stage without comment ownership", reason, notify)
+	}
+}
+
 func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 	t.Run("CI failure", func(t *testing.T) {
 		run := newRunnerTestJournal(t, "repass-cause-ci")

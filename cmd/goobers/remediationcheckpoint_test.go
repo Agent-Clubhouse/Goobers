@@ -67,6 +67,7 @@ type remediationCheckpointServerState struct {
 	listedHeadSHA       string
 	liveBaseSHA         string
 	state               string
+	body                string
 	merged              bool
 	terminalOnComments  bool
 	mergeOnComments     bool
@@ -160,6 +161,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		writeFakeJSON(w, map[string]interface{}{
 			"number": st.number, "draft": false, "state": state, "merged": st.merged,
+			"body":     st.body,
 			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
 			"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
 			"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
@@ -696,17 +698,17 @@ func TestRemediationCheckpointShortCircuitsImplementationEscalatedDigest(t *test
 	if err != nil {
 		t.Fatalf("diffDigest: %v", err)
 	}
-	comment, err := implementationEscalationComment(implementationEscalationState{
+	marker, err := implementationEscalationMarker(implementationEscalationState{
 		DiffDigest: digest,
 		Reason:     "local-ci exceeded its timeout and the implementer produced no change",
 		Cause:      map[string]any{"kind": "stage-failure", "stage": "local-ci"},
 	})
 	if err != nil {
-		t.Fatalf("implementationEscalationComment: %v", err)
+		t.Fatalf("implementationEscalationMarker: %v", err)
 	}
 	st := &remediationCheckpointServerState{
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
-		labels: []string{needsRemediationLabel}, comments: []string{comment},
+		labels: []string{needsRemediationLabel}, body: marker,
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
@@ -724,7 +726,7 @@ func TestRemediationCheckpointShortCircuitsImplementationEscalatedDigest(t *test
 		t.Fatalf("labels = %v, want merge-escalated", st.labels)
 	}
 	if len(st.comments) != 1 {
-		t.Fatalf("comments = %d, want the implementation marker updated in place", len(st.comments))
+		t.Fatalf("comments = %d, want one remediation escalation comment", len(st.comments))
 	}
 }
 
