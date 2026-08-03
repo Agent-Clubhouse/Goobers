@@ -102,11 +102,10 @@ spec:
         trustLabel: "goobers:approved"
         # Idempotency: items already bearing an output marker are excluded, so
         # a re-run over an already-curated backlog claims nothing. #2028:
-        # blocked-on-sibling and needs-remediation are also curator output
-        # dispositions now (applied by the implementation workflow's park
-        # paths, not the curator itself) — excluded for the same reason
-        # needs-human is, so a parked item isn't re-offered for triage.
-        excludeLabels: "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+        # needs-remediation is terminal for curation. blocked-on-sibling is
+        # deliberately eligible so each pass can revalidate the named blocker
+        # and self-clear the disposition after the issue closes or PR merges.
+        excludeLabels: "goobers:ready,goobers:needs-human,goobers:needs-remediation"
         # Batch: claim up to 20 eligible items in one run (#236). backlog-query
         # now honors maxItems (it was a dead input) and, for a batch, writes a
         # claimed-items.json array.
@@ -183,8 +182,9 @@ spec:
         Unclaimed candidate members are read-only except for narrowly scoped
         roadmap maintenance on directly linked tracking parents.
         Dedupe, handle staleness, tag, split oversized items, maintain milestone
-        and tracking-parent organization, and mark each item goobers:ready or
-        goobers:needs-human. Explain every action in a comment.
+        and tracking-parent organization, and mark each item goobers:ready,
+        goobers:blocked-on-sibling, or goobers:needs-human. Explain every
+        mutation in a comment.
       capabilities:
         - github:issues:write
         - github:milestones:write
