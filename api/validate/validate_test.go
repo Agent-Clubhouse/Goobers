@@ -938,7 +938,8 @@ spec:
   role: coder
   instructions: instructions.md
   skills:
-    - present
+    - present-shared
+    - present-scoped
     - missing
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
@@ -947,7 +948,10 @@ spec:
 	if err := os.WriteFile(filepath.Join(configDir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(base, "skills", "present"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(base, "skills", "present-shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "gaggles", "example", "skills", "present-scoped"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -965,7 +969,7 @@ spec:
 		Code:        WarningMissingSkillPackage,
 		Severity:    Warning,
 		Scope:       "config.yaml Goober/coder",
-		Explanation: `spec.skills declares "missing", but no skill package directory was found at "skills/missing"`,
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
 	}
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
@@ -1038,7 +1042,7 @@ spec:
 		}
 	}
 	for _, want := range []string{
-		`spec.skills declares "missing", but no skill package directory was found at "skills/missing"`,
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
 		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
 		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
 	} {

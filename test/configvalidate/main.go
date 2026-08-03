@@ -24,21 +24,26 @@ repos:
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
 
 type checkedInTree struct {
-	path                   string
-	sourceTree             bool
-	strict                 bool
-	allowedWarnings        []string
-	allowedWarningPrefixes []string
+	path            string
+	sourceTree      bool
+	strict          bool
+	allowedWarnings []string
 }
 
 var checkedInTrees = []checkedInTree{
 	{
-		path:            "reference-workflows",
-		sourceTree:      true,
-		strict:          true,
-		allowedWarnings: []string{docsUpdaterInertWarning},
-		allowedWarningPrefixes: []string{
-			"WARNING SKILL002 ",
+		path:       "reference-workflows",
+		sourceTree: true,
+		strict:     true,
+		allowedWarnings: []string{
+			docsUpdaterInertWarning,
+			`WARNING SKILL002 gaggles/goobers/goobers/analyst/goober.yaml Goober/analyst: spec.skills declares "tutor-diagnosis", but no skill package directory was found at "gaggles/goobers/skills/tutor-diagnosis" or "skills/tutor-diagnosis"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/config-author/goober.yaml Goober/config-author: spec.skills declares "config-authoring", but no skill package directory was found at "gaggles/goobers/skills/config-authoring" or "skills/config-authoring"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/curator/goober.yaml Goober/curator: spec.skills declares "triage", but no skill package directory was found at "gaggles/goobers/skills/triage" or "skills/triage"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "implement", but no skill package directory was found at "gaggles/goobers/skills/implement" or "skills/implement"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "run-tests", but no skill package directory was found at "gaggles/goobers/skills/run-tests" or "skills/run-tests"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/nominator/goober.yaml Goober/nominator: spec.skills declares "nomination", but no skill package directory was found at "gaggles/goobers/skills/nomination" or "skills/nomination"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/reviewer/goober.yaml Goober/reviewer: spec.skills declares "review", but no skill package directory was found at "gaggles/goobers/skills/review" or "skills/review"`,
 		},
 	},
 	{path: "config-examples"},
@@ -136,7 +141,7 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 			continue
 		}
 		if len(tree.allowedWarnings) > 0 {
-			got := withoutAllowedWarningPrefixes(validationWarnings(commandStdout.String()), tree.allowedWarningPrefixes)
+			got := validationWarnings(commandStdout.String())
 			if !equalStrings(got, tree.allowedWarnings) {
 				_, _ = fmt.Fprintf(
 					stderr,
@@ -153,23 +158,6 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		return 1
 	}
 	return 0
-}
-
-func withoutAllowedWarningPrefixes(warnings, prefixes []string) []string {
-	filtered := make([]string, 0, len(warnings))
-	for _, warning := range warnings {
-		allowed := false
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(warning, prefix) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			filtered = append(filtered, warning)
-		}
-	}
-	return filtered
 }
 
 func gitWorktreeEnv(root string) ([]string, error) {

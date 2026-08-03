@@ -931,28 +931,35 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkMissingSkillPackages(r, configRoot)
 }
 
-func declaredSkillPackageDir(configRoot, skill string) (string, bool) {
+func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
 	if skill == "" || skill == "." || skill == ".." || strings.ContainsAny(skill, `/\`) || filepath.VolumeName(skill) != "" {
-		return "", false
+		return "", "", false
 	}
-	return filepath.Join(filepath.Dir(filepath.Clean(configRoot)), "skills", skill), true
+	configRoot = filepath.Clean(configRoot)
+	return filepath.Join(configRoot, "gaggles", gaggle, "skills", skill),
+		filepath.Join(filepath.Dir(configRoot), "skills", skill), true
 }
 
 func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 	for _, g := range ix.goobers {
 		for _, skill := range g.Spec.Skills {
-			packageDir, ok := declaredSkillPackageDir(configRoot, skill)
+			scoped, shared, ok := declaredSkillPackageDirs(configRoot, g.Spec.Gaggle, skill)
 			if !ok {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
 					"spec.skills declares %q, but the skill name cannot resolve to a package directory under %q",
 					skill, "skills")
 				continue
 			}
-			info, err := os.Stat(packageDir)
-			if errors.Is(err, fs.ErrNotExist) || (err == nil && !info.IsDir()) {
+			scopedInfo, scopedErr := os.Stat(scoped)
+			sharedInfo, sharedErr := os.Stat(shared)
+			scopedMissing := errors.Is(scopedErr, fs.ErrNotExist) || (scopedErr == nil && !scopedInfo.IsDir())
+			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
+			if scopedMissing && sharedMissing {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
-					"spec.skills declares %q, but no skill package directory was found at %q",
-					skill, filepath.ToSlash(filepath.Join("skills", skill)))
+					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					skill,
+					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
+					filepath.ToSlash(filepath.Join("skills", skill)))
 			}
 		}
 	}
