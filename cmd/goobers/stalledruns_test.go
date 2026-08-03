@@ -105,7 +105,7 @@ func TestDaemonRunnerRegistryHardStopsRunTrackedAfterForce(t *testing.T) {
 	}
 
 	registry := newDaemonRunnerRegistry()
-	registry.HardStopAll()
+	registry.HardStopAll(nil)
 	untrack := registry.Track("late-run", "implementation", runRunner)
 	defer untrack()
 	result, err := runRunner.Start(context.Background(), runner.StartInput{
@@ -117,6 +117,45 @@ func TestDaemonRunnerRegistryHardStopsRunTrackedAfterForce(t *testing.T) {
 	if err != nil || result.Phase != journal.PhaseRunning {
 		t.Fatalf("late tracked Start() = %+v, %v, want running checkpoint", result, err)
 	}
+}
+
+func TestDaemonRunnerRegistryReportsHardStopCountAtForceActivation(t *testing.T) {
+	registry := newDaemonRunnerRegistry()
+	owner := &runner.Runner{}
+	untrack := registry.Track("active-run", "implementation", owner)
+	defer untrack()
+
+	reporting := make(chan struct{})
+	releaseReport := make(chan struct{})
+	stopped := make(chan int, 1)
+	go func() {
+		stopped <- registry.HardStopAll(func(count int) {
+			if count != 1 {
+				t.Errorf("hard-stop count = %d, want 1", count)
+			}
+			close(reporting)
+			<-releaseReport
+		})
+	}()
+	<-reporting
+
+	tracked := make(chan func(), 1)
+	go func() {
+		tracked <- registry.Track("late-run", "implementation", owner)
+	}()
+	select {
+	case untrackLate := <-tracked:
+		untrackLate()
+		t.Fatal("Track completed before force activation and counting finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseReport)
+	if count := <-stopped; count != 1 {
+		t.Fatalf("HardStopAll() = %d, want 1", count)
+	}
+	untrackLate := <-tracked
+	untrackLate()
 }
 
 type stalledRunStarter struct {

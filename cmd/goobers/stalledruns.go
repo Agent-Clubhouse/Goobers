@@ -112,9 +112,14 @@ func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
 	return runs
 }
 
-func (r *daemonRunnerRegistry) HardStopAll() {
+// HardStopAll invokes report while registration is blocked, immediately before
+// stopping the runs counted for that report. report must not call the registry.
+func (r *daemonRunnerRegistry) HardStopAll(report func(int)) int {
 	if r == nil {
-		return
+		if report != nil {
+			report(0)
+		}
+		return 0
 	}
 	r.mu.Lock()
 	r.hardStopping = true
@@ -122,10 +127,14 @@ func (r *daemonRunnerRegistry) HardStopAll() {
 	for _, run := range r.owners {
 		runs = append(runs, run)
 	}
+	if report != nil {
+		report(len(runs))
+	}
 	r.mu.Unlock()
 	for _, run := range runs {
 		run.owner.HardStopRunWhenStarted(run.RunID)
 	}
+	return len(runs)
 }
 
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {

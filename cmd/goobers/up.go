@@ -1212,12 +1212,12 @@ func drainDaemonRuns(
 }
 
 func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout io.Writer, reason string) daemonDrainResult {
-	active := runners.ActiveRuns()
-	pf(stdout, "hard shutdown: %s; terminating %d run(s) mid-stage; they will resume from their last checkpoints on the next `goobers up`\n",
-		reason, len(active))
-	runners.HardStopAll()
+	terminated := runners.HardStopAll(func(count int) {
+		pf(stdout, "hard shutdown: %s; terminating %d run(s) mid-stage; they will resume from their last checkpoints on the next `goobers up`\n",
+			reason, count)
+	})
 	<-done
-	return daemonDrainResult{forced: true, terminated: len(active)}
+	return daemonDrainResult{forced: true, terminated: terminated}
 }
 
 func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {
