@@ -816,8 +816,25 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 		}}
 	}
 
-	_, err := compileAcknowledged(definition("missing-eviction-capability", queueTask))
-	want := `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
+	readOnlyTask := apiv1.Task{
+		Name:         "read-backlog",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "confirm backlog access",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+		Capabilities: []string{string(capability.GitHubIssuesWrite)},
+	}
+	_, err := compileAcknowledged(definition("write-only-backlog-read", readOnlyTask))
+	want := `task "read-backlog" invokes built-in subcommand "backlog-query" but does not declare capability "github:issues:read"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+	readOnlyTask.Capabilities = append(readOnlyTask.Capabilities, string(capability.GitHubIssuesRead))
+	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {
+		t.Fatalf("read-only backlog-query with explicit read capability should compile: %v", err)
+	}
+
+	_, err = compileAcknowledged(definition("missing-eviction-capability", queueTask))
+	want = `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
