@@ -66,6 +66,17 @@ type backlogScanCursor struct {
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
+// blockedOnlyCompletionAnnotation marks a cycle that claimed nothing solely
+// because every remaining candidate was skipped as blocked (#1907): without
+// this, such a cycle's run.finished(status=completed) is byte-identical to a
+// cycle that found a genuinely empty backlog, or one that did real work —
+// the exact ambiguity that let a 3.5h claim-selection stall go undetected
+// until someone cross-referenced claim.acquired counts against run.finished
+// status by hand. One annotation per run (not per skipped item, unlike
+// blockedEligibilitySkipAnnotation above) gives a watcher/telemetry query a
+// single, unambiguous signal to filter or alert on.
+const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
+
 const inReviewStatusLabel = "goobers/status:in-review"
 
 type backlogClaimLedger interface {
@@ -955,7 +966,25 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
+		reason := "no eligible item to claim"
+		if len(observedSkips) > 0 {
+			// This cycle's only candidate(s) were all blocked — distinct from a
+			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
+			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
+			if jerr := instanceLog.Append(journal.Event{
+				Type:     journal.EventRunnerAnnotation,
+				Workflow: workflow,
+				RunID:    runID,
+				Reason:   reason,
+				Runner: map[string]any{
+					"annotation":     blockedOnlyCompletionAnnotation,
+					"skippedBlocked": len(observedSkips),
+				},
+			}); jerr != nil {
+				pf(stderr, "warning: journal blocked-only completion summary: %v\n", jerr)
+			}
+		}
+		return writeNoWorkResult(stdout, stderr, reason)
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
 	// tick (#233), not an error: exit 0 with the structured noWork result the
