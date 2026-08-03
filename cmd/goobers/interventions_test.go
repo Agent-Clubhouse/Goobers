@@ -655,14 +655,16 @@ func TestRunInterventionRegistersLiveOwnerForCancellation(t *testing.T) {
 		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
 	}, deterministic)
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := service.Override(context.Background(), httpapi.InterventionRequest{
-			RunID: "run-cancellable", Stage: "review", Actor: "operator",
-			Decision: "pass", Rationale: "continue under observation",
-		})
-		done <- err
-	}()
+	result, err := service.AcceptOverride(context.Background(), context.Background(), httpapi.InterventionRequest{
+		RunID: "run-cancellable", Stage: "review", Actor: "operator",
+		Decision: "pass", Rationale: "continue under observation", IdempotencyKey: "cancellable-override",
+	})
+	if err != nil {
+		t.Fatalf("AcceptOverride: %v", err)
+	}
+	if result.JournalSeq == 0 {
+		t.Fatalf("accepted result = %+v, want durable journal position", result)
+	}
 	select {
 	case <-deterministic.started:
 	case <-time.After(5 * time.Second):
@@ -675,13 +677,12 @@ func TestRunInterventionRegistersLiveOwnerForCancellation(t *testing.T) {
 	if response.Code != cancelCodeAborted || response.Phase != string(journal.PhaseAborted) {
 		t.Fatalf("cancel response = %+v, want aborted", response)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Override after cancellation: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("intervention did not return after cancellation")
+	deadline := time.Now().Add(5 * time.Second)
+	for service.interventionActive("run-cancellable") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if service.interventionActive("run-cancellable") {
+		t.Fatal("accepted intervention did not stop after cancellation")
 	}
 }
 
@@ -911,7 +912,7 @@ func TestRunInterventionRejectsDelayedDuplicateFromPriorTerminalSegment(t *testi
 		t.Fatal(err)
 	}
 
-	_, err = service.execute(context.Background(), stale, true, "override", httpapi.InterventionRequest{}, func(ctx context.Context) (runner.Result, error) {
+	_, err = service.execute(context.Background(), context.Background(), false, stale, true, "override", httpapi.InterventionRequest{}, func(ctx context.Context) (runner.Result, error) {
 		return stale.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: stale.runID, Machine: stale.machine, GooberDigest: stale.gooberDigest, RepoRef: stale.repoRef,
 			Target: "finish", Actor: "delayed-operator", Action: "override", Gate: "review", Decision: "pass",

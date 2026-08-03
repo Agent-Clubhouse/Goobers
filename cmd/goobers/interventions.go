@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ type runInterventionService struct {
 	definitions    *interventionDefinitionRegistry
 	runnerRegistry *daemonRunnerRegistry
 	instanceLog    *journal.InstanceLog
+	errorLog       *log.Logger
 	scheduler      atomic.Pointer[localscheduler.Scheduler]
 	wg             *sync.WaitGroup
 	activeMu       sync.Mutex
@@ -95,12 +97,13 @@ type resolvedInterventionRun struct {
 	terminalSeq  uint64
 }
 
-func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup) *runInterventionService {
+func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *runInterventionService {
 	return &runInterventionService{
 		layout:         layout,
 		definitions:    setup.Interventions,
 		runnerRegistry: setup.RunnerRegistry,
 		instanceLog:    setup.InstanceLog,
+		errorLog:       errorLog,
 		wg:             wg,
 	}
 }
@@ -112,6 +115,14 @@ func (s *runInterventionService) AttachScheduler(scheduler *localscheduler.Sched
 }
 
 func (s *runInterventionService) Approve(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.approve(ctx, ctx, input, false)
+}
+
+func (s *runInterventionService) AcceptApprove(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.approve(admission, execution, input, true)
+}
+
+func (s *runInterventionService) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
@@ -148,7 +159,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 				fmt.Sprintf("run %q is not paused at gate %q", input.RunID, input.Stage),
 			)
 		}
-		_, err = s.execute(ctx, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
+		_, err = s.execute(admission, execution, background, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
 			return resolved.runner.Resume(ctx, runner.ResumeInput{
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 				HumanDecision: &runner.HumanGateDecision{
@@ -170,7 +181,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 			)
 		}
 		target, complete := interventionResumeTarget(target)
-		_, err = s.execute(ctx, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
+		_, err = s.execute(admission, execution, background, resolved, true, "approve", input, func(ctx context.Context) (runner.Result, error) {
 			return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 				RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 				Target: target, Complete: complete,
@@ -191,6 +202,14 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 }
 
 func (s *runInterventionService) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.override(ctx, ctx, input, false)
+}
+
+func (s *runInterventionService) AcceptOverride(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.override(admission, execution, input, true)
+}
+
+func (s *runInterventionService) override(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	rationale := strings.TrimSpace(input.Rationale)
 	if rationale == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("rationale_required", "override rationale is required")
@@ -229,7 +248,7 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 		)
 	}
 	target, complete := interventionResumeTarget(target)
-	_, err = s.execute(ctx, resolved, true, "override", input, func(ctx context.Context) (runner.Result, error) {
+	_, err = s.execute(admission, execution, background, resolved, true, "override", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.ResumeFromTerminal(ctx, runner.ResumeFromTerminalInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Target: target, Complete: complete,
@@ -244,6 +263,14 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 }
 
 func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.rerunStage(ctx, ctx, input, false)
+}
+
+func (s *runInterventionService) AcceptRerunStage(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	return s.rerunStage(admission, execution, input, true)
+}
+
+func (s *runInterventionService) rerunStage(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	addendum := strings.TrimSpace(input.InstructionAddendum)
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
@@ -261,7 +288,7 @@ func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.I
 			fmt.Sprintf("run %q is %s; only escalated runs can rerun a stage", input.RunID, resolved.phase),
 		)
 	}
-	_, err = s.execute(ctx, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
+	_, err = s.execute(admission, execution, background, resolved, true, "rerun", input, func(ctx context.Context) (runner.Result, error) {
 		return resolved.runner.RerunStage(ctx, runner.RerunStageInput{
 			RunID: input.RunID, Machine: resolved.machine, GooberDigest: resolved.gooberDigest, RepoRef: resolved.repoRef,
 			Stage: input.Stage, Actor: input.Actor, InstructionAddendum: addendum,
@@ -406,30 +433,69 @@ type interventionExecutionLease struct {
 }
 
 func (s *runInterventionService) execute(
-	ctx context.Context,
+	admission context.Context,
+	execution context.Context,
+	background bool,
 	resolved resolvedInterventionRun,
 	reacquireClaims bool,
 	action string,
 	input httpapi.InterventionRequest,
 	run func(context.Context) (runner.Result, error),
 ) (runner.Result, error) {
-	if err := ctx.Err(); err != nil {
+	if err := admission.Err(); err != nil {
+		return runner.Result{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
+		)
+	}
+	if err := execution.Err(); err != nil {
 		return runner.Result{}, httpapi.NewInterventionError(
 			http.StatusServiceUnavailable, "daemon_stopping", "the daemon is stopping", err,
 		)
 	}
-	if s.wg != nil {
-		s.wg.Add(1)
-		defer s.wg.Done()
+	if background && input.IdempotencyKey == "" {
+		return runner.Result{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
 	}
 	lease, err := s.beginExecution(resolved, reacquireClaims)
 	if err != nil {
 		return runner.Result{}, err
 	}
-	defer lease.Close()
+	if err := admission.Err(); err != nil {
+		lease.Close()
+		return runner.Result{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "request_budget_exceeded", "the intervention was not accepted within the request budget", err,
+		)
+	}
 	if err := recordInterventionMarker(resolved, action, input); err != nil {
+		lease.Close()
 		return runner.Result{}, err
 	}
+	if background {
+		if s.wg != nil {
+			s.wg.Add(1)
+		}
+		go func() {
+			if s.wg != nil {
+				defer s.wg.Done()
+			}
+			if _, runErr := s.finishExecution(execution, lease, run); runErr != nil && s.errorLog != nil {
+				s.errorLog.Printf("%s run intervention failed after acceptance: %v", action, runErr)
+			}
+		}()
+		return runner.Result{}, nil
+	}
+	if s.wg != nil {
+		s.wg.Add(1)
+		defer s.wg.Done()
+	}
+	return s.finishExecution(execution, lease, run)
+}
+
+func (s *runInterventionService) finishExecution(
+	ctx context.Context,
+	lease *interventionExecutionLease,
+	run func(context.Context) (runner.Result, error),
+) (runner.Result, error) {
+	defer lease.Close()
 	result, runErr := run(ctx)
 	phase := result.Phase
 	if phase == "" {

@@ -37,12 +37,12 @@ type InterventionResult struct {
 	JournalSeq uint64 `json:"journalSeq"`
 }
 
-// InterventionService is the API-first human-intervention seam shared by the
-// CLI and dashboard.
+// InterventionService separates bounded request admission from daemon-owned
+// execution. Methods return only after the action has a durable handoff.
 type InterventionService interface {
-	Approve(context.Context, InterventionRequest) (InterventionResult, error)
-	Override(context.Context, InterventionRequest) (InterventionResult, error)
-	RerunStage(context.Context, InterventionRequest) (InterventionResult, error)
+	AcceptApprove(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
+	AcceptOverride(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
+	AcceptRerunStage(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
 }
 
 // InterventionError is a safe, typed action refusal returned to API clients.
@@ -100,17 +100,14 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			return
 		}
 		input.IdempotencyKey = key
-		executionContext, cancel := interventionExecutionContext(lifecycle, request.Context())
-		defer cancel()
-
 		var result InterventionResult
 		switch action {
 		case "approve":
-			result, err = interventions.Approve(executionContext, input)
+			result, err = interventions.AcceptApprove(request.Context(), lifecycle, input)
 		case "override":
-			result, err = interventions.Override(executionContext, input)
+			result, err = interventions.AcceptOverride(request.Context(), lifecycle, input)
 		case "rerun":
-			result, err = interventions.RerunStage(executionContext, input)
+			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
 		default:
 			panic("unknown intervention action " + action)
 		}
@@ -150,13 +147,6 @@ func stageMutationHandler(action string, interventions InterventionService, life
 		w.Header().Set(HeaderSourceApplied, fmt.Sprintf("%s:%d", input.RunID, result.JournalSeq))
 		writeJSON(w, http.StatusOK, result)
 	}
-}
-
-func interventionExecutionContext(lifecycle, request context.Context) (context.Context, context.CancelFunc) {
-	if deadline, ok := request.Deadline(); ok {
-		return context.WithDeadline(lifecycle, deadline)
-	}
-	return context.WithCancel(lifecycle)
 }
 
 func validateMutationTransport(request *http.Request) (int, string, string) {

@@ -33,6 +33,7 @@ type fakeInterventions struct {
 type blockingInterventions struct {
 	started chan context.Context
 	release chan struct{}
+	done    chan error
 }
 
 func (b *blockingInterventions) call(ctx context.Context) (InterventionResult, error) {
@@ -57,6 +58,31 @@ func (b *blockingInterventions) RerunStage(ctx context.Context, _ InterventionRe
 	return b.call(ctx)
 }
 
+func (b *blockingInterventions) accept(admission, execution context.Context) (InterventionResult, error) {
+	if err := admission.Err(); err != nil {
+		return InterventionResult{}, err
+	}
+	go func() {
+		_, err := b.call(execution)
+		if b.done != nil {
+			b.done <- err
+		}
+	}()
+	return InterventionResult{Phase: "running", JournalSeq: 7}, nil
+}
+
+func (b *blockingInterventions) AcceptApprove(admission, execution context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.accept(admission, execution)
+}
+
+func (b *blockingInterventions) AcceptOverride(admission, execution context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.accept(admission, execution)
+}
+
+func (b *blockingInterventions) AcceptRerunStage(admission, execution context.Context, _ InterventionRequest) (InterventionResult, error) {
+	return b.accept(admission, execution)
+}
+
 func (f *fakeInterventions) call(action string, input InterventionRequest) (InterventionResult, error) {
 	f.calls = append(f.calls, interventionCall{action: action, input: input})
 	return f.result, f.err
@@ -71,6 +97,18 @@ func (f *fakeInterventions) Override(_ context.Context, input InterventionReques
 }
 
 func (f *fakeInterventions) RerunStage(_ context.Context, input InterventionRequest) (InterventionResult, error) {
+	return f.call("rerun", input)
+}
+
+func (f *fakeInterventions) AcceptApprove(_, _ context.Context, input InterventionRequest) (InterventionResult, error) {
+	return f.call("approve", input)
+}
+
+func (f *fakeInterventions) AcceptOverride(_, _ context.Context, input InterventionRequest) (InterventionResult, error) {
+	return f.call("override", input)
+}
+
+func (f *fakeInterventions) AcceptRerunStage(_, _ context.Context, input InterventionRequest) (InterventionResult, error) {
 	return f.call("rerun", input)
 }
 
@@ -159,12 +197,13 @@ func TestMutationRoutesUseAuthenticatedPrincipalAsActor(t *testing.T) {
 	}
 }
 
-func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) {
+func TestMutationReturnsAfterHandoffAndContinuesUnderDaemonContext(t *testing.T) {
 	lifecycle, stopDaemon := context.WithCancel(context.Background())
 	defer stopDaemon()
 	service := &blockingInterventions{
 		started: make(chan context.Context, 1),
 		release: make(chan struct{}),
+		done:    make(chan error, 1),
 	}
 
 	handler, err := NewHandler(
@@ -177,30 +216,24 @@ func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	requestContext, disconnect := context.WithCancel(context.Background())
+	requestContext, disconnect := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer disconnect()
 	request := newMutationRequest(http.MethodPost, "override", `{"actor":"operator","rationale":"reviewed"}`)
 	request = request.WithContext(requestContext)
 	response := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		handler.ServeHTTP(response, request)
-		close(done)
-	}()
+	handler.ServeHTTP(response, request)
 
 	executionContext := <-service.started
-	disconnect()
-	select {
-	case <-done:
-		t.Fatal("client disconnect canceled the accepted intervention")
-	case <-time.After(50 * time.Millisecond):
-	}
-	if err := executionContext.Err(); err != nil {
-		t.Fatalf("execution context after client disconnect: %v", err)
-	}
-	close(service.release)
-	<-done
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	<-requestContext.Done()
+	if err := executionContext.Err(); err != nil {
+		t.Fatalf("execution context after response budget: %v", err)
+	}
+	close(service.release)
+	if err := <-service.done; err != nil {
+		t.Fatalf("accepted execution: %v", err)
 	}
 }
 
@@ -211,7 +244,7 @@ func TestMutationExecutionStopsAtRequestBudget(t *testing.T) {
 	}
 	handler := stageMutationHandler("override", service, context.Background(), discardLogger())
 	request := newMutationRequest(http.MethodPost, "override", `{"actor":"operator","rationale":"reviewed"}`)
-	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithDeadline(request.Context(), time.Now().Add(-time.Second))
 	defer cancel()
 	request = request.WithContext(ctx)
 	response := httptest.NewRecorder()

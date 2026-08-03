@@ -421,7 +421,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
-	interventions := newRunInterventionService(l, setup, &wg)
+	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
