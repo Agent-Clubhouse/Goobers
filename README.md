@@ -72,31 +72,32 @@ merge reviewed desired state to the tracked branch and Goobers converges on it,
 with an audit trail and a safe rejection path. It is the same operating model
 Argo CD popularized for cluster configuration, applied to an agent workforce.
 
-## One real issue-to-merge run
+## One real agent-to-human handoff
 
 [Issue #664](https://github.com/Agent-Clubhouse/Goobers/issues/664) requested a
 flake ledger and quarantine policy. A running Goobers instance claimed it and
-created [PR #2200](https://github.com/Agent-Clubhouse/Goobers/pull/2200) from
-`goobers/implementation/a5236bf6de96406c933ecb1a9b9b83bc`--the branch name
-identifies the workflow and run.
+worked it on `goobers/implementation/a5236bf6de96406c933ecb1a9b9b83bc`--the
+branch name identifies the workflow and run.
 
 1. The deterministic backlog stage selected and leased the approved issue.
 2. The implementation agent worked in the run's isolated branch; the reviewer
    and local-CI gates controlled whether it could advance or needed a repass.
-3. Deterministic stages published the branch, opened the PR, and waited for
-   provider CI. The resulting
+3. Deterministic stages published the branch and opened
+   [PR #1746](https://github.com/Agent-Clubhouse/Goobers/pull/1746). Review
+   escalated unresolved defects to a human, and that PR closed without merging.
+4. A maintainer repaired the defects on the same branch, manually opened
+   replacement [PR #2200](https://github.com/Agent-Clubhouse/Goobers/pull/2200),
+   and merged it on 2026-08-01 after the resulting
    [CI run passed](https://github.com/Agent-Clubhouse/Goobers/actions/runs/30722079485),
    including the shipped-workflow contract checks.
-4. The PR merged to `main` on 2026-08-01. The separate shipped
-   [`merge-review` workflow](reference-workflows/gaggles/goobers/workflows/merge-review.yaml)
-   shows the guarded review, verdict publication, merge, and post-merge path
-   used for PR-lifecycle automation.
 
-That is the product loop in concrete terms: trusted backlog work enters a
-declared machine; agents do the parts that require judgment; deterministic
-stages and gates coordinate review, CI, and repository effects; humans receive
-an ordinary PR and an inspectable run record rather than an opaque agent
-session.
+This was not one fully automated issue-to-merge run: automation produced the
+initial implementation and PR, then a human completed the remediation and
+merge. It demonstrates the intended boundary in concrete terms: trusted backlog
+work enters a declared machine; agents do bounded work; deterministic stages
+and gates coordinate repository effects and expose unresolved problems; and
+humans take over with an ordinary branch, PR, and inspectable history rather
+than an opaque agent session.
 
 ## Try it locally
 
