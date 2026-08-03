@@ -35,14 +35,14 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 	}
 	machine := humanGateFixtureMachine(t)
 	ref := humanGateRepoRef()
-	start := func(ctx context.Context, runID string) (Result, error) {
-		return r.Start(ctx, StartInput{
+	start := func(runID string) (Result, error) {
+		return r.Start(context.Background(), StartInput{
 			RunID: runID, Machine: machine, Gaggle: "acme-web",
 			Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: ref,
 		})
 	}
 
-	first, err := start(context.Background(), "pinned-paused-1")
+	first, err := start("pinned-paused-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,14 +53,12 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 	secondDone := make(chan struct{})
 	var second Result
 	var secondErr error
-	secondCtx, cancelSecond := context.WithCancel(context.Background())
-	defer cancelSecond()
 	go func() {
-		second, secondErr = start(secondCtx, "pinned-paused-2")
+		second, secondErr = start("pinned-paused-2")
 		close(secondDone)
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		rd, openErr := journal.OpenRead(filepath.Join(root, "runs", "pinned-paused-2"))
 		if openErr == nil {
@@ -110,9 +108,7 @@ queued:
 
 	select {
 	case <-secondDone:
-	case <-time.After(5 * time.Second):
-		cancelSecond()
-		<-secondDone
+	case <-time.After(2 * time.Second):
 		t.Fatal("second run did not acquire the pinned lease after the first completed")
 	}
 	if secondErr != nil {
