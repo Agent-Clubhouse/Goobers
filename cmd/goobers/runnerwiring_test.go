@@ -1883,6 +1883,133 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 	}
 }
 
+// TestBuildCredentialsDaemonIdentityPAT is #1780's core acceptance: a
+// configured pat-kind DaemonIdentity backs the standard daemon-mutation
+// capability set with its own token, distinct from the repo default, while
+// capabilities outside that set (github:issues:approve, github:milestones:write)
+// keep using the repo token unchanged.
+func TestBuildCredentialsDaemonIdentityPAT(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("DAEMON_PAT", "daemon-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_PAT"}},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if got[string(c)] != "daemon-token" {
+			t.Fatalf("capability %s = %q, want the daemon identity's own token", c, got[string(c)])
+		}
+	}
+	if got[string(capability.GitHubIssuesApprove)] != "tokenA" {
+		t.Fatalf("github:issues:approve = %q, want the repo token (deliberately excluded from the daemon identity default)", got[string(capability.GitHubIssuesApprove)])
+	}
+	if got[string(capability.GitHubMilestonesWrite)] != "tokenA" {
+		t.Fatalf("github:milestones:write = %q, want the repo token (deliberately excluded from the daemon identity default)", got[string(capability.GitHubMilestonesWrite)])
+	}
+}
+
+// TestBuildCredentialsDaemonIdentityExplicitOverrideWins: an explicit
+// credentials: entry for a capability the daemon identity would otherwise
+// back must still take precedence — #1780's design explicitly preserves
+// today's per-capability override as the finer-grained escape hatch.
+func TestBuildCredentialsDaemonIdentityExplicitOverrideWins(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("DAEMON_PAT", "daemon-token")
+	t.Setenv("REVIEW_TOKEN", "review-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_PAT"}},
+		Credentials: []instance.CredentialGrant{
+			{Capability: "github:pr:review", Token: instance.TokenRef{Env: "REVIEW_TOKEN"}},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got["github:pr:review"] != "review-token" {
+		t.Fatalf("github:pr:review = %q, want the explicit override to win over the daemon identity", got["github:pr:review"])
+	}
+	if got["github:pr:write"] != "daemon-token" {
+		t.Fatalf("github:pr:write = %q, want the daemon identity's token (not overridden)", got["github:pr:write"])
+	}
+}
+
+// TestBuildCredentialsDaemonIdentityGitHubAppMintsToken mirrors
+// TestBuildCredentialsGitHubAppMintsRepoToken for the daemon-identity path
+// (#1780/#1779): a github-app-kind DaemonIdentity mints per resolve, scoped
+// to this gaggle's own repo name.
+func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
+	prev := newDaemonIdentityGitHubAppTokenSource
+	mints := 0
+	var gotRepoName string
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+		gotRepoName = gaggleRepoName
+		return func(context.Context) (string, error) {
+			mints++
+			return fmt.Sprintf("minted-daemon-token-%d", mints), nil
+		}, nil
+	}
+	t.Cleanup(func() { newDaemonIdentityGitHubAppTokenSource = prev })
+
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			PrivateKey: &instance.TokenRef{File: "/run/secrets/daemon-app.pem"},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if gotRepoName != "web" {
+		t.Fatalf("minting source scoped to repo %q, want %q", gotRepoName, "web")
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if !strings.HasPrefix(got[string(c)], "minted-daemon-token-") {
+			t.Fatalf("capability %s = %q, want a minted daemon-identity installation token", c, got[string(c)])
+		}
+	}
+	if mints < 1 {
+		t.Fatalf("mints = %d, want the source consulted at least once", mints)
+	}
+}
+
+// TestBuildCredentialsWithoutDaemonIdentityUnchanged: nil DaemonIdentity (the
+// default) must be byte-identical to buildCredentials before this field
+// existed — every capability still resolves from the plain repo default.
+func TestBuildCredentialsWithoutDaemonIdentityUnchanged(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+	}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if got[string(c)] != "tokenA" {
+			t.Fatalf("capability %s = %q, want the plain repo token (no DaemonIdentity configured)", c, got[string(c)])
+		}
+	}
+}
+
 func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	sources := []credentials.Grant{
 		{Capability: "agent:model", Ref: "model-token"},
