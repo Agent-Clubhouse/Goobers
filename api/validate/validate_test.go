@@ -1856,11 +1856,11 @@ func TestGaggleSchemaSandboxAndCheckout(t *testing.T) {
 	}
 }
 
-// TestGaggleCheckoutSparseIsInertWarning pins the accepted-but-inert contract
-// for checkout.sparse (#649): declaring it must validate without errors and
-// surface a VER003 compatibility notice on both the project repo and any
-// additionalRepos entry.
-func TestGaggleCheckoutSparseIsInertWarning(t *testing.T) {
+// TestGaggleCheckoutSparseValidatesCleanly pins that the local runner now
+// honors project.checkout.sparse (#649): a well-formed declaration on both
+// the project repo and an additionalRepos entry validates without any
+// error or warning naming "checkout".
+func TestGaggleCheckoutSparseValidatesCleanly(t *testing.T) {
 	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
 metadata:
@@ -1871,7 +1871,7 @@ spec:
     owner: acme
     name: web
     checkout:
-      sparse: [services/web]
+      sparse: [services/web, docs]
   additionalRepos:
     - provider: github
       owner: acme
@@ -1892,24 +1892,69 @@ spec:
 	if err != nil {
 		t.Fatalf("ValidateDir: %v", err)
 	}
-	var got []string
-	for _, warning := range report.Warnings() {
-		if warning.Code == WarningCompatibility && strings.Contains(warning.Explanation, "not honored by the local runner") {
-			got = append(got, warning.Scope+": "+warning.Explanation)
-		}
-	}
-	if len(got) != 2 {
-		t.Fatalf("checkout VER003 warnings = %v, want project + additionalRepos entries", got)
-	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"spec.project.checkout.sparse", "spec.additionalRepos[0].checkout.sparse"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("warnings missing %q:\n%s", want, joined)
-		}
-	}
 	for _, issue := range report.Issues {
-		if issue.Severity == Error && strings.Contains(issue.Message, "checkout") {
-			t.Errorf("checkout declaration must not be an error: %v", issue)
+		if strings.Contains(issue.Message, "checkout") || strings.Contains(issue.Message, "sparse") {
+			t.Errorf("well-formed checkout.sparse must validate cleanly, got: %v", issue)
 		}
+	}
+}
+
+// TestGaggleCheckoutSparseRejectsInvalidCones covers every malformed-cone
+// case (#649): an absolute path, an empty list, a glob pattern, a ".."
+// traversal segment, and a duplicate entry are all validation errors with
+// actionable messages, on both spec.project.checkout and an additionalRepos
+// entry.
+func TestGaggleCheckoutSparseRejectsInvalidCones(t *testing.T) {
+	cases := []struct {
+		name       string
+		sparseYAML string
+		wantSubstr string
+	}{
+		{"empty list", "checkout:\n      sparse: []", "must declare at least one cone"},
+		{"absolute path", "checkout:\n      sparse: [/services/web]", "repo-relative, not absolute"},
+		{"glob pattern", "checkout:\n      sparse: [\"services/*\"]", "does not support glob patterns"},
+		{"parent traversal", "checkout:\n      sparse: [../escape]", `must not contain ".." segments`},
+		{"empty cone string", "checkout:\n      sparse: [\"\"]", "must not be empty"},
+		{"duplicate cone", "checkout:\n      sparse: [services/web, services/web]", "duplicates cone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gaggleYAML := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    ` + tc.sparseYAML + `
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-example
+`
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var found bool
+			for _, issue := range report.Issues {
+				if issue.Severity != Error {
+					continue
+				}
+				if issue.Code == errorGaggleCheckoutSparse && strings.Contains(issue.Message, tc.wantSubstr) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected an error containing %q, got: %v", tc.wantSubstr, report.Issues)
+			}
+		})
 	}
 }

@@ -3726,7 +3726,13 @@ type stageWorkspace struct {
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
 	additional []additionalCheckout
-	release    func()
+	// sparse records the repo-relative cones this workspace's checkout was
+	// materialized with (project.checkout.sparse, #649) — empty for a full
+	// checkout. Surfaced to the stage via the invocation envelope's
+	// CheckoutCones so an agentic stage knows the tree is partial instead of
+	// treating a pruned path as unexpectedly deleted.
+	sparse  []string
+	release func()
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -3745,10 +3751,48 @@ func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
 	return out
 }
 
+// checkoutCones projects a stage workspace's sparse-checkout cones into the
+// invocation envelope's CheckoutCones (project.checkout.sparse, #649): ""
+// for the primary Workspace, else the matching AdditionalWorkspaces[i].Name.
+// A workspace with a full checkout is omitted, so the common (non-sparse)
+// case publishes no field at all.
+func checkoutCones(w *stageWorkspace) map[string][]string {
+	if w == nil {
+		return nil
+	}
+	cones := map[string][]string{}
+	if len(w.sparse) > 0 {
+		cones[""] = w.sparse
+	}
+	for _, a := range w.additional {
+		if len(a.sparse) > 0 {
+			cones[a.name] = a.sparse
+		}
+	}
+	if len(cones) == 0 {
+		return nil
+	}
+	return cones
+}
+
+// sparseCones returns spec's declared cones, or nil for a full checkout
+// (spec nil, or Sparse empty — validation rejects an explicitly empty Sparse
+// list, so an empty result here only ever means no checkout override was
+// declared).
+func sparseCones(spec *apiv1.CheckoutSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	return spec.Sparse
+}
+
 // additionalCheckout is one provisioned read-only reference-repo worktree.
 type additionalCheckout struct {
 	name     string
 	worktree *worktree.Worktree
+	// sparse records the cones this reference checkout was materialized with
+	// (project.checkout.sparse, #649) — empty for a full checkout.
+	sparse []string
 }
 
 func (w *stageWorkspace) ActivateAssetPathGuard() error {
@@ -3824,6 +3868,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
+		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,
 		ContextPointers:      upstream,
 		Capabilities:         capabilities,
@@ -3902,6 +3947,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3910,6 +3956,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// Branch deliberately empty — a detached checkout, the same shape
 			// provisionAdditionalCheckouts already uses for reference repos.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create read-only worktree: %w", err)
@@ -3919,7 +3966,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	case "", apiv1.WorkspaceRepo:
 		if in.pinnedWorkspace != nil {
 			in.pinnedStage.Lock()
@@ -3947,6 +3994,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if workspaceBranch != "" {
 			branch = workspaceBranch
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3958,6 +4006,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
+			Sparse:                sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
@@ -3969,7 +4018,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
@@ -4089,6 +4138,7 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(repo.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName + "-ref-" + sanitizeRefName(repo.Name),
@@ -4096,12 +4146,13 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 			BaseRef:    baseRef,
 			// Detached, read-only: no run branch, never pushed.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			r.teardownCheckouts(ctx, checkouts)
 			return nil, fmt.Errorf("checkout reference repo %q: %w", repo.Name, err)
 		}
-		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt})
+		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt, sparse: sparse})
 	}
 	return checkouts, nil
 }

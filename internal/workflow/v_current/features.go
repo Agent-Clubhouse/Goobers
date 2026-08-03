@@ -621,13 +621,15 @@ func currentFeatures(sinceVersion string) []Feature {
 // and config-examples model, which must validate without a preview
 // acknowledgement (an earlier placeholder marked *every* field preview, so
 // guided-init tripped VER002 on every standard field, #1196). Only genuinely
-// unproven features stay preview: sparse checkout, accepted but inert on the
-// local runner (#649), and the per-gaggle sandbox posture override, whose
-// enforcement is landing behind the default-off instance opt-in (#1305).
+// unproven features stay preview: the per-gaggle sandbox posture override,
+// whose enforcement is landing behind the default-off instance opt-in
+// (#1305). Sparse checkout (featureGaggleCheckoutSparse) promoted to GA once
+// the local runner started honoring it (#649) — it was preview only because
+// it was "accepted but inert"; declaring it is now a real, opt-in behavior
+// change, exactly the case GA features already cover.
 // Promoting a feature to GA is a one-line removal from this map.
 var previewFeatures = map[FeatureID]struct{}{
-	featureGaggleSandbox:        {},
-	featureGaggleCheckoutSparse: {},
+	featureGaggleSandbox: {},
 }
 
 type featureSet map[FeatureID]struct{}
