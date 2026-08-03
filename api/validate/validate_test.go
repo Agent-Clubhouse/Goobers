@@ -1292,8 +1292,9 @@ func TestWarningCodesAreStable(t *testing.T) {
 		WarningCompatibility,
 		ErrorRemovedFeature,
 		WarningModelFallback,
+		WarningSkillPackageCollision,
 	}
-	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002"}
+	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002", "SKILL001"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("warning code %d = %q, want %q", i, got[i], want[i])

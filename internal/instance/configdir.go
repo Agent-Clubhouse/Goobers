@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -163,6 +164,9 @@ func readDocs(root string) ([]rawDoc, error) {
 		}
 		if d.IsDir() {
 			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			if configtree.IsGaggleSkillsDir(root, path) {
 				return filepath.SkipDir
 			}
 			if gooberassets.IsSourceDir(path) {

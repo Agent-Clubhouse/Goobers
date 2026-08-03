@@ -197,6 +197,36 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	}
 }
 
+func TestLoad_IgnoresSkillPackageDefinitions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportFile := filepath.Join(root, "gaggles", "acme-web", "skills", "implement", "support.yaml")
+	if err := os.MkdirAll(filepath.Dir(supportFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(supportFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewLoader("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loader.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v (report: %+v)", err, report)
+	}
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
+		t.Fatalf("skill package definition leaked into render set: got %d goobers", got)
+	}
+}
+
 func TestLoadRejectsCrossGaggleWorkflowNameCollision(t *testing.T) {
 	l, err := NewLoader("")
 	if err != nil {

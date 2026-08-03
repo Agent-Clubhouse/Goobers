@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
@@ -58,6 +59,9 @@ const (
 	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
 	WarningModelFallback WarningCode = "MODEL002"
+	// WarningSkillPackageCollision identifies a gaggle-scoped skill package
+	// shadowing an instance-level package with the same name.
+	WarningSkillPackageCollision WarningCode = "SKILL001"
 	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
 	// defaulted to supportmatrix.CurrentDSLVersion during the transition
 	// window (DVL-3, #863).
@@ -538,6 +542,9 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return err
 		}
 		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
 			return filepath.SkipDir
 		}
 		if gooberassets.IsSourceDir(path) {

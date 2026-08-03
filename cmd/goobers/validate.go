@@ -242,6 +242,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		)
 	}
 	printValidationWarnings(stdout, codedWarnings)
+	skillWarnings, err := appendSkillPackageCollisionWarnings(configDir, report, goobers)
+	if err != nil {
+		pf(stderr, "error: inspect skill package collisions: %v\n", err)
+		return 2
+	}
+	for _, warning := range skillWarnings {
+		diagnostics.add(
+			diagnosticFile(root, filepath.Join(configDir, "gaggles", strings.TrimPrefix(warning.Scope, "Gaggle/"), "skills")),
+			"/",
+			string(warning.Code),
+			string(warning.Severity),
+			warning.Explanation,
+		)
+	}
+	printValidationWarnings(stdout, skillWarnings)
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
