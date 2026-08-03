@@ -649,8 +649,12 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		instanceControls := cfg.RunConditions.RunControls()
+		if repo, ok := configuredRepoForProject(cfg, repoRefs[identity]); ok {
+			instanceControls = repo.EffectiveRunControls(instanceControls)
+		}
 		controls, err := runcontrol.Resolve(
-			cfg.RunConditions.RunControls(),
+			instanceControls,
 			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
 			wf.Spec.RunControls,
 		)

@@ -1966,7 +1966,11 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// Baseline deadline for a stage that declares no timeoutSeconds
 			// (#1969). Zero leaves executor.DefaultTimeout in force, so an
 			// instance that configures nothing is unchanged.
-			defaultStageTimeout, err := cfg.Runner.DefaultStageTimeoutDuration()
+			defaultStageTimeoutSetting := cfg.Runner.DefaultStageTimeout
+			if projectConfigured {
+				defaultStageTimeoutSetting = configuredProject.EffectiveDefaultStageTimeout(defaultStageTimeoutSetting)
+			}
+			defaultStageTimeout, err := (instance.RunnerConfig{DefaultStageTimeout: defaultStageTimeoutSetting}).DefaultStageTimeoutDuration()
 			if err != nil {
 				return nil, err
 			}

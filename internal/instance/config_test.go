@@ -222,6 +222,83 @@ workcopies:
 	}
 }
 
+func TestLargeRepoPresetResolvesDefaultsAndOverrides(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	repo := cfg.Repos[0]
+	if !repo.Pinned() || repo.Workspace == nil || repo.Workspace.CleanPolicy != "" {
+		t.Fatalf("workspace = %+v, want pinned with none clean-policy default", repo.Workspace)
+	}
+	if repo.PathLength == nil || repo.PathLength.Disabled {
+		t.Fatalf("pathLength = %+v, want enabled preset default", repo.PathLength)
+	}
+	if repo.DefaultStageTimeout != LargeRepoDefaultStageTimeout {
+		t.Fatalf("defaultStageTimeout = %q, want %q", repo.DefaultStageTimeout, LargeRepoDefaultStageTimeout)
+	}
+	if repo.RunControls == nil ||
+		repo.RunControls.StalledRunTimeout != LargeRepoStalledRunTimeout ||
+		repo.RunControls.MaxRunDuration != LargeRepoMaxRunDuration {
+		t.Fatalf("runControls = %+v, want large-repo defaults", repo.RunControls)
+	}
+	if got := repo.EffectiveRunControls((RunConditions{MaxRepasses: 2, StalledRunTimeout: "30m"}).RunControls()); got.MaxRepasses != 2 ||
+		got.StalledRunTimeout != LargeRepoStalledRunTimeout || got.MaxRunDuration != LargeRepoMaxRunDuration {
+		t.Fatalf("EffectiveRunControls = %+v, want preset over instance defaults", got)
+	}
+
+	path = writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+    workspace:
+      pinned: false
+    pathLength:
+      disabled: true
+    defaultStageTimeout: 45m
+    runControls:
+      stalledRunTimeout: 90m
+      maxRunDuration: 8h
+`)
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig with overrides: %v", err)
+	}
+	repo = cfg.Repos[0]
+	if repo.Pinned() {
+		t.Fatalf("workspace = %+v, want explicit pinned:false relaxation", repo.Workspace)
+	}
+	if repo.PathLength == nil || !repo.PathLength.Disabled {
+		t.Fatalf("pathLength = %+v, want explicit disabled relaxation", repo.PathLength)
+	}
+	if repo.DefaultStageTimeout != "45m" {
+		t.Fatalf("defaultStageTimeout = %q, want tightened 45m", repo.DefaultStageTimeout)
+	}
+	if repo.RunControls.StalledRunTimeout != "90m" || repo.RunControls.MaxRunDuration != "8h" {
+		t.Fatalf("runControls = %+v, want explicit overrides", repo.RunControls)
+	}
+	if got := repo.EffectiveDefaultStageTimeout("20m"); got != "45m" {
+		t.Fatalf("EffectiveDefaultStageTimeout = %q, want explicit 45m", got)
+	}
+}
+
 func TestLoadConfigRepoPathLength(t *testing.T) {
 	cfg, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
