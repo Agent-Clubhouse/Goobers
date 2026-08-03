@@ -93,6 +93,9 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 			t.Fatalf("%v: validation was not clean: %s", args, stdout)
 		}
 	}
+
+	skills := []string{"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis"}
+	createDeclaredSkillPackages(t, filepath.Dir(sourceRoot), skills...)
 	assertCleanValidation("validate", "--source-tree", "--json", sourceRoot)
 
 	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
@@ -102,6 +105,7 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
 		t.Fatalf("materialize composed instance: %v", err)
 	}
+	createDeclaredSkillPackages(t, instanceRoot, skills...)
 	assertCleanValidation("validate", "--json", instanceRoot)
 
 	var golden bytes.Buffer
