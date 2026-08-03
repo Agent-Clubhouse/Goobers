@@ -479,6 +479,7 @@ func TestRunnerRerunStageReacquiresPinnedWorkspace(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "implement",
 		Actor: "maintainer", InstructionAddendum: "Use the pinned workspace.",
+		ExpectedTerminalSeq: terminalRunSequence(t, filepath.Join(root, "runs"), runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)

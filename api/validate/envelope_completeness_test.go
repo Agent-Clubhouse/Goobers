@@ -300,7 +300,6 @@ func completeJournalEvent() journal.Event {
 		Decision:            "pass",
 		Rationale:           "accepted risk",
 		InstructionAddendum: "Reuse the existing parser.",
-		Rationale:           "The nondeterministic result was manually reviewed.",
 		Gate:                "review",
 		Verdict:             "needs-changes",
 		Target:              "implement",

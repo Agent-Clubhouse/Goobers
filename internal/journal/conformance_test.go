@@ -28,7 +28,6 @@ func baseNormativeEvent() Event {
 		Decision:            "pass",
 		Rationale:           "accepted risk",
 		InstructionAddendum: "Reuse the existing parser.",
-		Rationale:           "The gate result was nondeterministic.",
 		Gate:                "review",
 		Verdict:             "pass",
 		Target:              "local-ci",

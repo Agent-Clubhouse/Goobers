@@ -219,8 +219,6 @@ type Event struct {
 	// Decision is the configured gate branch selected by a run.resumed
 	// intervention. Normative.
 	Decision string `json:"decision,omitempty"`
-	// Rationale records why an operator overrode a gate. Normative.
-	Rationale string `json:"rationale,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`

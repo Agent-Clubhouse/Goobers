@@ -35,7 +35,6 @@ type NormativeEvent struct {
 	Decision            string
 	Rationale           string
 	InstructionAddendum string
-	Rationale           string
 	Gate                string
 	Verdict             string
 	Target              string

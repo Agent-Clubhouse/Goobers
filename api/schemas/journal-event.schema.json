@@ -128,12 +128,6 @@
       "minLength": 1,
       "x-conformance": "normative"
     },
-    "rationale": {
-      "description": "Operator rationale for a run.resumed gate override.",
-      "type": "string",
-      "minLength": 1,
-      "x-conformance": "normative"
-    },
     "instructionAddendum": {
       "description": "One-off instruction text supplied for stage.rerun.requested.",
       "type": "string",
@@ -141,7 +135,7 @@
       "x-conformance": "normative"
     },
     "rationale": {
-      "description": "Required operator explanation for a gate.overridden intervention.",
+      "description": "Required operator explanation for a gate override intervention.",
       "type": "string",
       "minLength": 1,
       "x-conformance": "normative"
