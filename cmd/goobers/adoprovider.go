@@ -49,12 +49,23 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 }
 
 // newADOProviderForStage builds the ADO provider a provider-chain stage talks
-// to. PAT auth consumes the capability credential injected by the runner rather
-// than rereading the configured source, which is outside the stage's
-// default-deny environment. Other auth kinds resolve through adoauth.Source.
+// to using its configured authentication source.
 var newADOProviderForStage = buildADOProviderForStage
 
 func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return nil, err
+	}
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
+}
+
+// open-pr receives PAT credentials through its provider:pr:write capability;
+// the configured PAT environment variable is intentionally absent from the
+// stage's default-deny environment.
+var newADOProviderForOpenPR = buildADOProviderForOpenPR
+
+func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
 	repo, err := adoRepoRefForStage(root, routed)
 	if err != nil {
 		return nil, err

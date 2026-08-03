@@ -226,8 +226,8 @@ func TestOpenPRADOStageHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	baseURL := os.Getenv("GOOBERS_TEST_ADO_API_URL")
-	newADOProviderForStage = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-		provider, err := buildADOProviderForStage(root, routed)
+	newADOProviderForOpenPR = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		provider, err := buildADOProviderForOpenPR(root, routed)
 		if err != nil {
 			return nil, err
 		}

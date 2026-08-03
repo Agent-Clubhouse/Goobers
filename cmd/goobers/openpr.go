@@ -61,7 +61,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	var provider openPRProvider
 	switch repo.Provider {
 	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForStage(root, repo)
+		adoProvider, err := newADOProviderForOpenPR(root, repo)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
