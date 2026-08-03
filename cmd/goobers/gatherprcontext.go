@@ -178,13 +178,6 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// selection resumes automatically once it does. Enumerated once here (a
 	// local git query, no provider call) and reused across the candidate loop.
 	heldBranches := worktreeHeldBranches(".")
-	if hasPinnedCandidate {
-		// Held-branch filtering prevents selection from creating a checkout
-		// race. It must not discard a candidate already selected and claimed by
-		// update-behind-pr; checkout below surfaces a still-live race as an
-		// error instead of silently turning the handoff into no-work.
-		delete(heldBranches, prs[0].Head)
-	}
 
 	nonBlocked, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
 	if err != nil {
