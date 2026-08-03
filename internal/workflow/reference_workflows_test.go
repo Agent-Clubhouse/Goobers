@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 )
 
 // TestReferenceWorkflowsCompile is #124's divergence guard: it compiles the
@@ -236,11 +237,11 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 			continue
 		}
 		for _, declared := range task.Capabilities {
-			if declared == "github:pr:write" {
+			if declared == string(capability.ProviderPRWrite) {
 				return
 			}
 		}
-		t.Fatalf("ci-poll task %q capabilities = %v, want github:pr:write", task.Name, task.Capabilities)
+		t.Fatalf("ci-poll task %q capabilities = %v, want %s", task.Name, task.Capabilities, capability.ProviderPRWrite)
 	}
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }

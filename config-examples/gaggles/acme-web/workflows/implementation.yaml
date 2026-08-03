@@ -233,7 +233,7 @@ spec:
         # flatten every upstream Output automatically.
         prNumber: prNumber
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       expectedOutputs:
         - ciStatus
       next: ci-gate
