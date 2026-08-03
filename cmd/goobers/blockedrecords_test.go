@@ -133,6 +133,127 @@ func TestFindBlockedCycle(t *testing.T) {
 	}
 }
 
+// TestFindAllBlockedCyclesSequentialWrites is #1405's core regression: the
+// write order that produced the live asymmetry report — one member recorded
+// alone (no cycle yet visible), then the other member's write closes it —
+// must still resolve to every cycle member on the closing write, for both a
+// 2-member cycle (#466/#469's shape) and a 3-member cycle, in every possible
+// write order.
+func TestFindAllBlockedCyclesSequentialWrites(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+
+	permute := func(items []string, fn func([]string)) {
+		var helper func([]string, int)
+		helper = func(arr []string, k int) {
+			if k == len(arr) {
+				cp := append([]string(nil), arr...)
+				fn(cp)
+				return
+			}
+			for i := k; i < len(arr); i++ {
+				arr[k], arr[i] = arr[i], arr[k]
+				helper(arr, k+1)
+				arr[k], arr[i] = arr[i], arr[k]
+			}
+		}
+		helper(append([]string(nil), items...), 0)
+	}
+
+	tests := []struct {
+		name     string
+		blockers map[string][]string // written one at a time, in every order
+		items    []string
+	}{
+		{
+			name:     "466/469 two-member cycle",
+			blockers: map[string][]string{"466": {"469"}, "469": {"466", "468"}},
+			items:    []string{"466", "469"},
+		},
+		{
+			name:     "three-member cycle",
+			blockers: map[string][]string{"A": {"B"}, "B": {"C"}, "C": {"A"}},
+			items:    []string{"A", "B", "C"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			permute(tc.items, func(order []string) {
+				recs := map[string]blockedRecord{}
+				for _, item := range order {
+					recs[blockedRecordKey(repo, item)] = blockedRecord{
+						Repository: repo, ItemID: item, Blockers: tc.blockers[item],
+					}
+				}
+				cycles := findAllBlockedCycles(recs)
+				if len(cycles) != 1 {
+					t.Fatalf("order %v: cycles = %+v, want exactly 1", order, cycles)
+				}
+				got := make(map[string]bool, len(cycles[0].Affected))
+				for _, node := range cycles[0].Affected {
+					got[node.ItemID] = true
+				}
+				for _, item := range tc.items {
+					if !got[item] {
+						t.Errorf("order %v: cycle.Affected = %v, missing %q", order, cycles[0].Affected, item)
+					}
+				}
+				if len(got) != len(tc.items) {
+					t.Errorf("order %v: cycle.Affected = %v, want exactly %v", order, cycles[0].Affected, tc.items)
+				}
+			})
+		})
+	}
+}
+
+// TestFindAllBlockedCyclesFindsEveryDisjointCycle covers what findBlockedCycle
+// alone cannot answer: the current state can hold more than one active cycle
+// at once (e.g. #466/#469 plus an unrelated pair), and reconciliation must
+// walk all of them, not just the one touching a single key.
+func TestFindAllBlockedCyclesFindsEveryDisjointCycle(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		// Cycle 1: a two-member cycle, #468 hangs off it one-way (not a member).
+		"466": {"469"},
+		"469": {"466", "468"},
+		// Cycle 2: an unrelated three-member cycle elsewhere in the graph.
+		"700": {"701"},
+		"701": {"702"},
+		"702": {"700"},
+		// Noise: a plain acyclic chain, must not be reported as a cycle.
+		"800": {"801"},
+	})
+
+	cycles := findAllBlockedCycles(recs)
+	if len(cycles) != 2 {
+		t.Fatalf("cycles = %+v, want exactly 2 disjoint cycles", cycles)
+	}
+	var got []map[string]bool
+	for _, cycle := range cycles {
+		members := make(map[string]bool, len(cycle.Affected))
+		for _, node := range cycle.Affected {
+			members[node.ItemID] = true
+		}
+		got = append(got, members)
+	}
+	wantSets := []map[string]bool{
+		{"466": true, "469": true},
+		{"700": true, "701": true, "702": true},
+	}
+	for _, want := range wantSets {
+		found := false
+		for _, members := range got {
+			if reflect.DeepEqual(members, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cycles = %+v, want one matching %v", cycles, want)
+		}
+	}
+}
+
 func TestFindBlockedCycleBoundsDenseGraphPaths(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	dependencies := make(map[string][]string)
@@ -1451,5 +1572,103 @@ func TestStalledBlockedStateProviderCallDoesNotDelayFinalizer(t *testing.T) {
 	}
 	if entry, held := reopened.Lookup("900"); held {
 		t.Fatalf("terminal claim still held after finalizer: %+v", entry)
+	}
+}
+
+// TestReconcileBlockedCycleLabelsReEscalatesDriftedMember is #1405's live
+// symptom, reproduced directly: a cycle both members were correctly
+// escalated into, where one member's labels later drifted back to ready (a
+// human override, a stale re-curation pass — anything that never touched
+// blocked.json, so nothing re-fired the write-time escalation for it). The
+// next reconciliation pass must re-apply needs-human to the drifted member
+// without re-posting a comment on the member that never drifted.
+func TestReconcileBlockedCycleLabelsReEscalatesDriftedMember(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(466, "466", "goobers:needs-human")
+	server.addIssue(469, "469", "goobers:ready", "goobers:approved") // drifted back to ready
+	server.addIssue(468, "468", "goobers:ready")                     // one-way blocker, not a cycle member
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"466": {"469"},
+		"469": {"466", "468"},
+	})
+
+	warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, "")
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+
+	server.mu.Lock()
+	labels466 := append([]string(nil), server.issues[466].labels...)
+	labels469 := append([]string(nil), server.issues[469].labels...)
+	comments466 := len(server.issues[466].comments)
+	comments469 := append([]string(nil), server.issues[469].comments...)
+	server.mu.Unlock()
+
+	if !hasAllLabels(labels466, []string{providers.LabelNeedsHuman}) {
+		t.Errorf("466 labels = %v, want needs-human retained", labels466)
+	}
+	if comments466 != 0 {
+		t.Errorf("466 comments = %d, want 0 — it was already escalated, must not be re-commented", comments466)
+	}
+
+	if !hasAllLabels(labels469, []string{providers.LabelNeedsHuman}) {
+		t.Errorf("469 labels = %v, want needs-human re-applied after drift", labels469)
+	}
+	if hasAllLabels(labels469, []string{providers.LabelReady}) {
+		t.Errorf("469 labels = %v, want goobers:ready removed", labels469)
+	}
+	if len(comments469) != 1 {
+		t.Fatalf("469 comments = %v, want exactly 1 re-escalation comment", comments469)
+	}
+	if !strings.Contains(comments469[0], "#466") || !strings.Contains(comments469[0], "#469") {
+		t.Errorf("469 comment = %q, want both cycle members named", comments469[0])
+	}
+}
+
+// TestReconcileBlockedCycleLabelsNoopWhenAlreadyEscalated confirms the
+// common-case cost: when every cycle member already carries needs-human,
+// reconciliation performs reads only — no label writes, no new comments.
+func TestReconcileBlockedCycleLabelsNoopWhenAlreadyEscalated(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(466, "466", "goobers:needs-human")
+	server.addIssue(469, "469", "goobers:needs-human")
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"466": {"469"},
+		"469": {"466"},
+	})
+
+	if warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, ""); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.issues[466].comments) != 0 || len(server.issues[469].comments) != 0 {
+		t.Fatalf("comments 466=%d 469=%d, want none posted when nothing drifted",
+			len(server.issues[466].comments), len(server.issues[469].comments))
+	}
+}
+
+// TestReconcileBlockedCycleLabelsIgnoresAcyclicRecords confirms an ordinary
+// (non-circular) blocked record — the overwhelmingly common case — costs
+// nothing beyond the per-member reads: no comments, no label churn.
+func TestReconcileBlockedCycleLabelsIgnoresAcyclicRecords(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(510, "blocked item", "goobers:needs-human")
+	server.addIssue(441, "prerequisite", "goobers:ready")
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"510": {"441"},
+	})
+
+	if warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, ""); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.issues[510].comments) != 0 {
+		t.Fatalf("510 comments = %d, want none — no cycle involved", len(server.issues[510].comments))
 	}
 }

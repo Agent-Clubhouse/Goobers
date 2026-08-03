@@ -541,6 +541,19 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		// parked when its provider state cannot be resolved.
 		pf(stderr, "warning: blocked records: %s\n", warning)
 	}
+	// Re-affirm cycle escalation on every tick (#1405), using the freshest,
+	// post-self-heal record set: a fully skip-parked cycle member is never
+	// reclaimed and so never re-runs its own blocked-handler to notice a
+	// sibling whose labels drifted without a blocked.json change. Best-effort
+	// and warn-only, like filterBlockedEligibility above — a config load or
+	// provider hiccup here must not block the eligibility scan itself.
+	if needsHumanAssignee, cfgErr := needsHumanAssigneeFor(l); cfgErr != nil {
+		pf(stderr, "warning: blocked cycle reconciliation: %v\n", cfgErr)
+	} else {
+		for _, warning := range reconcileBlockedCycleLabels(ctx, issueProvider, remainingRecords, needsHumanAssignee) {
+			pf(stderr, "warning: blocked cycle reconciliation: %s\n", warning)
+		}
+	}
 	verifiedSkips := make(map[string]blockedEligibilitySkip, len(observedSkips))
 	for _, skip := range observedSkips {
 		verifiedSkips[skip.ItemID] = skip
