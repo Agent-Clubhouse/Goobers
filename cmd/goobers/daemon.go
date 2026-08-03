@@ -386,7 +386,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
+		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
@@ -605,7 +605,7 @@ func buildSchedulerDefinitions(
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
+			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
@@ -766,6 +766,7 @@ func buildRetainedLegacyRunner(
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
@@ -782,7 +783,7 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
@@ -818,6 +819,7 @@ func buildRuntimeRunner(
 	sharedReg *journal.RegistryScrubber,
 	manager *worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
@@ -836,6 +838,7 @@ func buildRuntimeRunner(
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
+	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err

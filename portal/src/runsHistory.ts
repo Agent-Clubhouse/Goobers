@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
-import type { DaemonClient, RunListOptions, RunPhase, RunSummary } from "./api/types";
+import type {
+  DaemonClient,
+  ModelInvalidation,
+  RunListOptions,
+  RunPhase,
+  RunSummary,
+} from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 import { QueryFamily } from "./api/queryFamily";
@@ -82,6 +88,7 @@ export function useRunsHistory(
     initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
   );
   const runs = useRef<RunSummary[]>(initialCached.current?.data.runs ?? []);
+  const invalidatedRunIds = useRef(new Set<string>());
   const loadingMore = useRef(false);
 
   const publish = useCallback((fresh: boolean, cacheRevision?: number) => {
@@ -158,17 +165,8 @@ export function useRunsHistory(
   //
   //   - runs the user paged in stay loaded, and the scroll position holds;
   //   - new runs appear at the head;
-  //   - a run already in the window that changed is updated, because mergeRuns
-  //     is keyed by id and the incoming copy wins.
-  //
-  // Known limit, stated rather than hidden: a run that changed but is NOT on
-  // the first page keeps its stale row until the next reload. Refetching every
-  // loaded page on every event would restore the cost this change exists to
-  // remove — on a busy instance under the polling fallback that is every 5s
-  // across N pages. The change feed carries the affected run ids (#1919), so
-  // Wave 5's client primitives (#1930) can patch those rows in place; until
-  // then the first page covers the common case, which is a run that just
-  // started or just finished.
+  //   - a run already in the head page is updated by the list response;
+  //   - invalidated rows outside the head page are fetched directly by id.
   const refreshWindow = useCallback(() => {
     // Deliberately does NOT abort an in-flight loadMore. A live event arriving
     // while the user is paging must not cancel their page — that was another
@@ -205,13 +203,25 @@ export function useRunsHistory(
       cursor: undefined,
       exhausted: false,
     }));
+    const affectedRunIds = [...invalidatedRunIds.current];
+    invalidatedRunIds.current.clear();
 
     return advanceStreams(client, head, scope, controller.signal).then(
-      (fetched) => {
+      async (fetched) => {
         if (controller.signal.aborted) {
           return true;
         }
-        runs.current = mergeRuns(runs.current, fetched);
+        const fetchedIds = new Set(fetched.map((run) => run.id));
+        const loadedIds = new Set(runs.current.map((run) => run.id));
+        const targeted = await Promise.all(
+          affectedRunIds
+            .filter((runId) => loadedIds.has(runId) && !fetchedIds.has(runId))
+            .map((runId) => client.getRun(runId, { signal: controller.signal })),
+        );
+        if (controller.signal.aborted) {
+          return true;
+        }
+        runs.current = mergeRuns(runs.current, [...fetched, ...targeted]);
         publish(isFresh(), cacheRevision);
         return true;
       },
@@ -258,7 +268,7 @@ export function useRunsHistory(
   useEffect(() => {
     const unsubscribe = subscribe(
       ["run"],
-      (_models, reason) => {
+      (_models, reason, invalidations) => {
         const cached =
           reason === "initial" ? cache.get<CachedRunsHistory>(cacheKey) : undefined;
         if (cached) {
@@ -278,6 +288,7 @@ export function useRunsHistory(
         if (reason === "initial") {
           return reload();
         }
+        collectInvalidatedRunIds(invalidations, runs.current, invalidatedRunIds.current);
         // Through the family, not straight to refreshWindow: an event arriving
         // while a refresh is already running must queue one follow-up pass, not
         // start a second request and not cancel the first.
@@ -367,13 +378,34 @@ function mergeRuns(existing: RunSummary[], incoming: RunSummary[]): RunSummary[]
     byId.set(run.id, run);
   }
   for (const run of incoming) {
-    byId.set(run.id, run);
+    const current = byId.get(run.id);
+    if (!current || run.lastSeq >= current.lastSeq) {
+      byId.set(run.id, run);
+    }
   }
   return [...byId.values()].sort(
     (left, right) =>
       Date.parse(right.startedAt) - Date.parse(left.startedAt) ||
       left.id.localeCompare(right.id),
   );
+}
+
+function collectInvalidatedRunIds(
+  invalidations: readonly ModelInvalidation[] | undefined,
+  loadedRuns: readonly RunSummary[],
+  target: Set<string>,
+): void {
+  if (!invalidations) {
+    return;
+  }
+  const loadedIds = new Set(loadedRuns.map((run) => run.id));
+  for (const invalidation of invalidations) {
+    for (const runId of invalidation.runIds ?? []) {
+      if (loadedIds.has(runId)) {
+        target.add(runId);
+      }
+    }
+  }
 }
 
 function runsError(

@@ -1,7 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import type {
@@ -59,12 +59,12 @@ class PushableClient extends FixtureDaemonClient {
   }
 }
 
-function runEvent(id: string): DaemonUpdateEvent {
+function runEvent(id: string, runIds: string[] = []): DaemonUpdateEvent {
   return {
     id,
-    type: "update",
-    data: { cursor: id, models: ["run"], runIds: [], workflows: [] },
-  } as unknown as DaemonUpdateEvent;
+    type: "invalidate",
+    data: { cursor: id, models: ["run"], runIds, workflows: [] },
+  };
 }
 
 describe("runs history pagination under live events", () => {
@@ -102,6 +102,51 @@ describe("runs history pagination under live events", () => {
     expect(
       within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
     ).toHaveLength(68);
+  });
+
+  it("updates every invalidated row outside the refreshed head page", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 0,
+      running: 68,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const affected = fixtures.runs.runs.slice(0, 2);
+    for (const run of affected) {
+      run.currentStage = "query-backlog";
+    }
+    fixtures.runDetails = Object.fromEntries(
+      affected.map((run, index) => [
+        run.id,
+        {
+          ...run,
+          currentStage: index === 0 ? "implement" : "review",
+          lastSeq: run.lastSeq + 1,
+          graphStatus: "unavailable",
+          transitionsStatus: "unavailable",
+        },
+      ]),
+    );
+    const client = new PushableClient(fixtures);
+    const getRun = vi.spyOn(client, "getRun");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    const rows = await Promise.all(
+      affected.map((run) => screen.findByRole("link", { name: `Open run ${run.id}` })),
+    );
+    expect(rows.every((row) => within(row).getByText("query-backlog"))).toBe(true);
+
+    act(() => {
+      client.push(runEvent("session:live-subset", affected.map((run) => run.id)));
+    });
+
+    await waitFor(() => expect(within(rows[0]).getByText("implement")).toBeInTheDocument());
+    expect(within(rows[1]).getByText("review")).toBeInTheDocument();
+    expect(getRun).toHaveBeenCalledTimes(2);
   });
 
   // The counterpart: a real filter change MUST still reset pagination, or the

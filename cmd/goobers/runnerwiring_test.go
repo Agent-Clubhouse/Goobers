@@ -35,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -42,6 +43,32 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
+	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	observe := runIntakeObserver(store, nil)
+
+	for index, runID := range []string{"run-a", "run-b", "run-c", "run-d", "run-e"} {
+		observe(runID, uint64(index+2))
+	}
+
+	pending, err := store.Pending(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 5 {
+		t.Fatalf("pending markers = %d, want 5", len(pending))
+	}
+	for index, marker := range pending {
+		if marker.SourceSeq != uint64(index+2) {
+			t.Fatalf("marker %s sequence = %d, want %d", marker.RunID, marker.SourceSeq, index+2)
+		}
+	}
+}
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a

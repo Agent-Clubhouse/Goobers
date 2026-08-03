@@ -139,7 +139,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
@@ -173,7 +173,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}

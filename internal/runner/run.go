@@ -351,6 +351,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// JournalAdvanced reports each durable journal append to derived readers.
+	// Optional; the callback owns failure reporting and must not fail the run.
+	JournalAdvanced func(runID string, seq uint64)
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
@@ -614,7 +617,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:          in.Gaggle,
 		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
-	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}

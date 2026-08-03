@@ -284,6 +284,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		id:       id,
 		scrubber: cfg.scrubber,
 		now:      cfg.now,
+		observer: cfg.appendObserver,
 		events:   f,
 		lock:     lock,
 		seq:      report.LastSeq,

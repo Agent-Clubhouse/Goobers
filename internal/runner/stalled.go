@@ -439,7 +439,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover stalled run %q: %w", runID, err)
 	}
@@ -591,7 +591,7 @@ func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover expired run %q: %w", runID, err)
 	}
