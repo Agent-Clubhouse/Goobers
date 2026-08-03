@@ -153,6 +153,53 @@ func TestRunEndToEndPartialClone(t *testing.T) {
 	}
 }
 
+// TestRunEndToEndSparse exercises the harness in the mode #649's before/after
+// numbers are collected in: a cone-mode worktree must come out smaller than
+// a full-checkout worktree of the same fixture.
+func TestRunEndToEndSparse(t *testing.T) {
+	fullOut := filepath.Join(t.TempDir(), "full.json")
+	sparseOut := filepath.Join(t.TempDir(), "sparse.json")
+	fixtureDir := filepath.Join(t.TempDir(), "fixture.git")
+	baseArgs := []string{
+		"-files", "24", "-depth", "4", "-branches", "2", "-tags", "1",
+		"-large-blobs", "1", "-large-blob-bytes", "32768",
+		"-cycles", "1", "-fixture", fixtureDir, "-keep-fixture",
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(append(append([]string{}, baseArgs...), "-out", fullOut), &stdout, &stderr); code != 0 {
+		t.Fatalf("full run = %d, stderr:\n%s", code, stderr.String())
+	}
+	if code := run(append(append([]string{}, baseArgs...), "-sparse", "dir000", "-out", sparseOut), &stdout, &stderr); code != 0 {
+		t.Fatalf("sparse run = %d, stderr:\n%s", code, stderr.String())
+	}
+
+	full := readReport(t, fullOut)
+	sparse := readReport(t, sparseOut)
+	if len(sparse.Sparse) != 1 || sparse.Sparse[0] != "dir000" {
+		t.Fatalf("report does not record sparse: %+v", sparse.Sparse)
+	}
+	if len(full.Cycles) != 1 || len(sparse.Cycles) != 1 {
+		t.Fatalf("cycles = full:%+v sparse:%+v, want one each", full.Cycles, sparse.Cycles)
+	}
+	if sparse.Cycles[0].WorktreeBytes >= full.Cycles[0].WorktreeBytes {
+		t.Fatalf("sparse worktree (%d bytes) is not smaller than the full checkout (%d bytes) — the cone did not apply",
+			sparse.Cycles[0].WorktreeBytes, full.Cycles[0].WorktreeBytes)
+	}
+}
+
+func readReport(t *testing.T, path string) report {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep report
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("report is not valid JSON: %v\n%s", err, raw)
+	}
+	return rep
+}
+
 func TestRunRejectsUnknownPreset(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-preset", "galactic"}, &stdout, &stderr); code != 2 {

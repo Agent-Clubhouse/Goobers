@@ -66,6 +66,12 @@ type CreateOptions struct {
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
+	// Sparse declares repo-relative path cones (project.checkout.sparse,
+	// #649): when non-empty, Create materializes a cone-mode sparse checkout
+	// containing only these cones plus root-level files, instead of the full
+	// tree. Empty (the default) is a full checkout — byte-identical to Create
+	// without this field.
+	Sparse []string
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -224,7 +230,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// worktree. That is what makes local-ci and the reviewer gate evaluate the
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
+	sparse := len(opts.Sparse) > 0
 	args := []string{"worktree", "add"}
+	if sparse {
+		// Skip materializing the full tree here; sparse-checkout is configured
+		// below, before the explicit checkout that actually populates the
+		// working directory, so only the declared cones are ever written to
+		// disk (#649).
+		args = append(args, "--no-checkout")
+	}
+	checkoutTarget := opts.BaseRef
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
@@ -234,6 +249,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		// branch in two live worktrees, which holds here because stages run
 		// sequentially and each stage's worktree is removed before the next.
 		args = append(args, path, opts.Branch)
+		checkoutTarget = opts.Branch
 	case opts.RequireExistingBranch:
 		// Never silently substitute a fresh branch off BaseRef for a branch
 		// the caller asserted already exists — see RequireExistingBranch.
@@ -241,6 +257,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	default:
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
+		checkoutTarget = opts.Branch
 	}
 
 	pid := os.Getpid()
@@ -301,6 +318,27 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}
 	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	}
+	if sparse {
+		// Cone mode only, per the design (path-list "legacy" sparse-checkout
+		// patterns are out of scope, #649): a plain, fast set of directory
+		// prefixes rather than full gitignore-style pattern matching.
+		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
+		if err := runGit(ctx, path, setArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
+		}
+		// The actual materialization: --no-checkout above left the working
+		// directory empty, so this checkout is what populates it — and, with
+		// sparse-checkout already configured, populates only the declared
+		// cones plus root-level files instead of the full tree.
+		checkoutArgs := []string{"checkout", checkoutTarget}
+		if partialMirror {
+			if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
+				return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+			}
+		} else if err := runGit(ctx, path, checkoutArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+		}
 	}
 	if opts.SyncBase && existingBranch {
 		mergeArgs := []string{"merge", "--ff", "--no-edit", opts.BaseRef}
@@ -568,6 +606,28 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
 	}
 	return out, nil
+}
+
+// HasCommitsAheadOf reports whether HEAD contains commits not reachable from
+// baseRef.
+func (wt *Worktree) HasCommitsAheadOf(ctx context.Context, baseRef string) (bool, error) {
+	if baseRef == "" {
+		return false, fmt.Errorf("worktree: HasCommitsAheadOf requires a baseRef")
+	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
+	commit, err := gitOutput(ctx, wt.Path, "rev-list", "--max-count=1", baseRef+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect commits ahead of %s for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return commit != "", nil
+}
+
+// HasNewCommits reports whether this stage attempt committed work after the
+// HEAD at which its worktree was created.
+func (wt *Worktree) HasNewCommits(ctx context.Context) (bool, error) {
+	return wt.HasCommitsAheadOf(ctx, wt.startRef)
 }
 
 // forceClear tears down whatever is left at path from a previous, never-torn-

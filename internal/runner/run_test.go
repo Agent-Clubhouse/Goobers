@@ -1443,6 +1443,110 @@ func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
 	}
 }
 
+// TestRunnerDeclaresCheckoutConesOnTheStageWire is #649's counterpart to
+// TestRunnerKeepsCheckoutOffTheStageWire: RepoRef.Checkout itself stays off
+// the wire, but the sparse cones it declared are surfaced through the
+// separate, additive CheckoutCones envelope field so a stage can tell its
+// checkout is partial. A workflow with no checkout override gets no field at
+// all — the key-absent, regression-identical case.
+func TestRunnerDeclaresCheckoutConesOnTheStageWire(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, &envelopeCapturingAutomated{})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"services/web"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskEnv, ok := det.received["run-cones:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	want := map[string][]string{"": {"services/web"}}
+	if !reflect.DeepEqual(taskEnv.CheckoutCones, want) {
+		t.Fatalf("task envelope CheckoutCones = %+v, want %+v", taskEnv.CheckoutCones, want)
+	}
+}
+
+// TestRunnerOmitsCheckoutConesForFullCheckout is the key-absent counterpart:
+// a workflow that never declares project.checkout gets no CheckoutCones
+// field at all, not an empty-but-present map.
+func TestRunnerOmitsCheckoutConesForFullCheckout(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-absent-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones-absent:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, nil)
+
+	if _, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones-absent",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	taskEnv, ok := det.received["run-cones-absent:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	if taskEnv.CheckoutCones != nil {
+		t.Fatalf("task envelope CheckoutCones = %+v, want nil (no checkout override declared)", taskEnv.CheckoutCones)
+	}
+}
+
 // TestRunnerSetsBaseBranchFromRepoRef is #2087's core: every invocation
 // envelope (task and automated gate) carries BaseBranch from the run's own
 // RepoRef.Branch — the branch the worktree was actually forked from — not a
