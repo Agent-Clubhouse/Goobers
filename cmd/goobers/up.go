@@ -424,6 +424,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
+	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
 			Issuer:     auth.OIDC.Issuer,

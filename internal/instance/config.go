@@ -2273,6 +2273,12 @@ func validateLoopbackListenAddress(address string) error {
 	return nil
 }
 
+// IsLoopbackListenAddress reports whether address is a valid loopback
+// host:port listener.
+func IsLoopbackListenAddress(address string) bool {
+	return validateLoopbackListenAddress(address) == nil
+}
+
 // WriteConfig marshals cfg as YAML and writes it to path.
 func WriteConfig(path string, cfg *Config) error {
 	yamlBytes, err := marshalConfig(cfg)
