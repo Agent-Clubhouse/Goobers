@@ -78,6 +78,7 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 			if test.check != nil {
 				test.check(t, root)
 			}
+			createDeclaredSkillPackages(t, filepath.Dir(root), "implement", "review", "run-tests")
 
 			var envelope onboardingActionResult
 			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {

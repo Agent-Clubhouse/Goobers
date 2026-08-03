@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 // repo paths reused as fixtures.
@@ -329,6 +330,19 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
+	writeFile(t, filepath.Join(dir, "gaggles", "web", "goobers", "coder"), "goober.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata: {name: coder}
+spec:
+  gaggle: web
+  role: coder
+  instructions: instructions.md
+  skills: [present]
+`)
+	writeFile(t, filepath.Join(dir, "gaggles", "web", "goobers", "coder"), "instructions.md", "# Coder\n")
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(dir), "skills", "present"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate a prior render living under the config root: a duplicate Gaggle
 	// that, if ingested, would cause a duplicate-name validation error.
@@ -348,6 +362,11 @@ spec: {instance: {name: acme, environment: dev}, gaggles: [web]}
 	by := objectsByKind(set.Objects)
 	if len(by["Gaggle"]) != 1 {
 		t.Errorf("expected exactly 1 Gaggle (output dir ignored), got %d", len(by["Gaggle"]))
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("present skill package emitted warning: %+v", warning)
+		}
 	}
 }
 
