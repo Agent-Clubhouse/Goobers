@@ -11,8 +11,10 @@ Factory Floor is the main operational view of a Goobers instance. It presents
 configured workflows as production lines, declared stages as machines, active
 runs as carriers, and goobers at the stages they own while work is present.
 
-The view is factual. Geometry is deterministic and motion follows a reported
-stage change. A red alarm means every run at that stage is confirmed held and
+The view is factual. Geometry is deterministic. A confirmed stage change
+produces a one-shot transfer, while confirmed active work powers a restrained
+operating cycle on that workflow's machines, belts, work orders, and posted
+goobers. Idle workflows stay still. A red alarm means every run at that stage is confirmed held and
 at least one is hard blocked. An amber alarm means every run is confirmed
 paused at a human gate. The page does not add simulated work, decorative
 traffic, or inferred owners.
@@ -84,6 +86,12 @@ production-zone callouts, belts, crates, workers, capacity, and alarms are live
 React elements layered over it. The complete scene scales as one unit to the
 available viewport and never requires internal scrolling. This keeps the
 factory readable as a whole even when the instance has many workflows.
+
+Plant does not redraw topology edges over the illustration. Arbitrary
+point-to-point connectors cross the scene and duplicate the conveyors already
+painted into the factory, so active work is shown locally at machines, work
+orders, and posted goobers. Lines remains the exact always-visible topology
+view, with orthogonal circuit-style traces on an isolating floor-colour bed.
 
 Every real stage remains a keyboard-accessible machine pin. Its placard opens
 on hover, focus, selection, or alarm. World view keeps the scene quiet, Flow

@@ -255,6 +255,13 @@ export interface FactoryCarrier {
   transition?: FactoryCarrierTransition;
 }
 
+export function carrierIsWorking(carrier: FactoryCarrier): boolean {
+  return (
+    carrier.confirmed &&
+    (carrier.state === "running" || carrier.state === "starting")
+  );
+}
+
 export interface FactoryWorkerPlacement {
   id: string;
   workerId: string;

@@ -238,23 +238,48 @@ describe("plant layout entities", () => {
 });
 
 describe("plant layout honesty", () => {
-  it("renders every outcome in the upper annotation layer with a backing plate", async () => {
+  it("does not redraw crossing topology wires over the factory illustration", async () => {
     window.location.hash = "#/factory?gaggle=core&layout=plant";
     render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
 
     const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
-    const annotations = plant.querySelector(".factory-plant-annotations")!;
-    const labels = [...annotations.querySelectorAll(".plant-belt-label")].map(
-      (label) => label.textContent,
-    );
-    expect(labels.sort()).toEqual(["approve", "fail", "needs-changes"]);
-    expect(annotations.querySelectorAll(".plant-annotation-plate")).toHaveLength(
-      annotations.querySelectorAll(".plant-annotation").length,
-    );
-    expect(within(plant).getByText("Inbound")).toBeInTheDocument();
-    expect(annotations.compareDocumentPosition(
-      plant.querySelector(".factory-plant-machine")!,
-    ) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(plant.querySelector(".factory-plant-live-belts")).not.toBeInTheDocument();
+    expect(plant.querySelector(".factory-plant-annotations")).not.toBeInTheDocument();
+    expect(plant.querySelector(".plant-belt-line")).not.toBeInTheDocument();
+  });
+
+  it("marks real active work for localized operating animation", async () => {
+    window.location.hash = "#/factory?layout=plant";
+    render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
+
+    const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
+    expect(plant).toHaveAttribute("data-working", "true");
+    expect(within(plant).getByText("FACTORY WORKING")).toBeInTheDocument();
+    expect(
+      plant.querySelector('.factory-plant-machine[data-status="running"]'),
+    ).toBeInTheDocument();
+    expect(
+      plant.querySelector('.factory-plant-staff[data-working="true"]'),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps blocked work still and labels it as attention, not working", async () => {
+    window.location.hash = "#/factory?gaggle=core&layout=plant";
+    const fixtures = factoryFloorFixtures();
+    fixtures.runs = {
+      runs: fixtures.runs.runs.filter((run) => run.id === "01JZ500BLOCKED"),
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
+    expect(plant).toHaveAttribute("data-working", "false");
+    expect(within(plant).getByText("ATTENTION REQUIRED")).toBeInTheDocument();
+    expect(
+      plant.querySelector('.factory-plant-staff[data-active="true"]'),
+    ).toBeInTheDocument();
+    expect(
+      plant.querySelector('.factory-plant-staff[data-working="true"]'),
+    ).not.toBeInTheDocument();
   });
 
   it("uses truthful workflow identity for floor paint", async () => {
@@ -480,11 +505,6 @@ describe("plant layout liveness", () => {
         name: /^Run 01JZ700RETRY.*at stage review/,
       }),
     ).toHaveAttribute("data-moved", "false");
-    expect(
-      [...remounted.querySelectorAll(".plant-belt-line")].some(
-        (belt) => belt.getAttribute("data-active") === "true",
-      ),
-    ).toBe(false);
   });
 });
 
@@ -532,8 +552,12 @@ describe("plant layout presentation contracts", () => {
     const reduced = factoryBlocks[1];
     expect(reduced).toContain(".factory-plant-beacon");
     expect(reduced).toContain(".factory-plant-crate");
-    expect(reduced).toContain(".plant-belt-line[data-active=\"true\"]");
+    expect(reduced).toContain(".factory-plant-machine[data-status=\"running\"]");
+    expect(reduced).toContain(".factory-plant-staff[data-working=\"true\"]");
     expect(reduced).toContain("animation: none !important");
+    expect(portalStyles).toContain("@keyframes factory-belt-operating");
+    expect(portalStyles).toContain("@keyframes factory-machine-cycle");
+    expect(portalStyles).toContain("@keyframes factory-plant-machine-core");
 
     // Only compact alarm hardware blinks. The floor wash stays static.
     const plantSection = factoryBlocks[0].slice(
@@ -603,7 +627,6 @@ describe("plant layout presentation contracts", () => {
     expect(screen.getByText("Plant", { selector: "strong" })).toBeVisible();
     expect(screen.getByText("Beacon alarm")).toBeVisible();
     expect(screen.getByText("Placard status")).toBeVisible();
-    expect(screen.getByText("Outcome dock")).toBeVisible();
     expect(screen.getByText("Ready commons")).toBeVisible();
     expect(screen.getByText("Dashed means order unknown")).toBeVisible();
     expect(screen.queryByText("Machines")).not.toBeInTheDocument();

@@ -5937,10 +5937,10 @@ a.telemetry-error-row:hover {
 
 .factory-conveyor-bed {
   fill: none;
-  stroke: color-mix(in srgb, var(--line-strong) 85%, transparent);
+  stroke: var(--surface);
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 9;
+  stroke-width: 11;
 }
 
 .factory-conveyor-line {
@@ -5950,6 +5950,7 @@ a.telemetry-error-row:hover {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+  shape-rendering: geometricPrecision;
 }
 
 .factory-conveyor-line[data-kind="repass"] {
@@ -5971,9 +5972,20 @@ a.telemetry-error-row:hover {
   stroke-width: 2.6;
 }
 
+.factory-conveyor-line[data-working="true"]:not([data-active="true"]) {
+  animation: factory-belt-operating 1.7s linear infinite;
+  stroke: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
 @keyframes factory-belt {
   to {
     stroke-dashoffset: -26;
+  }
+}
+
+@keyframes factory-belt-operating {
+  to {
+    stroke-dashoffset: -13;
   }
 }
 
@@ -6241,7 +6253,34 @@ a.telemetry-error-row:hover {
 }
 
 .factory-station[data-status="running"] .factory-status-light {
+  animation: factory-running-light 1.3s ease-in-out infinite;
   background: var(--success);
+}
+
+.factory-station[data-status="running"] .factory-station-vent {
+  animation: factory-machine-cycle 780ms ease-in-out infinite alternate;
+}
+
+.factory-station[data-status="running"] .factory-station-vent:nth-child(2) {
+  animation-delay: -260ms;
+}
+
+.factory-station[data-status="running"] .factory-station-vent:nth-child(3) {
+  animation-delay: -520ms;
+}
+
+@keyframes factory-running-light {
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent),
+      0 0 9px 3px color-mix(in srgb, var(--success) 58%, transparent);
+  }
+}
+
+@keyframes factory-machine-cycle {
+  to {
+    transform: translateY(3px);
+  }
 }
 
 .factory-station[data-status="impeded"] .factory-status-light {
@@ -6538,6 +6577,32 @@ a.telemetry-error-row:hover {
   border-color: color-mix(in srgb, var(--muted) 45%, transparent);
 }
 
+.factory-worker[data-working="true"] .factory-worker-head {
+  animation: factory-worker-operating 900ms ease-in-out infinite alternate;
+}
+
+.factory-worker[data-working="true"] .factory-worker-body {
+  animation: factory-worker-operating 900ms ease-in-out -450ms infinite alternate;
+}
+
+@keyframes factory-worker-operating {
+  to {
+    translate: 0 -2px;
+  }
+}
+
+.factory-carrier[data-state="running"] .factory-carrier-lid,
+.factory-carrier[data-state="starting"] .factory-carrier-lid {
+  animation: factory-work-order 1.25s ease-in-out infinite;
+}
+
+@keyframes factory-work-order {
+  50% {
+    filter: brightness(1.35);
+    transform: translateY(-1px);
+  }
+}
+
 .factory-worker[aria-pressed="true"] {
   box-shadow: 0 0 0 2px var(--accent);
 }
@@ -6619,6 +6684,16 @@ a.telemetry-error-row:hover {
 .factory-floor[data-lens="risk"] .factory-carrier[data-state="blocked"],
 .factory-floor[data-lens="risk"] .factory-carrier[data-state="paused"] {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.factory-floor[data-lens="risk"] .factory-conveyor-line[data-working="true"],
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"] .factory-status-light,
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"] .factory-station-vent,
+.factory-floor[data-lens="risk"] .factory-worker[data-working="true"] .factory-worker-head,
+.factory-floor[data-lens="risk"] .factory-worker[data-working="true"] .factory-worker-body,
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="running"] .factory-carrier-lid,
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="starting"] .factory-carrier-lid {
+  animation: none;
 }
 
 /* --- Legend ----------------------------------------------------------- */
@@ -7925,6 +8000,14 @@ a.telemetry-error-row:hover {
   opacity: 1;
 }
 
+.factory-plant[data-lens="risk"] .factory-plant-machine[data-status="running"] .factory-plant-machine-core,
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="running"] .plant-crate-halo,
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="starting"] .plant-crate-halo,
+.factory-plant[data-lens="risk"] .factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+.factory-plant[data-lens="risk"] .factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation: none;
+}
+
 /* --- Boss's-window plant ---------------------------------------------- */
 
 .factory-plant-classic {
@@ -7978,7 +8061,7 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-classic .plant-belt-line {
-  opacity: 0.12;
+  opacity: 0;
   stroke-width: 3.5;
 }
 
@@ -7986,16 +8069,12 @@ a.telemetry-error-row:hover {
   opacity: 0;
 }
 
-.factory-plant-classic[data-lens="flow"] .factory-plant-annotations {
-  opacity: 1;
-}
-
 .factory-plant-classic[data-lens="flow"] .plant-belt-bed {
-  opacity: 0.7;
+  opacity: 0;
 }
 
 .factory-plant-classic[data-lens="flow"] .plant-belt-line {
-  opacity: 1;
+  opacity: 0;
 }
 
 .factory-plant-classic .plant-belt-line[data-active="true"] {
@@ -8064,6 +8143,20 @@ a.telemetry-error-row:hover {
 
 .factory-plant-classic .factory-plant-machine[data-kind="gate"] {
   --machine-tint: var(--active);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="running"] .factory-plant-machine-core {
+  animation: factory-plant-machine-core 1.1s linear infinite;
+}
+
+@keyframes factory-plant-machine-core {
+  50% {
+    filter: drop-shadow(0 0 0.38cqw color-mix(in srgb, var(--success) 72%, transparent));
+  }
+
+  to {
+    rotate: 1turn;
+  }
 }
 
 .factory-plant-classic .factory-plant-machine[data-status="blocked"] {
@@ -8364,6 +8457,33 @@ a.telemetry-error-row:hover {
   width: 150%;
 }
 
+.factory-plant-crate[data-state="running"] .plant-crate-halo,
+.factory-plant-crate[data-state="starting"] .plant-crate-halo {
+  animation: factory-plant-work-order 1.4s ease-in-out infinite;
+}
+
+@keyframes factory-plant-work-order {
+  50% {
+    opacity: 0.7;
+    scale: 1.08;
+  }
+}
+
+.factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+.factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation: factory-plant-staff-operating 850ms ease-in-out infinite alternate;
+}
+
+.factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation-delay: -425ms;
+}
+
+@keyframes factory-plant-staff-operating {
+  to {
+    translate: 0 -0.18cqw;
+  }
+}
+
 .factory-plant-classic .factory-plant-crate[data-state="blocked"] {
   filter: drop-shadow(0 0 0.45cqw color-mix(in srgb, var(--danger) 75%, transparent));
 }
@@ -8537,7 +8657,19 @@ a.telemetry-error-row:hover {
   }
 
   .factory-conveyor-line[data-active="true"],
-  .plant-belt-line[data-active="true"] {
+  .factory-conveyor-line[data-working="true"],
+  .plant-belt-line[data-active="true"],
+  .factory-station[data-status="running"] .factory-status-light,
+  .factory-station[data-status="running"] .factory-station-vent,
+  .factory-worker[data-working="true"] .factory-worker-head,
+  .factory-worker[data-working="true"] .factory-worker-body,
+  .factory-carrier[data-state="running"] .factory-carrier-lid,
+  .factory-carrier[data-state="starting"] .factory-carrier-lid,
+  .factory-plant-machine[data-status="running"] .factory-plant-machine-core,
+  .factory-plant-crate[data-state="running"] .plant-crate-halo,
+  .factory-plant-crate[data-state="starting"] .plant-crate-halo,
+  .factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+  .factory-plant-staff[data-working="true"] .factory-plant-staff-body {
     animation: none !important;
   }
 }

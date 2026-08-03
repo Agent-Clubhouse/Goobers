@@ -97,6 +97,13 @@ describe("factory floor route", () => {
     expect(within(rail).getByText("Active runs").closest("div")).toHaveTextContent("4");
     expect(within(rail).getByText("Blocked stages").closest("div")).toHaveTextContent("1");
     expect(within(rail).getByText("Human holds").closest("div")).toHaveTextContent("1");
+    expect(floor).toHaveAttribute("data-working", "true");
+    expect(
+      floor.querySelector('.factory-conveyor-line[data-working="true"]'),
+    ).toBeInTheDocument();
+    expect(
+      floor.querySelector('.factory-station[data-status="running"]'),
+    ).toBeInTheDocument();
   });
 
   it("removes a closed inspector from navigation and returns focus to its toggle", async () => {

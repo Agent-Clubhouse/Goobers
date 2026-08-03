@@ -8,9 +8,9 @@ import type {
   FactoryWorker,
   FactoryWorkerPlacement,
 } from "../factoryModel";
+import { carrierIsWorking } from "../factoryModel";
 import {
   carrierLabel,
-  dockLabel,
   laneLabel,
   machineStatusText,
   shortKind,
@@ -50,6 +50,7 @@ export function FactoryPlant({
   selection: FactorySelection;
 }) {
   const scene = useMemo(() => buildClassicPlant(model), [model]);
+  const working = model.carriers.some(carrierIsWorking);
   const zones = useMemo(() => buildZoneSummaries(model), [model]);
   const stationsById = new Map(model.stations.map((station) => [station.id, station]));
   const workersById = new Map(model.workers.map((worker) => [worker.id, worker]));
@@ -69,6 +70,7 @@ export function FactoryPlant({
       data-lens={lens}
       data-motion={reducedMotion ? "reduced" : "full"}
       data-responsive-layout="fit"
+      data-working={working ? "true" : "false"}
       role="group"
       style={{ height: `${CLASSIC_PLANT_HEIGHT}px`, width: `${CLASSIC_PLANT_WIDTH}px` }}
     >
@@ -80,28 +82,6 @@ export function FactoryPlant({
           draggable="false"
           src="/factory-plant-base.png"
         />
-
-        <svg
-          aria-hidden="true"
-          className="factory-plant-live-belts"
-          focusable="false"
-          viewBox={`0 0 ${CLASSIC_PLANT_WIDTH} ${CLASSIC_PLANT_HEIGHT}`}
-        >
-          {scene.belts.map((belt) => (
-            <g key={belt.id}>
-              <path
-                className="plant-belt-bed"
-                d={beltPath(belt.from, belt.to, belt.kind === "repass")}
-              />
-              <path
-                className="plant-belt-line"
-                d={beltPath(belt.from, belt.to, belt.kind === "repass")}
-                data-active={animateTransitions && belt.active ? "true" : "false"}
-                data-kind={belt.kind}
-              />
-            </g>
-          ))}
-        </svg>
 
         <ZoneCards zones={zones} />
 
@@ -147,6 +127,11 @@ export function FactoryPlant({
               placement={placement}
               point={point}
               selected={isSelected(selection, { kind: "worker", id: worker.id })}
+              working={
+                placement.stationId
+                  ? stationsById.get(placement.stationId)?.status === "running"
+                  : false
+              }
               worker={worker}
             />
           ) : null;
@@ -226,14 +211,22 @@ export function FactoryPlant({
           </button>
         )}
 
-        <AnnotationLayer model={model} scene={scene} />
-
         <div aria-hidden="true" className="factory-plant-hud factory-plant-hud-top">
           <span>
             {model.scope.gaggle ?? "All gaggles"} · {model.counts.activeRuns}
             {model.runsTruncated ? "+" : ""} work orders
           </span>
-          <b>LIVE FACTORY</b>
+          <b>
+            {working
+              ? "FACTORY WORKING"
+              : model.counts.blockedStages > 0
+                ? "ATTENTION REQUIRED"
+                : model.counts.heldStages > 0
+                  ? "HUMAN HOLD"
+                  : model.counts.unreadRuns > 0
+                    ? "SIGNALS INCOMPLETE"
+                    : "PLANT READY"}
+          </b>
         </div>
         <div aria-hidden="true" className="factory-plant-hud factory-plant-hud-bottom">
           <span><i data-tone="working" /> Working</span>
@@ -484,12 +477,14 @@ function Worker({
   placement,
   point,
   selected,
+  working,
   worker,
 }: {
   onSelect: (selection: FactorySelection) => void;
   placement: FactoryWorkerPlacement;
   point: ClassicPoint;
   selected: boolean;
+  working: boolean;
   worker: FactoryWorker;
 }) {
   return (
@@ -498,6 +493,7 @@ function Worker({
       aria-pressed={selected}
       className="factory-plant-staff"
       data-active={placement.active ? "true" : "false"}
+      data-working={working ? "true" : "false"}
       onClick={() => onSelect({ kind: "worker", id: worker.id })}
       style={pointStyle(point)}
       type="button"
@@ -511,80 +507,9 @@ function Worker({
   );
 }
 
-function AnnotationLayer({
-  model,
-  scene,
-}: {
-  model: FactoryFloorModel;
-  scene: ReturnType<typeof buildClassicPlant>;
-}) {
-  const annotations = [
-    ...scene.lanes.map(({ lane, inbound }) => ({
-      id: `${lane.id}-inbound`,
-      point: { x: inbound.x - 38, y: inbound.y + 72 },
-      text: "Inbound",
-      className: "plant-pad-label",
-    })),
-    ...scene.belts.flatMap((belt) =>
-      belt.outcome
-        ? [{
-            id: `${belt.id}-outcome`,
-            point: midpoint(belt.from, belt.to),
-            text: belt.outcome,
-            className: "plant-belt-label",
-          }]
-        : [],
-    ),
-    ...model.lanes.flatMap((lane) =>
-      lane.docks.map((dock, index) => ({
-        id: dock.id,
-        point: { x: 1185 + index * 78, y: 650 + index * 34 },
-        text: dockLabel(dock.terminal),
-        className: "plant-pad-label",
-      })),
-    ),
-  ];
-  return (
-    <svg
-      aria-hidden="true"
-      className="factory-plant-annotations"
-      focusable="false"
-      viewBox={`0 0 ${CLASSIC_PLANT_WIDTH} ${CLASSIC_PLANT_HEIGHT}`}
-    >
-      {annotations.map(({ className, id, point, text }) => (
-        <g className="plant-annotation" key={id}>
-          <rect
-            className="plant-annotation-plate"
-            height="24"
-            rx="5"
-            width={Math.max(70, text.length * 7 + 18)}
-            x={point.x - Math.max(70, text.length * 7 + 18) / 2}
-            y={point.y - 15}
-          />
-          <text className={className} textAnchor="middle" x={point.x} y={point.y + 3}>
-            {text}
-          </text>
-        </g>
-      ))}
-    </svg>
-  );
-}
-
 function pointStyle(point: ClassicPoint): CSSProperties {
   return {
     left: `${(point.x / CLASSIC_PLANT_WIDTH) * 100}%`,
     top: `${(point.y / CLASSIC_PLANT_HEIGHT) * 100}%`,
   };
-}
-
-function midpoint(a: ClassicPoint, b: ClassicPoint): ClassicPoint {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 16 };
-}
-
-function beltPath(from: ClassicPoint, to: ClassicPoint, repass: boolean): string {
-  if (!repass) {
-    return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
-  }
-  const bendY = Math.max(from.y, to.y) + 72;
-  return `M ${from.x} ${from.y} L ${from.x} ${bendY} L ${to.x} ${bendY} L ${to.x} ${to.y}`;
 }

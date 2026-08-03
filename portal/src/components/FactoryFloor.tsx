@@ -9,6 +9,7 @@ import type {
   FactoryWorker,
   FactoryWorkerPlacement,
 } from "../factoryModel";
+import { carrierIsWorking } from "../factoryModel";
 import {
   carrierLabel,
   dockLabel,
@@ -53,6 +54,10 @@ export function FactoryFloor({
   const tileId = `factory-tile-${domId}`;
   const hazardId = `factory-hazard-${domId}`;
   const arrowId = `factory-arrow-${domId}`;
+  const workingLaneIds = new Set(
+    model.carriers.filter(carrierIsWorking).map((carrier) => carrier.laneId),
+  );
+  const stationsById = new Map(model.stations.map((station) => [station.id, station]));
   const workersByStation = new Map<string, FactoryWorker[]>();
   for (const worker of model.workers) {
     for (const placement of worker.placements) {
@@ -71,6 +76,7 @@ export function FactoryFloor({
       className="factory-floor"
       data-lens={lens}
       data-motion={reducedMotion ? "reduced" : "full"}
+      data-working={workingLaneIds.size > 0 ? "true" : "false"}
       role="group"
       style={{ height: `${model.height}px`, width: `${model.width}px` }}
     >
@@ -139,6 +145,7 @@ export function FactoryFloor({
               hazardId={hazardId}
               key={lane.id}
               lane={lane}
+              working={workingLaneIds.has(lane.id)}
             />
           ))}
           {model.commons.workerIds.length > 0 && (
@@ -199,6 +206,11 @@ export function FactoryFloor({
               onSelect={onSelect}
               placement={placement}
               selected={isSelected(selection, { kind: "worker", id: worker.id })}
+              working={
+                placement.stationId
+                  ? stationsById.get(placement.stationId)?.status === "running"
+                  : false
+              }
               worker={worker}
             />
           )),
@@ -227,11 +239,13 @@ function LaneScenery({
   arrowId,
   hazardId,
   lane,
+  working,
 }: {
   animateTransitions: boolean;
   arrowId: string;
   hazardId: string;
   lane: FactoryLane;
+  working: boolean;
 }) {
   return (
     <g>
@@ -304,6 +318,7 @@ function LaneScenery({
             d={conveyor.path}
             data-active={animateTransitions && conveyor.active ? "true" : "false"}
             data-kind={conveyor.kind}
+            data-working={working ? "true" : "false"}
             markerEnd={`url(#${arrowId})`}
           />
           {(conveyor.branch || conveyor.outcome) && (
@@ -575,11 +590,13 @@ function Worker({
   onSelect,
   placement,
   selected,
+  working,
   worker,
 }: {
   onSelect: (selection: FactorySelection) => void;
   placement: FactoryWorkerPlacement;
   selected: boolean;
+  working: boolean;
   worker: FactoryWorker;
 }) {
   return (
@@ -588,6 +605,7 @@ function Worker({
       aria-pressed={selected}
       className="factory-worker"
       data-active={placement.active ? "true" : "false"}
+      data-working={working ? "true" : "false"}
       onClick={() => onSelect({ kind: "worker", id: worker.id })}
       style={{ left: `${placement.x}px`, top: `${placement.y}px` }}
       type="button"

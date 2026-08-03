@@ -506,7 +506,6 @@ function FloorLegend({
           <strong>Plant</strong>
           <span className="factory-legend-item" data-legend="beacon">Beacon alarm</span>
           <span className="factory-legend-item" data-legend="placard">Placard status</span>
-          <span className="factory-legend-item" data-legend="dock">Outcome dock</span>
           <span className="factory-legend-item" data-legend="commons">Ready commons</span>
           <span className="factory-legend-item" data-legend="observed">Dashed means order unknown</span>
         </div>
