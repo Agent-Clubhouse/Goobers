@@ -200,7 +200,7 @@ spec:
         # merges into Outputs).
         resultFile: "pr-result.json"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:

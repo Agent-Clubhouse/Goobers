@@ -456,7 +456,7 @@ func TestOpenPRDiscardsPreparedTutorHoldoutWhenProviderFails(t *testing.T) {
 	)
 	writeTutorFindingFixture(t, root, gaggle, runID)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 	t.Setenv("GOOBERS_GAGGLE", gaggle)
 	t.Setenv(executor.InputEnvVar("recordLiveVerification"), "true")

@@ -30,7 +30,7 @@ spec:
       goal: Implement the backlog item and open a PR.
       capabilities:
         - repo:push
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - modify-repository
         - open-or-update-pr
@@ -53,7 +53,7 @@ spec:
       goal: Remediate failed CI checks from the attached provider evidence.
       capabilities:
         - repo:push
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - modify-repository
         - open-or-update-pr

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -22,7 +24,7 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "run-1")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
@@ -79,7 +81,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const runID = "run-rich"
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), runID)
 
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
@@ -231,7 +233,7 @@ func TestOpenPRFailsClosedOnMalformedExistingJournal(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const runID = "run-malformed"
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), runID)
 	if err := os.MkdirAll(filepath.Join(layoutFor(root).RunsDir(), runID), 0o755); err != nil {
 		t.Fatalf("create malformed run directory: %v", err)
 	}
@@ -255,7 +257,7 @@ func TestOpenPRMissingRunIDFailsClosed(t *testing.T) {
 	prev := newGitHubProvider
 	newGitHubProvider = server.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = prev })
-	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "test-token")
 	// #321: a live local-ci `go test ./...` inherits the run's real
 	// GOOBERS_RUN_ID/GOOBERS_WORKFLOW from buildStageEnv, defeating this
 	// fail-closed test. Simulate the parent-process leak, then clear it —

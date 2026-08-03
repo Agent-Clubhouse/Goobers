@@ -229,12 +229,13 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// implement task's goal to describe this gaggle's actual `npm run ci`
 	// stack; no structural/behavioral change, but the goal text is hashed.
 	// #2213: ci-poll uses provider-neutral PR routing.
+	// #2341: open-pr uses provider-neutral PR routing.
 	// #2028: park-escalated now declares status=needs-remediation instead of
 	// needs-human — every route into it (repass exhaustion, infra failure, an
 	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
 	// policy decision. park-needs-human (the reviewer's explicit "fail"
 	// verdict) is unchanged.
-	const wantDigest = "sha256:713386161f67ca0b833180ccb7f9079a9adcd27692a6876e30b7e17dd1593e97"
+	const wantDigest = "sha256:5bcb7005bb428e9602a6f78c908152e55224076bf6a8bd6bc6b9e338b8c45b88"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
