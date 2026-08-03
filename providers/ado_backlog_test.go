@@ -95,6 +95,9 @@ func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != strconv.Itoa(adoWIQLPageSize) {
+			t.Fatalf("$top = %q, want %d", got, adoWIQLPageSize)
+		}
 		var body struct {
 			Query string `json:"query"`
 		}
@@ -140,5 +143,71 @@ func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
 	}
 	if comment.ID != "9" || comment.Body != "prepared" {
 		t.Fatalf("comment = %#v", comment)
+	}
+}
+
+func TestADOFindWorkItemsByMarkerPagesByID(t *testing.T) {
+	const marker = "<!-- goobers-action:v1 key=second-page -->"
+	var queries []string
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != "2" {
+			t.Fatalf("$top = %q, want 2", got)
+		}
+		var body struct {
+			Query string `json:"query"`
+		}
+		decodeJSON(t, r, &body)
+		queries = append(queries, body.Query)
+		switch {
+		case strings.Contains(body.Query, "[System.Id] > 2"):
+			writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 3}}})
+		case strings.Contains(body.Query, "[System.Id] >"):
+			t.Fatalf("unexpected cursor query %q", body.Query)
+		default:
+			writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
+		}
+	})
+	for id := 1; id <= 3; id++ {
+		description := "body"
+		if id == 3 {
+			description += "\n" + marker
+		}
+		mux.HandleFunc("/org/project/_apis/wit/workitems/"+strconv.Itoa(id), func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, map[string]interface{}{
+				"id": id, "rev": 1,
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue",
+					"System.State":        "New",
+					"System.Description":  description,
+				},
+			})
+		})
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	items, err := provider.findWorkItemsByMarker(
+		context.Background(),
+		RepositoryRef{Name: "repo", Project: "project"},
+		marker,
+		2,
+	)
+	if err != nil {
+		t.Fatalf("findWorkItemsByMarker: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "3" {
+		t.Fatalf("items = %#v, want exact marker match #3", items)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("queries = %#v, want two pages", queries)
+	}
+	if !strings.HasSuffix(queries[0], "ORDER BY [System.Id] ASC") {
+		t.Fatalf("first query = %q, want deterministic ID order", queries[0])
+	}
+	if !strings.HasSuffix(queries[1], "AND [System.Id] > 2 ORDER BY [System.Id] ASC") {
+		t.Fatalf("second query = %q, want ID cursor after first page", queries[1])
 	}
 }

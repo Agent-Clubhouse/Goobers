@@ -18,6 +18,7 @@ import (
 
 const (
 	adoCommentPageSize = 200
+	adoWIQLPageSize    = 20000
 	adoClaimRetries    = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
@@ -206,26 +207,53 @@ func (p *ADOProvider) FindWorkItemsByMarker(ctx context.Context, repo Repository
 	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
 		return nil, fmt.Errorf("single-line work item marker is required")
 	}
+	return p.findWorkItemsByMarker(ctx, repo, marker, adoWIQLPageSize)
+}
+
+func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string, pageSize int) ([]WorkItem, error) {
+	if pageSize <= 0 {
+		return nil, fmt.Errorf("ADO WIQL page size must be positive")
+	}
+	project := p.project(repo)
 	endpoint, err := p.workURL(project, "wiql")
 	if err != nil {
 		return nil, err
 	}
-	query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project ORDER BY [System.Id] ASC"
-	var result adoWIQLResponse
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(pageSize)}})
+	if err != nil {
 		return nil, err
 	}
 	var matches []WorkItem
-	for _, ref := range result.WorkItems {
-		item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
-		if err != nil {
+	afterID := 0
+	for {
+		query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+		if afterID > 0 {
+			query += fmt.Sprintf(" AND [System.Id] > %d", afterID)
+		}
+		query += " ORDER BY [System.Id] ASC"
+
+		var result adoWIQLResponse
+		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 			return nil, err
 		}
-		if containsExactLine(item.Body, marker) {
-			matches = append(matches, item)
+		for _, ref := range result.WorkItems {
+			item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
+			if err != nil {
+				return nil, err
+			}
+			if containsExactLine(item.Body, marker) {
+				matches = append(matches, item)
+			}
 		}
+		if len(result.WorkItems) < pageSize {
+			return matches, nil
+		}
+		nextID := result.WorkItems[len(result.WorkItems)-1].ID
+		if nextID <= afterID {
+			return nil, fmt.Errorf("ADO WIQL marker scan did not advance beyond work item %d", afterID)
+		}
+		afterID = nextID
 	}
-	return matches, nil
 }
 
 // CreateWorkItem creates an Azure Boards work item.
