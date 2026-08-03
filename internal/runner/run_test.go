@@ -4516,6 +4516,10 @@ type blockingCommenter struct {
 	ctxErr  error
 }
 
+func (*blockingCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return nil, nil
+}
+
 func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	close(c.called)
 	<-c.release
@@ -4524,12 +4528,26 @@ func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.Upda
 }
 
 type recordingCommenter struct {
-	requests []providers.UpdateWorkItemRequest
-	err      error
+	requests  []providers.UpdateWorkItemRequest
+	persisted []providers.UpdateWorkItemRequest
+	err       error
+}
+
+func (c *recordingCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	var comments []providers.Comment
+	for _, req := range c.persisted {
+		if req.ID == itemID {
+			comments = append(comments, providers.Comment{Body: req.Comment})
+		}
+	}
+	return comments, nil
 }
 
 func (c *recordingCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	c.requests = append(c.requests, req)
+	if c.err == nil {
+		c.persisted = append(c.persisted, req)
+	}
 	return providers.WorkItem{}, c.err
 }
 

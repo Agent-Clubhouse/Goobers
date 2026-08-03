@@ -2138,6 +2138,13 @@ type escFakeCommenter struct {
 	gotReq providers.UpdateWorkItemRequest
 }
 
+func (f *escFakeCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	if f.gotReq.Comment == "" {
+		return nil, nil
+	}
+	return []providers.Comment{{Body: f.gotReq.Comment}}, nil
+}
+
 func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.gotReq = req
 	return providers.WorkItem{}, nil
@@ -2387,6 +2394,16 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 // multi-item fallback path needs every call visible.
 type blockedHandlerFakeCommenter struct {
 	calls []providers.UpdateWorkItemRequest
+}
+
+func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	var comments []providers.Comment
+	for _, call := range f.calls {
+		if call.ID == itemID {
+			comments = append(comments, providers.Comment{Body: call.Comment})
+		}
+	}
+	return comments, nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
@@ -2980,7 +2997,7 @@ func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
 	}
 	notifier := buildEscalationNotifier(instance.Layout{}, cfg, resolver, reg)
 	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
-	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.Stage, outcome.Reason); err != nil {
+	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.RunID, 7, outcome.Stage, outcome.Reason); err != nil {
 		t.Fatalf("NotifyStageEscalated: %v", err)
 	}
 
@@ -3079,6 +3096,7 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 
 	err = h(context.Background(), runner.FailedOutcome{
 		RunID:   "run-timeout",
+		Seq:     17,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:   "implement",
 		Cause:   "runner: execute stage \"implement\": harness: copilot-cli: session timed out after 30m0s (attempt 2/2)",
@@ -3103,6 +3121,9 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 	}
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "run=run-timeout seq=17") {
+		t.Fatalf("comment = %q, want run+seq marker", got.Comment)
 	}
 	if !strings.Contains(got.Comment, "session timed out after 30m0s") {
 		t.Fatalf("comment = %q, want it to carry the terminal failure cause", got.Comment)
