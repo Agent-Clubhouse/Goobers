@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {

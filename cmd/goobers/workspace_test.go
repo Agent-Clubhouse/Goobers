@@ -5,9 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestResolvePinnedWorkspaceProject(t *testing.T) {
