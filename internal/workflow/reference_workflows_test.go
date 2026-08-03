@@ -60,7 +60,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 	}
 }
 
-func TestReferenceImplementationDelegatesProviderMutations(t *testing.T) {
+func TestReferenceImplementationHandlesProviderMutationsOnlyWithEvidence(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
@@ -75,9 +75,10 @@ func TestReferenceImplementationDelegatesProviderMutations(t *testing.T) {
 	for _, task := range workflow.Spec.Tasks {
 		if task.Name == "implement" {
 			foundImplement = true
-			if !strings.Contains(task.Goal, "Provider-side acceptance steps") ||
-				!strings.Contains(task.Goal, "do not fail or block") {
-				t.Fatalf("implement goal does not delegate provider mutations: %q", task.Goal)
+			if !strings.Contains(task.Goal, "only when attached context proves") ||
+				!strings.Contains(task.Goal, "PROVIDER_ACTION_REQUIRED") ||
+				!strings.Contains(task.Goal, "rather than attempting the mutation") {
+				t.Fatalf("implement goal does not require evidence or an explicit provider-action failure: %q", task.Goal)
 			}
 			break
 		}
@@ -90,11 +91,11 @@ func TestReferenceImplementationDelegatesProviderMutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read implementer instructions: %v", err)
 	}
-	instructions := string(raw)
-	if !strings.Contains(instructions, "owned by capability-scoped workflow stages") ||
-		!strings.Contains(instructions, "`MISSING_CAPABILITY` solely because") ||
-		!strings.Contains(instructions, "checking whether that mutation was already completed") {
-		t.Fatalf("implementer instructions do not delegate and deduplicate provider mutations")
+	instructions := strings.Join(strings.Fields(string(raw)), " ")
+	if !strings.Contains(instructions, "attached context explicitly proves") ||
+		!strings.Contains(instructions, "`error.code: PROVIDER_ACTION_REQUIRED`") ||
+		!strings.Contains(instructions, "never assume or silently claim") {
+		t.Fatalf("implementer instructions do not require proof or explicitly fail outstanding provider mutations")
 	}
 }
 

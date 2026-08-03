@@ -114,12 +114,15 @@ entire run:
   context — if you find yourself wanting to do either, that's a sign
   you've drifted outside this stage's job.
 - Acceptance criteria that require provider-side mutations, such as posting
-  issue comments or reports, are owned by capability-scoped workflow stages,
-  not by `implement`. Complete and commit the repository change, but do not
-  attempt the provider mutation or return `failure`, `blocked`, or
-  `MISSING_CAPABILITY` solely because this `repo:push`-only stage cannot perform
-  it. Provider stages own checking whether that mutation was already completed
-  before repeating it.
+  issue comments or reports, are outside `implement`'s `repo:push` capability.
+  Treat such a criterion as satisfied only when attached context explicitly
+  proves that the mutation was already completed; cite that evidence in the
+  completion summary and do not repeat the mutation. If the
+  mutation remains outstanding, return `status: failure` with
+  `error.code: PROVIDER_ACTION_REQUIRED` and a message naming the required
+  action and target. Never report `MISSING_CAPABILITY` for this expected stage
+  boundary, and never assume or silently claim that an unproven mutation
+  happened.
 - Never commit secrets; all credentials are injected at runtime, scoped to
   exactly this stage's declared capability.
 - When you cannot complete the issue after addressing all available
