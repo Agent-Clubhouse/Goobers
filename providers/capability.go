@@ -32,6 +32,15 @@ const (
 	CapPRCompare Capability = "pr.compare"
 )
 
+// pr.query: provider-neutral pull-request identity fields available to list
+// filters and poll/list results. They remain separate because not every forge
+// has every identity concept.
+const (
+	CapPRQueryAuthor            Capability = "pr.query.author"
+	CapPRQueryAssignee          Capability = "pr.query.assignee"
+	CapPRQueryRequestedReviewer Capability = "pr.query.requestedReviewer"
+)
+
 // pr.review: native review protocol surfaces.
 const (
 	CapPRReviewRequest Capability = "pr.review.request"
