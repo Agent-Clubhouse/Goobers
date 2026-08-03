@@ -91,6 +91,26 @@ func TestCloseWaitsForInFlightOperation(t *testing.T) {
 	}
 }
 
+func TestResolveReadHandleFallsBackToWriter(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	readerPool := openReaderPool("")
+	if readerPool != nil {
+		t.Fatal("empty path unexpectedly opened a reader pool")
+	}
+	reader := resolveReadHandle(store.writeDB(), readerPool)
+	if reader != store.writeDB() {
+		t.Fatal("nil reader pool did not resolve to the writer")
+	}
+	if err := reader.Ping(); err != nil {
+		t.Fatalf("fallback reader: %v", err)
+	}
+}
+
 // TestCloseIsIdempotent pins that a double Close is safe.
 //
 // The daemon has several shutdown paths that can each reach it, and a panic

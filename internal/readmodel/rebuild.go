@@ -450,6 +450,6 @@ func (s *Store) reopenLocked() error {
 	if err := s.migrateWithBusyRetry(context.Background()); err != nil {
 		return err
 	}
-	s.reader = openReaderPool(s.path)
+	s.reader = resolveReadHandle(writer, openReaderPool(s.path))
 	return nil
 }

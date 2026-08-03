@@ -140,7 +140,7 @@ func Open(path string) (*Store, error) {
 	}
 	// The reader pool opens only after migrations: a read-only handle cannot
 	// create the database, switch it to WAL, or run a migration.
-	store.reader = openReaderPool(path)
+	store.reader = resolveReadHandle(writer, openReaderPool(path))
 	return store, nil
 }
 
@@ -215,7 +215,7 @@ func (s *Store) writeHandle() (*sql.DB, func(), error) {
 // closeHandles closes both handles while the caller holds handles exclusively.
 func (s *Store) closeHandles() error {
 	var readerErr error
-	if s.reader != nil {
+	if s.reader != nil && s.reader != s.writer {
 		readerErr = s.reader.Close()
 	}
 	if s.writer == nil {
@@ -430,6 +430,13 @@ func openReaderPool(path string) *sql.DB {
 		return nil
 	}
 	return readDB
+}
+
+func resolveReadHandle(writer, reader *sql.DB) *sql.DB {
+	if reader != nil {
+		return reader
+	}
+	return writer
 }
 
 // readerPoolSize bounds the read pool (§5.2: NumCPU), with a floor so a
