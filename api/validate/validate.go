@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
@@ -541,6 +542,9 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return err
 		}
 		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
 			return filepath.SkipDir
 		}
 		if gooberassets.IsSourceDir(path) {

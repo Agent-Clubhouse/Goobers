@@ -108,6 +108,13 @@ func TestValidateWarnsWhenGaggleSkillShadowsSharedPackage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(
+		filepath.Join(root, "config", "gaggles", "example", "skills", "implement", "support.yaml"),
+		[]byte("cases:\n  - retry\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {

@@ -145,6 +145,33 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDirIgnoresSkillPackageYAML(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportFile := filepath.Join(root, "gaggles", "acme-web", "skills", "implement", "references", "cases.yaml")
+	if err := os.MkdirAll(filepath.Dir(supportFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(supportFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) != 12 {
+		t.Fatalf("skill support file leaked into config set: got %d goobers", len(set.Goobers))
+	}
+}
+
 func TestLoadConfigDirIgnoresHiddenRepositoryMetadata(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
