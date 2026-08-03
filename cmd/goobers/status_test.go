@@ -1163,7 +1163,7 @@ func TestStatusDaemonReportsStaleIdentity(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
 	}
-	want := "daemon not running (last daemon: pid 4242, started 2026-07-16T09:00:00Z); " +
+	want := "recorded daemon is not running: pid 4242, started 2026-07-16T09:00:00Z; " +
 		"version v0.3.0-test, live runs 0\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
@@ -1225,7 +1225,7 @@ func TestStatusDaemonDoesNotMistakeStaleIdentityForManualHolder(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, fmt.Sprintf("daemon not running (last daemon: pid %d, started ", os.Getpid())) {
+	if !strings.HasPrefix(stdout, fmt.Sprintf("recorded daemon is not running: pid %d, started ", os.Getpid())) {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }
