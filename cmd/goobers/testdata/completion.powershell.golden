@@ -65,6 +65,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'docs-churn'
         'ios-simulator-test'
         'pr-select'
+        'check-issue-staleness'
         'gather-sibling-context'
         'gather-implement-context'
         'apply-verdict'

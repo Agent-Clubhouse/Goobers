@@ -104,6 +104,13 @@ var commands = map[string]Command{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so implementation context collection fails at runtime"),
 		},
 	},
+	"check-issue-staleness": {
+		ResultFile: "issue-staleness-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so polling and labeling the pull request fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the pinned originating issue lookup fails at runtime"),
+		},
+	},
 	"gather-issue-context": {
 		ResultFile: "remediation-brief.json",
 		Capabilities: []CapabilityUse{
