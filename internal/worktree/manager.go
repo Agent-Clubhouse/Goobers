@@ -305,6 +305,12 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 	return m, nil
 }
 
+// PinnedRoot returns the node-wide root pinned workspaces are materialized
+// under (WithPinnedRoot, defaulting to Root when unset).
+func (m *Manager) PinnedRoot() string {
+	return m.pinnedRoot
+}
+
 // repoKey derives a stable, filesystem-safe directory name for a repo URL so
 // two managers (or two runs) referring to the same repo always land on the
 // same managed working copy.

@@ -102,6 +102,12 @@ type Worktree struct {
 	// (see Manager.checkSymlinkSupport, #643); empty on darwin/linux. The
 	// runner journals any entries as a runner.annotation event.
 	Warnings []string
+	// PinnedWorkspaceCreated reports whether PreparePinned/AcquirePinned
+	// materialized the stable workspace during this call (a fresh clone) as
+	// opposed to reusing an existing one. Always false for disposable
+	// worktrees. Callers (e.g. the large-repo benchmark harness) use this to
+	// distinguish cold-start from warm-reuse timing.
+	PinnedWorkspaceCreated bool
 
 	manager  *Manager
 	key      string

@@ -41,6 +41,9 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	manager, repo := pinnedFixture(t)
 	first := acquirePinnedFixture(t, manager, repo, "run-one", PinnedCleanNone)
 	pinPath := first.Worktree.Path
+	if !first.Worktree.PinnedWorkspaceCreated {
+		t.Fatal("first AcquirePinned did not report workspace creation")
+	}
 	if origin := strings.TrimSpace(runTestGit(t, pinPath, "remote", "get-url", "origin")); origin != repo {
 		t.Fatalf("pinned origin = %q, want push remote %q", origin, repo)
 	}
@@ -53,6 +56,9 @@ func TestAcquirePinnedReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 
 	second := acquirePinnedFixture(t, manager, repo, "run-two", PinnedCleanNone)
 	defer func() { _ = second.Release() }()
+	if second.Worktree.PinnedWorkspaceCreated {
+		t.Fatal("second AcquirePinned reported workspace recreation")
+	}
 	if second.Worktree.Path != pinPath {
 		t.Fatalf("second workspace = %q, want stable pin %q", second.Worktree.Path, pinPath)
 	}
@@ -452,5 +458,35 @@ func TestPinnedWorkspaceIsOutsideRetentionInventory(t *testing.T) {
 	}
 	if _, err := os.Stat(pinPath); err != nil {
 		t.Fatalf("retention removed pinned workspace: %v", err)
+	}
+}
+
+func TestAcquirePinnedAppliesPathLengthPreflightBeforeCheckout(t *testing.T) {
+	repo := newSourceRepo(t)
+	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	mustWriteFile(t, filepath.Join(repo, deepest), "content")
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "add deep path")
+
+	root := t.TempDir()
+	checkoutPath := filepath.Join(root, repoKey(repo), "pin")
+	available := len(filepath.FromSlash(deepest)) - 1
+	manager, err := NewManager(root, WithPathLengthLimit(repo, PathLengthLimit{
+		MaxPathLength: len(checkoutPath) + 1 + available,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.AcquirePinned(context.Background(), PinnedOptions{
+		RepoURL: repo, RunID: "path-budget", BaseRef: "main",
+	})
+	if err == nil {
+		t.Fatal("AcquirePinned succeeded despite exhausted path budget")
+	}
+	if !strings.Contains(err.Error(), deepest) {
+		t.Fatalf("AcquirePinned error %q does not name deepest path %q", err, deepest)
+	}
+	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
+		t.Fatalf("pinned checkout exists after preflight refusal: %v", statErr)
 	}
 }
