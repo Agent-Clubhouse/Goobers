@@ -562,6 +562,48 @@ func TestScenarioScriptFailureEmitsOnlyErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestScenarioScriptFailureClassShapesRetryability(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		outcome       string
+		wantRetryable bool
+	}{
+		{outcome: gate.OutcomeFail, wantRetryable: false},
+		{outcome: gate.OutcomeInfra, wantRetryable: true},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			definition := apiv1.Workflow{
+				Spec: apiv1.WorkflowSpec{
+					Tasks: []apiv1.Task{{
+						Name: "local-ci",
+						Next: "local-gate",
+					}},
+					Gates: []apiv1.Gate{{
+						Name:      "local-gate",
+						Evaluator: apiv1.EvaluatorAutomated,
+						Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+						Branches:  map[string]string{tc.outcome: workflow.TerminalComplete},
+					}},
+				},
+			}
+			script := newScenarioScript(definition, terminalScenario{
+				gateOutcomes: map[string][]string{"local-gate": {tc.outcome}},
+			})
+
+			got, err := script.deterministic("local-ci", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.exitCode != 1 {
+				t.Fatalf("exit code = %d, want 1", got.exitCode)
+			}
+			if got.outputs[executor.OutputErrorRetryable] != tc.wantRetryable {
+				t.Fatalf("errorRetryable = %v, want %t", got.outputs[executor.OutputErrorRetryable], tc.wantRetryable)
+			}
+		})
+	}
+}
+
 func TestFailedStageIncludesExplicitClassifierExtras(t *testing.T) {
 	t.Parallel()
 	got := failedStage("RATE_LIMITED", map[string]any{"rateLimitReset": "contract-reset"})
@@ -1317,12 +1359,14 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (sta
 	if stage == s.scenario.escalationTask {
 		return failedStage("ISSUE_OVER_SCOPE", nil), nil
 	}
-	failed, err := s.shapeAutomatedGateChain(task, outputs)
+	failed, retryable, err := s.shapeAutomatedGateChain(task, outputs)
 	if err != nil {
 		return stageScript{}, err
 	}
 	if failed {
-		return failedStage("CONTRACT_FAILURE", nil), nil
+		result := failedStage("CONTRACT_FAILURE", nil)
+		result.outputs[executor.OutputErrorRetryable] = retryable
+		return result, nil
 	}
 	return stageScript{outputs: outputs}, nil
 }
@@ -1403,31 +1447,36 @@ func failedStage(code string, classifierExtras map[string]any) stageScript {
 	}
 }
 
-func (s *scenarioScript) shapeAutomatedGateChain(task apiv1.Task, outputs map[string]any) (bool, error) {
+func (s *scenarioScript) shapeAutomatedGateChain(task apiv1.Task, outputs map[string]any) (bool, bool, error) {
 	next := task.Next
 	seen := map[string]bool{}
 	failed := false
+	retryable := false
 	for {
 		gateDefinition, ok := s.gates[next]
 		if !ok || gateDefinition.Evaluator != apiv1.EvaluatorAutomated {
-			return failed, nil
+			return failed, retryable, nil
 		}
 		if seen[next] {
-			return false, fmt.Errorf("task %q reaches automated gate cycle at %q", task.Name, next)
+			return false, false, fmt.Errorf("task %q reaches automated gate cycle at %q", task.Name, next)
 		}
 		seen[next] = true
 		desired, ok := s.nextGateOutcome(gateDefinition.Name)
 		if !ok {
-			return failed, nil
+			return failed, retryable, nil
 		}
 		if gateDefinition.Automated == nil {
-			return false, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
+			return false, false, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
 		}
 		if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
 			failed = true
 		}
+		if gateDefinition.Automated.Check == "failure-class" && desired != gate.OutcomePass {
+			failed = true
+			retryable = desired == gate.OutcomeInfra
+		}
 		if err := shapeGateOutputs(outputs, *gateDefinition.Automated, desired); err != nil {
-			return false, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
+			return false, false, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
 		}
 		next = gateDefinition.Branches[desired]
 	}
@@ -1443,7 +1492,7 @@ func shapeGateOutputs(outputs map[string]any, automated apiv1.AutomatedGate, des
 	}
 	pass := desired == gate.OutcomePass
 	switch automated.Check {
-	case "status-equals", "ci-status":
+	case "status-equals", "failure-class", "ci-status":
 		return nil
 	case "output-equals":
 		key := automated.Params["key"]
@@ -1558,14 +1607,14 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				Code: "ISSUE_OVER_SCOPE", Message: "scripted wired-workflow escalation", Retryable: false,
 			}
 		} else {
-			failed, err := s.shapeAutomatedGateChain(task, result.Outputs)
+			failed, retryable, err := s.shapeAutomatedGateChain(task, result.Outputs)
 			if err != nil {
 				return err
 			}
 			if failed {
 				result.Status = apiv1.ResultFailure
 				result.Error = &apiv1.ErrorInfo{
-					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: false,
+					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: retryable,
 				}
 			}
 		}
@@ -1659,6 +1708,17 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 	script, err := d.script.deterministic(stage, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
+	}
+	if retryable, _ := script.outputs[executor.OutputErrorRetryable].(bool); retryable {
+		code, _ := script.outputs[executor.OutputErrorCode].(string)
+		message, _ := script.outputs[executor.OutputErrorMessage].(string)
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Summary: message,
+			Error: &apiv1.ErrorInfo{
+				Code: code, Message: message, Retryable: true,
+			},
+		}, nil
 	}
 	payload, err := json.Marshal(script.outputs)
 	if err != nil {
