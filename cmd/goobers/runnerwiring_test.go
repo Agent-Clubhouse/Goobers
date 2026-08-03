@@ -584,6 +584,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -631,6 +632,7 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -1325,6 +1327,7 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 			harnessPreflightInfo{},
 			nil,
 			instance.SandboxDisabled,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("buildRunnerConfig: %v", err)
@@ -1358,6 +1361,28 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 	}
 	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
 		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestADORemoteGitQuotaGateConsumesADOWindow(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).UTC()
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderADO, 1, resetAt)
+	gate := adoRemoteGitQuotaGate(quota)
+
+	if err := gate(context.Background(), "https://github.com/acme/web.git"); err != nil {
+		t.Fatalf("GitHub remote admission: %v", err)
+	}
+	if err := gate(context.Background(), "https://dev.azure.com/acme/widgets/_git/web"); err != nil {
+		t.Fatalf("first ADO remote admission: %v", err)
+	}
+	err := gate(context.Background(), "https://acme.visualstudio.com/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("second ADO remote error = %v, want ProviderPollBudgetError", err)
+	}
+	if budgetErr.Provider != apiv1.ProviderADO || budgetErr.ResetAt != resetAt {
+		t.Fatalf("budget error = %+v, want ADO reset at %s", budgetErr, resetAt)
 	}
 }
 
@@ -1879,7 +1904,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1902,7 +1927,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1915,6 +1940,47 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 	}
 	if e.adoRepo != nil {
 		t.Fatalf("adoRepo must be nil for a gitea ci-poll executor")
+	}
+}
+
+func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
+	t.Setenv("ADO_TEST_TOKEN", "ado-token")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_TEST_TOKEN"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	quota := localscheduler.NewProviderQuotaState()
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota)
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+	e, ok := exec.(*ciPollKindExecutor)
+	if !ok {
+		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
+	}
+	if e.quota == nil {
+		t.Fatal("ADO ci-poll quota observer is nil")
+	}
+
+	resetAt := time.Now().Add(time.Hour).UTC()
+	e.quota.ObserveQuota(context.Background(), providers.QuotaObservation{
+		Provider: providers.ProviderADO, Remaining: 0, Reset: resetAt, Known: true,
+	})
+	err = adoRemoteGitQuotaGate(quota)(context.Background(), "https://dev.azure.com/acme/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) || !budgetErr.ResetAt.Equal(resetAt) {
+		t.Fatalf("ADO git admission error = %v, want quota exhaustion until %s", err, resetAt)
 	}
 }
 

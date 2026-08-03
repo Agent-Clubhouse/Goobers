@@ -633,7 +633,7 @@ func repoUsesToken(repo instance.RepoRef) bool {
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
-		provider, err := adoauth.Provider(repo, nil, nil, nil, stores)
+		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err
 		}

@@ -113,6 +113,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("build runner config: %v", err)

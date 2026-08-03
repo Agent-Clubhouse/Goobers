@@ -692,13 +692,14 @@ type ciPollKindExecutor struct {
 	// of defaulting to GitHub.
 	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
+	quota     providers.QuotaObserver
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -744,7 +745,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -754,7 +755,11 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar}, nil
+	var quotaObserver providers.QuotaObserver
+	if quota != nil {
+		quotaObserver = &providerQuotaAccounting{state: quota}
+	}
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
@@ -1758,6 +1763,27 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
+func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
+	if state == nil {
+		return nil
+	}
+	return func(_ context.Context, repoURL string) error {
+		if !isADORemote(repoURL) {
+			return nil
+		}
+		decision := state.ReservePolls(apiv1.ProviderADO, time.Now(), 1)
+		if decision.Allowed != 0 {
+			return nil
+		}
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
+}
+
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
 // `goobers run` share: real worktrees, registry-selected harness adapters and
 // the shell executor, credentials scoped to instance.yaml's configured repo(s).
@@ -1777,7 +1803,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture, providerQuota *localscheduler.ProviderQuotaState) (runner.Config, *worktree.Manager, error) {
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -1817,6 +1843,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		}
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
+		}
+		if gitQuotaGate := adoRemoteGitQuotaGate(providerQuota); gitQuotaGate != nil {
+			managerOptions = append(managerOptions, worktree.WithRemoteGitGate(gitQuotaGate))
 		}
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
@@ -1947,7 +1976,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if r, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
 				giteaRepo = &r
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg, providerQuota)
 			if err != nil {
 				return nil, err
 			}
