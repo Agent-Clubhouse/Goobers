@@ -74,6 +74,20 @@ func TestPRRemediationDeclaresWorkDrivenPolling(t *testing.T) {
 	t.Fatal("pr-remediation has no high-priority schedule trigger for eligibility-driven fan-out")
 }
 
+func TestPRRemediationThreadsUpdateSelectionIntoFullRemediation(t *testing.T) {
+	w, _ := loadPRRemediation(t)
+	for _, task := range w.Spec.Tasks {
+		if task.Name != "gather-pr-context" {
+			continue
+		}
+		if got := task.InputsFrom["selectedNumber"]; got != "selectedNumber" {
+			t.Fatalf("gather-pr-context selectedNumber input = %q, want update-behind-pr selectedNumber", got)
+		}
+		return
+	}
+	t.Fatal("gather-pr-context task not found")
+}
+
 // TestPRRemediationWiresTheAgenticChain is issue #392's regression guard. The
 // workflow shipped for months with rebase-gate's "fail" branch dead-ending at
 // a checkpoint that could only escalate, which meant every PR merge-review did

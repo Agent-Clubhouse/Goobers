@@ -1,86 +1,102 @@
-# Decision: the `test-suite-quality` workflow owns test-suite quality
+# Decision: `quality-sprint` owns scheduled repository quality review
 
-> **Status:** Accepted design decision (2026-07-25); runtime implementation is
-> tracked by #1489 and #1490.
+> **Status:** Implemented by #1568 (2026-07-30).
 >
-> **Related:** #507 (this decision), #506 / PR #1037 (per-check CI evidence),
-> [`ARCHITECTURE.md` §5 and §8](../ARCHITECTURE.md), and
-> [`requirements/telemetry.md`](../requirements/telemetry.md).
+> **Canonical workflow:** [`quality-sprint`](../../reference-workflows/gaggles/goobers/workflows/quality-sprint.yaml)
+>
+> **Related:** #507 (original test-suite-quality decision), #506 / PR #1037
+> (per-check CI evidence), [`ARCHITECTURE.md` §5 and §8](../ARCHITECTURE.md),
+> [`requirements/telemetry.md`](../requirements/telemetry.md), and
+> [`static-fan-out-fan-in.md`](static-fan-out-fan-in.md).
 
 ## Decision
 
-A dedicated canonical producer workflow named **`test-suite-quality`** owns
-longitudinal analysis of a target repository's test suite. Its responsibility
-is deliberately narrow:
+The shipped canonical producer workflow is named **`quality-sprint`**. It runs
+a scheduled, evidence-based review of a target repository across six quality
+lenses. Test coverage is one lens; the workflow is not a test-suite-specific
+telemetry analyzer and there is no shipped workflow named
+`test-suite-quality`.
 
-- detect tests that are flaky across comparable observations;
-- track coverage trends and identify sustained regressions; and
-- identify tests that are persistently slow, rather than merely slow once.
+The workflow reports and nominates findings. It does not edit product code,
+tests, gates, quarantine configuration, or instance configuration.
 
-It converts check- and test-level telemetry into versioned, evidence-backed
-quality findings. It does not edit tests, quarantine tests, change gates, or
-file backlog items itself.
+## Shipped workflow
 
-## Inputs
-
-The workflow reads immutable telemetry snapshots through the standard
-telemetry-query connector. Every observation must retain the target revision,
-check identity, execution environment, and a journal or artifact evidence
-pointer so unlike runs are not silently compared.
-
-| Input | Required content | Use |
-|---|---|---|
-| CI check observations | Stable check name, terminal outcome, duration when available, target revision, environment, and bounded failure detail | Establish the check-level series and link findings to durable evidence. The existing `ci-checks.json` artifact from #506 / PR #1037 is one source. |
-| Test observations | Stable test and suite/package identity, outcome, duration, attempt or rerun identity, check identity, revision, and environment | Detect outcome instability and persistent duration outliers. A failed check without test-level records remains check-level evidence; the workflow must not invent a test diagnosis by scraping an unstructured log. |
-| Coverage snapshots | Scope identity (for example package/module), covered and total units, revision, check identity, and environment | Compare like-for-like coverage over time and distinguish a trend from one isolated measurement. |
-| Quality policy | Analysis window, minimum sample counts, comparison dimensions, flake threshold, coverage regression threshold, slow-test budget, and proposal limits | Make classification deterministic and keep noise bounded. |
-
-All inputs remain subject to the journal's redaction-before-digest boundary.
-The workflow owns analysis of these records, not their collection or retention.
-
-## Outputs
-
-Each run emits a versioned **`test-suite-quality-findings`** artifact, including
-an empty artifact when no threshold is crossed. Each finding contains:
-
-- a kind: `flake-candidate`, `coverage-trend`, or `persistent-slow-test`;
-- the affected test, suite, package, or coverage scope;
-- the observation window, comparison dimensions, sample count, threshold, and
-  measured values;
-- digested evidence pointers back to the source checks, tests, or coverage
-  snapshots; and
-- a bounded recommendation. Flake recommendations may propose quarantine with
-  an owner and expiry, but never enact it.
-
-The workflow publishes the artifact pointer as a signal for
-`work-nomination`. That workflow decides whether a finding is actionable,
-deduplicates it against existing work, and, when warranted, turns it into an
-evidence-backed backlog item. Curation and implementation continue to own
-readiness and code changes.
+Each run has this fixed shape:
 
 ```text
-CI/test producers -> telemetry + journal evidence
-                  -> test-suite-quality
-                  -> test-suite-quality-findings
-                  -> work-nomination -> backlog -> curation/implementation
+churn-analysis
+      |
+      +-> security -----------+
+      +-> performance --------+
+      +-> maintainability ----+
+      +-> test coverage ------+-> collate -> nominate
+      +-> dependencies -------+
+      +-> latent bugs --------+
 ```
+
+1. `churn-analysis` creates a deterministic digest of files changed during the
+   configured lookback period.
+2. `focus-areas` statically fans out six read-only `quality-researcher`
+   branches: security, performance, maintainability, test coverage,
+   dependencies, and latent bugs. All six belong to one parallel, although
+   `maxConcurrentBranches: 4` limits execution to four branches at a time.
+3. The parallel uses `continue_on_error`, so one failed, timed-out, or
+   no-output lens does not discard successful reports from the others.
+4. `collate` fans the available reports in to one read-only `quality-lead`
+   stage, which deduplicates overlapping findings within the current run.
+5. `nominate` evaluates the collated findings and may create backlog issues.
+   Those issues remain unapproved; a maintainer still supplies the SEC-047
+   trust decision before curation.
+
+The checked-in reference runs weekly on Monday and permits one workflow run at
+a time and one run per hour. Operators may tune the live cadence and budget
+without changing the canonical fan-out/fan-in contract.
+
+## Inputs and outputs
+
+The repository and the churn digest are the shipped inputs. Each lens writes a
+freeform `findings.md` artifact and emits a scalar `findingsRef`; an honest
+empty report is valid. The join supplies the branch completeness record and
+available reports to `collate`, which writes `collated-findings.md` and emits
+`collatedFindingsRef`. The terminal `nominate` stage consumes that result and
+files any warranted backlog items.
+
+The reports must identify concrete repository locations and evidence, but they
+are deliberately judged and deduplicated by the agents rather than by a typed
+finding schema. Artifact pointers and stage outputs continue to follow the
+standard envelope, journal, digest, and redaction boundaries in
+[`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Ownership boundaries
 
 | Workflow | Owns | Explicitly does not own |
 |---|---|---|
-| `test-suite-quality` | Test-specific time-series analysis, classification, and bounded quality recommendations | Backlog admission, product-code changes, quarantine enforcement, quality-gate changes, or instance configuration |
-| `work-nomination` | General target-product signal mining, actionability judgment, duplicate suppression, and creation of evidence-backed backlog work | Reimplementing test-specific flake, coverage-trend, or slow-test analysis once a quality finding exists |
-| `tutor` | Improving how a gaggle works by proposing changes to its instance configuration, workflows, gates, skills, and goober instructions | Product test health, product-code changes, test quarantine, or target-repository coverage and performance campaigns |
+| `quality-sprint` | Scheduled repository review through six fixed lenses, within-run deduplication, and nomination of warranted backlog work | Product changes, test quarantine, quality-gate changes, maintainer approval, or instance configuration |
+| `work-nomination` | General target-product signal mining and nomination from its own gathered signals | Running or duplicating `quality-sprint`'s six-lens review |
+| `tutor` | Proposals to improve gaggle configuration, workflows, gates, skills, and goober instructions | Product-code or product test-suite quality campaigns |
 
 The same boundary applies when Goobers is its own target: a flaky Go test is a
-product test-suite finding and flows through nomination and implementation. A
-misconfigured workflow validation stage is a process/configuration concern for
-the Tutor. Sharing telemetry does not transfer ownership between those domains.
+product finding that a quality lens may nominate, while a misconfigured
+workflow validation stage is a process/configuration concern for the Tutor.
 
-## Implementation boundary
+## Aspirational test-suite telemetry design
 
-This decision adds no runtime workflow or telemetry schema. #1489 implements
-flake detection and quarantine proposals; #1490 implements coverage-trend and
-persistent-slow-test tracking. Until those changes land, the existing
-`work-nomination` and `tutor` workflows continue unchanged.
+The original decision proposed a narrower workflow named
+`test-suite-quality`. That proposal would consume immutable check-, test-, and
+coverage-level telemetry; compare like-for-like observations over time; apply
+configured sample counts and thresholds; and emit versioned, typed findings
+such as `flake-candidate`, `coverage-trend`, and `persistent-slow-test`.
+
+None of that is current `quality-sprint` behavior. In particular, the shipped
+workflow has no telemetry-query input, longitudinal or cross-run trend
+tracking, deterministic quality thresholds, severity taxonomy, typed
+`test-suite-quality-findings` artifact, or automatic quarantine action. It
+also nominates through its own terminal stage rather than publishing a
+findings signal for a separate `work-nomination` run.
+
+Those capabilities remain aspirational. If adopted, they require a separate
+design and implementation that defines how a specialized telemetry analyzer
+composes with, extends, or replaces part of `quality-sprint`; the old
+`test-suite-quality` name and data flow must not be read as shipped aliases or
+current runtime behavior.
