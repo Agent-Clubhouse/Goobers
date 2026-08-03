@@ -444,6 +444,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
       - name: Download modules
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
@@ -459,14 +466,16 @@ jobs:
 
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
-      - name: Provision declared dependencies (bash, bwrap, dirname, head, mkdir, sh, sleep, yes)
+      - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash
+          sudo apt-get install --yes bash bubblewrap coreutils dash maven
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Run strict integration tier
+        env:
+          GOOBERS_JAVA_E2E: "1"
         run: make test-integration-strict
 
   conformance:

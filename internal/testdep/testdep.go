@@ -47,9 +47,17 @@ var declared = map[string]Dependency{
 		Name:        "head",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
+	"java": {
+		Name:        "java",
+		InstallHint: "install a JDK (https://adoptium.net/)",
+	},
 	"mkdir": {
 		Name:        "mkdir",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"mvn": {
+		Name:        "mvn",
+		InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)",
 	},
 	"sh": {
 		Name:        "sh",
