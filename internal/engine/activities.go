@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -26,6 +30,7 @@ const (
 	ActRunDeterministic   = "RunDeterministic"
 	ActEvaluateAutomated  = "EvaluateAutomated"
 	ActReconcileSchedules = "ReconcileSchedules"
+	mutationsSidecarFile  = "mutations.jsonl"
 )
 
 // Activities bundles the engine's side-effecting operations as Temporal
@@ -46,6 +51,25 @@ type Activities struct {
 	// are pure functions over env.Inputs and get no workspace, matching the
 	// local runner (#112).
 	Workspaces WorkspaceProvisioner
+	// Scrubber removes secret-shaped material before activity results enter
+	// Temporal history. Nil uses the journal's pattern scrubber.
+	Scrubber journal.Scrubber
+}
+
+type stageActivityResult struct {
+	// Embed the legacy activity result so its JSON stays flat and histories
+	// recorded before mutation metadata was added remain replay-decodable.
+	apiv1.ResultEnvelope
+	Mutations      []mutationFact `json:"mutations,omitempty"`
+	MutationIssues []string       `json:"mutationIssues,omitempty"`
+}
+
+type mutationFact struct {
+	Provider  string `json:"provider"`
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	URL       string `json:"url,omitempty"`
+	Operation string `json:"operation,omitempty"`
 }
 
 type scheduleReconcileActivityInput struct {
@@ -153,20 +177,20 @@ func removeWorkspace(ctx context.Context, ws Workspace) {
 }
 
 // InvokeGoober executes an agentic task.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope) (stageActivityResult, error) {
 	if a.Goober == nil {
-		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
+		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, classifySeamError(err)
+		return stageActivityResult{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, classifySeamError(err)
+		return stageActivityResult{}, classifySeamError(err)
 	}
-	return res, nil
+	return a.scrubStageActivityResult(stageActivityResult{ResultEnvelope: res})
 }
 
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
@@ -185,19 +209,19 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
-	return verdict, nil
+	return a.scrubVerdict(verdict)
 }
 
 // RunDeterministic executes a deterministic task in the workspace mode the
 // task's run block declares (repo by default, scratch on request).
-func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (stageActivityResult, error) {
 	if a.Det == nil {
-		return apiv1.ResultEnvelope{}, classifySeamError(ErrNotConfigured)
+		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
 	// Dispatch distinguishes absent from zero-value (#626): no stage may run
 	// without a command or script, whatever the workflow handed us.
 	if len(run.Command) == 0 && run.Script == "" {
-		return apiv1.ResultEnvelope{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command and script; refusing to execute (fail closed)", env.TaskID))
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command and script; refusing to execute (fail closed)", env.TaskID))
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase)
 	if err != nil {
@@ -209,24 +233,101 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 			// error burning the retry budget. The conflict-detail artifact
 			// stays a local-runner surface for now — the projection (#629)
 			// commits workflow-derived bytes only.
-			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error: &apiv1.ErrorInfo{
-					Code:      runner.BaseSyncConflictErrorCode,
-					Message:   err.Error(),
-					Retryable: true,
+			return a.scrubStageActivityResult(stageActivityResult{
+				ResultEnvelope: apiv1.ResultEnvelope{
+					Status:  apiv1.ResultFailure,
+					Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+					Error: &apiv1.ErrorInfo{
+						Code:      runner.BaseSyncConflictErrorCode,
+						Message:   err.Error(),
+						Retryable: true,
+					},
 				},
-			}, nil
+			})
 		}
-		return apiv1.ResultEnvelope{}, classifySeamError(err)
+		return stageActivityResult{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, classifySeamError(err)
+		return stageActivityResult{}, classifySeamError(err)
 	}
-	return res, nil
+	mutations, issues := readMutationSidecar(ws.Path())
+	return a.scrubStageActivityResult(stageActivityResult{
+		ResultEnvelope: res, Mutations: mutations, MutationIssues: issues,
+	})
+}
+
+func (a *Activities) scrubStageActivityResult(result stageActivityResult) (stageActivityResult, error) {
+	// Activity return values are persisted in Temporal history before the final
+	// journal writer can scrub them. Redact at this boundary so history and the
+	// later projection commit the same bytes and therefore the same digests.
+	data, err := json.Marshal(result)
+	if err != nil {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("marshal stage result for history scrubbing: %w", err))
+	}
+	data = a.scrubber().Scrub(data)
+	var scrubbed stageActivityResult
+	if err := json.Unmarshal(data, &scrubbed); err != nil {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("decode scrubbed stage result: %w", err))
+	}
+	return scrubbed, nil
+}
+
+func (a *Activities) scrubVerdict(verdict apiv1.Verdict) (apiv1.Verdict, error) {
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		return apiv1.Verdict{}, classifySeamError(fmt.Errorf("marshal verdict for history scrubbing: %w", err))
+	}
+	data = a.scrubber().Scrub(data)
+	var scrubbed apiv1.Verdict
+	if err := json.Unmarshal(data, &scrubbed); err != nil {
+		return apiv1.Verdict{}, classifySeamError(fmt.Errorf("decode scrubbed verdict: %w", err))
+	}
+	return scrubbed, nil
+}
+
+func (a *Activities) scrubber() journal.Scrubber {
+	if a.Scrubber != nil {
+		return a.Scrubber
+	}
+	return journal.NewPatternScrubber()
+}
+
+func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
+	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
+	}
+	for i, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var fact mutationFact
+		if err := json.Unmarshal(line, &fact); err != nil {
+			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
+			continue
+		}
+		if fact.Provider == "" || fact.Kind == "" || fact.ID == "" {
+			// The provider action has already happened. Keep malformed
+			// provenance observable without converting success into failure.
+			issues = append(issues, fmt.Sprintf("line %d: provider, kind, and id are required", i+1))
+			continue
+		}
+		facts = append(facts, fact)
+	}
+	return facts, issues
 }
 
 // EvaluateAutomated runs an automated gate check. Automated gates are pure
