@@ -934,7 +934,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		return 0
 	}
 	if identity != nil {
-		pf(stdout, "daemon not running (last daemon: pid %d, started %s); version %s, live runs %d\n",
+		pf(stdout, "daemon not running: recorded pid %d is not running (started %s); version %s, live runs %d\n",
 			identity.PID, identity.StartedAt.Format(time.RFC3339), identity.Version, liveRuns)
 		return 1
 	}
