@@ -77,15 +77,36 @@ ready commons.
 `FactoryPlant.tsx` (plant) places the same model onto a fixed 1450 by 950
 boss's-window scene. `factoryClassicPlant.ts` deterministically maps declared
 stage order onto the factory's intake, planning, build, quality, and shipping
-areas. There is no randomness, wall clock, or module state, so an unchanged
-model never moves. A crate changes position only after its run reports a real
-stage transition.
+areas. There is no random placement or simulated production. A crate changes
+position only after its run reports a real stage transition.
 
-The artwork is stable scenery, not data. Workflow buttons, stage pins,
-production-zone callouts, belts, crates, workers, capacity, and alarms are live
-React elements layered over it. The complete scene scales as one unit to the
-available viewport and never requires internal scrolling. This keeps the
-factory readable as a whole even when the instance has many workflows.
+`FactoryWebGLScene.tsx` renders that projection as a procedural Three.js hall
+with an orthographic isometric camera, physical materials, lights, shadows,
+district pads, stage machines, local conveyor modules, work-order crates, and
+posted goobers. It does not load remote models or textures. Colors are read
+from the active portal theme, and changing theme rebuilds the scene with the
+new palette.
+
+The approved factory image remains mounted underneath the canvas. The canvas
+becomes visible only after a renderer has initialized and completed its first
+render. A browser without WebGL, or a renderer that throws during
+initialization, therefore continues to show the complete image-based Plant
+instead of a blank floor. A lost WebGL context immediately reveals the image
+and a restored context redraws the scene. Renderer resources, geometries,
+materials, resize observers, and animation frames are released when the scene
+is replaced or unmounted. The WebGL module and Three.js are loaded only when
+Plant is selected, so Lines and the rest of the portal do not pay the renderer
+download cost.
+
+Workflow buttons, stage pins, production-zone callouts, crates, workers,
+capacity, and alarms remain live React elements over the visual renderer. When
+WebGL is ready, duplicate HTML artwork becomes transparent while the semantic
+buttons, focus rings, tooltips, and accessible names remain available. The
+complete scene scales as one unit to the available viewport and never requires
+internal scrolling. This keeps the factory readable as a whole even when the
+instance has many workflows. Machine, crate, and goober hit targets use their
+original image coordinates in fallback mode and the matching orthographic
+camera projection when WebGL is ready.
 
 Plant does not redraw topology edges over the illustration. Arbitrary
 point-to-point connectors cross the scene and duplicate the conveyors already
@@ -102,6 +123,11 @@ Lines remains the exact topology when an operator needs every edge and branch.
 The Plant legend explains beacon alarms, placard status, outcome docks, ready
 commons, and the observed-order cue. The Lines legend remains limited to
 concepts used by the line topology layout.
+
+WebGL animation follows the same truth rules as the HTML presentation.
+Rotors, local rollers, crates, and posted goobers move only for confirmed
+`running` or `starting` work. Risk suppresses healthy activity, and reduced
+motion renders a static first frame without scheduling an animation loop.
 
 Transition metadata belongs to a newly observed model generation. FactoryPage
 consumes it for the layout that was mounted when the update arrived. Mounting

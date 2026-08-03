@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { lazy, Suspense, useMemo, type CSSProperties } from "react";
 import type {
   FactoryCarrier,
   FactoryFloorModel,
@@ -25,14 +25,21 @@ import {
 } from "../factoryClassicPlant";
 import type { FactorySelection } from "../factorySelection";
 import { isSelected } from "../factorySelection";
+import { projectedPointStyle } from "../factoryWebGL";
+
+const FactoryWebGLScene = lazy(async () => {
+  const module = await import("./FactoryWebGLScene");
+  return { default: module.FactoryWebGLScene };
+});
 
 /**
  * The boss's-window plant view.
  *
- * The approved factory illustration is stable scenery. Every card, beacon,
- * crate, worker and belt layered over it is still derived from the same live
- * model as the precise Lines view. The whole 1450 by 950 scene scales as one
- * unit, so the plant always fits instead of turning into a scrollable map.
+ * WebGL draws the operating hall when the browser supports it; the approved
+ * factory illustration stays mounted underneath as the automatic fallback.
+ * Semantic controls and live state still come from the same model as Lines.
+ * The whole 1450 by 950 scene scales as one unit, so the plant always fits
+ * instead of turning into a scrollable map.
  */
 export function FactoryPlant({
   animateTransitions,
@@ -75,13 +82,14 @@ export function FactoryPlant({
       style={{ height: `${CLASSIC_PLANT_HEIGHT}px`, width: `${CLASSIC_PLANT_WIDTH}px` }}
     >
       <div className="factory-plant-scene">
-        <img
-          alt=""
-          aria-hidden="true"
-          className="factory-plant-backdrop"
-          draggable="false"
-          src="/factory-plant-base.png"
-        />
+        <Suspense fallback={<FactoryPlantFallback />}>
+          <FactoryWebGLScene
+            lens={lens}
+            model={model}
+            reducedMotion={reducedMotion}
+            scene={scene}
+          />
+        </Suspense>
 
         <ZoneCards zones={zones} />
 
@@ -309,7 +317,7 @@ function StationCard({
         data-start={station.isStart ? "true" : "false"}
         data-status={station.status}
         onClick={() => onSelect({ kind: "station", id: station.id })}
-        style={pointStyle(machine)}
+        style={projectedPointStyle(machine, 0.72)}
         type="button"
       >
         <span aria-hidden="true" className="factory-plant-machine-core">
@@ -460,7 +468,7 @@ function Carrier({
       data-moved={moved ? "true" : "false"}
       data-state={carrier.state}
       onClick={() => onSelect({ kind: "run", id: carrier.runId })}
-      style={pointStyle(point)}
+      style={projectedPointStyle(point, 0.34)}
       type="button"
     >
       <span aria-hidden="true" className="plant-crate-top" />
@@ -495,7 +503,7 @@ function Worker({
       data-active={placement.active ? "true" : "false"}
       data-working={working ? "true" : "false"}
       onClick={() => onSelect({ kind: "worker", id: worker.id })}
-      style={pointStyle(point)}
+      style={projectedPointStyle(point, 0.48)}
       type="button"
     >
       <span aria-hidden="true" className="factory-plant-staff-head" />
@@ -512,4 +520,21 @@ function pointStyle(point: ClassicPoint): CSSProperties {
     left: `${(point.x / CLASSIC_PLANT_WIDTH) * 100}%`,
     top: `${(point.y / CLASSIC_PLANT_HEIGHT) * 100}%`,
   };
+}
+
+function FactoryPlantFallback() {
+  return (
+    <div
+      aria-hidden="true"
+      className="factory-plant-renderer"
+      data-webgl="fallback"
+    >
+      <img
+        alt=""
+        className="factory-plant-backdrop"
+        draggable="false"
+        src="/factory-plant-base.png"
+      />
+    </div>
+  );
 }

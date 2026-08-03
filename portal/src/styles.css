@@ -8038,6 +8038,70 @@ a.telemetry-error-row:hover {
   width: 100%;
 }
 
+.factory-plant-renderer {
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-renderer .factory-plant-backdrop {
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-backdrop {
+  opacity: 0;
+}
+
+.factory-plant-webgl {
+  display: block;
+  height: 100%;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 180ms ease;
+  width: 100%;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-webgl {
+  opacity: 1;
+}
+
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  :is(.factory-plant-machine, .factory-plant-crate, .factory-plant-staff) {
+  left: var(--factory-webgl-left);
+  top: var(--factory-webgl-top);
+}
+
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-machine {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-machine-core,
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-crate
+  > span:not(.sr-only),
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-staff-head,
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-staff-body {
+  opacity: 0;
+}
+
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-machine:focus-visible,
+.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
+  .factory-plant-machine[aria-pressed="true"] {
+  box-shadow: 0 0 0 0.26cqw var(--focus);
+}
+
 .factory-plant-live-belts,
 .factory-plant-classic .factory-plant-annotations {
   height: 100%;
@@ -8633,6 +8697,11 @@ a.telemetry-error-row:hover {
    global reduced-motion block on purpose: it has to win. */
 
 @media (prefers-reduced-motion: reduce) {
+  .factory-plant-backdrop,
+  .factory-plant-webgl {
+    transition: none !important;
+  }
+
   .factory-alarm-beacon,
   .factory-plant-beacon {
     animation: none !important;

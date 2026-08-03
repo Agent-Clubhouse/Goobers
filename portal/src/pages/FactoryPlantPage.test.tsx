@@ -509,6 +509,25 @@ describe("plant layout liveness", () => {
 });
 
 describe("plant layout presentation contracts", () => {
+  it("keeps the approved image as a fallback when WebGL is unavailable", async () => {
+    window.location.hash = "#/factory?layout=plant";
+    render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
+
+    const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
+    const renderer = plant.querySelector(".factory-plant-renderer");
+    await waitFor(() => expect(renderer).toHaveAttribute("data-webgl", "fallback"));
+    expect(renderer?.querySelector(".factory-plant-backdrop")).toBeInTheDocument();
+    expect(renderer?.querySelector("canvas.factory-plant-webgl")).toBeInTheDocument();
+
+    const rendererStyles = portalStyles.slice(
+      portalStyles.indexOf(".factory-plant-renderer {"),
+      portalStyles.indexOf(".factory-plant-live-belts"),
+    );
+    expect(rendererStyles).toContain('[data-webgl="ready"] .factory-plant-backdrop');
+    expect(rendererStyles).toContain("opacity: 0");
+    expect(rendererStyles).toContain('[data-webgl="ready"] .factory-plant-webgl');
+  });
+
   it("never renders a free-form or sensitive daemon field", async () => {
     window.location.hash = "#/factory?layout=plant";
     const user = userEvent.setup();
