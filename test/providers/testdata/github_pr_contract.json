@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "v1",
+  "provider": "github",
+  "repository": {
+    "owner": "fixture-owner",
+    "name": "fixture-repo"
+  },
+  "pullRequest": "8",
+  "exchanges": [
+    {
+      "name": "list-open-prs",
+      "method": "GET",
+      "path": "/repos/fixture-owner/fixture-repo/pulls?per_page=100\u0026state=open",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-GitHub-Api-Version-Selected": "2022-11-28",
+          "X-RateLimit-Limit": "0",
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Reset": "0",
+          "X-RateLimit-Resource": "core",
+          "X-RateLimit-Used": "0"
+        },
+        "body": [
+          {
+            "assignees": [
+              {
+                "id": 0,
+                "login": "fixture-assignee",
+                "node_id": "NORMALIZED"
+              }
+            ],
+            "base": {
+              "ref": "main",
+              "sha": "fixture-base-sha"
+            },
+            "body": "Stable fixture pull request body.",
+            "draft": false,
+            "head": {
+              "ref": "fixture-head",
+              "sha": "fixture-head-sha"
+            },
+            "html_url": "https://github.com/fixture-owner/fixture-repo/pull/8",
+            "id": 0,
+            "labels": [
+              {
+                "id": 0,
+                "name": "goobers:ready",
+                "node_id": "NORMALIZED"
+              }
+            ],
+            "number": 8,
+            "requested_reviewers": [
+              {
+                "id": 0,
+                "login": "fixture-reviewer",
+                "node_id": "NORMALIZED"
+              }
+            ],
+            "state": "open",
+            "title": "Stable fixture pull request",
+            "updated_at": "2000-01-01T00:00:00Z",
+            "user": {
+              "id": 0,
+              "login": "fixture-author",
+              "node_id": "NORMALIZED"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "get-pr",
+      "method": "GET",
+      "path": "/repos/fixture-owner/fixture-repo/pulls/8",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-GitHub-Api-Version-Selected": "2022-11-28",
+          "X-RateLimit-Limit": "0",
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Reset": "0",
+          "X-RateLimit-Resource": "core",
+          "X-RateLimit-Used": "0"
+        },
+        "body": {
+          "assignees": [
+            {
+              "id": 0,
+              "login": "fixture-assignee",
+              "node_id": "NORMALIZED"
+            }
+          ],
+          "base": {
+            "ref": "main",
+            "sha": "fixture-base-sha"
+          },
+          "body": "Stable fixture pull request body.",
+          "draft": false,
+          "head": {
+            "ref": "fixture-head",
+            "sha": "fixture-head-sha"
+          },
+          "html_url": "https://github.com/fixture-owner/fixture-repo/pull/8",
+          "id": 0,
+          "labels": [
+            {
+              "id": 0,
+              "name": "goobers:ready",
+              "node_id": "NORMALIZED"
+            }
+          ],
+          "number": 8,
+          "requested_reviewers": [
+            {
+              "id": 0,
+              "login": "fixture-reviewer",
+              "node_id": "NORMALIZED"
+            }
+          ],
+          "state": "open",
+          "title": "Stable fixture pull request",
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user": {
+            "id": 0,
+            "login": "fixture-author",
+            "node_id": "NORMALIZED"
+          }
+        }
+      }
+    }
+  ]
+}
