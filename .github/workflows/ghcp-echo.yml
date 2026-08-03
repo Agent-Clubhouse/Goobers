@@ -1,0 +1,79 @@
+name: GHCP Echo Drift Gate
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcp-echo-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ghcp-echo:
+    name: real Copilot echo (quarantined)
+    if: >-
+      vars.GHCP_ECHO_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+      (github.event.label.name == '/ghcp-echo' &&
+      github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The external-service probe is advisory and runs once per dispatch. A human
+    # may redispatch only after classifying the failure and linking a tracking issue.
+    continue-on-error: true
+    steps:
+      - name: Check secret provisioning
+        id: provision
+        env:
+          MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$MODEL_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=GHCP echo disabled::COPILOT_GITHUB_TOKEN is not provisioned."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.provision.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        if: steps.provision.outputs.enabled == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Copilot CLI
+        if: steps.provision.outputs.enabled == 'true'
+        run: |
+          curl -fsSL https://gh.io/copilot-install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run real-adapter echo
+        if: steps.provision.outputs.enabled == 'true'
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GOOBERS_COPILOT_EVIDENCE_DIR: ${{ github.workspace }}/ghcp-echo-evidence
+          GOOBERS_COPILOT_LIVE_SMOKE: "1"
+        run: >-
+          go test -tags=integration ./cmd/goobers
+          -run '^TestIntegrationCopilotEchoWorkflow$'
+          -count=1
+          -timeout=10m
+
+      - name: Upload failed run journal
+        if: ${{ failure() && steps.provision.outputs.enabled == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghcp-echo-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ghcp-echo-evidence/runs/
+          if-no-files-found: warn
+          retention-days: 14
