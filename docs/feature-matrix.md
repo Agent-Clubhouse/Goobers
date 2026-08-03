@@ -21,6 +21,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `gate.evaluator.automated` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 1.4 | ga | supported | dev |
+| `gate.evaluator.automated.check.failure-class` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.land-outcome` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-equals` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-matches` | 1.4 | ga | supported | dev |
@@ -124,6 +125,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `gate.evaluator.automated` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 2.0 | ga | supported | dev |
+| `gate.evaluator.automated.check.failure-class` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.land-outcome` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-equals` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-matches` | 2.0 | ga | supported | dev |

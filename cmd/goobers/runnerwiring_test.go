@@ -410,6 +410,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 func TestValidationAutomatedChecksGolden(t *testing.T) {
 	want := []string{
 		"ci-status",
+		"failure-class",
 		"land-outcome",
 		"output-equals",
 		"output-matches",
