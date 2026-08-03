@@ -298,7 +298,7 @@ func TestListPlansUseCoveringIndexes(t *testing.T) {
 
 func explainWithArgs(t *testing.T, store *Store, query string, args []any) string {
 	t.Helper()
-	rows, err := store.readDB().Query("EXPLAIN QUERY PLAN "+query, args...)
+	rows, err := store.reader.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -480,7 +480,7 @@ func seedProjectedStages(t *testing.T, store *Store, n int) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
-	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+	if _, err := store.writer.Exec("ANALYZE"); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
 }

@@ -29,7 +29,12 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	// lands on the read model's single writer (measurement.go).
 	s.applyMeasurement(ctx, &p)
 
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin upsert: %w", err)
 	}
@@ -225,19 +230,26 @@ func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow, gaggle stri
 // is where they would have been dropped.
 func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) {
 	var out RunRow
-	row := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return RunRow{}, false, err
+	}
+	row := db.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM run r WHERE r.run_id = ?`, runID)
 	switch err := row.Scan(runScanTargets(&out)...); {
 	case errors.Is(err, sql.ErrNoRows):
+		release()
 		return RunRow{}, false, nil
 	case err != nil:
+		release()
 		return RunRow{}, false, fmt.Errorf("readmodel: read run %s: %w", runID, err)
 	}
 	if err := out.finishScan(); err != nil {
+		release()
 		return RunRow{}, false, err
 	}
+	release()
 
-	var err error
 	if out.Stages, err = s.runStages(ctx, runID); err != nil {
 		return RunRow{}, false, err
 	}
@@ -246,7 +258,12 @@ func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) 
 
 // runStages returns the stage names recorded for a run, in stable order.
 func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
-	rows, err := s.readDB().QueryContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT stage FROM run_stage WHERE run_id = ? ORDER BY stage`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read stages for %s: %w", runID, err)
@@ -272,7 +289,12 @@ func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
 // becomes one indexed aggregate over phase = 'running'". It is served by
 // idx_run_phase_recency without touching a journal.
 func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error) {
-	rows, err := s.readDB().QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: count by phase: %w", err)
 	}

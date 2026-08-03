@@ -140,7 +140,7 @@ func TestEveryCombinationVisitsAtMostLimitPlusOneRows(t *testing.T) {
 			}
 
 			probeCount.Store(0)
-			rows, err := store.readDB().Query(instrumented, args...)
+			rows, err := store.reader.Query(instrumented, args...)
 			if err != nil {
 				t.Fatalf("instrumented query: %v", err)
 			}
@@ -189,7 +189,7 @@ func TestProbeCountsExaminedRowsNotReturnedRows(t *testing.T) {
 		ORDER BY started_at DESC, run_id ASC LIMIT 51`
 
 	probeCount.Store(0)
-	rows, err := store.readDB().Query(query)
+	rows, err := store.reader.Query(query)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -281,7 +281,7 @@ func seedProbeCorpus(t *testing.T, store *Store, n int) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
-	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+	if _, err := store.writer.Exec("ANALYZE"); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
 }
@@ -349,7 +349,7 @@ func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
 		}
 
 		probeCount.Store(0)
-		result, err := store.readDB().Query(instrumented, args...)
+		result, err := store.reader.Query(instrumented, args...)
 		if err != nil {
 			t.Fatalf("query {%s}: %v", Key(combination.Dims), err)
 		}
@@ -368,7 +368,7 @@ func TestBoundHoldsAtOneHundredThousandRows(t *testing.T) {
 		}
 	}
 	var stageRows int
-	if err := store.readDB().QueryRow(`SELECT COUNT(*) FROM run_stage`).Scan(&stageRows); err != nil {
+	if err := store.reader.QueryRow(`SELECT COUNT(*) FROM run_stage`).Scan(&stageRows); err != nil {
 		t.Fatalf("count run_stage: %v", err)
 	}
 	if stageRows < 1_000_000 {
@@ -392,7 +392,7 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n, stagesPerRun int) {
 	const batch = 5_000
 
 	for start := 0; start < n; start += batch {
-		tx, err := store.writeDB().Begin()
+		tx, err := store.writer.Begin()
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -448,7 +448,7 @@ func seedProbeCorpusBulk(t *testing.T, store *Store, n, stagesPerRun int) {
 	// ANALYZE after loading, not before: the planner's choices are what this test
 	// is about, and it must make them against the statistics a real 100k store
 	// would have.
-	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+	if _, err := store.writer.Exec("ANALYZE"); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
 }

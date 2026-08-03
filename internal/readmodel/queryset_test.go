@@ -162,7 +162,7 @@ func TestCanonicalKeyIgnoresOrder(t *testing.T) {
 // pass every other test while silently walking rows in production.
 func TestEverySupportedCombinationNamesARealIndex(t *testing.T) {
 	store := openTestStore(t)
-	rows, err := store.readDB().Query(
+	rows, err := store.reader.Query(
 		`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('run', 'run_stage')`)
 	if err != nil {
 		t.Fatalf("list indexes: %v", err)
