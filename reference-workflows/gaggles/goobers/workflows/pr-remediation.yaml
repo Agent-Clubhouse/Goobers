@@ -663,6 +663,35 @@ spec:
       # failure.
       next: release-escalated-claim
 
+    - name: park-infrastructure-failure
+      type: deterministic
+      goal: Park a remediation blocked by a retryable infrastructure failure.
+      run:
+        command:
+          [
+            "goobers",
+            "remediation-checkpoint",
+            "--escalate",
+            "local CI could not complete because of a retryable infrastructure failure; no implementation defect was established",
+            "--escalation-outcome",
+            "infrastructure-failure",
+          ]
+      inputs:
+        resultFile: "infrastructure-escalation-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      policyActions:
+        - record-remediation-checkpoint
+        - escalate-pr
+      expectedOutputs:
+        - escalationOutcome
+        - remediationAttempted
+        - attemptedCauses
+        - escalationReason
+      next: release-escalated-claim
+
     - name: park-invalid-finding-responses
       type: deterministic
       goal: Park a PR whose implementer exhausted the finding-response validation repass budget.
@@ -791,14 +820,14 @@ spec:
         fail: park-escalated
         escalate: park-escalated
 
-    # local-ci's ResultEnvelope.Status is flattened into this gate's
-    # Inputs[status] by the runner; "success" is status-equals' default
-    # expected value, so no params are needed.
+    # A genuine CI failure remains actionable by the implementer. Retryable
+    # executor/infrastructure failures park with an explicit infra disposition.
     - name: local-gate
       evaluator: automated
       automated:
-        check: status-equals
+        check: failure-class
       branches:
         pass: guard-before-push
         fail: guard-before-implement
+        infra: park-infrastructure-failure
         escalate: park-escalated

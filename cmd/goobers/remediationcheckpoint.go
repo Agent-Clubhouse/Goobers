@@ -41,6 +41,7 @@ const (
 	remediationOutcomeDidNotConverge  remediationEscalationOutcome = "did-not-converge"
 	remediationOutcomeBudgetExhausted remediationEscalationOutcome = "budget-exhausted"
 	remediationOutcomePolicyExcluded  remediationEscalationOutcome = "policy-excluded"
+	remediationOutcomeInfrastructure  remediationEscalationOutcome = "infrastructure-failure"
 )
 
 var remediationCauseOrder = []remediationCause{
@@ -438,9 +439,9 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
 	"four per-cause budget inputs. --budget overrides every declared cause\n" +
 	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
-	"--escalate as did-not-converge (the default) or budget-exhausted.\n" +
+	"--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.\n" +
 	"Escalations persist a machine-readable `escalationOutcome`\n" +
-	"(`did-not-converge`, `budget-exhausted`, or `policy-excluded`), whether\n" +
+	"(`did-not-converge`, `budget-exhausted`, `policy-excluded`, or `infrastructure-failure`), whether\n" +
 	"repair was attempted, and the attempted causes in both the sticky comment\n" +
 	"and stage result. Exit codes: 0 = checkpoint\n" +
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
@@ -459,7 +460,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	escalationOutcome := fs.String(
 		"escalation-outcome",
 		string(remediationOutcomeDidNotConverge),
-		"machine-readable outcome for --escalate (did-not-converge or budget-exhausted)",
+		"machine-readable outcome for --escalate (did-not-converge, budget-exhausted, or infrastructure-failure)",
 	)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -474,9 +475,9 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	forcedOutcome := remediationEscalationOutcome(*escalationOutcome)
 	switch forcedOutcome {
-	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted:
+	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure:
 	default:
-		pf(stderr, "error: --escalation-outcome must be %q or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted)
+		pf(stderr, "error: --escalation-outcome must be %q, %q, or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure)
 		return 2
 	}
 	if *escalateReason == "" && forcedOutcome != remediationOutcomeDidNotConverge {

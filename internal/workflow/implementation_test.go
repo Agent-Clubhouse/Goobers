@@ -79,6 +79,22 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if localCI.Run == nil || !localCI.Run.SyncBase {
 		t.Error("local-ci.run.syncBase = false, want true")
 	}
+	localGate, ok := m.Gate("local-gate")
+	if !ok {
+		t.Fatal("local-gate not found")
+	}
+	if localGate.Automated == nil || localGate.Automated.Check != "failure-class" {
+		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
+	}
+	for outcome, want := range map[string]string{
+		"pass":  "push-branch",
+		"fail":  "implement",
+		"infra": "park-escalated",
+	} {
+		if got := localGate.Branches[outcome]; got != want {
+			t.Errorf("local-gate %s branch = %q, want %q", outcome, got, want)
+		}
+	}
 	review, ok := m.Gate("review")
 	if !ok {
 		t.Fatal("review gate not found")
@@ -212,7 +228,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #2174: reworded leftover Go-specific prose (`make ci`/`go test`) in the
 	// implement task's goal to describe this gaggle's actual `npm run ci`
 	// stack; no structural/behavioral change, but the goal text is hashed.
-	const wantDigest = "sha256:42fbae3d3a08335c51bc11bd65a8b91463ce394a924c1707dcce335115044bf5"
+	const wantDigest = "sha256:271455be9a36a4ba4f38e2de33bc5f95b8c87326ca4a04aa450e408ea213f517"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

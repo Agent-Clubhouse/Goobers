@@ -70,6 +70,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.evaluator.automated.check.failure-class",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gate.evaluator.automated.check.land-outcome",
       "stability": "ga",
       "sinceVersion": "dev"
