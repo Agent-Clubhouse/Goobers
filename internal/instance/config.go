@@ -437,7 +437,9 @@ func (c *RepoWorkspaceConfig) UnmarshalJSON(data []byte) error {
 		Worktrees   bool   `json:"worktrees"`
 		CleanPolicy string `json:"cleanPolicy"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
 		return err
 	}
 	c.Worktrees = wire.Worktrees

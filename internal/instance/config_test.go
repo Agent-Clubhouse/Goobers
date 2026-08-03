@@ -299,6 +299,27 @@ repos:
 	}
 }
 
+func TestLoadConfigRejectsUnknownWorkspaceField(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+    workspace:
+      pinned: false
+      pinend: true
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "pinend"`) {
+		t.Fatalf("LoadConfig error = %v, want unknown workspace field rejection", err)
+	}
+}
+
 func TestLoadConfigRepoPathLength(t *testing.T) {
 	cfg, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
