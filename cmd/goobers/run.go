@@ -339,8 +339,9 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		}
 		workcopiesRoot = runLayout.WorkcopiesDir()
 	} else {
-		set, _, loadErr := loadConfigDirectory(l.ConfigDir())
+		set, report, loadErr := loadConfigDirectory(l.ConfigDir())
 		if loadErr != nil {
+			printValidationIssues(stderr, report)
 			pf(stderr, "error: load config directory: %v\n", loadErr)
 			return 2
 		}

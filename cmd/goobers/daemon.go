@@ -556,11 +556,7 @@ func buildSchedulerDefinitions(
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
 	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
 	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
-	workcopyPaths := make(map[string]string, len(set.Gaggles))
-	cloneURL := repoCloneURL
-	if cloneURL == nil {
-		cloneURL = runner.DefaultRepoCloneURL
-	}
+	workcopyRoots := make(map[string]string, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggle := &set.Gaggles[i]
 		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
@@ -577,23 +573,14 @@ func buildSchedulerDefinitions(
 		if pathErr != nil {
 			return nil, fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle.Name, pathErr)
 		}
-		repos := append([]apiv1.RepoRef{gaggle.Spec.Project}, gaggle.Spec.AdditionalRepos...)
-		for _, repo := range repos {
-			url, urlErr := cloneURL(repo)
-			if urlErr != nil {
-				return nil, fmt.Errorf("resolve repository URL for gaggle %s: %w", gaggle.Name, urlErr)
-			}
-			finalPath := filepath.Join(path, worktree.RepositoryKey(url))
-			key := filepath.Clean(finalPath)
-			if runtime.GOOS == "windows" {
-				key = strings.ToLower(key)
-			}
-			owner := url
-			if other, exists := workcopyPaths[key]; exists && other != owner {
-				return nil, fmt.Errorf("workcopies path collision: %s and %s resolve to %s", other, owner, finalPath)
-			}
-			workcopyPaths[key] = owner
+		key := filepath.Clean(path)
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
 		}
+		if other, exists := workcopyRoots[key]; exists && other != gaggle.Name {
+			return nil, fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other, gaggle.Name, path)
+		}
+		workcopyRoots[key] = gaggle.Name
 		workcopyLayouts[gaggle.Name] = scoped
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)

@@ -67,8 +67,9 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	set, _, err := loadConfigDirectory(layout.ConfigDir())
+	set, report, err := loadConfigDirectory(layout.ConfigDir())
 	if err != nil {
+		printValidationIssues(stderr, report)
 		pf(stderr, "error: load config directory: %v\n", err)
 		return 1
 	}
