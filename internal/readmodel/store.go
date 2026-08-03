@@ -224,16 +224,6 @@ func (s *Store) closeHandles() error {
 	return errors.Join(readerErr, s.writer.Close())
 }
 
-// writeDB exposes the resolved writer to package tests.
-func (s *Store) writeDB() *sql.DB {
-	return s.writer
-}
-
-// readDB exposes the resolved reader to package tests.
-func (s *Store) readDB() *sql.DB {
-	return s.reader
-}
-
 // State returns the store's projection state.
 func (s *Store) State(ctx context.Context) (State, error) {
 	db, release, err := s.readHandle()

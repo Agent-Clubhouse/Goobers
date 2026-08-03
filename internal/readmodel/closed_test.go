@@ -102,8 +102,8 @@ func TestResolveReadHandleFallsBackToWriter(t *testing.T) {
 	if readerPool != nil {
 		t.Fatal("empty path unexpectedly opened a reader pool")
 	}
-	reader := resolveReadHandle(store.writeDB(), readerPool)
-	if reader != store.writeDB() {
+	reader := resolveReadHandle(store.writer, readerPool)
+	if reader != store.writer {
 		t.Fatal("nil reader pool did not resolve to the writer")
 	}
 	if err := reader.Ping(); err != nil {
