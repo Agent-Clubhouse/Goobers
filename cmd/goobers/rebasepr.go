@@ -496,7 +496,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 	}
 	rebaseBaseSHA = strings.TrimSpace(string(baseOut))
 
-	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
+	rebase := exec.Command("git", "rebase", "--no-reapply-cherry-picks", "FETCH_HEAD")
 	rebase.Dir = dir
 	out, rerr := rebase.CombinedOutput()
 	if rerr == nil {
