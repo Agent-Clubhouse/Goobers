@@ -733,6 +733,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
+	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		if err := refreshEscalationSnapshotAfterRepeatFail(ctx, provider, repo, current, statusComments); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("refresh merge-escalation snapshot for PR #%d", selectedNumber), err, resultFile)
+		}
+	}
 
 	priorityDispatchRequested := false
 	if label == blockedOnSiblingLabel {
