@@ -37,6 +37,7 @@ type fakeIssue struct {
 	children       []int
 	blockers       []int
 	createdAt      time.Time
+	updatedAt      time.Time
 }
 
 type fakeIssueEvent struct {
@@ -321,10 +322,20 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	createdAt := time.Now().UTC()
 	s.issues[number] = &fakeIssue{
 		number: number, title: title, labels: append([]string{}, labels...), state: "open",
-		createdAt: createdAt,
+		createdAt: createdAt, updatedAt: createdAt,
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+// setIssueUpdatedAt records an issue's live updatedAt (#2340's staleness
+// check compares this against a PR's pinned implementation-time snapshot).
+func (s *fakeGitHubServer) setIssueUpdatedAt(number int, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if issue := s.issues[number]; issue != nil {
+		issue.updatedAt = at
 	}
 }
 
@@ -952,6 +963,9 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	}
 	if !issue.createdAt.IsZero() {
 		out["created_at"] = issue.createdAt
+	}
+	if !issue.updatedAt.IsZero() {
+		out["updated_at"] = issue.updatedAt
 	}
 	if issue.assignee != "" {
 		out["assignees"] = []map[string]string{{"login": issue.assignee}}

@@ -22,6 +22,7 @@
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
 | [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
+| [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
@@ -503,6 +504,32 @@ evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
 
 ~~~console
 $ goobers check-fail-first
+~~~
+
+## `goobers check-issue-staleness`
+
+route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+
+~~~text
+Usage: goobers check-issue-staleness [path]
+
+Re-fetch the PR's pinned linked issue and compare its live updatedAt
+against the snapshot taken when the PR was opened. If the issue changed
+materially since implementation began, label the PR goobers:needs-
+remediation and post an explanatory comment instead of letting review
+proceed against stale copied criteria. A PR with no pin (predates this
+feature, or its linked issue never resolved an updatedAt) is never
+considered stale — there is nothing to compare against. Declared
+inputs: pullNumber (required), head/base/advisoryMode (passed through
+unchanged for the next stage's inputsFrom). Writes
+issueStale/number/head/base/advisoryMode to the declared result file.
+Exit codes: 0 = evaluated, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-issue-staleness
 ~~~
 
 ## `goobers claims`
