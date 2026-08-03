@@ -314,6 +314,7 @@
               "respond-to-findings",
               "rework-pr",
               "route-queue-outcome",
+              "route-provider-verdict",
               "route-verdict",
               "unpark-resolved-siblings",
               "update-issue",
