@@ -58,7 +58,8 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"evaluate this cycle (a workflow stage). authorScope defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
-	"labeled goobers:no-merge-review are always excluded. Before selection,\n" +
+	"PRs labeled goobers:no-merge-review or goobers:run-aborted are always\n" +
+	"excluded. Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
@@ -102,7 +103,11 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	excludeLabels = append(excludeLabels, noMergeReviewLabel)
+	// abortedRunLabel is always excluded, never operator-overridable via the
+	// excludeLabels input, same as noMergeReviewLabel: a cancelled run's PR
+	// must stay ineligible for auto-merge until a human removes the label
+	// directly (#2238).
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
 	identityFilters := providers.ListPullRequestsRequest{
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
