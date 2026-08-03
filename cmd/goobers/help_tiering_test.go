@@ -59,7 +59,7 @@ func TestRegistryTierAnnotations(t *testing.T) {
 
 func TestCompletionDiscoveryUsesCoreTier(t *testing.T) {
 	names := strings.Join(commandNames(buildCompletionModel()), " ")
-	for _, command := range []string{"init", "validate", "run", "status"} {
+	for _, command := range []string{"help", "init", "validate", "run", "status"} {
 		if !strings.Contains(" "+names+" ", " "+command+" ") {
 			t.Errorf("completion discovery missing core command %q", command)
 		}
@@ -69,4 +69,17 @@ func TestCompletionDiscoveryUsesCoreTier(t *testing.T) {
 			t.Errorf("completion discovery exposes non-core command %q", command)
 		}
 	}
+}
+
+func TestCompletionDiscoveryExposesHelpTiers(t *testing.T) {
+	model := buildCompletionModel()
+	for _, command := range model.commands {
+		if command.id == "help" {
+			if got := strings.Join(command.argValues, " "); got != "all stages" {
+				t.Fatalf("help completion candidates = %q, want %q", got, "all stages")
+			}
+			return
+		}
+	}
+	t.Fatal("completion model is missing help")
 }

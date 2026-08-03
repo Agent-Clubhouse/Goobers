@@ -2,7 +2,7 @@
 Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
-    $completions = @(
+    $topLevel = @(
         'version'
         'init'
         'examples'
@@ -20,6 +20,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'trace'
         'escalations'
         'completion'
+        'help'
         '--version'
         '-h'
         '--help'
@@ -28,8 +29,15 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {
         if ($_.Extent) { $_.Extent.Text } else { "$_" }
     })
-    if ($elements.Count -gt 1) {
-        return
+    $completions = $topLevel
+    if ($elements.Count -gt 0 -and !($elements.Count -eq 1 -and $wordToComplete -eq $elements[0])) {
+        switch ($elements[0]) {
+            'help' {
+                $completions = @('all', 'stages')
+            }
+            default { return }
+        }
+        if ($elements.Count -gt 2) { return }
     }
 
     $pattern = if ([string]::IsNullOrEmpty($wordToComplete)) {

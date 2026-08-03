@@ -620,7 +620,7 @@ func init() {
 			withSynopsis(synopsisByID["respond-to-findings"]).
 			withHelp("post a validated per-finding remediation response to the claimed PR (a workflow stage)", respondToFindingsHelp).
 			withExamples("goobers respond-to-findings"),
-		aliasCommand(
+		coreAliasCommand(
 			"help",
 			[]string{"-h", "--help", "help"},
 			apicontract.ActionReadOnlyNavigation,
