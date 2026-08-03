@@ -216,7 +216,12 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 	}
 
 	query, args := listQuery(options, limit)
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("readmodel: list runs: %w", err)
 	}
