@@ -13,7 +13,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: flake-watch
+  group: flake-ledger-publish
   cancel-in-progress: false
 
 jobs:
