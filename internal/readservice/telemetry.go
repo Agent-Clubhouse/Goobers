@@ -54,23 +54,34 @@ type TelemetryStatsResult struct {
 }
 
 // TelemetryCurationStats is the windowed action rollup for backlog curation.
+// EverRecorded distinguishes a curation workflow that has never once
+// invoked its telemetry writers (#2278) from one that simply has no
+// action rows in the requested window — Ready/NeedsHuman/Closed/etc and
+// ForwardCurationThroughput otherwise show as real zeros in both cases.
 type TelemetryCurationStats struct {
-	Runs         int `json:"runs"`
-	ReportedRuns int `json:"reportedRuns"`
-	Ready        int `json:"ready"`
-	NeedsHuman   int `json:"needsHuman"`
-	Closed       int `json:"closed"`
-	Deduped      int `json:"deduped"`
-	Split        int `json:"split"`
-	Stale        int `json:"stale"`
-	Reconciled   int `json:"reconciled"`
-	Milestoned   int `json:"milestoned"`
-	Bounced      int `json:"bounced"`
+	EverRecorded bool `json:"everRecorded"`
+	Runs         int  `json:"runs"`
+	ReportedRuns int  `json:"reportedRuns"`
+	Ready        int  `json:"ready"`
+	NeedsHuman   int  `json:"needsHuman"`
+	Closed       int  `json:"closed"`
+	Deduped      int  `json:"deduped"`
+	Split        int  `json:"split"`
+	Stale        int  `json:"stale"`
+	Reconciled   int  `json:"reconciled"`
+	Milestoned   int  `json:"milestoned"`
+	Bounced      int  `json:"bounced"`
 }
 
 // TelemetryReadyPool is the latest ready-pool snapshot plus windowed quality
-// and flow measures.
+// and flow measures. SampleEverRecorded/BounceEverRecorded mirror
+// TelemetryCurationStats.EverRecorded for the ready-pool-sample-backed
+// fields (Depth/AverageAgeSeconds/OldestAgeSeconds/Starved) and the
+// ready-label-transition-backed field (BounceRate) respectively — both of
+// those fields are already nil-when-absent, but nil is ambiguous between
+// "never recorded" and "no data in the selected window" without this.
 type TelemetryReadyPool struct {
+	SampleEverRecorded        bool       `json:"sampleEverRecorded"`
 	ObservedAt                *time.Time `json:"observedAt,omitempty"`
 	Depth                     *int       `json:"depth,omitempty"`
 	AverageAgeSeconds         *float64   `json:"averageAgeSeconds,omitempty"`
@@ -78,9 +89,19 @@ type TelemetryReadyPool struct {
 	Starved                   *bool      `json:"starved,omitempty"`
 	ClaimAgeSamples           int        `json:"claimAgeSamples"`
 	AverageClaimAgeSeconds    *float64   `json:"averageClaimAgeSeconds,omitempty"`
+	BounceEverRecorded        bool       `json:"bounceEverRecorded"`
 	BounceRate                *float64   `json:"bounceRate,omitempty"`
 	ForwardCurationThroughput int        `json:"forwardCurationThroughput"`
 	ImplementationDemand      int        `json:"implementationDemand"`
+	// InFlightClaimSamples/AverageInFlightClaimAgeSeconds/
+	// OldestInFlightClaimAgeSeconds report how long currently open
+	// implementation claims have been claimed as of now (#2279) — distinct
+	// from AverageClaimAgeSeconds, which reports the completed
+	// ready-to-claim transition. Zero is always a real, meaningful value
+	// (no open claims), so these are plain fields, not omitempty pointers.
+	InFlightClaimSamples           int     `json:"inFlightClaimSamples"`
+	AverageInFlightClaimAgeSeconds float64 `json:"averageInFlightClaimAgeSeconds"`
+	OldestInFlightClaimAgeSeconds  float64 `json:"oldestInFlightClaimAgeSeconds"`
 }
 
 // TelemetryGaggleStats is the run aggregate for one gaggle.
@@ -296,6 +317,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		Usage:   make([]TelemetryUsageStats, 0, len(stats.Usage)),
 		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
 		Curation: TelemetryCurationStats{
+			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,
 			ReportedRuns: stats.Curation.ReportedRuns,
 			Ready:        stats.Curation.Ready,
@@ -309,9 +331,14 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			Bounced:      stats.Curation.Bounced,
 		},
 		ReadyPool: TelemetryReadyPool{
-			ClaimAgeSamples:           stats.ReadyPool.ClaimAgeSamples,
-			ForwardCurationThroughput: stats.ReadyPool.ForwardCurationThroughput,
-			ImplementationDemand:      stats.ReadyPool.ImplementationDemand,
+			SampleEverRecorded:             stats.ReadyPool.SampleEverRecorded,
+			BounceEverRecorded:             stats.ReadyPool.BounceEverRecorded,
+			ClaimAgeSamples:                stats.ReadyPool.ClaimAgeSamples,
+			ForwardCurationThroughput:      stats.ReadyPool.ForwardCurationThroughput,
+			ImplementationDemand:           stats.ReadyPool.ImplementationDemand,
+			InFlightClaimSamples:           stats.ReadyPool.InFlightClaimSamples,
+			AverageInFlightClaimAgeSeconds: stats.ReadyPool.AverageInFlightClaimAgeSeconds,
+			OldestInFlightClaimAgeSeconds:  stats.ReadyPool.OldestInFlightClaimAgeSeconds,
 		},
 	}
 	if stats.ReadyPool.HasSample {
