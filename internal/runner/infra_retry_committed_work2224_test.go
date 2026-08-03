@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 type infraRetryNoWorkGoober struct {
@@ -202,5 +203,96 @@ func TestRunnerDoesNotPreserveEarlierStageCommitWhenFailedAttemptCreatedNone(t *
 	}
 	if want := []string{"prepare"}; !reflect.DeepEqual(deterministic.stageCalls, want) {
 		t.Fatalf("deterministic stages = %v, want %v", deterministic.stageCalls, want)
+	}
+}
+
+func TestRunnerPreservesCommittedWorkAfterRestartBeforeInfrastructureRetry(t *testing.T) {
+	const runID = "run-preserve-infra-work-after-restart"
+	machine := infraRetryWorkflow(t, false)
+	instanceRoot := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: fixtureRepo,
+		RunID:   runID + "-failed-attempt",
+		BaseRef: "main",
+		Branch:  providers.BranchName(machine.Def.Name, runID),
+	})
+	if err != nil {
+		t.Fatalf("create failed-attempt worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "impl.txt"), []byte("committed implementation\n"), 0o644); err != nil {
+		t.Fatalf("write implementation: %v", err)
+	}
+	runGit(t, wt.Path, "add", "-A")
+	runGit(t, wt.Path, "commit", "-m", "implement feature")
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("remove failed-attempt worktree: %v", err)
+	}
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create interrupted run journal: %v", err)
+	}
+	jr.SetMachineState("implement")
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{
+			Type: journal.EventError, Stage: "implement", Attempt: 1,
+			Error: &journal.ErrorDetail{Code: "executor_error", Message: "harness: no completion file written"},
+			Runner: map[string]any{
+				retryFailureClassKey:  string(journal.AttemptInfra),
+				infraCommittedWorkKey: true,
+			},
+		},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append interrupted run event: %v", err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close interrupted run journal: %v", err)
+	}
+
+	goober := &infraRetryNoWorkGoober{t: t, calls: 1}
+	deterministic := &infraRetryPathDeterministic{t: t}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    manager,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("new restarted runner: %v", err)
+	}
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if goober.calls != 2 || goober.reviews != 1 {
+		t.Fatalf("post-restart implement calls = %d, reviews = %d; want 1 and 1", goober.calls-1, goober.reviews)
+	}
+	wantStages := []string{"local-ci", "push-branch", "open-pr"}
+	if !reflect.DeepEqual(deterministic.stageCalls, wantStages) {
+		t.Fatalf("downstream stages = %v, want %v", deterministic.stageCalls, wantStages)
 	}
 }

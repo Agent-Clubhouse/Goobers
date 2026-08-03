@@ -801,10 +801,11 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // recorded is true after a second crash finds that closure already journaled
 // but the replacement attempt not yet started.
 type resumeContext struct {
-	stage    string
-	attempt  int
-	class    journal.AttemptClass
-	recorded bool
+	stage                string
+	attempt              int
+	class                journal.AttemptClass
+	recorded             bool
+	committedWorkOnInfra bool
 }
 
 // BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
@@ -817,6 +818,7 @@ const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
+	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
@@ -1277,6 +1279,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			var instructionAddendum string
 			var taskRerun *rerunContext
 			var resumedResult *apiv1.ResultEnvelope
+			var infraFailedAttemptCommittedWork bool
 			if rerun != nil && rerun.stage == t.Name {
 				taskRerun = rerun
 				startAttempt = int32(rerun.attempt)
@@ -1284,6 +1287,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				instructionAddendum = rerun.instructionAddendum
 			}
 			if resume != nil && resume.stage == t.Name {
+				infraFailedAttemptCommittedWork = resume.committedWorkOnInfra
 				interruptedClass := journal.AttemptInfra
 				if rerun != nil && rerun.stage == t.Name {
 					interruptedClass = resume.class
@@ -1354,7 +1358,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if par != nil {
 					upstreamPointers = par.currentPointers(parallelRootPointers)
 				}
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded, infraFailedAttemptCommittedWork)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -2521,7 +2525,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
@@ -2598,7 +2602,6 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 	var lastErr error
 	cumulativeUsage := newStageUsageTotals()
 	nextRetryClass := journal.AttemptPolicy
-	var infraFailedAttemptCommittedWork bool
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
@@ -2688,8 +2691,11 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
-				Runner: map[string]any{retryFailureClassKey: string(failureClass)},
+				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Runner: map[string]any{
+					retryFailureClassKey:  string(failureClass),
+					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
+				},
 			}); aerr != nil {
 				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 				span.Fail(err)
