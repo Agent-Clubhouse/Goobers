@@ -294,8 +294,14 @@ install and manage the platform-supervised daemon
 \fBgoobers service install\fR
 install, enable, and start the supervised daemon
 .TP
+\fBgoobers service start\fR
+resume an installed-but-stopped daemon
+.TP
 \fBgoobers service status\fR
 report whether the supervised daemon is installed and running
+.TP
+\fBgoobers service stop\fR
+halt the running daemon without disabling or removing it
 .TP
 \fBgoobers service uninstall\fR
 gracefully stop and remove the supervised daemon
@@ -470,7 +476,9 @@ tear down and re-materialize a pinned repository workspace
 \fBgoobers-self-update\fR(1),
 \fBgoobers-service\fR(1),
 \fBgoobers-service-install\fR(1),
+\fBgoobers-service-start\fR(1),
 \fBgoobers-service-status\fR(1),
+\fBgoobers-service-stop\fR(1),
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),

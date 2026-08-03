@@ -14,11 +14,16 @@ import (
 
 type fakeDaemonServiceManager struct {
 	status       daemonservice.Status
+	startStatus  daemonservice.Status
 	installErr   error
 	uninstallErr error
 	statusErr    error
+	stopErr      error
+	startErr     error
 	installed    bool
 	uninstalled  bool
+	stopped      bool
+	started      bool
 }
 
 func (m *fakeDaemonServiceManager) Install(context.Context) (daemonservice.Status, error) {
@@ -33,6 +38,16 @@ func (m *fakeDaemonServiceManager) Uninstall(context.Context) error {
 
 func (m *fakeDaemonServiceManager) Status(context.Context) (daemonservice.Status, error) {
 	return m.status, m.statusErr
+}
+
+func (m *fakeDaemonServiceManager) Stop(context.Context) error {
+	m.stopped = true
+	return m.stopErr
+}
+
+func (m *fakeDaemonServiceManager) Start(context.Context) (daemonservice.Status, error) {
+	m.started = true
+	return m.startStatus, m.startErr
 }
 
 func TestServiceInstall(t *testing.T) {
@@ -64,6 +79,82 @@ func TestServiceUninstallIsIdempotent(t *testing.T) {
 	}
 	if manager.uninstalled || !strings.Contains(stdout, "not installed") {
 		t.Fatalf("uninstalled = %v, stdout = %q", manager.uninstalled, stdout)
+	}
+}
+
+func TestServiceStop(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{status: daemonservice.Status{
+		Platform: "linux", Supervisor: "systemd", Installed: true, Running: true, State: "active",
+	}}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "stop", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !manager.stopped || !strings.Contains(stdout, "service stopped") {
+		t.Fatalf("stopped = %v, stdout = %q", manager.stopped, stdout)
+	}
+}
+
+func TestServiceStopNotInstalled(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{stopErr: daemonservice.ErrNotInstalled}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "stop", root)
+	if code != 1 || stderr != "" || !strings.Contains(stdout, "not installed") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestServiceStopReportsError(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{stopErr: errors.New("systemctl unavailable")}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "stop", root)
+	if code != 1 || !strings.Contains(stderr, "systemctl unavailable") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestServiceStart(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{startStatus: daemonservice.Status{
+		Platform: "darwin", Supervisor: "launchd", Installed: true, Running: true, State: "running",
+	}}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "start", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !manager.started || !strings.Contains(stdout, "service running under launchd") {
+		t.Fatalf("started = %v, stdout = %q", manager.started, stdout)
+	}
+}
+
+func TestServiceStartNotInstalled(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{startErr: daemonservice.ErrNotInstalled}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, stdout, stderr := runArgs(t, "service", "start", root)
+	if code != 1 || stderr != "" || !strings.Contains(stdout, "not installed") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestServiceStartReportsError(t *testing.T) {
+	root := serviceTestInstance(t)
+	manager := &fakeDaemonServiceManager{startErr: errors.New("sc.exe unavailable")}
+	useFakeDaemonServiceManager(t, manager)
+
+	code, _, stderr := runArgs(t, "service", "start", root)
+	if code != 1 || !strings.Contains(stderr, "sc.exe unavailable") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 }
 
