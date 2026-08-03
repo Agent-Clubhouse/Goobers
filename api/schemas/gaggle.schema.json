@@ -106,20 +106,10 @@
         "branch": { "type": "string", "description": "Default branch checked out by runs. Omitted defaults to main." },
         "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this repository." },
         "checkout": {
-          "description": "Repository workspace materialization. Pinned mode is a non-hermetic opt-in: build state persists between runs and target-repository .gitignore hygiene is load-bearing.",
+          "description": "Partial-checkout declaration (B2, #649). Accepted but not honored by the local runner yet — inert, surfaced as a VER003 compatibility warning at validate time.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "mode": {
-              "description": "Workspace lifecycle. Omitted/worktree creates disposable per-stage worktrees; pinned reuses one whole-run-serialized workspace.",
-              "type": "string",
-              "enum": ["worktree", "pinned"]
-            },
-            "cleanPolicy": {
-              "description": "Pinned-workspace cleanup between runs. none preserves ignored and untracked state; ignored-safe removes untracked but not ignored files; full removes both.",
-              "type": "string",
-              "enum": ["none", "ignored-safe", "full"]
-            },
             "sparse": {
               "description": "Repo-relative path cones a sparse checkout materializes. Empty means a full checkout.",
               "type": "array",

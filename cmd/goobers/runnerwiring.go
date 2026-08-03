@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -691,13 +692,14 @@ type ciPollKindExecutor struct {
 	// of defaulting to GitHub.
 	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
+	quota     providers.QuotaObserver
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -743,7 +745,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -753,7 +755,11 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar}, nil
+	var quotaObserver providers.QuotaObserver
+	if quota != nil {
+		quotaObserver = &providerQuotaAccounting{state: quota}
+	}
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
@@ -1757,6 +1763,27 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
 }
 
+func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
+	if state == nil {
+		return nil
+	}
+	return func(_ context.Context, repoURL string) error {
+		if !isADORemote(repoURL) {
+			return nil
+		}
+		decision := state.ReservePolls(apiv1.ProviderADO, time.Now(), 1)
+		if decision.Allowed != 0 {
+			return nil
+		}
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
+}
+
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
 // `goobers run` share: real worktrees, registry-selected harness adapters and
 // the shell executor, credentials scoped to instance.yaml's configured repo(s).
@@ -1776,7 +1803,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture, providerQuota *localscheduler.ProviderQuotaState) (runner.Config, *worktree.Manager, error) {
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -1800,6 +1827,28 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
+	pathLimits, pathLimitsErr := pathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
+	if pathLimitsErr != nil {
+		return runner.Config{}, nil, pathLimitsErr
+	}
+	configuredProject, projectConfigured := configuredRepoForProject(cfg, gaggleProject)
+	pinned := projectConfigured && configuredProject.Pinned()
+	if pinned && len(additionalRepos) > 0 {
+		return runner.Config{}, nil, fmt.Errorf("VER: pinned workspace for %s/%s cannot be combined with additional repository worktrees", gaggleProject.Owner, gaggleProject.Name)
+	}
+	workcopiesRoot := l.WorkcopiesDir()
+	if pinned {
+		workcopiesRoot = instance.NewLayout(l.Root).WorkcopiesDir()
+	}
+	absoluteWorkcopiesRoot, err := filepath.Abs(workcopiesRoot)
+	if err != nil {
+		return runner.Config{}, nil, fmt.Errorf("resolve workcopies root: %w", err)
+	}
+	if wtMgr != nil && wtMgr.Root != absoluteWorkcopiesRoot {
+		// A config reload may switch this repo into or out of pinned mode; do
+		// not retain a manager rooted in the opposite lifecycle namespace.
+		wtMgr = nil
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1810,6 +1859,12 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 			worktree.WithPinnedRoot(instance.NewLayout(l.Root).WorkcopiesDir()),
+		}
+		for repoURL, limit := range pathLimits {
+			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
+		}
+		if gitQuotaGate := adoRemoteGitQuotaGate(providerQuota); gitQuotaGate != nil {
+			managerOptions = append(managerOptions, worktree.WithRemoteGitGate(gitQuotaGate))
 		}
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
@@ -1824,7 +1879,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
 		}
-		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), managerOptions...)
+		wtMgr, err = worktree.NewManager(workcopiesRoot, managerOptions...)
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
@@ -1940,7 +1995,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if r, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
 				giteaRepo = &r
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg, providerQuota)
 			if err != nil {
 				return nil, err
 			}
@@ -2048,8 +2103,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				opts...,
 			)
 		},
-		Automated: gate.NewAutomatedEvaluator(),
-		Worktrees: wtMgr,
+		Automated:         gate.NewAutomatedEvaluator(),
+		Worktrees:         wtMgr,
+		PinnedWorkspace:   pinned,
+		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
 		// Resolve each run's branch namespace from its gaggle (StartInput.Gaggle),
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
@@ -2089,7 +2146,60 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if tel != nil {
 		rc.Telemetry = tel
 	}
+	wtMgr.SetPathLengthLimits(pathLimits)
 	return rc, wtMgr, nil
+}
+
+func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {
+	limits := make(map[string]worktree.PathLengthLimit)
+	for i, repo := range cfg.Repos {
+		if repo.PathLength != nil && repo.PathLength.Disabled {
+			continue
+		}
+		if repo.PathLength == nil && goos != "windows" {
+			continue
+		}
+		url, err := cloneURL(apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider),
+			BaseURL:  repo.BaseURL,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("repos[%d] (%s/%s): resolve clone URL for path-length preflight: %w", i, repo.Owner, repo.Name, err)
+		}
+		limit := worktree.PathLengthLimit{MaxPathLength: worktree.DefaultMaxPathLength}
+		if repo.PathLength != nil {
+			if repo.PathLength.MaxPathLength != 0 {
+				limit.MaxPathLength = repo.PathLength.MaxPathLength
+			}
+			limit.BuildOutputAllowance = repo.PathLength.BuildOutputAllowance
+		}
+		limits[url] = limit
+	}
+	return limits, nil
+}
+
+func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == apiv1.ProviderADO {
+		if repo, ok := adoRepoForGaggle(cfg, project); ok {
+			return repo, true
+		}
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == string(project.Provider) && repo.Owner == project.Owner &&
+			repo.Project == project.Project && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+		return cfg.Repos[0], true
+	}
+	return instance.RepoRef{}, false
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

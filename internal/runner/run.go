@@ -337,6 +337,11 @@ type Config struct {
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
+	// PinnedWorkspace runs every repository-backed stage in one persistent
+	// checkout protected by a whole-run lease.
+	PinnedWorkspace bool
+	// PinnedCleanPolicy is none, ignored-safe, or full. Empty means none.
+	PinnedCleanPolicy string
 	// ScratchDir contains disposable workspaces for deterministic commands that
 	// declare run.workspace=scratch. Required only when such a task executes.
 	ScratchDir string
@@ -3736,6 +3741,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if syncBase {
 			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
 		}
+
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}
@@ -3881,7 +3887,7 @@ func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase
 }
 
 func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
-	if in.RepoRef.Checkout == nil || in.RepoRef.Checkout.Mode != apiv1.CheckoutModePinned {
+	if !r.cfg.PinnedWorkspace {
 		return nil, nil
 	}
 	if len(r.cfg.AdditionalRepos) > 0 {
@@ -3909,7 +3915,7 @@ func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal
 		RunID:       in.RunID,
 		BaseRef:     baseRef,
 		Branch:      branch,
-		CleanPolicy: worktree.PinnedCleanPolicy(in.RepoRef.Checkout.CleanPolicy),
+		CleanPolicy: worktree.PinnedCleanPolicy(r.cfg.PinnedCleanPolicy),
 		OnQueuePosition: func(position int) error {
 			return jr.Append(journal.Event{
 				Type: journal.EventRunnerAnnotation,

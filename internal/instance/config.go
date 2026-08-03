@@ -369,6 +369,60 @@ type RepoRef struct {
 	// configures none behaves exactly as before.
 	// +optional
 	Policy *RepoPolicyExpectation `json:"policy,omitempty" yaml:"policy,omitempty"`
+	// PathLength configures the checkout path-length preflight for this repo.
+	// On Windows the preflight defaults to the 260-character MAX_PATH ceiling;
+	// declaring this block enables it on every host. Set disabled to opt out.
+	// +optional
+	PathLength *RepoPathLengthConfig `json:"pathLength,omitempty" yaml:"pathLength,omitempty"`
+	// Workspace selects how this repository is materialized for local runs.
+	// Pinned mode is intentionally non-hermetic: ignored and untracked build
+	// state may persist between runs, so the target repository's .gitignore
+	// hygiene is load-bearing for clean run-branch diffs.
+	Workspace *RepoWorkspaceConfig `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+}
+
+// RepoPathLengthConfig bounds paths a repository checkout and its build output
+// may create beneath a managed worktree.
+type RepoPathLengthConfig struct {
+	// Disabled explicitly opts this repository out of path-length preflight.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
+	// MaxPathLength is the absolute path ceiling. Zero defaults to 260.
+	MaxPathLength int `json:"maxPathLength,omitempty" yaml:"maxPathLength,omitempty"`
+	// BuildOutputAllowance reserves characters beyond the deepest tracked path
+	// for build-generated subdirectories and files.
+	BuildOutputAllowance int `json:"buildOutputAllowance,omitempty" yaml:"buildOutputAllowance,omitempty"`
+}
+
+const (
+	// WorkspaceCleanNone preserves ignored and untracked files between runs.
+	WorkspaceCleanNone = "none"
+	// WorkspaceCleanIgnoredSafe removes untracked files while preserving ignored files.
+	WorkspaceCleanIgnoredSafe = "ignored-safe"
+	// WorkspaceCleanFull removes all ignored and untracked files.
+	WorkspaceCleanFull = "full"
+)
+
+// RepoWorkspaceConfig configures the mutually exclusive local checkout modes.
+// Worktrees is explicit only so contradictory declarations fail loudly;
+// omitting Workspace retains the existing per-stage worktree behavior.
+type RepoWorkspaceConfig struct {
+	Pinned      bool   `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	Worktrees   bool   `json:"worktrees,omitempty" yaml:"worktrees,omitempty"`
+	CleanPolicy string `json:"cleanPolicy,omitempty" yaml:"cleanPolicy,omitempty"`
+}
+
+// Pinned reports whether this repository uses its node-local persistent copy.
+func (r RepoRef) Pinned() bool {
+	return r.Workspace != nil && r.Workspace.Pinned
+}
+
+// WorkspaceCleanPolicy returns the configured pinned clean policy, defaulting
+// to none so ignored and untracked incremental build state survives.
+func (r RepoRef) WorkspaceCleanPolicy() string {
+	if r.Workspace == nil || r.Workspace.CleanPolicy == "" {
+		return WorkspaceCleanNone
+	}
+	return r.Workspace.CleanPolicy
 }
 
 // RepoPolicyExpectation is one repo's declared forge-conformance manifest
@@ -1094,6 +1148,27 @@ func (c *Config) Validate() error {
 		}
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
+		}
+		if r.PathLength != nil {
+			if r.PathLength.MaxPathLength < 0 {
+				return fmt.Errorf("repos[%d] (%s/%s): pathLength.maxPathLength must not be negative", i, r.Owner, r.Name)
+			}
+			if r.PathLength.BuildOutputAllowance < 0 {
+				return fmt.Errorf("repos[%d] (%s/%s): pathLength.buildOutputAllowance must not be negative", i, r.Owner, r.Name)
+			}
+		}
+		if r.Workspace != nil {
+			if r.Workspace.Pinned && r.Workspace.Worktrees {
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.pinned and workspace.worktrees are mutually exclusive", i, r.Owner, r.Name)
+			}
+			switch policy := r.Workspace.CleanPolicy; policy {
+			case "", WorkspaceCleanNone, WorkspaceCleanIgnoredSafe, WorkspaceCleanFull:
+			default:
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy %q must be one of none, ignored-safe, or full", i, r.Owner, r.Name, policy)
+			}
+			if !r.Workspace.Pinned && r.Workspace.CleanPolicy != "" {
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy requires workspace.pinned", i, r.Owner, r.Name)
+			}
 		}
 		if r.Token.sourceCount() > 1 {
 			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+

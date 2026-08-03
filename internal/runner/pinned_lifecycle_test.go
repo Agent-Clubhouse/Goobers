@@ -23,8 +23,9 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 
 	repo := newFixtureRepo(t)
 	r, err := New(Config{
-		Worktrees: manager,
-		RunsDir:   filepath.Join(root, "runs"),
+		PinnedWorkspace: true,
+		Worktrees:       manager,
+		RunsDir:         filepath.Join(root, "runs"),
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return repo, nil
 		},
@@ -34,7 +35,6 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 	}
 	machine := humanGateFixtureMachine(t)
 	ref := humanGateRepoRef()
-	ref.Checkout = &apiv1.CheckoutSpec{Mode: apiv1.CheckoutModePinned}
 	start := func(runID string) (Result, error) {
 		return r.Start(context.Background(), StartInput{
 			RunID: runID, Machine: machine, Gaggle: "acme-web",
@@ -151,6 +151,7 @@ func TestPinnedFailureStreakSuggestsResetWithoutResetting(t *testing.T) {
 		}
 	}
 	r, err := New(Config{
+		PinnedWorkspace: true,
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 			return &stubDeterministic{rec: rec, byTask: byTask}, nil
 		},
@@ -169,7 +170,6 @@ func TestPinnedFailureStreakSuggestsResetWithoutResetting(t *testing.T) {
 		Owner:    "acme",
 		Name:     "web",
 		Branch:   "main",
-		Checkout: &apiv1.CheckoutSpec{Mode: apiv1.CheckoutModePinned},
 	}
 
 	var markerPath string

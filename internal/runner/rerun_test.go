@@ -432,15 +432,33 @@ func TestRunnerRerunStageReacquiresPinnedWorkspace(t *testing.T) {
 	machine := rerunTaskMachine(t)
 	implementer := &rerunTaskGoober{}
 	finisher := &capturingSuccessGoober{}
-	r, _ := newRerunTestRunner(t, func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+	newAgentic := func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
 		if name == "implementer" {
 			return implementer, nil
 		}
 		return finisher, nil
-	}, nil)
+	}
+	// Pinning is an operator-controlled instance.yaml setting (Config.PinnedWorkspace),
+	// not a per-run RepoRef declaration — build the runner directly instead of
+	// newRerunTestRunner's shared (unpinned) Config.
+	root := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		PinnedWorkspace: true,
+		NewAgentic:      newAgentic,
+		Worktrees:       manager,
+		RunsDir:         filepath.Join(root, "runs"),
+		RepoCloneURL:    func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
-		Checkout: &apiv1.CheckoutSpec{Mode: apiv1.CheckoutModePinned},
 	}
 
 	started, err := r.Start(context.Background(), StartInput{

@@ -62,12 +62,7 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: load instance config: %v\n", err)
 		return 1
 	}
-	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
-	if err != nil {
-		pf(stderr, "error: load definitions: %v (%v)\n", err, report)
-		return 1
-	}
-	project, err := resolvePinnedWorkspaceProject(set, selector)
+	project, err := resolvePinnedWorkspaceProject(cfg, selector)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -126,29 +121,34 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func resolvePinnedWorkspaceProject(set *instance.ConfigSet, selector string) (apiv1.RepoRef, error) {
+// resolvePinnedWorkspaceProject selects the configured repo to reset. Pinning
+// is an operator-controlled instance.yaml setting (repos[].workspace.pinned),
+// not a per-workflow declaration — matches the large-repo-execution-model
+// design (§5.1: "operator opts in via the large-repo preset").
+func resolvePinnedWorkspaceProject(cfg *instance.Config, selector string) (apiv1.RepoRef, error) {
 	var matches []apiv1.RepoRef
-	seen := make(map[string]bool)
 	hasUnpinnedMatch := false
-	for _, gaggle := range set.Gaggles {
-		project := gaggle.Spec.Project
+	for _, repo := range cfg.Repos {
+		project := apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider),
+			BaseURL:  repo.BaseURL,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		}
 		if !workspaceRepoMatches(project, selector) {
 			continue
 		}
-		if project.Checkout == nil || project.Checkout.Mode != apiv1.CheckoutModePinned {
+		if !repo.Pinned() {
 			hasUnpinnedMatch = true
 			continue
 		}
-		key := strings.Join([]string{string(project.Provider), project.BaseURL, project.Owner, project.Project, project.Name}, "\x00")
-		if !seen[key] {
-			seen[key] = true
-			matches = append(matches, project)
-		}
+		matches = append(matches, project)
 	}
 	switch len(matches) {
 	case 0:
 		if hasUnpinnedMatch {
-			return apiv1.RepoRef{}, fmt.Errorf("repository %q is not configured for pinned checkout", selector)
+			return apiv1.RepoRef{}, fmt.Errorf("repository %q is not configured for pinned workspace (instance.yaml repos[].workspace.pinned)", selector)
 		}
 		return apiv1.RepoRef{}, fmt.Errorf("no configured pinned repository matches %q", selector)
 	case 1:

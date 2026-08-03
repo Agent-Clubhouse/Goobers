@@ -73,28 +73,11 @@ spec:
                         out and target.
                       type: string
                     checkout:
-                      description: Checkout controls how repository run workspaces
-                        are materialized.
+                      description: |-
+                        Checkout narrows how much of the repository run workspaces materialize
+                        (B2, #649). Accepted but not honored by the local runner yet: declaring
+                        it is inert and surfaces a VER003 compatibility warning at validate time.
                       properties:
-                        cleanPolicy:
-                          description: |-
-                            CleanPolicy applies before each pinned run. None (the default) preserves
-                            ignored and untracked build state; ignored-safe removes untracked but not
-                            ignored files; full removes both.
-                          enum:
-                          - none
-                          - ignored-safe
-                          - full
-                          type: string
-                        mode:
-                          description: |-
-                            Mode defaults to worktree. Pinned opts into a non-hermetic, whole-run
-                            serialized workspace whose ignored build state persists between runs.
-                            Target-repository .gitignore hygiene is therefore load-bearing.
-                          enum:
-                          - worktree
-                          - pinned
-                          type: string
                         sparse:
                           description: |-
                             Sparse lists repo-relative path cones a sparse checkout materializes;
@@ -252,28 +235,11 @@ spec:
                       and target.
                     type: string
                   checkout:
-                    description: Checkout controls how repository run workspaces are
-                      materialized.
+                    description: |-
+                      Checkout narrows how much of the repository run workspaces materialize
+                      (B2, #649). Accepted but not honored by the local runner yet: declaring
+                      it is inert and surfaces a VER003 compatibility warning at validate time.
                     properties:
-                      cleanPolicy:
-                        description: |-
-                          CleanPolicy applies before each pinned run. None (the default) preserves
-                          ignored and untracked build state; ignored-safe removes untracked but not
-                          ignored files; full removes both.
-                        enum:
-                        - none
-                        - ignored-safe
-                        - full
-                        type: string
-                      mode:
-                        description: |-
-                          Mode defaults to worktree. Pinned opts into a non-hermetic, whole-run
-                          serialized workspace whose ignored build state persists between runs.
-                          Target-repository .gitignore hygiene is therefore load-bearing.
-                        enum:
-                        - worktree
-                        - pinned
-                        type: string
                       sparse:
                         description: |-
                           Sparse lists repo-relative path cones a sparse checkout materializes;
@@ -437,28 +403,11 @@ spec:
                             out and target.
                           type: string
                         checkout:
-                          description: Checkout controls how repository run workspaces
-                            are materialized.
+                          description: |-
+                            Checkout narrows how much of the repository run workspaces materialize
+                            (B2, #649). Accepted but not honored by the local runner yet: declaring
+                            it is inert and surfaces a VER003 compatibility warning at validate time.
                           properties:
-                            cleanPolicy:
-                              description: |-
-                                CleanPolicy applies before each pinned run. None (the default) preserves
-                                ignored and untracked build state; ignored-safe removes untracked but not
-                                ignored files; full removes both.
-                              enum:
-                              - none
-                              - ignored-safe
-                              - full
-                              type: string
-                            mode:
-                              description: |-
-                                Mode defaults to worktree. Pinned opts into a non-hermetic, whole-run
-                                serialized workspace whose ignored build state persists between runs.
-                                Target-repository .gitignore hygiene is therefore load-bearing.
-                              enum:
-                              - worktree
-                              - pinned
-                              type: string
                             sparse:
                               description: |-
                                 Sparse lists repo-relative path cones a sparse checkout materializes;

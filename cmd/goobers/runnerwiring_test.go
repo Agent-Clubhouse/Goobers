@@ -584,6 +584,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -631,6 +632,7 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -639,6 +641,96 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	_, err = cfg.NewAgentic(gooberName, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
 		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
+	}
+}
+
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
+	root := t.TempDir()
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned:      true,
+			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
+		},
+	}}}
+	cfg, manager, err := buildRunnerConfig(
+		instance.NewLayout(root).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
+		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
+	}
+	wantRoot, err := filepath.Abs(instance.NewLayout(root).WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Root != wantRoot {
+		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) {
+	t.Setenv("ADO_TOKEN", "test-token")
+	root := t.TempDir()
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "acme/widgets",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "ADO_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned: true,
+		},
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(root).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace {
+		t.Fatal("PinnedWorkspace = false, want true for ADO combined owner/project reference")
 	}
 }
 
@@ -1266,6 +1358,124 @@ func TestGitAuthEnvironmentSupportsMirrorCloneAndFetch(t *testing.T) {
 	}
 }
 
+func TestPathLengthManagerLimits(t *testing.T) {
+	cloneURL := func(repo apiv1.RepoRef) (string, error) {
+		return fmt.Sprintf("https://example.test/%s/%s.git", repo.Owner, repo.Name), nil
+	}
+	base := instance.RepoRef{Provider: "github", Owner: "acme", Name: "web"}
+
+	limits, err := pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("unconfigured linux limits = %d, %v; want 0", len(limits), err)
+	}
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("unconfigured windows limits = %d, %v; want 1", len(limits), err)
+	}
+	base.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 320, BuildOutputAllowance: 40}
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("configured linux limits = %d, %v; want 1", len(limits), err)
+	}
+	base.PathLength.Disabled = true
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("disabled windows limits = %d, %v; want 0", len(limits), err)
+	}
+}
+
+func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
+	previousCloneURL := repoCloneURL
+	origin := initBareOrigin(t)
+	repoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+
+	layout := instance.NewLayout(t.TempDir())
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	layout = layout.ForGaggle("example")
+	repo := instance.RepoRef{
+		Provider:   "github",
+		Owner:      "acme",
+		Name:       "web",
+		PathLength: &instance.RepoPathLengthConfig{Disabled: true},
+	}
+	build := func(manager *worktree.Manager) *worktree.Manager {
+		t.Helper()
+		_, manager, err := buildRunnerConfig(
+			layout,
+			&instance.Config{Repos: []instance.RepoRef{repo}},
+			map[string]apiv1.GooberSpec{},
+			map[string]string{},
+			nil,
+			journal.NewRegistryScrubber(),
+			manager,
+			nil,
+			apiv1.RepoRef{},
+			nil,
+			harnessPreflightInfo{},
+			nil,
+			instance.SandboxDisabled,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("buildRunnerConfig: %v", err)
+		}
+		return manager
+	}
+
+	manager := build(nil)
+	repo.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 1}
+	reused := build(manager)
+	if reused != manager {
+		t.Fatal("config reload replaced the worktree manager")
+	}
+	if _, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "enabled-after-reload",
+		BaseRef: "main",
+	}); err == nil {
+		t.Fatal("Create succeeded after reload enabled an exhausted path budget")
+	}
+
+	repo.PathLength.Disabled = true
+	build(manager)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "disabled-after-reload",
+		BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create after reload disabled path preflight: %v", err)
+	}
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestADORemoteGitQuotaGateConsumesADOWindow(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).UTC()
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderADO, 1, resetAt)
+	gate := adoRemoteGitQuotaGate(quota)
+
+	if err := gate(context.Background(), "https://github.com/acme/web.git"); err != nil {
+		t.Fatalf("GitHub remote admission: %v", err)
+	}
+	if err := gate(context.Background(), "https://dev.azure.com/acme/widgets/_git/web"); err != nil {
+		t.Fatalf("first ADO remote admission: %v", err)
+	}
+	err := gate(context.Background(), "https://acme.visualstudio.com/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("second ADO remote error = %v, want ProviderPollBudgetError", err)
+	}
+	if budgetErr.Provider != apiv1.ProviderADO || budgetErr.ResetAt != resetAt {
+		t.Fatalf("budget error = %+v, want ADO reset at %s", budgetErr, resetAt)
+	}
+}
+
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	testBin, err := os.Executable()
 	if err != nil {
@@ -1784,7 +1994,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1807,7 +2017,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1820,6 +2030,47 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 	}
 	if e.adoRepo != nil {
 		t.Fatalf("adoRepo must be nil for a gitea ci-poll executor")
+	}
+}
+
+func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
+	t.Setenv("ADO_TEST_TOKEN", "ado-token")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_TEST_TOKEN"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	quota := localscheduler.NewProviderQuotaState()
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota)
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+	e, ok := exec.(*ciPollKindExecutor)
+	if !ok {
+		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
+	}
+	if e.quota == nil {
+		t.Fatal("ADO ci-poll quota observer is nil")
+	}
+
+	resetAt := time.Now().Add(time.Hour).UTC()
+	e.quota.ObserveQuota(context.Background(), providers.QuotaObservation{
+		Provider: providers.ProviderADO, Remaining: 0, Reset: resetAt, Known: true,
+	})
+	err = adoRemoteGitQuotaGate(quota)(context.Background(), "https://dev.azure.com/acme/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) || !budgetErr.ResetAt.Equal(resetAt) {
+		t.Fatalf("ADO git admission error = %v, want quota exhaustion until %s", err, resetAt)
 	}
 }
 
