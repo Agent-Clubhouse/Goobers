@@ -23,6 +23,7 @@ type updateBehindServer struct {
 	mergeable       *bool
 	labels          []string
 	comments        []map[string]interface{}
+	checkState      string
 	updateCalls     int
 	updateStatus    int
 	current         bool
@@ -53,7 +54,17 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		}})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, _ *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+		state := s.checkState
+		if state == "" {
+			state = "success"
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"state": state,
+			"statuses": []map[string]string{{
+				"context": "required-ci",
+				"state":   state,
+			}},
+		})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
@@ -161,6 +172,9 @@ func setupUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (root, wor
 	root = initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-720")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", updateBehindPRToken)
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", updateBehindIssuesToken)
 	workspace = t.TempDir()
@@ -213,6 +227,27 @@ func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 		t.Fatalf("result = %v", result)
 	}
 	if !strings.Contains(stdout, "updated behind branch through GitHub API") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
+	state := &updateBehindServer{
+		checkState: "failure",
+		current:    true,
+	}
+	stdout, _, result := runUpdateBehindPRTest(t, state)
+
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0 for current PR", state.updateCalls)
+	}
+	if result["needsFullRemediation"] != "true" || result["selectedNumber"] != "55" {
+		t.Fatalf("result = %v, want failing PR routed to full remediation", result)
+	}
+	if len(state.labels) != 0 {
+		t.Fatalf("labels = %v, want unlabeled candidate unchanged", state.labels)
+	}
+	if !strings.Contains(stdout, "requires full remediation") {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }
