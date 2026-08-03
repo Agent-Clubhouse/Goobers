@@ -101,6 +101,10 @@ spec:
       goal: Select a PR needing remediation, check out its branch, and emit the versioned remediation brief.
       run:
         command: ["goobers", "gather-pr-context"]
+      inputsFrom:
+        # update-behind-gate is transparent, so this pins the exact candidate
+        # selected by update-behind-pr instead of asking this stage to reselect.
+        selectedNumber: selectedNumber
       inputs:
         resultFile: "remediation-brief.json"
         # #941/PRR-6: applied at gate time (rebase-pr's decision reads the
