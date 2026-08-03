@@ -241,7 +241,6 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	if err := row.Scan(&st.SchemaVersion, &st.Epoch, &st.MinChangeSeq, &floor, &sweep, &built); err != nil {
 		return State{}, fmt.Errorf("readmodel: read projection state: %w", err)
 	}
-	err = nil
 	if st.ProjectionFloor, err = optionalTime(floor); err != nil {
 		return State{}, err
 	}
