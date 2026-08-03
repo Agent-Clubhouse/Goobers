@@ -59,6 +59,10 @@ var declared = map[string]Dependency{
 		Name:        "mvn",
 		InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)",
 	},
+	"python3": {
+		Name:        "python3",
+		InstallHint: "install Python 3.12 (https://www.python.org/downloads/)",
+	},
 	"sh": {
 		Name:        "sh",
 		InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)",
