@@ -246,6 +246,55 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
+func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	var localCI *apiv1.Task
+	for i := range w.Spec.Tasks {
+		task := &w.Spec.Tasks[i]
+		if task.Name != "local-ci" {
+			continue
+		}
+		localCI = task
+		break
+	}
+	if localCI == nil {
+		t.Fatal("implementation workflow has no local-ci task")
+	}
+	wantCommand := []string{"make", "ci", "test-integration-strict"}
+	if localCI.Run == nil || !slices.Equal(localCI.Run.Command, wantCommand) {
+		t.Fatalf("local-ci command = %v, want %v", localCI.Run, wantCommand)
+	}
+	if !localCI.Run.SyncBase {
+		t.Fatal("local-ci syncBase = false, want true")
+	}
+	if localCI.TimeoutSeconds != 1500 {
+		t.Fatalf("local-ci timeoutSeconds = %d, want 1500", localCI.TimeoutSeconds)
+	}
+	if localCI.Retry == nil || localCI.Retry.MaxAttempts != 1 {
+		t.Fatalf("local-ci retry = %+v, want maxAttempts 1", localCI.Retry)
+	}
+	if localCI.Next != "local-gate" {
+		t.Fatalf("local-ci next = %q, want local-gate", localCI.Next)
+	}
+	for _, workflowGate := range w.Spec.Gates {
+		if workflowGate.Name == localCI.Next {
+			if got := workflowGate.Branches["pass"]; got != "push-branch" {
+				t.Fatalf("local-gate pass branch = %q, want push-branch", got)
+			}
+			return
+		}
+	}
+	t.Fatal("implementation workflow has no local-gate")
+}
+
 // TestReferenceWorkflowsAgentModelDeclarations guards model-token admission for every
 // shipped agentic task. The reviewer is an agentic gate with no stage-level
 // capabilities field, so its grant remains sourced from reviewer/goober.yaml.
