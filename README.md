@@ -113,10 +113,12 @@ first-run path: a credential-free local demo, a disposable GitHub-backed run,
 and then a regular instance using the
 [production-oriented configuration examples](config-examples/README.md).
 
-For deeper context, read the [product vision](docs/VISION.md),
-[architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/), and
-[requirements](docs/requirements/). Those documents include future design;
-this overview deliberately describes the behavior shipped in this tree.
+For deeper context, read the
+[historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
+[architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/),
+and [requirements](docs/requirements/). Those documents include future
+design; this overview deliberately describes the behavior shipped in this
+tree.
 
 ## Engineering reference
 
