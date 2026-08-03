@@ -614,7 +614,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	var (
 		readOnlyResweep      []providers.WorkItem
-		resweepModeByID      map[string]string
+		curationModeByID     map[string]string
 		resweepState         backlogResweepState
 		resweepStatePath     string
 		resweepStateObserved uint64
@@ -632,6 +632,73 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		resweepStateObserved = resweepState.Generation
 		if backlogResweepDue(resweepState, observedAt, resweepPolicy.interval) {
+			curationModeByID = make(map[string]string)
+			blockedCandidates, nextBlockedCursor, listErr := listBacklogScanWindow(
+				ctx,
+				issueProvider,
+				repo,
+				compactLabels(trustLabel, blockedOnSiblingLabel),
+				"",
+				fieldFilter,
+				backlogScanCeiling,
+				backlogScanCursor{Cursor: resweepState.BlockedCursor},
+				false,
+			)
+			if listErr != nil {
+				return failProviderStage(stderr, "list blocked items for dependency recheck", listErr, "claimed-items.json")
+			}
+			filteredBlocked := blockedCandidates[:0]
+			for _, item := range blockedCandidates {
+				if !item.HasLabel(trustLabel) ||
+					!item.HasLabel(blockedOnSiblingLabel) ||
+					item.HasLabel(providers.LabelNeedsHuman) ||
+					(item.State != "" && !strings.EqualFold(item.State, "open")) {
+					continue
+				}
+				item.Integrity = providers.IntegrityForLabels(item.Labels, trustLabel)
+				filteredBlocked = append(filteredBlocked, item)
+			}
+			blockedCandidates = filteredBlocked
+			if err := sortBacklogResweepCandidates(
+				blockedCandidates,
+				selectionPriority,
+				fieldOrder,
+				resweepState.LastSweptAt,
+			); err != nil {
+				pf(stderr, "error: order blocked dependency rechecks: %v\n", err)
+				return 1
+			}
+			if len(blockedCandidates) > resweepPolicy.maxItems {
+				blockedCandidates = blockedCandidates[:resweepPolicy.maxItems]
+			}
+			selectedResweepItems = append(selectedResweepItems, blockedCandidates...)
+			for _, item := range blockedCandidates {
+				blockers, blockerErr := ghIssueProvider.ListWorkItemBlockers(ctx, repo, item.ID)
+				if blockerErr != nil {
+					pf(stderr, "warning: dependency recheck item %s: %v\n", item.ID, blockerErr)
+					continue
+				}
+				if len(blockers) == 0 {
+					pf(stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
+					continue
+				}
+				actionable := true
+				for _, blocker := range blockers {
+					if blocker.State != "" && strings.EqualFold(blocker.State, "open") {
+						if blocker.HasLabel(providers.LabelNeedsHuman) {
+							continue
+						}
+						actionable = false
+						break
+					}
+				}
+				if actionable {
+					eligible = append(eligible, item)
+					curationModeByID[item.ID] = "dependency-recheck"
+				}
+			}
+			resweepState.BlockedCursor = nextBlockedCursor.Cursor
+
 			resweepCandidates, nextResweepCursor, listErr := listBacklogScanWindow(
 				ctx,
 				issueProvider,
@@ -682,17 +749,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				resweepCandidates = resweepCandidates[:resweepBudget]
 			}
 			selectedResweepItems = append(selectedResweepItems, resweepCandidates...)
-			resweepModeByID = make(map[string]string, len(resweepCandidates))
 			for _, item := range resweepCandidates {
 				if item.HasLabel(inReviewStatusLabel) ||
 					item.HasLabel(providers.LabelClaimed) ||
 					openIssues[item.ID] {
 					readOnlyResweep = append(readOnlyResweep, item)
-					resweepModeByID[item.ID] = "read-only"
+					curationModeByID[item.ID] = "read-only"
 					continue
 				}
 				eligible = append(eligible, item)
-				resweepModeByID[item.ID] = "resweep"
+				curationModeByID[item.ID] = "resweep"
 			}
 			resweepState = recordBacklogResweep(
 				resweepState,
@@ -1066,7 +1132,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
 		}
 		for i := range curationItems {
-			curationItems[i].CurationMode = resweepModeByID[curationItems[i].ID]
+			curationItems[i].CurationMode = curationModeByID[curationItems[i].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
 			ctx,

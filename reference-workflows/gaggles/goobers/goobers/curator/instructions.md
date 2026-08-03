@@ -59,6 +59,11 @@ Each item has one of these curation modes:
 - `curationMode: "read-only"` (also carrying `readOnly: true`) is an in-flight
   item. Inspect it for re-sweep context, but never comment on, label, edit,
   close, or split it. Its active implementation/review owns all mutations.
+- `curationMode: "dependency-recheck"` means the deterministic selector
+  revalidated the item's native named blockers and found that every blocker
+  closed or that an open blocker now carries `goobers:needs-human`. Re-read the
+  blockers and apply §6. Unchanged open implementation dependencies are filtered
+  before claim and never reach this mode.
 
 For each mutable item, in order:
 
@@ -228,7 +233,10 @@ NOT reasons to withhold `ready`** — resolve them yourself and mark ready:
 Mark **`goobers:blocked-on-sibling`** when a named, still-open sibling issue or
 PR is only an implementation prerequisite. Sequencing is not a human decision:
 remove `goobers:ready` and `goobers:needs-human`, name the blocker in the
-explanatory comment, and leave the item open to self-clear on a later pass.
+explanatory comment, register each blocker as a native GitHub blocked-by
+dependency, and leave the item open to self-clear on a later pass. Do not apply
+the label unless the native dependency is present: the deterministic selector
+uses that relationship to revalidate the blocker without claiming the item.
 
 Before assigning any dependency disposition, re-read every named blocker and
 its linked PRs from the provider; never rely on an earlier curation comment or

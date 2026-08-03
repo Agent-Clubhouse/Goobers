@@ -95,16 +95,17 @@ spec:
         trustLabel: "goobers:approved"
         # Idempotency: items already bearing an output marker are excluded, so
         # a re-run over an already-curated backlog claims nothing. #2028:
-        # needs-remediation is terminal for curation. blocked-on-sibling is
-        # deliberately eligible so each pass can revalidate the named blocker
-        # and self-clear the disposition after the issue closes or PR merges.
-        excludeLabels: "goobers:ready,goobers:needs-human,goobers:needs-remediation"
+        # Outcome markers stay out of ordinary FIFO selection. A bounded
+        # dependency recheck revisits blocked-on-sibling items without claiming
+        # unchanged blockers or starving forward work.
+        excludeLabels: "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
         # Batch: claim up to 20 eligible items per run; backlog-query honors
         # maxItems and writes a claimed-items.json array for a batch (#236).
         maxItems: "20"
         # Continuous re-curation: forward work always fills the batch first.
-        # A persisted daily sweep may use at most five leftover slots; in-flight
-        # ready items are passed to the curator read-only and are never claimed.
+        # A persisted daily sweep checks at most five blocked items before claim
+        # and may use at most five leftover slots for ready items. Unchanged
+        # blockers and in-flight ready items are never claimed.
         resweepMaxItems: "5"
         resweepInterval: "24h"
         resweepReadyLabel: "goobers:ready"

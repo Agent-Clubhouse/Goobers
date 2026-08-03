@@ -102,19 +102,19 @@ spec:
         trustLabel: "goobers:approved"
         # Idempotency: items already bearing an output marker are excluded, so
         # a re-run over an already-curated backlog claims nothing. #2028:
-        # needs-remediation is terminal for curation. blocked-on-sibling is
-        # deliberately eligible so each pass can revalidate the named blocker
-        # and self-clear the disposition after the issue closes or PR merges.
-        excludeLabels: "goobers:ready,goobers:needs-human,goobers:needs-remediation"
+        # Outcome markers stay out of ordinary FIFO selection. A bounded
+        # dependency recheck below revisits blocked-on-sibling items without
+        # claiming unchanged blockers or starving forward work.
+        excludeLabels: "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
         # Batch: claim up to 20 eligible items in one run (#236). backlog-query
         # now honors maxItems (it was a dead input) and, for a batch, writes a
         # claimed-items.json array.
         maxItems: "20"
         # Continuous re-curation (CURE-1): only leftover batch capacity may be
-        # used for ready-item re-sweeps, capped at five items and no more than
-        # once per day. Persisted selection state rotates within the same
-        # selectionPriority tiers used by forward curation. In-flight ready
-        # items are included as read-only context and are never claimed.
+        # used for ready-item re-sweeps. The same daily, rotating pass checks at
+        # most five blocked items before claim and selects only resolved gates
+        # or blockers carrying a current human decision. Unchanged blockers are
+        # never claimed. In-flight ready items are read-only context.
         resweepMaxItems: "5"
         resweepInterval: "24h"
         resweepReadyLabel: "goobers:ready"
