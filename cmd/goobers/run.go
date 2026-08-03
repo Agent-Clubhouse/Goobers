@@ -335,8 +335,9 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	}
 	workcopiesRoot := runLayout.WorkcopiesDir()
 	if runLayout.Gaggle() != "" {
-		set, _, loadErr := loadConfigDirectory(l.ConfigDir())
+		set, report, loadErr := loadConfigDirectory(l.ConfigDir())
 		if loadErr != nil {
+			printValidationIssues(stderr, report)
 			pf(stderr, "warning: load config directory for workcopies placement: %v; continuing without gaggle placement\n", loadErr)
 		} else {
 			gaggle := configuredGaggle(set, runLayout.Gaggle())
