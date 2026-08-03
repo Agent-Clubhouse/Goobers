@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -26,12 +26,16 @@ describe("runs history page", () => {
 
     const history = await screen.findByRole("region", { name: "Run history" });
     // The initial load is one bounded page, not the whole 68-run journal.
-    expect(history.querySelectorAll("a")).toHaveLength(50);
+    expect(within(history).getAllByRole("link")).toHaveLength(50);
     const callsBeforeLoadMore = listRuns.mock.calls.length;
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
+      ).toHaveLength(68),
+    );
     // Load more advanced a server-side cursor instead of refetching from the start.
     const lastCall = listRuns.mock.calls.at(-1);
     expect(lastCall?.[0]?.cursor).toBeTruthy();
@@ -45,8 +49,9 @@ describe("runs history page", () => {
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    const revisitedHistory = screen.getByRole("region", { name: "Run history" });
-    expect(revisitedHistory.querySelectorAll("a")).toHaveLength(68);
+    expect(
+      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
+    ).toHaveLength(68);
     expect(listRuns).toHaveBeenCalledTimes(callsBeforeRevisit);
   });
 
