@@ -14,7 +14,7 @@ import (
 func TestImplementationWorkflowsGatherFirstPassContext(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "implementation.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "implementation.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)

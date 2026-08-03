@@ -13,16 +13,16 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
-// TestSelfhostWorkflowsCompile is #124's divergence guard: it compiles the
-// REAL selfhost/ definitions (this repo's own dogfood config) directly,
+// TestReferenceWorkflowsCompile is #124's divergence guard: it compiles the
+// REAL reference-workflows/ definitions (this repo's own dogfood config) directly,
 // against the compiler's full admission checks (capabilities, harness, and
 // gate-outcome coverage). testdata/shipped/*.yaml are separately maintained,
 // deliberately minimal synthetic fixtures pinned to golden digests — nothing
-// previously compiled the actual selfhost YAML, so it could (and did, per
+// previously compiled the actual reference-workflows YAML, so it could (and did, per
 // #124's architect review of testdata/shipped/implementation.yaml) drift
 // invalid without any test catching it.
-func TestSelfhostWorkflowsCompile(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+func TestReferenceWorkflowsCompile(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	goobers := map[string]apiv1.GooberSpec{}
 	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
@@ -49,7 +49,7 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 			}
 			def := Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
 			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {
-				t.Fatalf("compile %s against selfhost's real goobers: %v", file, err)
+				t.Fatalf("compile %s against the real reference workflows' goobers: %v", file, err)
 			}
 			if file == "backlog-curation.yaml" {
 				if warnings := CheckWarnings(def); len(warnings) != 0 {
@@ -60,8 +60,8 @@ func TestSelfhostWorkflowsCompile(t *testing.T) {
 	}
 }
 
-func TestSelfhostCuratorDeclaresRoadmapMutation(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+func TestReferenceWorkflowsCuratorDeclaresRoadmapMutation(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	var curator apiv1.Goober
 	raw, err := os.ReadFile(filepath.Join(root, "goobers", "curator", "goober.yaml"))
@@ -105,8 +105,8 @@ func TestSelfhostCuratorDeclaresRoadmapMutation(t *testing.T) {
 	t.Fatal("curate task not found")
 }
 
-func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+func TestReferenceWorkflowsPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	actions := map[string]bool{}
 
 	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
@@ -151,12 +151,12 @@ func TestSelfhostPolicyActionAuditCoversDeclaredVocabulary(t *testing.T) {
 	}
 	sort.Strings(missing)
 	if len(missing) != 0 {
-		t.Fatalf("capability-vs-policy audit omits declared selfhost actions: %v", missing)
+		t.Fatalf("capability-vs-policy audit omits declared reference-workflows actions: %v", missing)
 	}
 }
 
-func TestSelfhostRemediationRejectsOmittedPersonaActions(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+func TestReferenceWorkflowsRemediationRejectsOmittedPersonaActions(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	var implementer apiv1.Goober
 	raw, err := os.ReadFile(filepath.Join(root, "goobers", "implementer", "goober.yaml"))
@@ -192,8 +192,8 @@ func TestSelfhostRemediationRejectsOmittedPersonaActions(t *testing.T) {
 	}
 }
 
-func TestSelfhostTelemetryQueriesDeclareResultFile(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows")
+func TestReferenceWorkflowsTelemetryQueriesDeclareResultFile(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows")
 	for _, file := range []string{"work-nomination.yaml", "tutor.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			wantResultFile := "telemetry-signals.json"
@@ -221,8 +221,8 @@ func TestSelfhostTelemetryQueriesDeclareResultFile(t *testing.T) {
 	}
 }
 
-func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
-	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "implementation.yaml")
+func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read implementation workflow: %v", err)
@@ -245,11 +245,11 @@ func TestSelfhostImplementationCIPollDeclaresRequiredCapability(t *testing.T) {
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
-// TestSelfhostAgentModelDeclarations guards model-token admission for every
+// TestReferenceWorkflowsAgentModelDeclarations guards model-token admission for every
 // shipped agentic task. The reviewer is an agentic gate with no stage-level
 // capabilities field, so its grant remains sourced from reviewer/goober.yaml.
-func TestSelfhostAgentModelDeclarations(t *testing.T) {
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+func TestReferenceWorkflowsAgentModelDeclarations(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	taskCaps := func(t *testing.T, file, task string) []string {
 		t.Helper()
@@ -326,8 +326,8 @@ func TestSelfhostAgentModelDeclarations(t *testing.T) {
 	}
 }
 
-func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
-	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+func TestReferenceWorkflowsTutorValidatesBeforePush(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "tutor.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -388,8 +388,8 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 		validateTask.Run.Command[0] != "goobers" ||
 		validateTask.Run.Command[1] != "validate" ||
 		validateTask.Run.Command[2] != "--source-tree" ||
-		validateTask.Run.Command[3] != "selfhost" {
-		t.Fatalf("validate-config run = %+v, want direct selfhost source-tree validation", validateTask.Run)
+		validateTask.Run.Command[3] != "reference-workflows" {
+		t.Fatalf("validate-config run = %+v, want direct reference-workflows source-tree validation", validateTask.Run)
 	}
 	if validateTask.Next != "config-valid" {
 		t.Fatalf("validate-config next = %q, want config-valid", validateTask.Next)
@@ -411,12 +411,12 @@ func TestSelfhostTutorValidatesBeforePush(t *testing.T) {
 	}
 }
 
-// TestSelfhostTutorEnforcesFailFirst is TUT-A2's (#1214) config-side
-// counterpart to TestSelfhostTutorValidatesBeforePush: the tutor workflow must
+// TestReferenceWorkflowsTutorEnforcesFailFirst is TUT-A2's (#1214) config-side
+// counterpart to TestReferenceWorkflowsTutorValidatesBeforePush: the tutor workflow must
 // mechanically gate on `goobers check-fail-first` between config-valid and
 // push-branch, not merely document the fail-first contract in prose.
-func TestSelfhostTutorEnforcesFailFirst(t *testing.T) {
-	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+func TestReferenceWorkflowsTutorEnforcesFailFirst(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "tutor.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -461,18 +461,18 @@ func TestSelfhostTutorEnforcesFailFirst(t *testing.T) {
 	}
 }
 
-// TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites is TUT-A4's
+// TestReferenceWorkflowsTutorDeclaresPerGaggleScopeAndConfinesWrites is TUT-A4's
 // contract guard: the tutor's topology tier must be explicit in the
 // workflow definition, and its write boundary must be scoped to this
 // gaggle's own config subtree, not the whole (potentially multi-gaggle)
-// selfhost instance config — the hard silo, applied to the one shipped
+// reference-workflows instance config — the hard silo, applied to the one shipped
 // tutor definition. TUT-A5/#1217 widened the single configRoot boundary to
 // the per-target-action-root boundary (confineToActionRoots/actionRoots,
 // exclusive across roots) so the tutor can also author skill bodies; this
-// still must include the gaggle-scoped config root, not the whole selfhost
+// still must include the gaggle-scoped config root, not the whole reference-workflows
 // instance config.
-func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
-	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+func TestReferenceWorkflowsTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "tutor.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +500,7 @@ func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 		if task.Inputs["confineToActionRoots"] != "true" {
 			t.Fatalf("open-pr confineToActionRoots = %q, want %q", task.Inputs["confineToActionRoots"], "true")
 		}
-		wantRoot := "selfhost/gaggles/" + tutor.Spec.Gaggle
+		wantRoot := "reference-workflows/gaggles/" + tutor.Spec.Gaggle
 		found := false
 		for _, root := range strings.Split(task.Inputs["actionRoots"], ",") {
 			if strings.TrimSpace(root) == wantRoot {
@@ -509,15 +509,15 @@ func TestSelfhostTutorDeclaresPerGaggleScopeAndConfinesWrites(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("open-pr actionRoots = %q, want it to include %q (gaggle-scoped, not the whole selfhost instance config)", task.Inputs["actionRoots"], wantRoot)
+			t.Fatalf("open-pr actionRoots = %q, want it to include %q (gaggle-scoped, not the whole reference-workflows instance config)", task.Inputs["actionRoots"], wantRoot)
 		}
 		return
 	}
 	t.Fatal("tutor workflow has no open-pr task")
 }
 
-func TestSelfhostTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
-	path := filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml")
+func TestReferenceWorkflowsTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "tutor.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestSelfhostTutorRunsLiveVerificationBeforeNewFindings(t *testing.T) {
 		t.Fatalf("verify-live-holdouts capabilities = %v, want GitHub PR polling grant", verify.Capabilities)
 	}
 	openPR := tasks["open-pr"]
-	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "selfhost" {
+	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "reference-workflows" {
 		t.Fatalf("open-pr live-verification inputs = %v", openPR.Inputs)
 	}
 }

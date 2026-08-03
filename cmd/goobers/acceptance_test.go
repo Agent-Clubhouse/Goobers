@@ -42,7 +42,7 @@ import (
 )
 
 // acceptanceWorkflowYAML is the agentic build loop the dogfood implementation
-// workflow (selfhost/gaggles/goobers/workflows/implementation.yaml) is built
+// workflow (reference-workflows/gaggles/goobers/workflows/implementation.yaml) is built
 // around, trimmed to the stages runnable without the not-yet-wired provider
 // built-ins (backlog-query/open-pr/ci-poll/issue-close-out): a manual `goobers
 // run` starts it directly at `implement`. It mirrors #29's skeletonMachine.

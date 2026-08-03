@@ -1746,7 +1746,7 @@ func (a *providerQuotaAccounting) RefundUnused() {
 // definition directory" (api/v1alpha1.GooberSpec), which config-as-code
 // objects don't retain after instance.LoadConfigDir flattens them into a
 // ConfigSet — but every shipped config (internal/instance/starter,
-// config-examples/, selfhost/) lays goobers out at the same fixed path, so
+// config-examples/, reference-workflows/) lays goobers out at the same fixed path, so
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {

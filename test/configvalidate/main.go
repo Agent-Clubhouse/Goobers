@@ -32,7 +32,7 @@ type checkedInTree struct {
 
 var checkedInTrees = []checkedInTree{
 	{
-		path:            "selfhost",
+		path:            "reference-workflows",
 		sourceTree:      true,
 		strict:          true,
 		allowedWarnings: []string{docsUpdaterInertWarning},

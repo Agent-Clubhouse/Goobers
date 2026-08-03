@@ -1569,7 +1569,7 @@ func TestRunControlSchemas(t *testing.T) {
 			"project": {"provider": "github", "owner": "acme", "name": "web"},
 			"backlog": {"provider": "github", "project": "acme/web"},
 			"isolation": {"namespace": "gaggle-web"},
-			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h"}
+			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h", "maxRunDuration": "8h"}
 		}
 	}`
 	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
@@ -1583,7 +1583,7 @@ func TestRunControlSchemas(t *testing.T) {
 		"spec": {
 			"gaggle": "web",
 			"triggers": [{"type": "manual"}],
-			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m"},
+			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m", "maxRunDuration": "6h"},
 			"start": "review",
 			"gates": [{
 				"name": "review",

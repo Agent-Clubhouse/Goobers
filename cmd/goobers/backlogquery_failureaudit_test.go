@@ -19,7 +19,7 @@ import (
 
 func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 	configRoots := []string{
-		filepath.Join("..", "..", "selfhost"),
+		filepath.Join("..", "..", "reference-workflows"),
 		filepath.Join("..", "..", "config-examples"),
 		filepath.Join("..", "..", "examples", "ios-simulator"),
 		filepath.Join("..", "..", "internal", "instance", "starter"),

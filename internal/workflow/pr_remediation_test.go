@@ -14,12 +14,12 @@ import (
 
 // loadPRRemediation reads and compiles the REAL shipped pr-remediation
 // definition against the REAL implementer/reviewer goobers, the same
-// divergence-guard approach TestSelfhostWorkflowsCompile takes (#124): a
+// divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
 // synthetic fixture would happily keep passing while the definition the
 // dogfood instance actually runs drifted.
 func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -59,7 +59,7 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 		WithKnownChecks([]string{"output-equals", "status-equals"}))
 
 	if err != nil {
-		t.Fatalf("compile pr-remediation against selfhost's real goobers: %v", err)
+		t.Fatalf("compile pr-remediation against the real reference workflows' goobers: %v", err)
 	}
 	return w, m
 }
@@ -521,7 +521,7 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 
 func TestPRRemediationImplementerRequiresCompleteFindingAccount(t *testing.T) {
 	path := filepath.Join(
-		"..", "..", "selfhost", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
+		"..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
 	)
 	raw, err := os.ReadFile(path)
 	if err != nil {

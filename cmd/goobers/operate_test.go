@@ -281,7 +281,7 @@ func TestTraceShowsSpansWithoutPriorTelemetryCommand(t *testing.T) {
 
 // TestRunWithTelemetryDisabledSkipsSpansAndRollup is issue #129's
 // telemetry.enabled defect: the config field was documented (and set in the
-// real self-hosting config, selfhost/instance.yaml.example) but had zero
+// real self-hosting config, reference-workflows/instance.yaml.example) but had zero
 // callers — setting it to false did nothing. It's wired now, and the
 // regression that would have shipped along with a naive wire-up is a
 // typed-nil-in-interface panic (a nil *telemetry.Client assigned to

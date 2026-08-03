@@ -30,6 +30,7 @@ clustered orchestration over a large monorepo.
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
 | `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
 | `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
+| `reference-workflows/` | Canonical, proven workflow configs used to operate Goobers against this repository | Active — tested dogfood reference |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |

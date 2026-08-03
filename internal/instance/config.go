@@ -669,6 +669,9 @@ type RunConditions struct {
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// disables the limit.
+	MaxRunDuration string `json:"maxRunDuration,omitempty" yaml:"maxRunDuration,omitempty"`
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
 	// Empty defaults to 30 seconds.
 	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
@@ -679,6 +682,7 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	return apiv1.RunControls{
 		MaxRepasses:       c.MaxRepasses,
 		StalledRunTimeout: c.StalledRunTimeout,
+		MaxRunDuration:    c.MaxRunDuration,
 	}
 }
 
@@ -741,6 +745,21 @@ func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// MaxRunDurationDuration resolves the optional total run-age limit.
+func (c RunConditions) MaxRunDurationDuration() (time.Duration, error) {
+	if c.MaxRunDuration == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(c.MaxRunDuration)
+	if err != nil {
+		return 0, fmt.Errorf("runConditions.maxRunDuration %q: %w", c.MaxRunDuration, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("runConditions.maxRunDuration must be positive, got %s", duration)
+	}
+	return duration, nil
+}
+
 // ClaimsLockTimeoutDuration resolves the configured claims-lock deadline.
 func (c RunConditions) ClaimsLockTimeoutDuration() (time.Duration, error) {
 	if c.ClaimsLockTimeout == "" {
@@ -792,7 +811,7 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
-// config (selfhost/instance.yaml.example) but had zero callers.
+// config (reference-workflows/instance.yaml.example) but had zero callers.
 func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }

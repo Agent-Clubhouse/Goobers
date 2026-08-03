@@ -1,13 +1,13 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Manifest
 metadata:
-  name: goobers-selfhost
+  name: goobers-reference-workflows
   # The pre-GA DSL is preview and must be acknowledged at instance scope.
   annotations:
     goobers.dev/allow-preview-features: "true"
 spec:
   instance:
-    name: goobers-selfhost
+    name: goobers-reference-workflows
     environment: dev
   # Named, reusable connection. Credentials are always references — never
   # inline tokens (CFG-009, SEC-010). At tiers 1-2, secretRef.name is a label

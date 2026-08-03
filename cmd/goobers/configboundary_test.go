@@ -50,18 +50,18 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 
 // TestOpenPRWriteBoundaryRejectsOutOfRootChange is #223's core negative test,
 // exercised through the REAL open-pr stage: with confinement on and the config
-// root "selfhost", a run branch that touches a platform path is refused — the
+// root "reference-workflows", a run branch that touches a platform path is refused — the
 // cycle fails closed and NO PR is opened.
 func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
-		"internal/runner/run.go":                        "// smuggled platform edit\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
+		"internal/runner/run.go":                                   "// smuggled platform edit\n",
 	})
 	t.Chdir(wt)
 
@@ -87,11 +87,11 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml":          "kind: Workflow\n",
-		"selfhost/gaggles/goobers/goobers/coder/instructions.md": "# tutor guidance\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml":          "kind: Workflow\n",
+		"reference-workflows/gaggles/goobers/goobers/coder/instructions.md": "# tutor guidance\n",
 	})
 	t.Chdir(wt)
 
@@ -209,7 +209,7 @@ func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
-	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
 		"skills/new-skill/SKILL.md": "# new skill\n",
@@ -241,11 +241,11 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
-	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
-		"skills/new-skill/SKILL.md":                     "# new skill\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
+		"skills/new-skill/SKILL.md":                                "# new skill\n",
 	})
 	t.Chdir(wt)
 
@@ -272,7 +272,7 @@ func TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 	t.Chdir(t.TempDir()) // not a git repo
 
 	code, _, stderr := runArgs(t, "open-pr", root)

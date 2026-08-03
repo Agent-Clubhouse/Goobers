@@ -168,9 +168,9 @@ func runDocsUpdaterDryRun(t *testing.T, runID string, agentStatus apiv1.ResultSt
 
 func loadShippedDocsUpdater(t *testing.T) apiv1.Workflow {
 	t.Helper()
-	set, report, err := instance.LoadConfigDir(filepath.Join("..", "..", "selfhost"))
+	set, report, err := instance.LoadConfigDir(filepath.Join("..", "..", "reference-workflows"))
 	if err != nil {
-		t.Fatalf("load selfhost config: %v\n%v", err, report)
+		t.Fatalf("load reference-workflows config: %v\n%v", err, report)
 	}
 	for _, definition := range set.Workflows {
 		if definition.Spec.Gaggle == "goobers" && definition.Name == "docs-updater" {

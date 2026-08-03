@@ -246,8 +246,10 @@ Contract rules:
 - **Run-control inheritance is explicit:** `runConditions` supplies instance
   defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
   `Workflow.spec.runControls` overrides them for one definition. The resolved
-  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
-  starts, so config reloads cannot retune a run in flight. An automated or
+  `maxRepasses`, `stalledRunTimeout`, and optional `maxRunDuration` are pinned
+  in `run.yaml` when a run starts, so config reloads cannot retune a run in
+  flight. `maxRunDuration` bounds total wall-clock age independently of journal
+  activity and is disabled when omitted. An automated or
   agentic gate may override `maxRepasses` because separate review loops in one
   definition can legitimately need different budgets. Stall detection does not
   have a task-level override: task/gate `timeoutSeconds` and retry policies
@@ -412,12 +414,12 @@ Definition of done: feed issues into the backlog and watch them get curated, sco
 and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
-then closed the PR loop: the `selfhost/` reference config now defines **six**
+then closed the PR loop: the `reference-workflows/` reference config now defines **six**
 workflows (backlog curation, work nomination, implementation, merge-review,
 pr-remediation, Tutor) proven to curate, implement, review, and **merge PRs
 autonomously** — a ratified product decision (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
-`docs/design/sibling-pr-sequencing.md`). `selfhost/` is the canonical, tested
+`docs/design/sibling-pr-sequencing.md`). `reference-workflows/` is the canonical, tested
 pattern this capability is built against — not a live mirror of any specific
 deployment's actual running config, which is maintained separately and can
 drift from what's checked in here.

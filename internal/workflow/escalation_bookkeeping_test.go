@@ -34,14 +34,14 @@ import (
 // workable backlog with no signal pointing back at them.
 //
 // Asserted over both copies deliberately: the defect was present identically in
-// selfhost/ and config-examples/, so a test pinning only one of them would have
+// reference-workflows/ and config-examples/, so a test pinning only one of them would have
 // let the other drift right back. (The live instance keeps a third,
 // hand-maintained copy that no test can reach — see each file's INTENTIONAL
 // LIVE DIVERGENCE header — so that one must be synced by hand.)
 func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 	for _, root := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers"),
 	} {
 		t.Run(root, func(t *testing.T) {
 			var w apiv1.Workflow
