@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,11 +157,15 @@ func TestPartialDeliveryPolicies(t *testing.T) {
 
 type uncooperativeSink struct {
 	release <-chan struct{}
+	calls   *atomic.Int32
 }
 
 func (uncooperativeSink) Kind() string    { return "uncooperative" }
 func (uncooperativeSink) Version() string { return "v1" }
 func (s uncooperativeSink) Deliver(context.Context, apiv1.NotificationRequest) (string, error) {
+	if s.calls != nil {
+		s.calls.Add(1)
+	}
 	<-s.release
 	return "", nil
 }
@@ -169,7 +174,10 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		release := make(chan struct{})
 		t.Cleanup(func() { close(release) })
-		dispatcher := newTestDispatcher(t, &memoryRecorder{}, Policy{Timeout: 10 * time.Millisecond}, uncooperativeSink{release: release})
+		var calls atomic.Int32
+		dispatcher := newTestDispatcher(t, &memoryRecorder{}, Policy{
+			Timeout: 10 * time.Millisecond, MaxAttempts: 3,
+		}, uncooperativeSink{release: release, calls: &calls})
 		started := time.Now()
 		result, err := dispatcher.Dispatch(context.Background(), validRequest("uncooperative"))
 		if err == nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationFailed ||
@@ -178,6 +186,9 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 		}
 		if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 			t.Fatalf("non-cooperative sink blocked dispatcher for %s", elapsed)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("timed-out sink attempts = %d, want 1", got)
 		}
 	})
 	t.Run("cancellation", func(t *testing.T) {
@@ -203,6 +214,45 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 			t.Fatal("oversized request accepted")
 		}
 	})
+}
+
+type referenceSink string
+
+func (referenceSink) Kind() string    { return "reference" }
+func (referenceSink) Version() string { return "v1" }
+func (s referenceSink) Deliver(context.Context, apiv1.NotificationRequest) (string, error) {
+	return string(s), nil
+}
+
+func TestRegistryRejectsNonCanonicalSinkIdentity(t *testing.T) {
+	for _, sink := range []Sink{
+		&RecordingSink{SinkKind: " recording"},
+		&RecordingSink{SinkVersion: "v1 "},
+	} {
+		if err := NewRegistry().Register(sink); err == nil {
+			t.Fatalf("registered non-canonical sink kind=%q version=%q", sink.Kind(), sink.Version())
+		}
+	}
+}
+
+func TestDispatchOmitsOversizedExternalReference(t *testing.T) {
+	sink := referenceSink(strings.Repeat("x", MaxExternalRefRunes+1))
+	recorder := &memoryRecorder{}
+	result, err := newTestDispatcher(t, recorder, Policy{}, sink).Dispatch(context.Background(), validRequest("reference"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Receipts) != 1 ||
+		result.Receipts[0].Status != apiv1.NotificationDelivered ||
+		result.Receipts[0].ExternalReference != "" ||
+		!strings.Contains(result.Receipts[0].Error, "external reference exceeds") {
+		t.Fatalf("oversized external reference receipt = %+v", result.Receipts)
+	}
+
+	result, err = newTestDispatcher(t, recorder, Policy{}, sink).Dispatch(context.Background(), validRequest("reference"))
+	if err != nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationSkipped {
+		t.Fatalf("idempotent retry result=%+v err=%v", result, err)
+	}
 }
 
 func TestErrorsAreSanitized(t *testing.T) {

@@ -17,13 +17,14 @@ import (
 )
 
 const (
-	MaxTitleBytes      = 512
-	MaxBodyBytes       = 16 * 1024
-	MaxSpeechTextBytes = 4096
-	MaxFacts           = 64
-	MaxEvidenceRefs    = 64
-	MaxSinks           = 16
-	maxErrorRunes      = 240
+	MaxTitleBytes       = 512
+	MaxBodyBytes        = 16 * 1024
+	MaxSpeechTextBytes  = 4096
+	MaxFacts            = 64
+	MaxEvidenceRefs     = 64
+	MaxSinks            = 16
+	MaxExternalRefRunes = 2048
+	maxErrorRunes       = 240
 )
 
 // Sink transports pre-rendered content without changing it.
@@ -55,9 +56,13 @@ func (r *Registry) Register(sink Sink) error {
 	if sink == nil {
 		return errors.New("notification: sink is required")
 	}
-	kind := strings.TrimSpace(sink.Kind())
-	if kind == "" || strings.TrimSpace(sink.Version()) == "" {
+	kind := sink.Kind()
+	version := sink.Version()
+	if kind == "" || version == "" {
 		return errors.New("notification: sink kind and version are required")
+	}
+	if kind != strings.TrimSpace(kind) || version != strings.TrimSpace(version) {
+		return errors.New("notification: sink kind and version must be canonical")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -225,6 +230,10 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		if deliverErr != nil {
 			status = apiv1.NotificationFailed
 		}
+		if deliverErr == nil && utf8.RuneCountInString(externalRef) > MaxExternalRefRunes {
+			externalRef = ""
+			deliverErr = fmt.Errorf("external reference exceeds %d characters and was omitted", MaxExternalRefRunes)
+		}
 		receipt := d.receipt(request, sinkRef(sink), attempt, started, d.now().UTC(), status, externalRef, deliverErr)
 		var recordErr error
 		receipt, recordErr = d.persist(ctx, receipt)
@@ -237,7 +246,12 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		if receipt.Status == apiv1.NotificationDelivered {
 			return receipts, true
 		}
-		if ctx.Err() != nil || attempt == d.policy.MaxAttempts {
+		// A timed-out call may still complete an external side effect. Starting
+		// another attempt before its outcome is known could duplicate delivery.
+		if errors.Is(deliverErr, context.DeadlineExceeded) ||
+			errors.Is(deliverErr, context.Canceled) ||
+			ctx.Err() != nil ||
+			attempt == d.policy.MaxAttempts {
 			break
 		}
 		if d.policy.RetryDelay > 0 {

@@ -14,7 +14,9 @@ limits, records the request, and passes the request unchanged to each sink.
 Execution has a per-attempt timeout, caller cancellation, at most five attempts,
 and an explicit `require-all` or `require-any` partial-delivery policy. A request
 past its expiry is suppressed. The terminal sink is a credential-free development
-transport, and the recording sink is the hermetic test transport.
+transport, and the recording sink is the hermetic test transport. A timed-out
+attempt is not retried because a non-cooperative sink may still complete its
+external side effect after the dispatcher deadline.
 
 Each attempt and each pre-delivery suppression produces a
 `goobers.dev/notification/receipt/v1` with sink kind/version, attempt, timestamps,
@@ -26,4 +28,8 @@ including the registry fed every resolver-issued credential, so returned errors
 and durable records apply identical exact-value and pattern redaction. A delivered
 receipt keyed by `(idempotencyKey, sink kind)` suppresses later delivery after an
 in-process retry or journal recovery. Skipped and failed receipts are never
-represented as successful delivery.
+represented as successful delivery. Sink kinds and versions are canonical
+identifiers without surrounding whitespace. Transport references longer than
+2,048 characters are omitted from otherwise successful receipts so persisted
+receipts remain schema-valid without making an already completed delivery
+retryable.
