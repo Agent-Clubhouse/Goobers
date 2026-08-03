@@ -34,6 +34,11 @@ const (
 // ErrAlreadyInstalled indicates that a Goobers service definition already exists.
 var ErrAlreadyInstalled = errors.New("goobers service is already installed")
 
+// ErrNotInstalled indicates that no Goobers service is registered with the
+// platform supervisor, so Stop/Start (and Uninstall's underlying operations)
+// have nothing to act on.
+var ErrNotInstalled = errors.New("goobers service is not installed")
+
 // Status describes the installed and runtime state of the Goobers service.
 type Status struct {
 	Platform   string `json:"platform"`
@@ -176,6 +181,64 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		return m.statusLaunchd(ctx)
 	case "windows":
 		return m.statusWindows(ctx)
+	default:
+		panic("validated service platform")
+	}
+}
+
+// Stop halts the running Goobers service without disabling or removing its
+// supervisor registration (#2073) — distinct from Uninstall, which folds
+// stop, disable, and removal into one atomic step. A not-installed service is
+// ErrNotInstalled; an already-stopped service is a successful no-op, matching
+// a lifecycle command's normal idempotent-stop expectation regardless of
+// platform (the underlying supervisors disagree here: sc.exe errors stopping
+// an already-stopped service while systemctl/launchctl don't, so the
+// no-op check is enforced once here rather than relied on per-platform).
+func (m *Manager) Stop(ctx context.Context) error {
+	status, err := m.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if !status.Installed {
+		return ErrNotInstalled
+	}
+	if !status.Running {
+		return nil
+	}
+	switch m.config.GOOS {
+	case "linux":
+		return m.stopOnlySystemd(ctx)
+	case "darwin":
+		return m.stopOnlyLaunchd(ctx)
+	case "windows":
+		return m.stopOnlyWindows(ctx)
+	default:
+		panic("validated service platform")
+	}
+}
+
+// Start resumes an installed-but-stopped Goobers service (#2073). A
+// not-installed service is ErrNotInstalled; an already-running service is a
+// successful no-op returning its current status, for the same
+// idempotent-lifecycle-command reasoning as Stop.
+func (m *Manager) Start(ctx context.Context) (Status, error) {
+	status, err := m.Status(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !status.Installed {
+		return Status{}, ErrNotInstalled
+	}
+	if status.Running {
+		return status, nil
+	}
+	switch m.config.GOOS {
+	case "linux":
+		return m.startSystemd(ctx)
+	case "darwin":
+		return m.startLaunchd(ctx)
+	case "windows":
+		return m.startWindows(ctx)
 	default:
 		panic("validated service platform")
 	}
@@ -503,6 +566,66 @@ func (m *Manager) stopLaunchd(ctx context.Context, target string) error {
 	return err
 }
 
+// stopOnlySystemd halts the unit without disabling it (#2073) — `stop`
+// instead of stopSystemd's `disable --now`, so the unit remains enabled and
+// comes back on next login/boot exactly as it would have before this stop.
+func (m *Manager) stopOnlySystemd(ctx context.Context) error {
+	if err := m.runRequired(ctx, "systemctl", "--user", "stop", Name+".service"); err != nil {
+		return err
+	}
+	_, err := waitUntilStopped(ctx, m.statusSystemd)
+	return err
+}
+
+// startSystemd resumes a stopped-but-enabled unit (#2073).
+func (m *Manager) startSystemd(ctx context.Context) (Status, error) {
+	if err := m.runRequired(ctx, "systemctl", "--user", "start", Name+".service"); err != nil {
+		return Status{}, err
+	}
+	return waitUntilRunning(ctx, m.statusSystemd)
+}
+
+// stopOnlyLaunchd halts the job without unloading it (#2073) — `stop`
+// instead of stopLaunchd's `bootout`, so the job stays loaded/enabled in
+// launchd's table. The plist's KeepAlive is keyed on SuccessfulExit=false, so
+// a graceful (exit 0) SIGTERM-driven stop does not trigger an immediate
+// relaunch.
+func (m *Manager) stopOnlyLaunchd(ctx context.Context) error {
+	if err := m.runRequired(ctx, "launchctl", "stop", m.launchdDomain()+"/"+launchdLabel); err != nil {
+		return err
+	}
+	_, err := waitUntilStopped(ctx, m.statusLaunchd)
+	return err
+}
+
+// startLaunchd resumes a stopped-but-loaded job (#2073), the same primitive
+// installLaunchd already uses to bring a freshly bootstrapped job up.
+func (m *Manager) startLaunchd(ctx context.Context) (Status, error) {
+	if err := m.runRequired(ctx, "launchctl", "kickstart", m.launchdDomain()+"/"+launchdLabel); err != nil {
+		return Status{}, err
+	}
+	return waitUntilRunning(ctx, m.statusLaunchd)
+}
+
+// stopOnlyWindows stops the running service without deleting its SCM
+// registration (#2073) — deliberately separate from uninstallWindows' own
+// inline stop-then-wait, which must keep behaving exactly as it does today.
+func (m *Manager) stopOnlyWindows(ctx context.Context) error {
+	if err := m.runRequired(ctx, "sc.exe", "stop", Name); err != nil {
+		return err
+	}
+	_, err := waitUntilStopped(ctx, m.statusWindows)
+	return err
+}
+
+// startWindows resumes a stopped-but-registered service (#2073).
+func (m *Manager) startWindows(ctx context.Context) (Status, error) {
+	if err := m.runRequired(ctx, "sc.exe", "start", Name); err != nil {
+		return Status{}, err
+	}
+	return waitUntilRunning(ctx, m.statusWindows)
+}
+
 func (m *Manager) systemdPath() string {
 	return filepath.Join(m.config.HomeDir, ".config", "systemd", "user", Name+".service")
 }
@@ -653,7 +776,21 @@ func serviceStopped(status Status) bool {
 	if !status.Installed || status.State == "stopped" {
 		return true
 	}
-	return status.Supervisor == "systemd" && (status.State == "inactive" || status.State == "failed")
+	switch status.Supervisor {
+	case "systemd":
+		return status.State == "inactive" || status.State == "failed"
+	case "launchd":
+		// #2073: stopOnlyLaunchd's `launchctl stop` (unlike stopLaunchd's
+		// `bootout`) leaves the job loaded, so it never hits the explicit
+		// State == "stopped" case above (that string is only ever set on
+		// the "job not found" branch statusLaunchd takes after an unload).
+		// A loaded-but-idle job reports some other launchctl state string
+		// (real launchctl prints "not running"); !Running already reflects
+		// exactly that, since Running is state == "running".
+		return !status.Running
+	default:
+		return false
+	}
 }
 
 func parseProperties(output string) map[string]string {
