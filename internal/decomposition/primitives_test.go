@@ -22,6 +22,13 @@ type primitiveFake struct {
 	loseComment  bool
 }
 
+var (
+	_ WorkItemMutationProvider  = (*providers.GitHubProvider)(nil)
+	_ WorkItemMutationProvider  = (*providers.GiteaProvider)(nil)
+	_ WorkItemMutationProvider  = (*providers.ADOProvider)(nil)
+	_ WorkItemHierarchyProvider = (*providers.GitHubProvider)(nil)
+)
+
 func (f *primitiveFake) GetWorkItem(_ context.Context, _ providers.RepositoryRef, id string) (providers.WorkItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -222,5 +229,47 @@ func TestCreateChildRejectsStaleParentRevisionBeforeWrite(t *testing.T) {
 	}
 	if fake.createCount != 0 {
 		t.Fatalf("create count = %d, want 0", fake.createCount)
+	}
+}
+
+type coreMutationFake struct {
+	fake *primitiveFake
+}
+
+func (f coreMutationFake) GetWorkItem(ctx context.Context, repo providers.RepositoryRef, id string) (providers.WorkItem, error) {
+	return f.fake.GetWorkItem(ctx, repo, id)
+}
+
+func (f coreMutationFake) ListComments(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.Comment, error) {
+	return f.fake.ListComments(ctx, repo, id)
+}
+
+func (f coreMutationFake) CreateWorkItem(ctx context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error) {
+	return f.fake.CreateWorkItem(ctx, req)
+}
+
+func (f coreMutationFake) FindWorkItemsByMarker(ctx context.Context, repo providers.RepositoryRef, marker string) ([]providers.WorkItem, error) {
+	return f.fake.FindWorkItemsByMarker(ctx, repo, marker)
+}
+
+func (f coreMutationFake) CreateWorkItemComment(ctx context.Context, repo providers.RepositoryRef, id, body string) (providers.Comment, error) {
+	return f.fake.CreateWorkItemComment(ctx, repo, id, body)
+}
+
+func TestCoreMutationProviderDoesNotRequireHierarchy(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "acme", Name: "app"}
+	fake := &primitiveFake{parent: providers.WorkItem{ID: "7", Revision: "parent-r1"}}
+	primitives := Primitives{
+		Provider: coreMutationFake{fake: fake},
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+	}
+	if _, err := primitives.AppendMarkerComment(context.Background(), repo, MarkerCommentRequest{
+		ItemID: "7", ExpectedRevision: "parent-r1", IdempotencyKey: "prepared", Body: "prepared",
+	}); err != nil {
+		t.Fatalf("AppendMarkerComment: %v", err)
+	}
+	err := primitives.AttachChild(context.Background(), repo, providers.AttachWorkItemChildRequest{ParentID: "7", ChildID: "8"})
+	if err == nil {
+		t.Fatal("AttachChild error = nil, want unsupported hierarchy error")
 	}
 }

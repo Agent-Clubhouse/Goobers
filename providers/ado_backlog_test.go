@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,58 @@ func TestADOFindPullRequestByBranch(t *testing.T) {
 
 	if _, found, err := provider.FindPullRequestByBranch(context.Background(), repo, "run-999", "main"); err != nil || found {
 		t.Fatalf("FindPullRequestByBranch(run-999) found=%v err=%v, want not found", found, err)
+	}
+}
+
+func TestADODecompositionMarkerAndCommentMutations(t *testing.T) {
+	const marker = "<!-- goobers-action:v1 key=child -->"
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		decodeJSON(t, r, &body)
+		if strings.Contains(body.Query, "Description") {
+			t.Fatalf("query = %q, must not use full-text description search", body.Query)
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
+	})
+	for id, description := range map[int]string{1: "body\n" + marker, 2: "prefix " + marker} {
+		mux.HandleFunc("/org/project/_apis/wit/workitems/"+strconv.Itoa(id), func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, map[string]interface{}{
+				"id": id, "rev": 1,
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue",
+					"System.State":        "New",
+					"System.Description":  description,
+				},
+			})
+		})
+	}
+	mux.HandleFunc("/org/project/_apis/wit/workItems/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		writeJSON(t, w, map[string]interface{}{"commentId": 9, "text": body["text"]})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+	items, err := provider.FindWorkItemsByMarker(context.Background(), repo, marker)
+	if err != nil {
+		t.Fatalf("FindWorkItemsByMarker: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("items = %#v, want exact marker match #1", items)
+	}
+	comment, err := provider.CreateWorkItemComment(context.Background(), repo, "7", "prepared")
+	if err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	if comment.ID != "9" || comment.Body != "prepared" {
+		t.Fatalf("comment = %#v", comment)
 	}
 }

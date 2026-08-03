@@ -29,6 +29,10 @@ type WorkItemMutationProvider interface {
 	// listing, not an eventually-consistent full-text search index.
 	FindWorkItemsByMarker(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error)
 	CreateWorkItemComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
+}
+
+// WorkItemHierarchyProvider is the optional native parent/child surface.
+type WorkItemHierarchyProvider interface {
 	ListWorkItemChildren(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error)
 	AttachWorkItemChild(context.Context, providers.AttachWorkItemChildRequest) error
 }
@@ -157,6 +161,10 @@ func (p Primitives) AttachChild(ctx context.Context, repo providers.RepositoryRe
 	if err := p.validate(); err != nil {
 		return err
 	}
+	hierarchy, ok := p.Provider.(WorkItemHierarchyProvider)
+	if !ok {
+		return fmt.Errorf("provider %q does not support native work item hierarchy", repo.Provider)
+	}
 	release, err := p.Leaser.Acquire(ctx, repo, req.ParentID)
 	if err != nil {
 		return fmt.Errorf("acquire target lease: %w", err)
@@ -171,7 +179,7 @@ func (p Primitives) AttachChild(ctx context.Context, repo providers.RepositoryRe
 	if err != nil {
 		return err
 	}
-	children, err := p.Provider.ListWorkItemChildren(ctx, repo, req.ParentID)
+	children, err := hierarchy.ListWorkItemChildren(ctx, repo, req.ParentID)
 	if err != nil {
 		return err
 	}
@@ -183,7 +191,7 @@ func (p Primitives) AttachChild(ctx context.Context, repo providers.RepositoryRe
 	req.Repository = repo
 	req.ExpectedParentRevision = parent.Revision
 	req.ExpectedChildRevision = child.Revision
-	return p.Provider.AttachWorkItemChild(ctx, req)
+	return hierarchy.AttachWorkItemChild(ctx, req)
 }
 
 func (p Primitives) validate() error {
