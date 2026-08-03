@@ -200,6 +200,44 @@ func (p *GiteaProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id 
 	return mapGiteaIssue(issue), nil
 }
 
+// FindWorkItemsByMarker scans the authoritative issue listing for an exact
+// single-line body marker.
+func (p *GiteaProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}, "type": []string{"issues"}})
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []giteaIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode issues page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
+				matches = append(matches, mapGiteaIssue(issue))
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
 // ListComments returns the comments on a Gitea issue, oldest first.
 func (p *GiteaProvider) ListComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
 	if err := p.ready(); err != nil {
@@ -280,6 +318,28 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 		return err
 	}
 	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+}
+
+// CreateWorkItemComment appends one issue comment and returns its identity.
+func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
+	if err := p.ready(); err != nil {
+		return Comment{}, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return Comment{}, err
+	}
+	if id == "" {
+		return Comment{}, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment giteaComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	return mapGiteaComment(comment), nil
 }
 
 // CreateWorkItem creates a Gitea issue. Gitea takes label IDs, not names, so
@@ -992,11 +1052,8 @@ func (p *GiteaProvider) resolveExistingLabelIDs(ctx context.Context, repo Reposi
 }
 
 func (p *GiteaProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
+	_, err := p.CreateWorkItemComment(ctx, repo, id, body)
+	return err
 }
 
 // --- Gitea issue/comment/timeline decode structs and mappers ---
@@ -1071,6 +1128,7 @@ func mapGiteaIssue(issue giteaIssue) WorkItem {
 		Provider:   ProviderGitea,
 		ID:         strconv.Itoa(issue.Number),
 		ExternalID: strconv.FormatInt(issue.ID, 10),
+		Revision:   timeRevision(issue.UpdatedAt),
 		Type:       "issue",
 		Title:      issue.Title,
 		Body:       issue.Body,
