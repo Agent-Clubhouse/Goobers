@@ -33,6 +33,7 @@ type Command struct {
 // Group controls progressive disclosure in generated command indexes.
 type Group string
 
+// Command index groups, from the default operator surface to stage internals.
 const (
 	GroupCore     Group = "core"
 	GroupAdvanced Group = "advanced"
