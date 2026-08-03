@@ -289,7 +289,10 @@ spec:
 
     - name: park-needs-human
       type: deterministic
-      goal: Park a reviewer-rejected issue with the terminal review reason.
+      goal: >-
+        Park an issue only when implementation surfaced a policy or product
+        decision a human must make, stating the exact question in the terminal
+        review reason.
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
