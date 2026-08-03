@@ -70,6 +70,7 @@ func runRefresh(args []string, getenv func(string) string, stdout, stderr io.Wri
 	flags.SetOutput(stderr)
 	repository := flags.String("repository", "", "designated fixture repository in owner/name form")
 	issue := flags.String("issue", "", "stable fixture issue number")
+	pullRequest := flags.String("pull-request", "", "stable fixture pull request number")
 	output := flags.String("output", "", "candidate fixture output path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -78,8 +79,8 @@ func runRefresh(args []string, getenv func(string) string, stdout, stderr io.Wri
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return fmt.Errorf("-repository must use owner/name form")
 	}
-	if *issue == "" {
-		return fmt.Errorf("-issue is required")
+	if (*issue == "") == (*pullRequest == "") {
+		return fmt.Errorf("exactly one of -issue or -pull-request is required")
 	}
 	if *output == "" {
 		return fmt.Errorf("-output is required")
@@ -91,9 +92,10 @@ func runRefresh(args []string, getenv func(string) string, stdout, stderr io.Wri
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	fixture, err := refresh(ctx, providerfixture.RefreshConfig{
-		Repository: providerfixture.Repository{Owner: owner, Name: name},
-		Issue:      *issue,
-		Token:      token,
+		Repository:  providerfixture.Repository{Owner: owner, Name: name},
+		Issue:       *issue,
+		PullRequest: *pullRequest,
+		Token:       token,
 	})
 	if err != nil {
 		return fmt.Errorf("refresh provider fixture: %w", err)

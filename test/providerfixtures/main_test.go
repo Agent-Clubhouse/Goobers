@@ -65,6 +65,40 @@ func TestRefreshWritesNormalizedCandidate(t *testing.T) {
 	}
 }
 
+func TestRefreshAcceptsPullRequestTarget(t *testing.T) {
+	baselinePath := filepath.Join("..", "providers", "testdata", "github_pr_contract.json")
+	fixture, err := providerfixture.Read(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "candidate.json")
+	var stdout, stderr bytes.Buffer
+	exitCode := runWithRefresh(
+		[]string{"refresh", "-repository", "acme/fixtures", "-pull-request", "8", "-output", output},
+		func(name string) string {
+			if name == tokenEnvironment {
+				return "dedicated-token"
+			}
+			return ""
+		},
+		&stdout,
+		&stderr,
+		func(_ context.Context, cfg providerfixture.RefreshConfig) (providerfixture.Fixture, error) {
+			if cfg.Repository != (providerfixture.Repository{Owner: "acme", Name: "fixtures"}) ||
+				cfg.PullRequest != "8" || cfg.Issue != "" || cfg.Token != "dedicated-token" {
+				t.Fatalf("refresh config = %+v", cfg)
+			}
+			return fixture, nil
+		},
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if _, err := providerfixture.Read(output); err != nil {
+		t.Fatalf("read written candidate: %v", err)
+	}
+}
+
 func TestContractAndDriftCommands(t *testing.T) {
 	t.Parallel()
 	baseline := filepath.Join("..", "providers", "testdata", "github_contract.json")

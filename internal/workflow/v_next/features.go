@@ -752,9 +752,7 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	return currentFeatureRegistry.resolve(used.ids())
 }
 
-// addParallelFeatures records the DSL surface a parallel state uses. Every
-// field is preview until the conformance corpus is green, so any workflow that
-// declares a parallel needs the goobers.dev/allow-preview-features opt-in.
+// addParallelFeatures records the GA DSL fields used by a parallel state.
 func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
 	if parallel.FailurePolicy != "" {
 		used.add(featureParallelFailurePolicy)
