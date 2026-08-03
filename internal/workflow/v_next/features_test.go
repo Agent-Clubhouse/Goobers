@@ -123,7 +123,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	for _, feature := range features {
 		wantLevel := SupportGA
 		switch feature.ID {
-		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+		case featureGaggleSandbox,
 			featureTaskInputsFromQualified:
 			wantLevel = SupportPreview
 			previewSeen++

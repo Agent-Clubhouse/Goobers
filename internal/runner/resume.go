@@ -498,9 +498,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:   startState,
-				attempt: attempt,
-				class:   startedAttemptClass(segment, startState, attempt),
+				stage:                startState,
+				attempt:              attempt,
+				class:                startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
@@ -1411,6 +1412,18 @@ func startedAttemptClass(events []journal.Event, stageName string, attempt int) 
 		}
 	}
 	return ""
+}
+
+func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, attempt int) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventError || event.Stage != stageName || event.Attempt != attempt {
+			continue
+		}
+		committed, _ := event.Runner[infraCommittedWorkKey].(bool)
+		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
+	}
+	return false
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable
