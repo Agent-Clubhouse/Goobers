@@ -319,6 +319,11 @@ ci: deadcode
 bench-workcopy:
 	$(GO) run ./test/benchworkcopy $(BENCH_WORKCOPY_ARGS)
 
+## bench-large-repo: Run the >=10 GiB pinned-workspace acceptance benchmark.
+.PHONY: bench-large-repo
+bench-large-repo:
+	$(GO) run ./test/benchworkcopy -preset large-repo -mode pinned $(BENCH_LARGE_REPO_ARGS)
+
 ## stress: Repeat timing-sensitive packages under the race detector.
 .PHONY: stress
 stress:

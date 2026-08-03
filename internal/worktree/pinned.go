@@ -398,6 +398,20 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		return nil, err
 	}
 	createdPin := false
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
+		refs := []string{opts.BaseRef}
+		if opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch) {
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
+		}
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, pinDir, limit); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if _, err := os.Stat(pinDir); os.IsNotExist(err) {
 		if err := runGit(ctx, root, "clone", "--no-checkout", repoDir, pinDir); err != nil {
 			return nil, fmt.Errorf("worktree: materialize pinned workspace: %w", err)
@@ -477,7 +491,7 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		}
 	}
 	return &Worktree{
-		RunID: opts.RunID, Path: pinDir, Branch: opts.Branch,
+		RunID: opts.RunID, Path: pinDir, Branch: opts.Branch, PinnedWorkspaceCreated: createdPin,
 		manager: m, key: key, startRef: startRef, repoURL: opts.RepoURL,
 		pinned: true, repoDir: pinDir,
 	}, nil

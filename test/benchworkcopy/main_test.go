@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/testgit"
@@ -16,7 +17,7 @@ import (
 // content-hash surface the determinism test compares (every ref name and the
 // object id it points at).
 func fixtureRefs(ctx context.Context, dir string) (string, error) {
-	cmd := testgit.CommandContext(ctx, "for-each-ref", "--format=%(refname) %(objectname)")
+	cmd := testgit.CommandContext(ctx, "-c", "safe.bareRepository=all", "for-each-ref", "--format=%(refname) %(objectname)")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -156,5 +157,88 @@ func TestRunRejectsUnknownPreset(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"-preset", "galactic"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("run = %d, want usage failure 2", code)
+	}
+}
+
+func TestFixturePathHasConfiguredDepthAndLanguageMix(t *testing.T) {
+	for index, extension := range []string{".cpp", ".h", ".cs"} {
+		path := fixturePath(index, 12)
+		if got := strings.Count(path, "/"); got != 13 {
+			t.Fatalf("fixturePath(%d) slash count = %d, want 13: %s", index, got, path)
+		}
+		if !strings.HasSuffix(path, extension) {
+			t.Fatalf("fixturePath(%d) = %q, want %s extension", index, path, extension)
+		}
+	}
+}
+
+func TestPinnedBenchmarkReusesWorkspaceAndPreservesBuildState(t *testing.T) {
+	spec := fixtureSpec{
+		Seed: 1, Files: 24, HistoryDepth: 2, Branches: 1, Tags: 1,
+		PathDepth: 4, SharedBlobs: 3, SharedBlobBytes: 1024,
+	}
+	var progress bytes.Buffer
+	rep, err := benchmark(context.Background(), benchOptions{
+		spec: spec, preset: "test", mode: "pinned", baseRef: "main",
+		cycles: 1, maxPath: 1024, buildAllowance: 16, buildStateBytes: 4096,
+	}, &progress)
+	if err != nil {
+		t.Fatalf("benchmark: %v", err)
+	}
+	if rep.FirstRunWorkspaceCreates != 1 || rep.SecondRunWorkspaceCreates != 0 || rep.SecondRunCreateDelta != -1 || !rep.BuildStatePreserved {
+		t.Fatalf("pinned warm-run evidence = first creates:%d second creates:%d delta:%d state:%v",
+			rep.FirstRunWorkspaceCreates, rep.SecondRunWorkspaceCreates, rep.SecondRunCreateDelta, rep.BuildStatePreserved)
+	}
+	if rep.SecondRunWorkspaceBytes < rep.FirstRunWorkspaceBytes {
+		t.Fatalf("second workspace bytes = %d, first = %d", rep.SecondRunWorkspaceBytes, rep.FirstRunWorkspaceBytes)
+	}
+	if rep.DeepestRelativePathChars == 0 || rep.DeepestRelativePathChars > rep.PathBudgetAvailableChars {
+		t.Fatalf("deepest path/budget = %d/%d", rep.DeepestRelativePathChars, rep.PathBudgetAvailableChars)
+	}
+}
+
+func TestLargeRepoPresetPinsAcceptanceFloors(t *testing.T) {
+	spec := presets["large-repo"]
+	if got := int64(spec.Files) * spec.SharedBlobBytes; got < largeRepoWorkingTreeFloor {
+		t.Fatalf("large-repo tracked source bytes = %d, want at least %d", got, largeRepoWorkingTreeFloor)
+	}
+	if spec.PathDepth < largeRepoPathDepthFloor {
+		t.Fatalf("large-repo path depth = %d, want at least %d", spec.PathDepth, largeRepoPathDepthFloor)
+	}
+}
+
+func TestLargeRepoGatesRejectRegressions(t *testing.T) {
+	passing := report{
+		Fixture:                  &fixtureReport{PathDepth: largeRepoPathDepthFloor},
+		FirstRunWorkspaceBytes:   largeRepoWorkingTreeFloor,
+		SteadyStateBytes:         largeRepoDiskCeiling,
+		DeepestRelativePathChars: 200,
+		PathBudgetAvailableChars: 200,
+		FirstRunWorkspaceCreates: 1,
+		SecondRunCreateDelta:     -1,
+		BuildStatePreserved:      true,
+	}
+	if err := enforceLargeRepoGates(&passing); err != nil {
+		t.Fatalf("passing report rejected: %v", err)
+	}
+	tests := map[string]func(*report){
+		"working tree":  func(rep *report) { rep.FirstRunWorkspaceBytes-- },
+		"path depth":    func(rep *report) { rep.Fixture.PathDepth-- },
+		"path budget":   func(rep *report) { rep.DeepestRelativePathChars++ },
+		"steady disk":   func(rep *report) { rep.SteadyStateBytes++ },
+		"cold creation": func(rep *report) { rep.FirstRunWorkspaceCreates = 0 },
+		"warm creation": func(rep *report) { rep.SecondRunWorkspaceCreates = 1 },
+		"warm delta":    func(rep *report) { rep.SecondRunCreateDelta = 0 },
+	}
+	for name, regress := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := passing
+			fixture := *passing.Fixture
+			candidate.Fixture = &fixture
+			regress(&candidate)
+			if err := enforceLargeRepoGates(&candidate); err == nil {
+				t.Fatal("regressed report passed")
+			}
+		})
 	}
 }
