@@ -75,8 +75,8 @@ func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 			}
 
 			mechanicalRoutes := map[string][]string{
-				// review's escalation branch receives repass exhaustion,
-				// identical diffs, and non-retryable implementation failures.
+				// review's escalation branch receives empty diffs, repass
+				// exhaustion, identical diffs, and non-retryable failures.
 				"review":     {BranchEscalate},
 				"local-gate": {"infra", BranchEscalate},
 				"ci-gate":    {"timeout", BranchEscalate},
