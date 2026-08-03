@@ -74,7 +74,7 @@ func TestRefreshAcceptsPullRequestTarget(t *testing.T) {
 	}
 	output := filepath.Join(t.TempDir(), "candidate.json")
 	var stdout, stderr bytes.Buffer
-	exitCode := runWithRefresh(
+	exitCode := runWithRefreshers(
 		[]string{"refresh", "-repository", "acme/fixtures", "-pull-request", "8", "-output", output},
 		func(name string) string {
 			if name == tokenEnvironment {
@@ -91,6 +91,7 @@ func TestRefreshAcceptsPullRequestTarget(t *testing.T) {
 			}
 			return fixture, nil
 		},
+		providerfixture.RefreshADO,
 	)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
@@ -161,8 +162,6 @@ func TestADORefreshRequiresPAT(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), adoTokenEnvironment+" is required") {
 		t.Fatalf("missing ADO PAT was not reported clearly: %s", stderr.String())
-	}
-}
 	}
 }
 
