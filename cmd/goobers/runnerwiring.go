@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1800,6 +1801,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
+	pathLimits, pathLimitsErr := pathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
+	if pathLimitsErr != nil {
+		return runner.Config{}, nil, pathLimitsErr
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1809,6 +1814,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
+		}
+		for repoURL, limit := range pathLimits {
+			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
 		}
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
@@ -2088,7 +2096,39 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if tel != nil {
 		rc.Telemetry = tel
 	}
+	wtMgr.SetPathLengthLimits(pathLimits)
 	return rc, wtMgr, nil
+}
+
+func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {
+	limits := make(map[string]worktree.PathLengthLimit)
+	for i, repo := range cfg.Repos {
+		if repo.PathLength != nil && repo.PathLength.Disabled {
+			continue
+		}
+		if repo.PathLength == nil && goos != "windows" {
+			continue
+		}
+		url, err := cloneURL(apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider),
+			BaseURL:  repo.BaseURL,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("repos[%d] (%s/%s): resolve clone URL for path-length preflight: %w", i, repo.Owner, repo.Name, err)
+		}
+		limit := worktree.PathLengthLimit{MaxPathLength: worktree.DefaultMaxPathLength}
+		if repo.PathLength != nil {
+			if repo.PathLength.MaxPathLength != 0 {
+				limit.MaxPathLength = repo.PathLength.MaxPathLength
+			}
+			limit.BuildOutputAllowance = repo.PathLength.BuildOutputAllowance
+		}
+		limits[url] = limit
+	}
+	return limits, nil
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

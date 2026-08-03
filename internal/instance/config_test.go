@@ -222,6 +222,34 @@ workcopies:
 	}
 }
 
+func TestLoadConfigRepoPathLength(t *testing.T) {
+	cfg, err := LoadConfig(writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+    pathLength:
+      maxPathLength: 320
+      buildOutputAllowance: 48
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.Repos[0].PathLength
+	if got == nil || got.MaxPathLength != 320 || got.BuildOutputAllowance != 48 || got.Disabled {
+		t.Fatalf("pathLength = %+v", got)
+	}
+
+	cfg.Repos[0].PathLength.BuildOutputAllowance = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "pathLength.buildOutputAllowance must not be negative") {
+		t.Fatalf("Validate error = %v, want negative allowance rejection", err)
+	}
+}
+
 func TestEffectivePortalConfigAppliesDefaults(t *testing.T) {
 	cfg := &Config{}
 	got := cfg.EffectivePortalConfig()

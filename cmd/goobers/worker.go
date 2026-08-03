@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/goobers/goobers/internal/bootstrap"
@@ -127,7 +128,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 // runtime wiring slice; the engine's activities fail closed ("not configured")
 // if a stage needs one.
 func workerEngineDeps(workRoot string) (bootstrap.EngineDeps, error) {
-	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"))
+	return workerEngineDepsForPlatform(workRoot, runtime.GOOS)
+}
+
+func workerEngineDepsForPlatform(workRoot, goos string) (bootstrap.EngineDeps, error) {
+	var managerOptions []worktree.ManagerOption
+	if goos == "windows" {
+		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
+	}
+	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
 	if err != nil {
 		return bootstrap.EngineDeps{}, err
 	}
