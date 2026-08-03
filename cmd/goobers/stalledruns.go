@@ -22,9 +22,10 @@ type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, err
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu      sync.RWMutex
-	current map[string]*runner.Runner
-	owners  map[string]trackedRun
+	mu           sync.RWMutex
+	current      map[string]*runner.Runner
+	owners       map[string]trackedRun
+	hardStopping bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
@@ -63,7 +64,11 @@ func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runne
 		return func() {}
 	}
 	r.owners[runID] = trackedRun{RunID: runID, Workflow: workflow, owner: owner}
+	hardStopping := r.hardStopping
 	r.mu.Unlock()
+	if hardStopping {
+		owner.HardStopRunWhenStarted(runID)
+	}
 	return func() {
 		r.mu.Lock()
 		if tracked, ok := r.owners[runID]; ok && tracked.owner == owner {
@@ -108,8 +113,18 @@ func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
 }
 
 func (r *daemonRunnerRegistry) HardStopAll() {
-	for _, run := range r.ActiveRuns() {
-		run.owner.HardStopRun(run.RunID)
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.hardStopping = true
+	runs := make([]trackedRun, 0, len(r.owners))
+	for _, run := range r.owners {
+		runs = append(runs, run)
+	}
+	r.mu.Unlock()
+	for _, run := range runs {
+		run.owner.HardStopRunWhenStarted(run.RunID)
 	}
 }
 

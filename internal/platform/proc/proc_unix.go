@@ -41,10 +41,15 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	return &Tree{pid: cmd.Process.Pid}, nil
 }
 
-// kill SIGKILLs the whole process group (negative pid), not just the direct
-// child, so a runaway subprocess tree cannot outlive the stage.
+// kill snapshots descendants before terminating the process group so children
+// that escaped into another session cannot be orphaned by their parent's exit.
 func (t *Tree) kill() error {
-	return syscall.Kill(-t.pid, syscall.SIGKILL)
+	descendants := descendantPIDs(t.pid)
+	groupErr := syscall.Kill(-t.pid, syscall.SIGKILL)
+	for _, pid := range descendants {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	return groupErr
 }
 
 // requestDump SIGQUITs the whole process group so every Go process in it dumps

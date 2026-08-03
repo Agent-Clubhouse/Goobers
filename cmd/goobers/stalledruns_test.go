@@ -70,6 +70,55 @@ func TestDaemonRunnerRegistryRunIDsNilSafe(t *testing.T) {
 	}
 }
 
+func TestDaemonRunnerRegistryHardStopsRunTrackedAfterForce(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deterministic := &liveStalledDeterministic{started: make(chan struct{})}
+	runRunner, err := runner.New(runner.Config{
+		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		Worktrees:  manager,
+		ScratchDir: filepath.Join(layout.WorkcopiesDir(), "scratch"),
+		RunsDir:    layout.RunsDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "implementation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "must be stopped",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registry := newDaemonRunnerRegistry()
+	registry.HardStopAll()
+	untrack := registry.Track("late-run", "implementation", runRunner)
+	defer untrack()
+	result, err := runRunner.Start(context.Background(), runner.StartInput{
+		RunID:   "late-run",
+		Machine: machine,
+		Gaggle:  "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil || result.Phase != journal.PhaseRunning {
+		t.Fatalf("late tracked Start() = %+v, %v, want running checkpoint", result, err)
+	}
+}
+
 type stalledRunStarter struct {
 	mu    sync.Mutex
 	count int

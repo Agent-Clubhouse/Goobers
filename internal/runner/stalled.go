@@ -90,8 +90,9 @@ type activeRun struct {
 }
 
 type activeRunSet struct {
-	mu   sync.Mutex
-	runs map[string]*activeRun
+	mu        sync.Mutex
+	runs      map[string]*activeRun
+	hardStops map[string]struct{}
 }
 
 type activeRunContextKey struct{}
@@ -125,7 +126,12 @@ func (r *Runner) withActiveRunCleanup(ctx context.Context, runID string, jr *jou
 		return Result{}, err
 	}
 	r.active.runs[runID] = active
+	_, hardStop := r.active.hardStops[runID]
+	delete(r.active.hardStops, runID)
 	r.active.mu.Unlock()
+	if hardStop {
+		active.requestHardShutdown()
+	}
 
 	// Keep the public Start/Resume owner outside the workflow goroutine so a
 	// watchdog takeover can return even if an invocation ignores cancellation.
@@ -261,6 +267,23 @@ func (r *Runner) HardStopRun(runID string) bool {
 		return false
 	}
 	return active.requestHardShutdown()
+}
+
+// HardStopRunWhenStarted interrupts runID now or as soon as its active run
+// context is registered.
+func (r *Runner) HardStopRunWhenStarted(runID string) {
+	r.active.mu.Lock()
+	active := r.active.runs[runID]
+	if active == nil {
+		if r.active.hardStops == nil {
+			r.active.hardStops = make(map[string]struct{})
+		}
+		r.active.hardStops[runID] = struct{}{}
+		r.active.mu.Unlock()
+		return
+	}
+	r.active.mu.Unlock()
+	active.requestHardShutdown()
 }
 
 func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {

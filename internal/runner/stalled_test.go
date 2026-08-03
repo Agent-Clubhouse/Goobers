@@ -371,6 +371,7 @@ func TestHardStopRunLeavesCheckpointResumable(t *testing.T) {
 		result Result
 		err    error
 	}
+
 	done := make(chan startOutcome, 1)
 	go func() {
 		result, err := r.Start(context.Background(), StartInput{
@@ -410,6 +411,25 @@ func TestHardStopRunLeavesCheckpointResumable(t *testing.T) {
 	})
 	if err != nil || resumed.Phase != journal.PhaseCompleted {
 		t.Fatalf("Resume() = %+v, %v, want completed", resumed, err)
+	}
+}
+
+func TestHardStopRunWhenStartedStopsLateActiveRegistration(t *testing.T) {
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return &flakyDeterministic{}, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 1, time.Second)
+	r.HardStopRunWhenStarted("late-hard-stop")
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID:   "late-hard-stop",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || result.Phase != journal.PhaseRunning {
+		t.Fatalf("queued hard-stop Start() = %+v, %v, want running checkpoint", result, err)
 	}
 }
 

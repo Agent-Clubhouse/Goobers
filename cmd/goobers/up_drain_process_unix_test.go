@@ -47,9 +47,13 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 				t.Fatal(err)
 			}
 			pidsPath := filepath.Join(root, "stage.pids")
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
 			command := fmt.Sprintf(
-				`if [ -f %q ]; then exit 0; fi; sleep 60 & child=$!; printf '%%s %%s\n' "$$" "$child" > %q; wait`,
-				pidsPath, pidsPath,
+				`if [ -f %q ]; then exit 0; fi; printf '%%s ' "$$" > %q; %q -test.run=^TestUpDrainEscapedSessionProcess$ -- %q >/dev/null 2>&1 & wait`,
+				pidsPath, pidsPath, executable, pidsPath,
 			)
 			machine, err := workflow.Compile(workflow.Definition{
 				Name: "implementation", Version: 1,
@@ -67,6 +71,7 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			runRunner, err := runner.New(runner.Config{
 				NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 					resolver, resolveErr := credentials.NewResolver(nil)
@@ -137,6 +142,28 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 	}
 }
 
+func TestUpDrainEscapedSessionProcess(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
+		return
+	}
+	if _, err := syscall.Setsid(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(os.Args[len(os.Args)-1], os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(file, "%d\n", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
 func waitForStagePIDs(t *testing.T, path string) (int, int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -145,7 +172,8 @@ func waitForStagePIDs(t *testing.T, path string) (int, int) {
 		if err == nil {
 			fields := strings.Fields(string(data))
 			if len(fields) != 2 {
-				t.Fatalf("stage pid marker = %q, want shell and child pid", data)
+				time.Sleep(10 * time.Millisecond)
+				continue
 			}
 			stagePID, stageErr := strconv.Atoi(fields[0])
 			childPID, childErr := strconv.Atoi(fields[1])
