@@ -26,6 +26,13 @@ import (
 )
 
 func TestIntegrationPythonServiceGaggleRunsPytestGreen(t *testing.T) {
+	// Opt-in only (like the .NET/Java reference-gaggle integration tests):
+	// GOOBERS_PYTHON_E2E gates this to a host a human deliberately prepared,
+	// so an environment that fails these checks after opting in is a real
+	// host misconfiguration — fail loud (t.Fatalf), don't skip. The
+	// integration tier forbids raw t.Skip/t.Skipf entirely (test/integration's
+	// dependency guard); testdep.Require only covers PATH presence, so the
+	// Python 3.12 + pytest requirements are enforced here as hard failures.
 	testdep.RequireEnv(t, "GOOBERS_PYTHON_E2E")
 	testdep.Require(t, "python3")
 	version, err := exec.Command("python3", "--version").CombinedOutput()
@@ -33,10 +40,10 @@ func TestIntegrationPythonServiceGaggleRunsPytestGreen(t *testing.T) {
 		t.Fatalf("python3 --version: %v: %s", err, version)
 	}
 	if !strings.HasPrefix(strings.TrimSpace(string(version)), "Python 3.12.") {
-		t.Skipf("requires Python 3.12, got %s", strings.TrimSpace(string(version)))
+		t.Fatalf("requires Python 3.12, got %s", strings.TrimSpace(string(version)))
 	}
 	if output, err := exec.Command("python3", "-m", "pytest", "--version").CombinedOutput(); err != nil {
-		t.Skipf("requires pytest for Python 3.12: %v: %s", err, output)
+		t.Fatalf("requires pytest for Python 3.12: %v: %s", err, output)
 	}
 
 	t.Setenv("VIRTUAL_ENV", "/custom/python-venv")
