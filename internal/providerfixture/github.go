@@ -1,5 +1,5 @@
-// Package providerfixture records, normalizes, replays, and compares GitHub
-// provider contract fixtures.
+// Package providerfixture records, normalizes, replays, and compares provider
+// contract fixtures.
 package providerfixture
 
 import (
@@ -38,13 +38,13 @@ var ErrContractAssertion = errors.New("provider contract assertion failed")
 // ErrFixtureDrift identifies a material normalized difference from the baseline.
 var ErrFixtureDrift = errors.New("material normalized fixture drift")
 
-// Repository identifies the designated GitHub fixture repository.
+// Repository identifies the normalized provider fixture scope.
 type Repository struct {
 	Owner string `json:"owner"`
 	Name  string `json:"name"`
 }
 
-// Fixture contains normalized responses for the GitHub provider contract request set.
+// Fixture contains normalized responses for a provider contract request set.
 type Fixture struct {
 	SchemaVersion string     `json:"schemaVersion"`
 	Provider      string     `json:"provider"`
@@ -62,7 +62,7 @@ type Exchange struct {
 	Response FixtureResponse `json:"response"`
 }
 
-// FixtureResponse is the replayable portion of a GitHub API response.
+// FixtureResponse is the replayable portion of a provider API response.
 type FixtureResponse struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
@@ -203,10 +203,13 @@ func Write(path string, fixture Fixture) error {
 	return nil
 }
 
-// CheckContract replays a fixture through the GitHub provider and checks its mappings.
+// CheckContract replays a fixture through its provider and checks its mappings.
 func CheckContract(ctx context.Context, fixture Fixture) error {
 	if err := validate(fixture); err != nil {
 		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+	}
+	if fixture.Provider == "ado" {
+		return checkADOContract(ctx, fixture)
 	}
 	if fixture.PullRequest != "" {
 		return checkPullRequestContract(ctx, fixture)
@@ -507,8 +510,8 @@ func validate(fixture Fixture) error {
 	if fixture.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("fixture schemaVersion = %q, want %q", fixture.SchemaVersion, SchemaVersion)
 	}
-	if fixture.Provider != "github" {
-		return fmt.Errorf("fixture provider = %q, want github", fixture.Provider)
+	if fixture.Provider != "github" && fixture.Provider != "ado" {
+		return fmt.Errorf("fixture provider = %q, want github or ado", fixture.Provider)
 	}
 	if fixture.Repository.Owner == "" || fixture.Repository.Name == "" {
 		return fmt.Errorf("fixture repository owner and name are required")
@@ -537,7 +540,10 @@ func validate(fixture Fixture) error {
 		}
 	}
 	requiredExchanges := []string{"list-open-issues", "get-issue"}
-	if target.kind == pullRequestTarget {
+	switch {
+	case fixture.Provider == "ado":
+		requiredExchanges = []string{"list-open-work-items", "get-work-item"}
+	case target.kind == pullRequestTarget:
 		requiredExchanges = []string{"list-open-prs", "get-pr"}
 	}
 	for _, required := range requiredExchanges {

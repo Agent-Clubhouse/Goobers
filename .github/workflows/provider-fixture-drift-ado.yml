@@ -1,0 +1,79 @@
+name: ADO Provider Fixture Drift
+
+on:
+  workflow_dispatch:
+  # Enable a schedule only after the first live candidate has been reviewed.
+  # schedule:
+  #   - cron: "53 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-fixture-drift-ado
+  cancel-in-progress: true
+
+jobs:
+  provider-fixture-drift-ado:
+    name: ADO provider contract and normalized drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify explicit provisioning
+        env:
+          ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_PROVIDER_FIXTURE_WORK_ITEM: ${{ vars.ADO_PROVIDER_FIXTURE_WORK_ITEM }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          missing=""
+          [ -n "$ADO_ORG_URL" ] || missing="$missing ADO_ORG_URL"
+          [ -n "$ADO_PROJECT" ] || missing="$missing ADO_PROJECT"
+          [ -n "$ADO_PROVIDER_FIXTURE_WORK_ITEM" ] || missing="$missing ADO_PROVIDER_FIXTURE_WORK_ITEM"
+          [ -n "$ADO_PAT" ] || missing="$missing ADO_PAT"
+          if [ -n "$missing" ]; then
+            echo "::error title=ADO provider fixture refresh is not provisioned::Missing:$missing. Configure the stable seeded work item before making live calls."
+            exit 1
+          fi
+
+      - name: Refresh normalized candidate
+        env:
+          ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_PROVIDER_FIXTURE_WORK_ITEM: ${{ vars.ADO_PROVIDER_FIXTURE_WORK_ITEM }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: >-
+          go run ./test/providerfixtures refresh
+          -provider ado
+          -organization-url "$ADO_ORG_URL"
+          -project "$ADO_PROJECT"
+          -work-item "$ADO_PROVIDER_FIXTURE_WORK_ITEM"
+          -output ado-provider-fixture-candidate.json
+
+      - name: Provider contract assertions
+        run: >-
+          go run ./test/providerfixtures contract
+          -fixture ado-provider-fixture-candidate.json
+
+      - name: Normalized fixture drift
+        run: >-
+          go run ./test/providerfixtures drift
+          -baseline test/providers/testdata/ado_contract.json
+          -candidate ado-provider-fixture-candidate.json
+
+      - name: Upload normalized candidate
+        if: ${{ !cancelled() && hashFiles('ado-provider-fixture-candidate.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ado-provider-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ado-provider-fixture-candidate.json
+          retention-days: 30
