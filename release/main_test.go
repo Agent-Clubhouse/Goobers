@@ -248,7 +248,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"## 1. Install runtime prerequisites",
 		"source-only Linux validation harness is not included in release archives",
 		"## 2. Confirm the installed binary",
-		"goobers init ./my-instance",
+		"[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root)",
 		"every tool used by your configured workflows",
 		"bundled [Daemon supervision]",
 	} {
@@ -266,6 +266,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"../../CONTRIBUTING.md",
 		"../../packaging/systemd/goobers.service",
 		".github/workflows/ci.yml",
+		"goobers init ./my-instance",
 		"`make ci`",
 		"`golangci-lint`",
 	} {
