@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 // repo paths reused as fixtures.
@@ -43,12 +44,14 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
-	// config-examples ships two Gaggles (acme-web + the dotnet-service polyglot
-	// reference, #1093), eight Goobers (acme-web: coder, curator, docs,
-	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer), and nine Workflows (acme-web's eight +
-	// dotnet-implementation).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 2, "Goober": 8, "Workflow": 9}
+	// config-examples ships four Gaggles (acme-web plus the .NET, Java, and
+	// Python polyglot references), twelve Goobers (acme-web: coder, curator,
+	// docs, implementer, nominator, reviewer; dotnet-service:
+	// dotnet-implementer, dotnet-reviewer; java-service: java-implementer,
+	// java-reviewer; python-service: python-implementer, python-reviewer),
+	// and twelve Workflows (acme-web's nine plus all three polyglot
+	// implementations).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 4, "Goober": 12, "Workflow": 12}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {
@@ -190,8 +193,38 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 8 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
 		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
+	}
+}
+
+func TestLoad_IgnoresSkillPackageDefinitions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportFile := filepath.Join(root, "gaggles", "acme-web", "skills", "implement", "support.yaml")
+	if err := os.MkdirAll(filepath.Dir(supportFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(supportFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewLoader("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loader.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v (report: %+v)", err, report)
+	}
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
+		t.Fatalf("skill package definition leaked into render set: got %d goobers", got)
 	}
 }
 
@@ -297,6 +330,19 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
+	writeFile(t, filepath.Join(dir, "gaggles", "web", "goobers", "coder"), "goober.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata: {name: coder}
+spec:
+  gaggle: web
+  role: coder
+  instructions: instructions.md
+  skills: [present]
+`)
+	writeFile(t, filepath.Join(dir, "gaggles", "web", "goobers", "coder"), "instructions.md", "# Coder\n")
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(dir), "skills", "present"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate a prior render living under the config root: a duplicate Gaggle
 	// that, if ingested, would cause a duplicate-name validation error.
@@ -316,6 +362,11 @@ spec: {instance: {name: acme, environment: dev}, gaggles: [web]}
 	by := objectsByKind(set.Objects)
 	if len(by["Gaggle"]) != 1 {
 		t.Errorf("expected exactly 1 Gaggle (output dir ignored), got %d", len(by["Gaggle"]))
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("present skill package emitted warning: %+v", warning)
+		}
 	}
 }
 

@@ -50,6 +50,15 @@ const (
 	// (#965/#1010). Injected only under injectRunContext, alongside GOOBERS_GAGGLE.
 	BranchNamespaceEnvVar = "GOOBERS_BRANCH_NAMESPACE"
 
+	// BaseBranchEnvVar is the env var a goobers-CLI stage reads to learn its
+	// gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.
+	// Branch, "main" when unset) — the branch every worktree is actually
+	// forked from. PR-lifecycle stages (pr-select, open-pr, rebase-pr, ...)
+	// resolve their "base" input default via this var instead of assuming
+	// "main" (#2087). Injected only under injectRunContext, alongside
+	// GOOBERS_GAGGLE.
+	BaseBranchEnvVar = "GOOBERS_BASE_BRANCH"
+
 	// BuiltinErrorFileEnvVar carries an executor-owned file path through which
 	// goobers CLI stages report typed failures even when the stage declares no
 	// resultFile. It is an internal subprocess protocol, not a DSL input.
@@ -105,7 +114,7 @@ func baseEnv(extra []string) []string {
 // process env for the stage: baseEnv(), the definition's explicit env, one
 // GOOBERS_CRED_* var per declared capability that has a materialized credential,
 // plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
-// GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_INSTANCE_ROOT and the
+// GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_BASE_BRANCH/GOOBERS_INSTANCE_ROOT and the
 // provider snapshot identifier associated with the scheduler evaluation (when
 // present), plus one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor
 // appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function
@@ -134,7 +143,7 @@ func baseEnv(extra []string) []string {
 // (credentials.Injector's own contract — not every capability is
 // credentialed); resolution failure for a capability that IS granted fails
 // closed.
-func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
+func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared []string, registrar credentials.SecretRegistrar, runID, gaggle, workflowID, branchNamespace, baseBranch, instanceRoot string, injectRunContext bool, inputs map[string]interface{}, declaredEnv map[string]string, extraEnvAllowlist []string, additionalRepos map[string]string) ([]string, error) {
 	env := baseEnv(extraEnvAllowlist)
 	keys := make([]string, 0, len(declaredEnv))
 	for key := range declaredEnv {
@@ -155,11 +164,20 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// changes what a crash/quit dump contains. Set here so a hung stage's
 	// captured artifact shows the complete blocked-goroutine picture, not just
 	// user goroutines.
+	// Left unconditional intentionally (#2172): a non-Go stage (`dotnet test`,
+	// `npm run ci`, `pytest`) never reads this var, so it is silently inert for
+	// those stacks rather than harmful — no gating on a declared go-family
+	// capability needed. See the identical call-out already carried in
+	// config-examples/gaggles/dotnet-service/workflows/dotnet-implementation.yaml
+	// (AC5, #1093).
 	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
 		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_GAGGLE="+gaggle, "GOOBERS_WORKFLOW="+workflowID)
 		if branchNamespace != "" {
 			env = append(env, BranchNamespaceEnvVar+"="+branchNamespace)
+		}
+		if baseBranch != "" {
+			env = append(env, BaseBranchEnvVar+"="+baseBranch)
 		}
 		if instanceRoot != "" {
 			env = append(env, InstanceRootEnvVar+"="+instanceRoot)

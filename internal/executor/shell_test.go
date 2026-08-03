@@ -137,6 +137,30 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_DefaultEnvCanBeOverriddenByStage(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	exec.DefaultEnv = map[string]string{"GOOBERS_TEST_DEFAULT": "default"}
+	env := baseEnvelope(t)
+	command := []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`}
+	if runtime.GOOS == "windows" {
+		command = []string{"cmd.exe", "/D", "/S", "/C", `echo|set /p="%GOOBERS_TEST_DEFAULT%"`}
+	}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: command,
+		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "override" {
+		t.Fatalf("stdout = %q, want stage override", got)
+	}
+}
+
 func TestShellExecutor_RunScript(t *testing.T) {
 	exec, rec := newPortableTestExecutor(t, nil)
 	env := baseEnvelope(t)
@@ -273,6 +297,41 @@ func TestShellExecutor_TypedTimeoutOverridesLegacyInput(t *testing.T) {
 	}
 	if got != 7*time.Second {
 		t.Fatalf("timeout = %s, want 7s from invocation limits", got)
+	}
+}
+
+// The configured baseline only moves the floor: a stage that declares its own
+// deadline still wins, and an instance that configures nothing keeps the
+// built-in DefaultTimeout (#1969).
+func TestShellExecutor_ConfiguredDefaultTimeoutIsOnlyAFloor(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+
+	unconfigured := baseEnvelope(t)
+	got, err := exec.timeoutFor(unconfigured)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != DefaultTimeout {
+		t.Fatalf("timeout = %s, want the built-in %s when nothing is configured", got, DefaultTimeout)
+	}
+
+	exec.DefaultTimeout = 25 * time.Minute
+	got, err = exec.timeoutFor(unconfigured)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 25*time.Minute {
+		t.Fatalf("timeout = %s, want the configured baseline 25m", got)
+	}
+
+	declared := baseEnvelope(t)
+	declared.Limits.MaxDurationSeconds = 90
+	got, err = exec.timeoutFor(declared)
+	if err != nil {
+		t.Fatalf("timeoutFor: %v", err)
+	}
+	if got != 90*time.Second {
+		t.Fatalf("timeout = %s, want the stage's own 90s to win over the configured baseline", got)
 	}
 }
 
@@ -559,12 +618,13 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
-	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+	env.Inputs = map[string]interface{}{InputTimeout: "2s"}
 
 	const marker = "__SIGQUIT_DUMP_MARKER__"
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		// Trap SIGQUIT -> print the marker and exit; otherwise block forever.
-		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do sleep 0.05; done`},
+		// Trap SIGQUIT -> print the marker and exit; otherwise block without a
+		// child process that could defer the shell's trap handling.
+		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do :; done`},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

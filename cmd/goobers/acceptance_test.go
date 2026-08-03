@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,10 +38,11 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // acceptanceWorkflowYAML is the agentic build loop the dogfood implementation
-// workflow (selfhost/gaggles/goobers/workflows/implementation.yaml) is built
+// workflow (reference-workflows/gaggles/goobers/workflows/implementation.yaml) is built
 // around, trimmed to the stages runnable without the not-yet-wired provider
 // built-ins (backlog-query/open-pr/ci-poll/issue-close-out): a manual `goobers
 // run` starts it directly at `implement`. It mirrors #29's skeletonMachine.
@@ -236,7 +236,7 @@ func commitFixtureChange(workspace string, call int) error {
 		{"add", "-A"},
 		{"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", fmt.Sprintf("coder impl %d", call)},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = workspace
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %w\n%s", args, err, out)

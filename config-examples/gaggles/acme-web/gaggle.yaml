@@ -25,8 +25,8 @@ spec:
   # Per-gaggle CI command (MGV-1/#1009): this is a non-Go (web) stack, so the
   # deterministic `local-ci` stage runs this suite in place of the Go default
   # `["make", "ci"]` its workflow declares — no need to fork the shared workflow
-  # template. A non-zero exit fails the gate exactly as `make ci` does, and only
-  # ever fails this gaggle's own PRs.
+  # template. A non-zero exit fails the gate exactly as that Go default does,
+  # and only ever fails this gaggle's own PRs.
   ciCommand: ["npm", "run", "ci"]
   # Runner capabilities every run of this gaggle needs (RRQ-1/#1101). These are
   # matched at *schedule* time against the runner's advertised set

@@ -55,6 +55,10 @@ func (j *branchJournal) RecordStageArtifactWithIntegrity(stage string, attempt i
 	return j.run.RecordBranchStageArtifactWithIntegrity(j.branch, stage, attempt, class, name, data, integrity)
 }
 
+func (j *branchJournal) ExportOutbox(stage string, attempt int, class journal.AttemptClass, files []journal.OutboxFile) ([]journal.Ref, error) {
+	return j.run.ExportBranchOutbox(j.branch, stage, attempt, class, files)
+}
+
 func (j *branchJournal) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchSpanWithSchema(j.branch, stage, name, dataSchema, data)
 }
@@ -493,6 +497,7 @@ func (r *Runner) runParallelBranch(
 	var replayGateEvent *journal.Event
 	startAttempt := int32(1)
 	var firstClass journal.AttemptClass
+	var committedWorkOnInfra bool
 	if boundary, ok := lastParallelBoundary(history); ok {
 		if task, isTask := in.Machine.Task(state); isTask {
 			switch {
@@ -534,6 +539,7 @@ func (r *Runner) runParallelBranch(
 				if replayTask == nil {
 					startAttempt = int32(attempt) + 1
 					firstClass = journal.AttemptInfra
+					committedWorkOnInfra = infraFailedAttemptCommittedWork(history, state, attempt)
 				}
 			}
 		} else if _, isGate := in.Machine.Gate(state); isGate &&
@@ -581,7 +587,7 @@ func (r *Runner) runParallelBranch(
 					ctx, branchJournal, in, ex, task, branch.id,
 					branchContextPointers(basePointers, result.pointers),
 					result.lastResult, result.completed, nil, startAttempt, firstClass,
-					"", workspaceBranch, nil, &branchRecorded,
+					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra,
 				)
 				startAttempt = 1
 				firstClass = ""
@@ -770,10 +776,11 @@ func (r *Runner) runParallelBranch(
 				return result
 			default:
 				if gr.Escalated {
-					reason, _ := terminalGateNotificationReason(gr)
-					if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
-						result.status, result.err = journal.BranchFailed, err
-						return result
+					if reason, notify := terminalGateNotificationReason(gr); notify {
+						if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
+							result.status, result.err = journal.BranchFailed, err
+							return result
+						}
 					}
 				}
 				state = gr.Target

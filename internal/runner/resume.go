@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -230,7 +231,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	})
 }
 
-func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (Result, error) {
+func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (result Result, retErr error) {
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: open run %q for resume: %w", in.RunID, err)
@@ -295,6 +296,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
+	}
+	if override, ok := latestActiveGateOverride(events); ok {
+		switch override.Target {
+		case journal.TargetComplete, workflow.TerminalComplete:
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, override.Gate, 0)
+		case workflow.TargetAbort:
+			return r.finish(in.RunID, jr, journal.PhaseAborted, override.Gate, 0)
+		case workflow.TargetEscalate:
+			return r.finish(in.RunID, jr, journal.PhaseEscalated, override.Gate, 0)
+		}
 	}
 	if resumed, ok := latestRunResume(events); ok &&
 		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
@@ -487,9 +498,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:   startState,
-				attempt: attempt,
-				class:   startedAttemptClass(segment, startState, attempt),
+				stage:                startState,
+				attempt:              attempt,
+				class:                startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
@@ -551,6 +563,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
 	}
+	_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
+	if err != nil {
+		if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, startState, 0); ok {
+			return interrupted, interruptErr
+		}
+		return Result{}, err
+	}
+	defer func() {
+		if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+			retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+		}
+	}()
 	ctx, span := r.startRunSpan(ctx, startIn)
 	defer span.End()
 	setStalledAttemptContext(ctx)
@@ -594,7 +618,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	result, err := r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+	result, err = r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -636,7 +660,7 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 			return humanGateProgress{gate: g.Name, pauseSeq: event.Seq, waiting: true}
 		case journal.EventGateStarted,
 			journal.EventStageStarted, journal.EventStageFinished,
-			journal.EventRunResumed, journal.EventRunFinished:
+			journal.EventRunResumed, journal.EventGateOverridden, journal.EventRunFinished:
 			return humanGateProgress{}
 		}
 	}
@@ -645,7 +669,7 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 
 func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed {
+		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
 			return events[i+1:], events[i].Target
 		}
 	}
@@ -654,8 +678,20 @@ func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
 
 func latestRunResume(events []journal.Event) (journal.Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed {
+		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
 			return events[i], true
+		}
+	}
+	return journal.Event{}, false
+}
+
+func latestActiveGateOverride(events []journal.Event) (journal.Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case journal.EventGateOverridden:
+			return events[i], true
+		case journal.EventRunFinished:
+			return journal.Event{}, false
 		}
 	}
 	return journal.Event{}, false
@@ -1376,6 +1412,18 @@ func startedAttemptClass(events []journal.Event, stageName string, attempt int) 
 		}
 	}
 	return ""
+}
+
+func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, attempt int) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventError || event.Stage != stageName || event.Attempt != attempt {
+			continue
+		}
+		committed, _ := event.Runner[infraCommittedWorkKey].(bool)
+		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
+	}
+	return false
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

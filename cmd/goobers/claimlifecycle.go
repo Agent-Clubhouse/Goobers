@@ -14,20 +14,74 @@ import (
 // after an explicit workflow release already did the same work.
 func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
 	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunRelease, l.Gaggle(), runID, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(log),
-		)
+		return releaseClaimsForRunLocked(l, log, runID)
+	})
+}
+
+func releaseClaimsForRunWithDefaultTimeout(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	return withClaimLockBounds(lockPath, claimLockOperationRunRelease, instance.DefaultClaimsLockTimeout, claimLockSlowThreshold, claimLockEventContext{
+		Gaggle: l.Gaggle(),
+		RunID:  runID,
+	}, func() error {
+		return releaseClaimsForRunLocked(l, log, runID)
+	})
+}
+
+func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithInstanceLog(log),
+	)
+	if err != nil {
+		return fmt.Errorf("open claim ledger: %w", err)
+	}
+	for _, entry := range ledger.ForRunAll(runID) {
+		if err := ledger.ReleaseEntry(entry, runID); err != nil {
+			return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
+		}
+	}
+	return nil
+}
+
+// renewLiveClaims re-acquires every claim held by a run this process is
+// currently tracking (daemonRunnerRegistry.RunIDs, via `goobers up`'s
+// periodic claimTicker) — issue #2014's liveness signal, chosen over a
+// per-stage heartbeat because a stage runs as a subprocess with no reach into
+// the daemon process's claim ledger, while this process's own bookkeeping of
+// "which runs am I actively driving right now" already exists (stalledruns.go)
+// and stops tracking a run the moment it finishes or this process dies —
+// exactly the liveness RecoverExpired's own doc has always wanted and never
+// had. Opens the ledger WITHOUT WithInstanceLog deliberately: RenewEntry
+// reuses Claim/ClaimScoped, which journals claim.acquired on every success,
+// and a routine renewal every claimRecoverInterval for every live run is
+// bookkeeping, not an audit-worthy event — journaling it here would add a
+// recurring InstanceLog.Append (a real cost per its own doc) purely to
+// restate what the original claim and any eventual release already record.
+func renewLiveClaims(l instance.Layout, runIDs []string, leaseDuration time.Duration) ([]localscheduler.ClaimEntry, error) {
+	if len(runIDs) == 0 {
+		return nil, nil
+	}
+	var renewed []localscheduler.ClaimEntry
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRenewal, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		for _, entry := range ledger.ForRunAll(runID) {
-			if err := ledger.ReleaseEntry(entry, runID); err != nil {
-				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
+		for _, runID := range runIDs {
+			for _, entry := range ledger.ForRunAll(runID) {
+				ok, err := ledger.RenewEntry(entry, leaseDuration)
+				if err != nil {
+					return fmt.Errorf("renew claim %s for run %s: %w", entry.ItemID, runID, err)
+				}
+				if ok {
+					renewed = append(renewed, entry)
+				}
 			}
 		}
 		return nil
 	})
+	return renewed, err
 }
 
 // recoverClaims releases expired leases and leases whose owning run is already

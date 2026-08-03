@@ -66,6 +66,18 @@
             "target": { "type": "string", "minLength": 1, "description": "Workflow name a per-workflow tutor is confined to. Omit for a per-gaggle tutor." }
           }
         },
+        "requires": {
+          "type": "object",
+          "description": "Provider-capability requirements this workflow needs from its gaggle's connected provider (CONF-6, #2079). Distinct from a task's requiredCapabilities (runner/toolchain) and capabilities (credential grants). Omit to derive the requirement set from the stages this workflow uses; an explicit value here replaces that derivation entirely.",
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "type": "array",
+              "description": "Provider capability keys this workflow requires (e.g. \"pr.merge\", \"pr.landing.enqueue\") — see docs/design/provider-contract-conformance.md §3.1.",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "tasks": { "type": "array", "description": "Work states in the workflow state machine.", "items": { "$ref": "#/$defs/task" } },
         "gates": { "type": "array", "description": "Validation and branching states in the workflow state machine.", "items": { "$ref": "#/$defs/gate" } },
         "parallels": { "type": "array", "description": "Static fan-out/fan-in states in the workflow state machine.", "items": { "$ref": "#/$defs/parallel" } }
@@ -120,7 +132,8 @@
       "additionalProperties": false,
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
-        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
     },
     "trigger": {
@@ -213,6 +226,12 @@
           ]
         },
         "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for an agentic task. Deterministic tasks use run.workspace instead." },
+        "outbox": {
+          "type": "array",
+          "description": "Workspace-relative paths (files or directories) this stage durably exports into the run journal's outbox namespace on completion, for output that isn't something that can PR against a repo. A declared path that is missing is skipped; one that escapes the workspace fails the stage closed.",
+          "maxItems": 32,
+          "items": { "type": "string" }
+        },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
         "capabilities": {
@@ -223,9 +242,11 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",
+              "provider:pr:write",
               "github:pr:write",
               "github:pr:review",
               "github:branch:delete",
@@ -289,6 +310,7 @@
               "record-merge-refusal",
               "record-remediation-checkpoint",
               "release-backlog-claim",
+              "release-pr-claim",
               "respond-to-findings",
               "rework-pr",
               "route-queue-outcome",
@@ -362,7 +384,7 @@
             "check": {
               "type": "string",
               "minLength": 1,
-              "description": "Registered automated check name. Built-in names are status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, and queue-outcome."
+              "description": "Registered automated check name. Built-in names are status-equals, failure-class, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, and queue-outcome."
             },
             "params": {
               "type": "object",

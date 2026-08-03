@@ -130,6 +130,7 @@ function workflowDetail(
         owner: null,
         evaluator: "",
         capabilities: [SENSITIVE.capability],
+        rawYaml: "",
       },
       {
         name: "implement",
@@ -138,6 +139,7 @@ function workflowDetail(
         owner: { gaggle: gaggleName, name: "implementer" },
         evaluator: "",
         capabilities: [SENSITIVE.capability],
+        rawYaml: "",
       },
       {
         name: "review",
@@ -146,6 +148,7 @@ function workflowDetail(
         owner: { gaggle: gaggleName, name: "implementer" },
         evaluator: "agentic",
         capabilities: [SENSITIVE.capability],
+        rawYaml: "",
       },
     ],
   };
@@ -180,6 +183,7 @@ function activeRun(
     trigger: { kind: "item", ref: SENSITIVE.triggerRef },
     phase: "running",
     terminal: false,
+    noWork: false,
     currentStage: stage,
     startedAt,
     durationMillis: 120_000,
@@ -273,6 +277,25 @@ describe("factory floor entities", () => {
       "complete",
       "escalate",
     ]);
+  });
+
+  it("preserves declared parallel branch names on line conveyors", () => {
+    const core = workflowDetail("core");
+    core.graph.nodes[0] = { id: "query", kind: "parallel" };
+    core.graph.edges = [
+      { source: "query", target: "implement", branch: "linux" },
+      { source: "query", target: "review", branch: "windows" },
+      { source: "implement", target: "", outcome: "done", terminal: "complete" },
+      { source: "review", target: "@escalate", outcome: "fail", terminal: "escalate" },
+    ];
+
+    const model = twoGaggleFloor({
+      workflowDetails: details(core, workflowDetail("tools")),
+    });
+
+    const branches = model.lanes[0].conveyors.filter((conveyor) => conveyor.branch);
+    expect(branches.map((conveyor) => conveyor.branch)).toEqual(["linux", "windows"]);
+    expect(new Set(branches.map((conveyor) => conveyor.labelY)).size).toBe(2);
   });
 
   it("places a goober at an owned stage only while that stage holds work", () => {

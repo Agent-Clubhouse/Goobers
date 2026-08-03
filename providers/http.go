@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxPerPage is the GitHub REST API's maximum page size; getAllPages requests
@@ -109,6 +110,32 @@ func IsNotFoundError(err error) bool {
 	return errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound
 }
 
+// isIdempotentHTTPMethod reports whether method is safe to retry
+// automatically after a transport failure or 5xx without risking a
+// duplicate side effect (#2026), shared by every provider's low-level send
+// loop. GET/HEAD/PUT/DELETE are idempotent by HTTP semantics; POST and
+// PATCH are excluded by default — a provider's write surface (branch/
+// commit/PR/work-item mutations, comments) has no transport-level dedup
+// marker to make a blind retry of those safe, so a lost response is
+// surfaced as an error rather than silently risking a duplicate commit,
+// comment, or state transition.
+func isIdempotentHTTPMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// ErrMergeConflict is the provider-neutral sentinel a MergePullRequest
+// implementation wraps when the forge reports a confirmed merge conflict
+// through a channel other than GitHub's 405-with-wording response — e.g.
+// ADO's completion job reports mergeStatus="conflicts" in an ordinary 200
+// response body, not an HTTP error (CONF-3 #2076). IsMergeConflictError
+// recognizes either shape.
+var ErrMergeConflict = errors.New("provider reported a merge conflict")
+
 // IsMergeConflictError reports whether err is a typed provider response that
 // the forge returned specifically because the pull request has merge
 // conflicts (issue #1751). A conflicted PR is a normal business refusal —
@@ -122,8 +149,14 @@ func IsNotFoundError(err error) bool {
 // reclassified: an unrecognized 405 must keep the generic provider-error
 // behavior rather than be silently recorded as a conflict refusal. So the
 // status code alone is never sufficient — the response body must also name
-// the condition.
+// the condition. ADO has no such HTTP-status-coded refusal (its completion
+// job reports conflicts via mergeStatus in a 200 response, CONF-3 #2076),
+// so its MergePullRequest wraps ErrMergeConflict directly instead of
+// constructing a providerResponseError.
 func IsMergeConflictError(err error) bool {
+	if errors.Is(err, ErrMergeConflict) {
+		return true
+	}
 	var responseErr *providerResponseError
 	if !errors.As(err, &responseErr) {
 		return false
@@ -141,6 +174,33 @@ func IsMergeConflictError(err error) bool {
 func mentionsMergeConflict(body string) bool {
 	lowered := strings.ToLower(body)
 	return strings.Contains(lowered, "not mergeable") || strings.Contains(lowered, "merge conflict")
+}
+
+// IsPullRequestAlreadyExistsError reports whether err is a typed provider
+// response the forge returned because a pull request already exists for the
+// requested head/base (issue #1767). OpenPullRequest's own contract promises
+// idempotency by checking first and creating only when nothing is found, but
+// a second caller for the same stable run branch can still win a genuine
+// create race between that check and the POST — a normal, expected business
+// outcome (the PR OpenPullRequest was about to open already exists), not an
+// infrastructure failure. The caller re-resolves via FindPullRequestByBranch
+// on a classified error rather than this function returning the PR itself,
+// so classification and recovery stay separate the way IsMergeConflictError
+// and IsNotFoundError do.
+//
+// Deliberately narrow, mirroring IsMergeConflictError's discipline: GitHub's
+// pull-creation endpoint returns 422 for many unrelated validation failures
+// (empty diff, invalid base, etc.), so the status code alone is never
+// sufficient — the response body must also name the condition.
+func IsPullRequestAlreadyExistsError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(strings.ToLower(responseErr.body), "already exists")
 }
 
 // retryGuidanceSuffix formats GitHub's raw rate-limit headers as the
@@ -410,6 +470,55 @@ func withRunIDFooter(body, runID string) string {
 		return "---\n" + footer
 	}
 	return body + "\n\n---\n" + footer
+}
+
+// capDescriptionWithFooter appends the run-ID footer and, when the result would
+// exceed maxChars characters, trims the body so the whole description fits while
+// keeping the footer intact. Some providers (notably Azure DevOps, which caps a
+// PR description at 4000 characters and rejects anything longer with HTTP 400)
+// enforce a hard limit that the structured PR body (which has no overall cap of
+// its own) can exceed. The footer carries the run-id that open-pr relies on for
+// idempotency and traceability, so it is always preserved; only the body is
+// trimmed, preferring a line boundary so a markdown/HTML block is not sliced
+// mid-line. maxChars <= 0 disables the cap. Length is counted in runes (Unicode
+// code points), matching how ADO counts "characters".
+func capDescriptionWithFooter(body, runID string, maxChars int) string {
+	full := withRunIDFooter(body, runID)
+	if maxChars <= 0 || utf8.RuneCountInString(full) <= maxChars {
+		return full
+	}
+	const marker = "\n\n_… description truncated to fit the provider's length limit …_"
+	footer := ""
+	if runID != "" {
+		if body == "" {
+			footer = "---\n" + runFooter(runID)
+		} else {
+			footer = "\n\n---\n" + runFooter(runID)
+		}
+	}
+	budget := maxChars - utf8.RuneCountInString(marker) - utf8.RuneCountInString(footer)
+	if budget <= 0 {
+		// Degenerate: the footer plus marker alone already exceed the limit.
+		// Hard-truncate the fully rendered description on a rune boundary.
+		return truncateRunes(full, maxChars)
+	}
+	trimmed := truncateRunes(body, budget)
+	if idx := strings.LastIndexByte(trimmed, '\n'); idx > 0 {
+		trimmed = trimmed[:idx]
+	}
+	return strings.TrimRight(trimmed, " \n") + marker + footer
+}
+
+// truncateRunes returns s limited to at most max runes, cutting on a rune
+// boundary so multi-byte characters are never split.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
 }
 
 func shouldEmitWorkItem(seen map[string]time.Time, item WorkItem) bool {

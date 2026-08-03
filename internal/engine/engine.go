@@ -511,11 +511,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
-		env.Inputs = make(map[string]interface{}, 1+len(subject.Outputs))
-		env.Inputs[gate.InputKeyStatus] = string(subject.Status)
-		for k, v := range subject.Outputs {
-			env.Inputs[k] = v
-		}
+		env.Inputs = gate.AutomatedInputs(subject)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var outcome string
@@ -559,8 +555,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 // buildInvocation assembles a stage invocation envelope to the closed
 // invocation schema, mirroring the local runner's buildEnvelope
 // (internal/runner/run.go) field for field: identity, trigger, branch
-// namespace, goal, repo, item, read-only context pointers, capability grants,
-// limits, and static inputs (#621). The one field deliberately absent here is
+// namespace, base branch, goal, repo, item, read-only context pointers,
+// capability grants, limits, and static inputs (#621). The one field
+// deliberately absent here is
 // Workspace: provisioning a working copy is a side effect, so the activity
 // host provisions one fresh per attempt and stamps it into the envelope
 // before the stage executes (Activities.provisionWorkspace) — failing closed,
@@ -570,6 +567,13 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	for k, v := range taskInputs {
 		inputs[k] = v
 	}
+	// BaseBranch mirrors the local runner's fallback (internal/runner/run.go,
+	// #2087): RepoRef.Branch is the branch every worktree is actually forked
+	// from, defaulting to "main" when unset.
+	baseBranch := in.RepoRef.Branch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
 	return apiv1.InvocationEnvelope{
 		TaskID:          in.RunID + ":" + stateName,
 		WorkflowID:      in.WorkflowName,
@@ -577,6 +581,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		TriggerRef:      in.TriggerRef,
 		Gaggle:          in.Gaggle,
 		BranchNamespace: in.BranchNamespace,
+		BaseBranch:      baseBranch,
 		Goal:            goal,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,

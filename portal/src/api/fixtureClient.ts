@@ -89,6 +89,9 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  capabilities: {
+    revealRun: true,
+  },
 };
 
 interface FixtureRunCursor {
@@ -120,6 +123,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
     return fixture(DEFAULT_PORTAL_CONFIG, options);
+  }
+
+  revealRun(_runId: string, options?: RequestOptions): Promise<void> {
+    return fixture(undefined, options);
   }
 
   listGaggles(_request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {
@@ -345,6 +352,7 @@ function matchesRunRequest(
   request?: RunListOptions,
 ): boolean {
   if (
+    (!request?.showNoWork && run.noWork) ||
     (request?.gaggle && run.gaggle !== request.gaggle) ||
     (request?.workflow && run.workflow !== request.workflow) ||
     (request?.phase && run.phase !== request.phase) ||

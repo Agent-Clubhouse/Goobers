@@ -12,14 +12,23 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// fakeMergePolicyProvider is the narrow RepoProvider slice
-// detectMergePolicy depends on, stubbed via the same embedded-nil-interface
-// pattern internal/mergepolicy's own tests use.
+// fakeMergePolicyProvider is the narrow Provider slice detectMergePolicy
+// depends on, stubbed via the same embedded-nil-interface pattern
+// internal/mergepolicy's own tests use. It embeds the full Provider (not
+// just RepoProvider) because detectMergePolicy now receives a
+// *providers.Dispatcher (CONF-1 #2074), which requires Capabilities() to
+// decide whether to reach DetectMergePolicy at all.
 type fakeMergePolicyProvider struct {
-	providers.RepoProvider
+	providers.Provider
 	calls  int
 	result providers.RepoMergePolicyResult
 	err    error
+}
+
+func (f *fakeMergePolicyProvider) Kind() providers.ProviderKind { return providers.ProviderGitHub }
+
+func (f *fakeMergePolicyProvider) Capabilities() providers.CapabilitySet {
+	return providers.NewCapabilitySet(providers.CapPRLandingDetectPolicy)
 }
 
 func (f *fakeMergePolicyProvider) DetectMergePolicy(ctx context.Context, req providers.RepoMergePolicyRequest) (providers.RepoMergePolicyResult, error) {
@@ -34,7 +43,7 @@ func TestDetectMergePolicyCachesAcrossCalls(t *testing.T) {
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyMergeQueue}}
 	var stderr bytes.Buffer
 
-	policy, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
 	if err != nil {
 		t.Fatalf("first detectMergePolicy call: %v", err)
 	}
@@ -47,7 +56,7 @@ func TestDetectMergePolicyCachesAcrossCalls(t *testing.T) {
 
 	// A second call for the SAME repo+branch, still within TTL, must hit the
 	// cache — not call the provider again.
-	policy, err = detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr)
+	policy, err = detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
 	if err != nil {
 		t.Fatalf("second detectMergePolicy call: %v", err)
 	}
@@ -66,10 +75,10 @@ func TestDetectMergePolicyMissesCacheForDifferentBranch(t *testing.T) {
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
 
-	if _, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr); err != nil {
+	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr); err != nil {
 		t.Fatalf("detect for main: %v", err)
 	}
-	if _, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "release", &stderr); err != nil {
+	if _, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "release", &stderr); err != nil {
 		t.Fatalf("detect for release: %v", err)
 	}
 	if fake.calls != 2 {
@@ -92,7 +101,7 @@ func TestDetectMergePolicyExpiredEntryReDetects(t *testing.T) {
 
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
-	policy, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
 	if err != nil {
 		t.Fatalf("detectMergePolicy: %v", err)
 	}
@@ -112,7 +121,7 @@ func TestDetectMergePolicyPropagatesProviderError(t *testing.T) {
 	fake := &fakeMergePolicyProvider{err: wantErr}
 	var stderr bytes.Buffer
 
-	_, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr)
+	_, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("detectMergePolicy error = %v, want %v", err, wantErr)
 	}
@@ -132,7 +141,7 @@ func TestMergePolicyCacheCorruptFileDegradesToLiveDetect(t *testing.T) {
 
 	fake := &fakeMergePolicyProvider{result: providers.RepoMergePolicyResult{Policy: providers.MergePolicyDirect}}
 	var stderr bytes.Buffer
-	policy, err := detectMergePolicy(context.Background(), fake, l.SchedulerDir(), repo, "main", &stderr)
+	policy, err := detectMergePolicy(context.Background(), providers.NewDispatcher(fake), l.SchedulerDir(), repo, "main", &stderr)
 	if err != nil {
 		t.Fatalf("detectMergePolicy: %v", err)
 	}

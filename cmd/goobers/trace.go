@@ -55,7 +55,9 @@ const traceHelp = "Usage: goobers trace [--json] [--follow] [--transcripts | --t
 	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
 	"or --transcript to select one stage. With --follow, stream a live run's\n" +
 	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
-	"\".\"). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
+	"\".\"). Remediation escalations include the typed outcome, attempted flag,\n" +
+	"and attempted causes in the text summary and JSON `escalation.remediation`\n" +
+	"object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO\n" +
 	"error, 130 = interrupted while following.\n"
 
 func runTraceWithFactories(
@@ -391,10 +393,11 @@ func printTranscripts(stdout io.Writer, transcripts []readservice.TranscriptCont
 }
 
 type escalationSummary struct {
-	Stage                  string `json:"stage"`
-	Gate                   string `json:"gate"`
-	RepassCount            int    `json:"repassCount"`
-	LastNeedsChangesReason string `json:"lastNeedsChangesReason"`
+	Stage                  string                             `json:"stage"`
+	Gate                   string                             `json:"gate"`
+	RepassCount            int                                `json:"repassCount"`
+	LastNeedsChangesReason string                             `json:"lastNeedsChangesReason"`
+	Remediation            *readservice.RemediationEscalation `json:"remediation,omitempty"`
 }
 
 func traceEscalation(
@@ -411,6 +414,7 @@ func traceEscalation(
 		Gate:                   notRecorded,
 		RepassCount:            detail.Escalation.RepassCount,
 		LastNeedsChangesReason: notRecorded,
+		Remediation:            detail.Escalation.Remediation,
 	}
 	if traceDetail != nil {
 		summary.RepassCount = traceDetail.RepassCount
@@ -445,6 +449,13 @@ func printEscalationSummary(stdout io.Writer, summary escalationSummary) {
 	pf(stdout, "  stage: %s\n", summary.Stage)
 	pf(stdout, "  gate: %s\n", summary.Gate)
 	pf(stdout, "  repass count: %d\n", summary.RepassCount)
+	if summary.Remediation != nil {
+		pf(stdout, "  remediation outcome: %s\n", summary.Remediation.Outcome)
+		pf(stdout, "  repair attempted: %t\n", summary.Remediation.Attempted)
+		if len(summary.Remediation.AttemptedCauses) > 0 {
+			pf(stdout, "  attempted causes: %s\n", strings.Join(summary.Remediation.AttemptedCauses, ", "))
+		}
+	}
 	pf(stdout, "  last needs-changes reason: %s\n\n", reason)
 }
 
@@ -453,8 +464,8 @@ func traceCIFailures(
 	reads readservice.OfflineRuns,
 	runID string,
 	events []readservice.RunEvent,
-) ([]providers.CheckDetail, error) {
-	var failures []providers.CheckDetail
+) ([]executor.CICheck, error) {
+	var failures []executor.CICheck
 	for _, event := range events {
 		if !event.KnownSchema ||
 			event.Type != journal.EventStageFinished ||
@@ -483,7 +494,7 @@ func traceCIFailures(
 	return failures, nil
 }
 
-func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
+func printCIFailures(stdout io.Writer, checks []executor.CICheck) {
 	if len(checks) == 0 {
 		return
 	}
@@ -491,6 +502,32 @@ func printCIFailures(stdout io.Writer, checks []providers.CheckDetail) {
 	for _, check := range checks {
 		pf(stdout, "  check=%q summary=%q url=%q\n",
 			check.Name, firstLine(check.Summary), check.URL)
+		// Annotations carry file/line/message and are frequently the only
+		// machine-readable diagnosis, since a job that writes no
+		// output.summary leaves summary empty (#1972).
+		for _, annotation := range check.Annotations {
+			pf(stdout, "    %s\n", formatCheckAnnotation(annotation))
+		}
+	}
+}
+
+// formatCheckAnnotation renders one annotation as file:line: message, omitting
+// the parts the provider did not supply.
+func formatCheckAnnotation(annotation providers.CheckAnnotation) string {
+	location := annotation.Path
+	if location != "" && annotation.StartLine > 0 {
+		location = fmt.Sprintf("%s:%d", location, annotation.StartLine)
+	}
+	message := firstLine(annotation.Message)
+	switch {
+	case location == "" && annotation.Title == "":
+		return message
+	case location == "":
+		return fmt.Sprintf("%s: %s", annotation.Title, message)
+	case annotation.Title == "":
+		return fmt.Sprintf("%s: %s", location, message)
+	default:
+		return fmt.Sprintf("%s: %s: %s", location, annotation.Title, message)
 	}
 }
 

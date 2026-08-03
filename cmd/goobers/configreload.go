@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,11 +20,12 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
-	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -71,16 +73,34 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
-	layout          instance.Layout
-	setup           *schedulerSetup
-	scheduler       *localscheduler.Scheduler
-	openPRs         *openPRLoop
-	reads           *readservice.Local
-	events          *httpapi.EventStream
+	layout    instance.Layout
+	setup     *schedulerSetup
+	scheduler *localscheduler.Scheduler
+	openPRs   *openPRLoop
+	reads     *readservice.Local
+	// mu serializes poll()/pollOnce() across the reloader's two independent
+	// callers (Run's own ticker, gated behind --watch-config, and #459's
+	// on-demand apply sweep, which is unconditional). Before #459, poll()
+	// only ever ran on Run's single goroutine; now a concurrent `goobers
+	// apply` while --watch-config is also on would otherwise race on every
+	// field below plus the non-idempotent scheduler.Reload/RunnerRegistry
+	// .Replace/openPRs.Replace side effects poll performs.
+	mu sync.Mutex
+	// readModel publishes a definitions-changed row into the change feed
+	// (#1929). Replaces the deleted poller's out-of-band publish, so a config
+	// reload reaches clients through the SAME ordered feed as everything else
+	// rather than a second channel with its own latency.
+	readModel       *readmodel.Store
 	wg              *sync.WaitGroup
 	appliedDigest   string
 	observedDigest  string
 	lastDigestError string
+	// lastRejectionMessage is set by reject() during the most recent poll
+	// call and cleared at the start of each pollOnce (#459) — it lets an
+	// on-demand caller distinguish a validation rejection from "nothing to
+	// do," which poll's own plain error return cannot (reject reports success
+	// once the rejection is durably journaled).
+	lastRejectionMessage string
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -91,13 +111,38 @@ func (r *configReloader) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case now := <-ticker.C:
-			if err := r.poll(now); err != nil {
+			r.mu.Lock()
+			err := r.poll(now)
+			r.mu.Unlock()
+			if err != nil {
 				return err
 			}
 		}
 	}
 }
 
+// pollOnce runs exactly one reload check — the same check the ticker in Run
+// performs every tick — and reports a structured outcome instead of just
+// success/failure, so an on-demand caller (goobers apply, #459) can
+// distinguish "nothing changed," "applied," and "rejected: <message>."
+func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	oldDigest = r.appliedDigest
+	r.lastRejectionMessage = ""
+	if pollErr := r.poll(now); pollErr != nil {
+		return false, oldDigest, oldDigest, "", pollErr
+	}
+	if r.appliedDigest != oldDigest {
+		return true, oldDigest, r.appliedDigest, "", nil
+	}
+	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
+}
+
+// poll runs one reload check. Callers must hold r.mu — poll freely mutates
+// appliedDigest/observedDigest/lastDigestError/lastRejectionMessage and
+// drives non-idempotent side effects (scheduler.Reload, RunnerRegistry
+// .Replace, openPRs.Replace) with no internal synchronization of its own.
 func (r *configReloader) poll(now time.Time) error {
 	digest, err := configDirectoryDigest(r.layout.ConfigDir())
 	if err != nil {
@@ -124,7 +169,7 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
-	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
+	if webhookListenerTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
 	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
@@ -165,6 +210,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
+		r.observedDigest = r.appliedDigest
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
@@ -174,10 +220,17 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
+		r.observedDigest = r.appliedDigest
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
-	if r.events != nil {
-		r.events.PublishDefinitionsChanged()
+	if r.readModel != nil {
+		// Logged, not fatal: a reload that applied correctly must not be
+		// reported as failed because its invalidation could not be recorded.
+		// The cost is that connected clients notice the new definitions on
+		// their next ordinary refresh instead of immediately.
+		if err := r.readModel.PublishDefinitionsChanged(context.Background()); err != nil {
+			log.Printf("config reload: publish definitions change: %v", err)
+		}
 	}
 	r.appliedDigest = digest
 	return nil
@@ -185,6 +238,7 @@ func (r *configReloader) poll(now time.Time) error {
 
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
+	r.lastRejectionMessage = message
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
 		Error: &journal.ErrorDetail{
@@ -246,6 +300,9 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
+		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
+			return filepath.SkipDir
+		}
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -338,6 +395,7 @@ type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
 		Instructions string   `json:"instructions"`
+		Gaggle       string   `json:"gaggle"`
 		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
@@ -363,7 +421,7 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) (
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
 			if err != nil {
 				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
 			}

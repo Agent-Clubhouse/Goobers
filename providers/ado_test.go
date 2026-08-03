@@ -2,8 +2,10 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -204,7 +206,16 @@ func TestADOListWorkItemsLimitCountsMatchingLabels(t *testing.T) {
 	}
 }
 
-func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
+// TestADOListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary is
+// #2067's regression test: with Limit=1 and a LabelPredicate, the first
+// WIQL candidate fails the predicate but a later one matches. Before the
+// fix, $top was pinned to req.Limit (1), so the single fetched candidate
+// was the nonmatching one and ListWorkItems returned zero items despite a
+// real match existing — silently breaking "Limit = up to N matches". The
+// fix gives the candidate fetch an oversized ceiling whenever a post-WIQL
+// filter (here, LabelPredicate) is active, so the match is found in one
+// call instead of requiring the caller to already know to page further.
+func TestADOListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary(t *testing.T) {
 	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -213,16 +224,10 @@ func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
 	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("$top"); got != "1" {
-			t.Fatalf("$top = %q, want 1", got)
+		if got := r.URL.Query().Get("$top"); got != strconv.Itoa(candidateScanCeiling) {
+			t.Fatalf("$top = %q, want %d (oversized: LabelPredicate is active)", got, candidateScanCeiling)
 		}
-		var body map[string]string
-		decodeJSON(t, r, &body)
-		id := 1
-		if strings.Contains(body["query"], "[System.Id] > 1") {
-			id = 2
-		}
-		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": id}}})
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
 	})
 	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
 		getRequests++
@@ -248,28 +253,68 @@ func TestADOListWorkItemsBoundsAndAdvancesPredicateScan(t *testing.T) {
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	repo := RepositoryRef{Name: "repo", Project: "project"}
 
-	firstPage := &ListWorkItemsPageInfo{}
-	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
-		Repository: repo, LabelPredicate: predicate, Limit: 1, PageInfo: firstPage,
-	})
-	if err != nil {
-		t.Fatalf("ListWorkItems page 1: %v", err)
-	}
-	if len(items) != 0 || getRequests != 1 || !firstPage.HasNext || firstPage.NextCursor != "1" {
-		t.Fatalf(
-			"items = %#v, GET requests = %d, page info = %+v; want one nonmatching raw candidate",
-			items, getRequests, firstPage,
-		)
-	}
 	pageInfo := &ListWorkItemsPageInfo{}
-	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
-		Repository: repo, LabelPredicate: predicate, Limit: 1, Cursor: "1", PageInfo: pageInfo,
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, LabelPredicate: predicate, Limit: 1, PageInfo: pageInfo,
 	})
 	if err != nil {
-		t.Fatalf("ListWorkItems page 2: %v", err)
+		t.Fatalf("ListWorkItems: %v", err)
 	}
 	if len(items) != 1 || items[0].ID != "2" || getRequests != 2 {
-		t.Fatalf("items = %#v, GET requests = %d; want matching second candidate", items, getRequests)
+		t.Fatalf("items = %#v, GET requests = %d; want the matching second candidate found in one call", items, getRequests)
+	}
+	if pageInfo.HasNext {
+		t.Fatalf("page info = %+v, want HasNext=false (every fetched candidate was scanned, and the fetch wasn't itself capped)", pageInfo)
+	}
+}
+
+// TestADOListWorkItemsOversizedScanAppliesToStateFilterToo proves #2067's
+// second acceptance criterion — "same guarantee holds for ... state
+// filters on the bounded path" — not just LabelPredicate/FieldPredicate:
+// requestedState "open"/"closed" needs each candidate's process-specific
+// state category read before it can be compared, so it is exactly as
+// unable to fold into WIQL's $top truncation as a predicate is.
+func TestADOListWorkItemsOversizedScanAppliesToStateFilterToo(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("$top"); got != strconv.Itoa(candidateScanCeiling) {
+			t.Fatalf("$top = %q, want %d (oversized: a state filter is active)", got, candidateScanCeiling)
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		itemType, numericID := "Done", 1 // Completed category -> "closed", rejected by requestedState=open
+		if id == "2" {
+			itemType, numericID = "New", 2 // Proposed category -> "open", matches
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": itemType,
+				"System.Title":        id,
+				"System.State":        itemType,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Name: "repo", Project: "project"}
+
+	pageInfo := &ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: repo, State: "open", Limit: 1, PageInfo: pageInfo,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("items = %#v; want the open second candidate found in one call", items)
+	}
+	if pageInfo.HasNext {
+		t.Fatalf("page info = %+v, want HasNext=false", pageInfo)
 	}
 }
 
@@ -504,11 +549,15 @@ func TestADOProviderListPullRequests(t *testing.T) {
 		}
 		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
 			{
-				"pullRequestId":         12,
-				"url":                   "api-pr-url",
-				"status":                "active",
-				"title":                 "Implement ADO reads",
-				"createdBy":             map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"status":        "active",
+				"title":         "Implement ADO reads",
+				"createdBy":     map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
+				"reviewers": []map[string]interface{}{
+					{"displayName": "Pending Reviewer", "uniqueName": "reviewer@example.com", "vote": 0},
+					{"displayName": "Completed Reviewer", "uniqueName": "done@example.com", "vote": 10},
+				},
 				"creationDate":          "2026-07-15T20:30:00Z",
 				"sourceRefName":         "refs/heads/goobers/implementation/run-1",
 				"targetRefName":         "refs/heads/main",
@@ -520,8 +569,10 @@ func TestADOProviderListPullRequests(t *testing.T) {
 			},
 			{
 				"pullRequestId": 13,
-				"sourceRefName": "refs/heads/human/manual-fix",
+				"sourceRefName": "refs/heads/goobers/implementation/run-2",
 				"targetRefName": "refs/heads/main",
+				"createdBy":     map[string]string{"uniqueName": "other@example.com"},
+				"reviewers":     []map[string]interface{}{{"uniqueName": "reviewer@example.com", "vote": 0}},
 			},
 		}})
 	})
@@ -530,9 +581,11 @@ func TestADOProviderListPullRequests(t *testing.T) {
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	prs, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Base:       "main",
-		HeadPrefix: "goobers/",
+		Repository:        RepositoryRef{Name: "repo", Project: "project"},
+		Base:              "main",
+		HeadPrefix:        "goobers/",
+		Author:            "mona@example.com",
+		RequestedReviewer: "reviewer@example.com",
 	})
 	if err != nil {
 		t.Fatalf("ListPullRequests returned error: %v", err)
@@ -550,8 +603,24 @@ func TestADOProviderListPullRequests(t *testing.T) {
 	if !pr.Draft || pr.CheckState != CheckStatePending || len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
 		t.Fatalf("unexpected pull request metadata: %#v", pr)
 	}
+	if pr.Author != "mona@example.com" || len(pr.Assignees) != 0 ||
+		len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0] != "reviewer@example.com" {
+		t.Fatalf("unexpected pull request identities: %#v", pr)
+	}
 	if got := pr.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-07-15T20:30:00Z" {
 		t.Fatalf("UpdatedAt = %q", got)
+	}
+}
+
+func TestADOProviderListPullRequestsRejectsAssigneeFilter(t *testing.T) {
+	provider := NewADOProvider("org", "project", "token")
+	_, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Assignee:   "mona@example.com",
+	})
+	var unsupported ErrUnsupported
+	if !errors.As(err, &unsupported) || unsupported.Capability != CapPRQueryAssignee {
+		t.Fatalf("ListPullRequests error = %v, want ErrUnsupported for %q", err, CapPRQueryAssignee)
 	}
 }
 

@@ -4,7 +4,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,12 +16,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/flake"
 )
 
 const (
-	stressCount      = 20
-	reportSchema     = "goobers.dev/stress/v1"
-	failureTextLimit = 64 * 1024
+	stressCount           = 20
+	reportSchema          = "goobers.dev/stress/v1"
+	failureTextLimit      = 64 * 1024
+	failureSignatureLimit = 1024
 )
 
 type options struct {
@@ -86,6 +88,7 @@ type testFailure struct {
 	Fingerprint          string    `json:"fingerprint"`
 	Package              string    `json:"package"`
 	Test                 string    `json:"test"`
+	FailureSignature     string    `json:"failure_signature"`
 	FailureText          string    `json:"failure_text"`
 	FailureTextTruncated bool      `json:"failure_text_truncated"`
 	FirstSeenRun         string    `json:"first_seen_run"`
@@ -442,8 +445,9 @@ func (c *failureCollector) add(test, text string, observed time.Time) {
 	if text == "" {
 		text = "test reported failure without output"
 	}
+	signature := normalizeFailureSignature(text)
 	text, truncated := truncateFailureText(text)
-	fingerprint := failureFingerprint(c.pkg, test)
+	fingerprint := failureFingerprint(c.pkg, test, signature)
 	if index, ok := c.failureIndex[fingerprint]; ok {
 		c.failures[index].LastSeenAt = observed
 		c.failures[index].LastSeenRun = c.runID
@@ -455,6 +459,7 @@ func (c *failureCollector) add(test, text string, observed time.Time) {
 		Fingerprint:          fingerprint,
 		Package:              c.pkg,
 		Test:                 test,
+		FailureSignature:     signature,
 		FailureText:          text,
 		FailureTextTruncated: truncated,
 		FirstSeenRun:         c.runID,
@@ -474,11 +479,13 @@ func syntheticFailure(pkg, runID, text string, observed time.Time) testFailure {
 	if text == "" {
 		text = "package failed without output"
 	}
+	signature := normalizeFailureSignature(text)
 	text, truncated := truncateFailureText(text)
 	return testFailure{
-		Fingerprint:          failureFingerprint(pkg, "(package)"),
+		Fingerprint:          failureFingerprint(pkg, "(package)", signature),
 		Package:              pkg,
 		Test:                 "(package)",
+		FailureSignature:     signature,
 		FailureText:          text,
 		FailureTextTruncated: truncated,
 		FirstSeenRun:         runID,
@@ -496,10 +503,12 @@ func truncateFailureText(text string) (string, bool) {
 	return text[:failureTextLimit], true
 }
 
-// Test output contains volatile durations, addresses, and goroutine IDs; keep
-// the ledger key stable while retaining the complete failure text separately.
-func failureFingerprint(pkg, test string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(pkg+"\x00"+test)))
+func normalizeFailureSignature(text string) string {
+	return flake.NormalizeSignature(text)
+}
+
+func failureFingerprint(pkg, test, signature string) string {
+	return flake.Fingerprint(pkg, test, signature)
 }
 
 func artifactBase(pkg string) string {

@@ -53,6 +53,17 @@ const (
 	DimPopulation Dim = "population"
 	DimSince      Dim = "since"
 	DimUntil      Dim = "until"
+	// DimActivity marks a query ordered by last_activity_at rather than
+	// started_at (#1777).
+	//
+	// A dimension rather than a flag beside the set, because the ordering axis
+	// changes which index can serve a combination — {gaggle} needs
+	// idx_run_gaggle_recency on one axis and idx_run_gaggle_activity on the
+	// other. Treating it as anything but part of the combination's identity
+	// would let an activity-ordered query claim a started_at index, seek the
+	// right rows, and then sort them: bounded in rows returned, unbounded in
+	// rows examined, which is exactly what the closed set exists to prevent.
+	DimActivity Dim = "activity"
 )
 
 // AllDims is the full filter space, in canonical order.
@@ -61,7 +72,8 @@ const (
 // so every lookup normalises to this order. Without it, {gaggle, phase} and
 // {phase, gaggle} would be different keys for the same query.
 var AllDims = []Dim{
-	DimGaggle, DimWorkflow, DimPhase, DimStage, DimOutcome, DimPopulation, DimSince, DimUntil,
+	DimGaggle, DimWorkflow, DimPhase, DimStage, DimOutcome, DimPopulation,
+	DimSince, DimUntil, DimActivity,
 }
 
 // Combination is one supported filter combination.
@@ -145,6 +157,104 @@ var supportedCombinations = []Combination{
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+since"},
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+until"},
 	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimUntil}, Index: "idx_run_gaggle_workflow_recency", Bench: "list/gaggle+workflow+window"},
+
+	// Stage-scoped (#1782). These drive from run_stage, where the stage
+	// predicate, the gaggle scope, and the run-recency ordering are all served by
+	// one index. They used to be refused, which meant the portal's Insight
+	// drill-throughs fell to the journal path and opened one journal per
+	// candidate EXAMINED -- unbounded, because nothing capped the candidate loop.
+	{Dims: []Dim{DimStage}, Index: "idx_run_stage_recency", Bench: "list/stage"},
+	{Dims: []Dim{DimStage, DimSince}, Index: "idx_run_stage_recency", Bench: "list/stage+since"},
+	{Dims: []Dim{DimStage, DimUntil}, Index: "idx_run_stage_recency", Bench: "list/stage+until"},
+	{Dims: []Dim{DimStage, DimSince, DimUntil}, Index: "idx_run_stage_recency", Bench: "list/stage+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage"},
+	{Dims: []Dim{DimGaggle, DimStage, DimSince}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+window"},
+
+	// Stage + stage-outcome is NOT here, and the omission is deliberate (#1782).
+	//
+	// It looks like the easiest of the three -- run_stage already carries
+	// last_status, and `s.last_status = ?` is a one-line predicate on an index
+	// that costs nothing to add. It is also wrong, and the differential oracle
+	// is what showed it.
+	//
+	// The reference walks EVERY attempt of the stage (matchesStageAttempt) and
+	// matches if ANY of them had the requested status. run_stage keeps only the
+	// LAST attempt's status, so a stage that failed on attempt 1 and succeeded on
+	// attempt 2 stores `success` -- and `outcome=failure` must match that run.
+	// An equality test on last_status silently misses it. The filter would look
+	// like it worked, return fewer runs than the journal path, and nothing would
+	// say so.
+	//
+	// The outcome filter is also not a plain equality even per attempt:
+	// `terminal` means success-or-failure, `other` means neither, and `finished`
+	// means any. And an outcome-filtered list additionally requires the RUN to be
+	// terminal, which is a predicate on a different table.
+	//
+	// Serving it correctly needs per-attempt status sets in the projection, not a
+	// last-status column. That is its own change with its own oracle run, so
+	// until then this stays refused and falls to the journal path -- which is
+	// slow and right, and is what it did before.
+
+	// Population, stage-scoped. Index names the token-measured member of a
+	// four-index family; the plan test asserts that each population resolves to
+	// its own partial index rather than to this one.
+	{Dims: []Dim{DimStage, DimPopulation}, Index: "idx_run_stage_token", Bench: "list/stage+population"},
+	{Dims: []Dim{DimStage, DimPopulation, DimSince}, Index: "idx_run_stage_token", Bench: "list/stage+population+since"},
+	{Dims: []Dim{DimStage, DimPopulation, DimUntil}, Index: "idx_run_stage_token", Bench: "list/stage+population+until"},
+	{Dims: []Dim{DimStage, DimPopulation, DimSince, DimUntil}, Index: "idx_run_stage_token", Bench: "list/stage+population+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimSince}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimUntil}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimPopulation, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_token", Bench: "list/gaggle+stage+population+window"},
+
+	// Population WITHOUT a stage, answered from the run-level rollup. This must
+	// not be served by widening the stage-scoped form: a run with cost recorded in
+	// ANY stage matches here, which is a different question.
+	{Dims: []Dim{DimPopulation}, Index: "idx_run_any_token", Bench: "list/population"},
+	{Dims: []Dim{DimPopulation, DimSince}, Index: "idx_run_any_token", Bench: "list/population+since"},
+	{Dims: []Dim{DimPopulation, DimUntil}, Index: "idx_run_any_token", Bench: "list/population+until"},
+	{Dims: []Dim{DimPopulation, DimSince, DimUntil}, Index: "idx_run_any_token", Bench: "list/population+window"},
+
+	{Dims: []Dim{DimGaggle, DimPopulation}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimSince}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+since"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+until"},
+	{Dims: []Dim{DimGaggle, DimPopulation, DimSince, DimUntil}, Index: "idx_run_gaggle_any_token", Bench: "list/gaggle+population+window"},
+
+	// The last-activity axis (#1777). Each mirrors its started_at counterpart
+	// with an index whose ordering column is last_activity_at, because reusing
+	// the started_at index would make the planner sort rather than seek.
+	//
+	// Not mirrored: anything with DimStage. run_stage carries run_started_at but
+	// no activity copy, so a stage-scoped activity query would sort against the
+	// joined run row. It stays refused rather than served slowly.
+	{Dims: []Dim{DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+activity"},
+	{Dims: []Dim{DimSince, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+since+activity"},
+	{Dims: []Dim{DimUntil, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+until+activity"},
+	{Dims: []Dim{DimSince, DimUntil, DimActivity}, Index: "idx_run_activity", Bench: "list/unrestricted+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+activity"},
+	{Dims: []Dim{DimGaggle, DimSince, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+since+activity"},
+	{Dims: []Dim{DimGaggle, DimUntil, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+until+activity"},
+	{Dims: []Dim{DimGaggle, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_activity", Bench: "list/gaggle+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+since+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimUntil, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+until+activity"},
+	{Dims: []Dim{DimGaggle, DimWorkflow, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_workflow_activity", Bench: "list/gaggle+workflow+window+activity"},
+
+	{Dims: []Dim{DimPhase, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+activity"},
+	{Dims: []Dim{DimPhase, DimSince, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+since+activity"},
+	{Dims: []Dim{DimPhase, DimUntil, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+until+activity"},
+	{Dims: []Dim{DimPhase, DimSince, DimUntil, DimActivity}, Index: "idx_run_phase_activity", Bench: "list/phase+window+activity"},
+
+	{Dims: []Dim{DimGaggle, DimPhase, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimSince, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+since+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimUntil, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+until+activity"},
+	{Dims: []Dim{DimGaggle, DimPhase, DimSince, DimUntil, DimActivity}, Index: "idx_run_gaggle_phase_activity", Bench: "list/gaggle+phase+window+activity"},
 }
 
 // Lookup returns the supported combination for a dimension set.

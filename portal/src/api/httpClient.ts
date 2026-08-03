@@ -61,6 +61,7 @@ const clientRoutes = {
   workflowDetail: apiRoutes.workflowDetail,
   runs: apiRoutes.runs,
   runDetail: apiRoutes.runDetail,
+  runReveal: apiRoutes.runReveal,
   runEvents: apiRoutes.runEvents,
   stageAttempts: apiRoutes.stageAttempts,
   runArtifact: apiRoutes.runArtifact,
@@ -266,6 +267,7 @@ export class HttpDaemonClient implements DaemonClient {
         limit: request.limit,
         cursor: request.cursor,
         latestPerWorkflow: request.latestPerWorkflow ? "true" : undefined,
+        showNoWork: request.showNoWork ? "true" : undefined,
       },
       options,
     );
@@ -273,6 +275,17 @@ export class HttpDaemonClient implements DaemonClient {
 
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
     return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  }
+
+  revealRun(runId: string, options?: RequestOptions): Promise<void> {
+    return this.withResponse(
+      clientRoutes.runReveal,
+      undefined,
+      options,
+      "application/json",
+      async () => undefined,
+      { run: runId },
+    );
   }
 
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList> {

@@ -130,6 +130,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if query.Inputs["reconcileMetadata"] != "false" {
 		t.Errorf("query-backlog reconcileMetadata = %q, want false after dedicated reconciliation", query.Inputs["reconcileMetadata"])
 	}
+	if !strings.Contains(query.Inputs["excludeLabels"], "goobers:blocked-on-sibling") {
+		t.Errorf("query-backlog excludeLabels = %q, blocked-on-sibling must not enter ordinary FIFO selection", query.Inputs["excludeLabels"])
+	}
 	if !containsString(query.PolicyActions, "close-issue") {
 		t.Errorf("query-backlog policyActions = %v, want conservative close-issue declaration", query.PolicyActions)
 	}
@@ -180,7 +183,8 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:f23c44cf9054202d7f1e59258dfcb9106f3e0ba351d8796af090da3db991ccbe"
+	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
+	const wantDigest = "sha256:0e65e82e181ce5a49be4fb3ab76b6e0c2fee0fe83ae202c69b3c3108b7c2a3e4"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
@@ -199,7 +203,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -225,7 +229,7 @@ func TestCuratorInstructionsDefineRoadmapMaintenance(t *testing.T) {
 func TestCuratorInstructionsDefineContinuousResweep(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -247,10 +251,75 @@ func TestCuratorInstructionsDefineContinuousResweep(t *testing.T) {
 	}
 }
 
+func TestCuratorInstructionsClassifySiblingDependencies(t *testing.T) {
+	tests := []struct {
+		name     string
+		required []string
+	}{
+		{
+			name: "open dependency",
+			required: []string{
+				"Open implementation dependency",
+				"use `goobers:blocked-on-sibling`, never `goobers:needs-human`",
+			},
+		},
+		{
+			name: "closed dependency",
+			required: []string{
+				"Closed issue or merged PR",
+				"remove `goobers:blocked-on-sibling` and mark the item `goobers:ready`",
+			},
+		},
+		{
+			name: "open sibling decision",
+			required: []string{
+				"Open sibling decision",
+				"identify a specific unresolved human decision",
+			},
+		},
+		{
+			name: "repeated pass",
+			required: []string{
+				"cleared or refuted the same needs-human rationale",
+				"evidence recorded after that clearing comment",
+				"without another comment or label mutation",
+			},
+		},
+	}
+	for _, path := range []string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		instructions := strings.Join(strings.Fields(string(raw)), " ")
+		for _, tt := range tests {
+			t.Run(filepath.Base(filepath.Dir(path))+"/"+tt.name, func(t *testing.T) {
+				for _, required := range tt.required {
+					if !strings.Contains(instructions, required) {
+						t.Errorf("%s does not define %s behavior %q", path, tt.name, required)
+					}
+				}
+			})
+		}
+		for _, required := range []string{
+			"re-read every named blocker and its linked PRs from the provider",
+			"item carrying `goobers:blocked-on-sibling` is intentionally revisited",
+			"register each blocker as a native GitHub blocked-by dependency",
+		} {
+			if !strings.Contains(instructions, required) {
+				t.Errorf("%s does not require blocker revalidation %q", path, required)
+			}
+		}
+	}
+}
+
 func TestCuratorActionOutputsDelegateDeterministicCounts(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "instructions.md"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "instructions.md"),
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {

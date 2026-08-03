@@ -92,7 +92,8 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		Type: journal.EventStageFinished, Stage: "query-backlog", Attempt: 1, Status: "success",
 		Outputs: map[string]any{
 			"id": "42", "title": "Render rich PR bodies",
-			"body": "## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+			"body":      "## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+			"updatedAt": "2026-08-01T12:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("record claimed issue: %v", err)
@@ -198,6 +199,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		"Fixes #42",
 		finalDigest,
 		"goobers run-id: " + runID,
+		formatIssueSpecPin("42", "2026-08-01T12:00:00Z"),
 	} {
 		if !strings.Contains(pr.body, want) {
 			t.Errorf("PR body missing %q:\n%s", want, pr.body)

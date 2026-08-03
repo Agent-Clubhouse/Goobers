@@ -9,20 +9,45 @@ import (
 	"strconv"
 )
 
-func defaultDiagnosticsCapture(pid int) []byte {
+// diagnosticsKeywords returns the ps-output substrings that mark a line as
+// worth keeping in the captured process tree: the stage-neutral keywords
+// (git/sandbox/goobers/the PID header) plus the Go-specific ones, plus —
+// when stageCmd is non-empty — the hung stage's own command basename, so a
+// wedged npm/dotnet/pytest/mvn process is captured too, not just Go ones
+// (#2172).
+func diagnosticsKeywords(stageCmd string) []string {
+	keywords := []string{"make", "go test", ".test", "git ", "sandbox", "goobers", "PID"}
+	if stageCmd != "" {
+		keywords = append(keywords, stageCmd)
+	}
+	return keywords
+}
+
+// filterProcessTreeLines keeps only the ps-output lines that contain at least
+// one of keywords — extracted from defaultDiagnosticsCapture so the filter
+// itself is testable against synthetic ps fixtures without shelling out
+// (#2172).
+func filterProcessTreeLines(psOutput []byte, keywords []string) []byte {
 	var b bytes.Buffer
-	spid := strconv.Itoa(pid)
-	if out, err := exec.Command("ps", "-eo", "pid,ppid,pgid,etime,stat,command").Output(); err == nil {
-		b.WriteString("--- process tree (make / go test / .test / git / sandbox / goobers) ---\n")
-		for _, line := range bytes.Split(out, []byte("\n")) {
-			for _, kw := range []string{"make", "go test", ".test", "git ", "sandbox", "goobers", "PID"} {
-				if bytes.Contains(line, []byte(kw)) {
-					b.Write(line)
-					b.WriteByte('\n')
-					break
-				}
+	for _, line := range bytes.Split(psOutput, []byte("\n")) {
+		for _, kw := range keywords {
+			if bytes.Contains(line, []byte(kw)) {
+				b.Write(line)
+				b.WriteByte('\n')
+				break
 			}
 		}
+	}
+	return b.Bytes()
+}
+
+func defaultDiagnosticsCapture(pid int, stageCmd string) []byte {
+	var b bytes.Buffer
+	spid := strconv.Itoa(pid)
+	keywords := diagnosticsKeywords(stageCmd)
+	if out, err := exec.Command("ps", "-eo", "pid,ppid,pgid,etime,stat,command").Output(); err == nil {
+		b.WriteString("--- process tree (stage command / make / go test / .test / git / sandbox / goobers) ---\n")
+		b.Write(filterProcessTreeLines(out, keywords))
 	}
 	if out, err := exec.Command("lsof", "-p", spid).Output(); err == nil {
 		b.WriteString("\n--- lsof (open fds — PIPE/FIFO reveal I/O-deadlock partners) ---\n")

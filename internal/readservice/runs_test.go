@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,105 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 		resumed.WorkflowVersion != machine.Def.Version ||
 		resumed.WorkflowDigest != machine.Digest() {
 		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+}
+
+func TestFailedRunPreservesPinnedWorkspaceResetSuggestion(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-reset-suggested",
+		machine.Def.Name,
+		machine.Def.Spec.Gaggle,
+		time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		true,
+	)
+	suggestion := "Run `goobers workspace reset <repo>` before retrying."
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":          "workspace_reset_suggested",
+			"workspaceMode": "pinned",
+			"failureStreak": 3,
+			"suggestion":    suggestion,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseFailed)
+
+	want := "Workspace reset suggested: " + suggestion
+	detail, err := service.GetRun(context.Background(), "run-reset-suggested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Phase != journal.PhaseFailed || detail.CurrentStage != want {
+		t.Fatalf("failed run detail = %+v, want visible reset suggestion %q", detail.RunSummary, want)
+	}
+
+	list, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Runs) != 1 || list.Runs[0].CurrentStage != want {
+		t.Fatalf("failed run list = %+v, want visible reset suggestion %q", list.Runs, want)
+	}
+}
+
+// TestListRunsHidesNoWorkByDefault is the regression test for #2188: the
+// portal run list needs to hide routine no-work schedule ticks (a run that
+// touched exactly one stage and that stage's terminal status was no-work) by
+// default, with ShowNoWork as the explicit escape hatch — and the underlying
+// run must remain fully readable by ID, never deleted.
+func TestListRunsHidesNoWorkByDefault(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	base := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+
+	noWorkRun, noWorkClock := createFixtureRun(
+		t, layout, machine, "run-no-work", "implementation", "goobers",
+		base, journal.Trigger{Kind: journal.TriggerSchedule}, false)
+	appendFixtureStageAttempt(t, noWorkRun, noWorkClock, string(apiv1.ResultNoWork))
+	finishFixtureRun(t, noWorkRun, noWorkClock, journal.PhaseCompleted)
+
+	producedRun, producedClock := createFixtureRun(
+		t, layout, machine, "run-produced", "implementation", "goobers",
+		base.Add(time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false)
+	appendFixtureStageAttempt(t, producedRun, producedClock, "success")
+	finishFixtureRun(t, producedRun, producedClock, journal.PhaseCompleted)
+
+	hidden, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden.Runs) != 1 || hidden.Runs[0].ID != "run-produced" {
+		t.Fatalf("default list = %+v, want only run-produced", hidden.Runs)
+	}
+
+	shown, err := service.ListRuns(context.Background(), RunListOptions{ShowNoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown.Runs) != 2 {
+		t.Fatalf("ShowNoWork list = %+v, want both runs", shown.Runs)
+	}
+	var noWorkSummary *RunSummary
+	for i := range shown.Runs {
+		if shown.Runs[i].ID == "run-no-work" {
+			noWorkSummary = &shown.Runs[i]
+		}
+	}
+	if noWorkSummary == nil || !noWorkSummary.NoWork {
+		t.Fatalf("run-no-work summary = %+v, want NoWork = true", noWorkSummary)
+	}
+
+	// The filter hides no-work runs from list pages only; the run itself is
+	// never deleted or otherwise made unreadable.
+	if _, err := service.GetRun(context.Background(), "run-no-work"); err != nil {
+		t.Fatalf("GetRun(run-no-work) = %v, want the no-work run still directly readable", err)
 	}
 }
 
@@ -782,6 +882,48 @@ func TestStageRerunRequestReturnsEscalatedRunToRunning(t *testing.T) {
 	}
 }
 
+func TestGateOverrideReturnsEscalatedRunToRunning(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-gate-overridden", machine.Def.Name, "goobers",
+		time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review",
+		Verdict: "fail", Target: "@escalate",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateOverridden, Gate: "review",
+		Verdict: "needs-changes", Target: "implement",
+		Actor: "operator@example.test", Rationale: "The gate requires another implementation pass.",
+		Status:          string(journal.PhaseEscalated),
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-gate-overridden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Phase != journal.PhaseRunning || detail.Terminal || detail.FinishedAt != nil ||
+		detail.CurrentStage != "implement" {
+		t.Fatalf("overridden detail = %+v", detail.RunSummary)
+	}
+}
+
 func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	started := time.Date(2026, 7, 17, 9, 15, 0, 0, time.UTC)
@@ -814,6 +956,61 @@ func TestLiveRunDurationUsesObservationTime(t *testing.T) {
 	}
 	if want := started.Add(2 * time.Second); !detail.LastActivityAt.Equal(want) {
 		t.Fatalf("last activity = %s, want %s", detail.LastActivityAt, want)
+	}
+}
+
+// TestRunDetailProjectsExecutedTransitions proves RunDetail wires
+// readmodel.ProjectTransitions correctly end to end (issue #1427):
+// implement's implicit edge to review, and review's gate-evaluated edge to
+// its escalate branch, both appear with the right causal sequence — the
+// projector's own edge-classification correctness (repass, cyclic prefixes,
+// parallel branches) is unit-tested directly in internal/readmodel; this
+// proves the read-service plumbing (pinned graph -> events -> API shape)
+// itself is correct.
+func TestRunDetailProjectsExecutedTransitions(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	started := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-transitions", machine.Def.Name, "goobers",
+		started, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	appendEvent(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)})
+	appendEvent(journal.Event{Type: journal.EventGateStarted, Gate: "review"})
+	appendEvent(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate})
+	appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.GetRun(context.Background(), "run-transitions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.TransitionsStatus != "projected" {
+		t.Fatalf("transitionsStatus = %q, want projected", detail.TransitionsStatus)
+	}
+	if len(detail.Transitions) != 2 {
+		t.Fatalf("transitions = %+v, want 2 rows", detail.Transitions)
+	}
+	arrival := detail.Transitions[0]
+	if arrival.Source != "implement" || arrival.Target != "review" || arrival.Terminal {
+		t.Fatalf("transitions[0] = %+v, want implement->review", arrival)
+	}
+	escalate := detail.Transitions[1]
+	if escalate.Source != "review" || escalate.Target != workflow.TargetEscalate ||
+		escalate.Verdict != "fail" || !escalate.Terminal || escalate.Status != string(journal.PhaseEscalated) {
+		t.Fatalf("transitions[1] = %+v, want review->@escalate", escalate)
+	}
+	if escalate.Seq <= arrival.Seq {
+		t.Fatalf("transitions = %+v, want ascending causal sequence", detail.Transitions)
 	}
 }
 
@@ -853,6 +1050,9 @@ func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 	}
 	if detail.Phase != journal.PhaseRunning || detail.Graph != nil || detail.GraphStatus != "unavailable" {
 		t.Fatalf("future run detail = %+v", detail)
+	}
+	if detail.TransitionsStatus != "unavailable" || detail.Transitions != nil {
+		t.Fatalf("transitions = %+v (%s), want unavailable/nil without a pinned graph", detail.Transitions, detail.TransitionsStatus)
 	}
 	events, err := service.RunEvents(context.Background(), "run-future")
 	if err != nil {
@@ -1626,6 +1826,7 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 				Escalated: !tc.legacy,
 				Runner:    map[string]any{"repassAttempt": 4},
 			}
+
 			if tc.legacy {
 				event.Runner["escalated"] = true
 			}
@@ -1642,6 +1843,69 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 				cause.RepassCount != 4 ||
 				cause.TerminalReason != "repass budget exhausted" ||
 				cause.CausalEventSeq != 7 {
+				t.Fatalf("escalation cause = %+v", cause)
+			}
+		})
+	}
+}
+
+func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
+	tests := []struct {
+		name, stage, outcome, reason string
+		attempted                    bool
+	}{
+		{
+			name: "policy-excluded before gate", stage: "remediation-checkpoint",
+			outcome: "policy-excluded", reason: "declared policy excludes substantive",
+		},
+		{
+			name: "reviewer rejection after gate", stage: "park-escalated",
+			outcome: "did-not-converge", reason: "reviewer rejected the remediation", attempted: true,
+		},
+		{
+			name: "repass budget exhaustion after gate", stage: "park-invalid-finding-responses",
+			outcome: "budget-exhausted", reason: "finding response repass budget exhausted", attempted: true,
+		},
+		{
+			name: "infrastructure failure after gate", stage: "park-infrastructure-failure",
+			outcome: "infrastructure-failure", reason: "local CI timed out",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkpoint := journal.Event{
+				Schema: journal.EventSchema, Type: journal.EventStageFinished,
+				Stage: tc.stage, Status: string(apiv1.ResultSuccess),
+				Outputs: map[string]any{
+					"escalationOutcome":    tc.outcome,
+					"remediationAttempted": strconv.FormatBool(tc.attempted),
+					"attemptedCauses":      "",
+					"escalationReason":     tc.reason,
+				},
+			}
+			gate := journal.Event{
+				Schema: journal.EventSchema, Type: journal.EventGateEvaluated,
+				Gate: "checkpoint-gate", Verdict: "fail",
+			}
+			gate.Target = workflow.TargetEscalate
+			if tc.stage != "remediation-checkpoint" {
+				gate.Target = tc.stage
+			}
+			records := []journal.EventRecord{{Event: checkpoint}, {Event: gate}}
+			if tc.stage != "remediation-checkpoint" {
+				records = []journal.EventRecord{{Event: gate}, {Event: checkpoint}}
+			}
+			for i := range records {
+				records[i].Event.Seq = uint64(i + 4)
+			}
+
+			cause, err := escalationCause(RunSummary{Phase: journal.PhaseEscalated}, records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cause == nil || cause.TerminalReason != tc.reason ||
+				cause.Remediation == nil || cause.Remediation.Outcome != tc.outcome ||
+				cause.Remediation.Attempted != tc.attempted || len(cause.Remediation.AttemptedCauses) != 0 {
 				t.Fatalf("escalation cause = %+v", cause)
 			}
 		})

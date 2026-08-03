@@ -3,18 +3,139 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogQueryTokenUsesLeastPrivilegeCredential(t *testing.T) {
+	readEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesRead))
+	writeEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesWrite))
+	t.Setenv(readEnv, "read-token")
+	t.Setenv(writeEnv, "write-token")
+
+	if token, err := backlogQueryToken(true); err != nil || token != "read-token" {
+		t.Fatalf("read-only token = %q, %v; want read-token", token, err)
+	}
+	if token, err := backlogQueryToken(false); err != nil || token != "write-token" {
+		t.Fatalf("legacy token = %q, %v; want write-token", token, err)
+	}
+
+	t.Setenv(readEnv, "")
+	if token, err := backlogQueryToken(true); err == nil || token != "" {
+		t.Fatalf("read-only token without read authority = %q, %v; want credential error", token, err)
+	}
+
+	t.Setenv(writeEnv, "")
+	if token, err := backlogQueryToken(false); err == nil || token != "" {
+		t.Fatalf("legacy token without write authority = %q, %v; want credential error", token, err)
+	}
+}
+
+func TestBacklogQueryReadOnlyDoesNotMutateProviderOrScheduler(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Visible backlog item", "goobers:ready")
+
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-only-run")
+	schedulerDir := layoutFor(root).SchedulerDir()
+	blockedPath := blockedRecordsPath(layoutFor(root))
+	if err := os.WriteFile(blockedPath, []byte("{\"sentinel\":true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDirectoryFiles(t, schedulerDir)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--read-only", root)
+	if code != 0 {
+		t.Fatalf("backlog-query --read-only: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "7\tVisible backlog item") {
+		t.Fatalf("stdout = %q, want visible backlog item", stdout)
+	}
+	if after := snapshotDirectoryFiles(t, schedulerDir); !reflect.DeepEqual(after, before) {
+		t.Fatalf("scheduler state changed: before = %#v, after = %#v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, mutationsSidecarFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mutation sidecar exists after read-only query: %v", err)
+	}
+}
+
+func TestBacklogQueryReadOnlyReportsProviderFailure(t *testing.T) {
+	root := initDemo(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	previousProvider := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
+			provider.BaseURL = server.URL
+		})...)
+	}
+	t.Cleanup(func() { newGitHubProvider = previousProvider })
+
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--read-only", root)
+	if code != 1 || !strings.Contains(stderr, "list work items") {
+		t.Fatalf("backlog-query --read-only provider failure: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read provider failure result: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal provider failure result: %v", err)
+	}
+	if message, _ := result[executor.OutputErrorMessage].(string); !strings.Contains(message, "list work items") {
+		t.Fatalf("provider failure result = %#v, want list work items error", result)
+	}
+}
+
+func snapshotDirectoryFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			files[relative+"/"] = ""
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[relative] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
 
 type failNthBacklogClaimLedger struct {
 	backlogClaimLedger
@@ -349,6 +470,120 @@ func TestBacklogQueryLabelLists(t *testing.T) {
 				t.Fatalf("eligible IDs = %q, want %q; stdout = %q", got, tt.wantIDs, stdout)
 			}
 		})
+	}
+}
+
+// TestBacklogQueryRespectAssignee is #1820's (COORD-2) core acceptance:
+// opted-out is byte-identical to today regardless of assignee, and each
+// opted-in mode — fixed identity, null/unassigned-only, and the exclusion
+// case that must not be conflated with null mode (assigned to someone else,
+// not merely unassigned) — enforces the right eligibility.
+func TestBacklogQueryRespectAssignee(t *testing.T) {
+	tests := []struct {
+		name            string
+		respectAssignee string
+		assignedTo      string
+		issueAssignees  []string // index 0 -> issue 7, index 1 -> issue 8, index 2 -> issue 9
+		wantIDs         string
+	}{
+		{
+			name:            "opted out ignores assignee entirely",
+			respectAssignee: "",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "7,8,9",
+		},
+		{
+			name:            "fixed identity only matches that login",
+			respectAssignee: "true",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "7",
+		},
+		{
+			name:            "null mode matches only unassigned items",
+			respectAssignee: "true",
+			assignedTo:      "",
+			issueAssignees:  []string{"mason", "someone-else", ""},
+			wantIDs:         "9",
+		},
+		{
+			name:            "assigned to someone else is excluded, not conflated with null mode",
+			respectAssignee: "true",
+			assignedTo:      "mason",
+			issueAssignees:  []string{"someone-else"},
+			wantIDs:         "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			for i, assignee := range tt.issueAssignees {
+				number := 7 + i
+				server.addIssue(number, "Candidate", "trusted")
+				if assignee != "" {
+					server.issues[number].assignee = assignee
+				}
+			}
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+			t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+			t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", tt.respectAssignee)
+			t.Setenv("GOOBERS_INPUT_ASSIGNEDTO", tt.assignedTo)
+			t.Chdir(t.TempDir())
+
+			code, stdout, stderr := runArgs(t, "backlog-query", root)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			var gotIDs []string
+			for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+				if id, _, ok := strings.Cut(line, "\t"); ok {
+					gotIDs = append(gotIDs, id)
+				}
+			}
+			if got := strings.Join(gotIDs, ","); got != tt.wantIDs {
+				t.Fatalf("eligible IDs = %q, want %q; stdout = %q", got, tt.wantIDs, stdout)
+			}
+		})
+	}
+}
+
+// TestBacklogQueryRespectAssigneeClaimsOnlyMatchingIdentity verifies the
+// filter also governs --claim (the eligibility loop it shares with list),
+// and that a matching item is actually claimable end-to-end, not just
+// listed.
+func TestBacklogQueryRespectAssigneeClaimsOnlyMatchingIdentity(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Assigned to bot", "trusted")
+	server.issues[7].assignee = "gaggle-bot"
+	server.addIssue(8, "Assigned to someone else", "trusted")
+	server.issues[8].assignee = "someone-else"
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_ASSIGNEDTO", "gaggle-bot")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("stdout = %q, want a mention of claiming item 7 (assigned to gaggle-bot)", stdout)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, ok := ledger.Lookup("8"); ok {
+		t.Fatalf("item 8 (assigned to someone-else) must not be claimed under assignedTo=gaggle-bot")
 	}
 }
 

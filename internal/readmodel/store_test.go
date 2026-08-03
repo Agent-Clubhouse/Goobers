@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,6 +50,41 @@ func TestOpenSeedsAFreshEpoch(t *testing.T) {
 	}
 	if a.Epoch == b.Epoch {
 		t.Error("two separate stores were given the same epoch; each build must be distinguishable")
+	}
+}
+
+// TestConcurrentFirstOpenSucceeds is issue #2032's acceptance criterion,
+// mirroring internal/telemetry/rollup's own #1128 test of the same shape: N
+// goroutines each open their OWN *Store handle against the same fresh path
+// (simulating separate processes racing to create read.db, e.g. `goobers up`
+// against a `goobers portal` CLI invocation) — none of that should ever
+// error, including on SQLITE_BUSY_SNAPSHOT, which migrateWithBusyRetry
+// backstops.
+func TestConcurrentFirstOpenSucceeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store, err := Open(path)
+			if err != nil {
+				errs <- fmt.Errorf("open: %w", err)
+				return
+			}
+			defer func() { _ = store.Close() }()
+			if _, err := store.State(context.Background()); err != nil {
+				errs <- fmt.Errorf("state: %w", err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 
@@ -157,7 +193,7 @@ func TestOrderingIndexesServeTheListShapes(t *testing.T) {
 
 func explain(t *testing.T, store *Store, query string) string {
 	t.Helper()
-	rows, err := store.readDB().Query("EXPLAIN QUERY PLAN " + query)
+	rows, err := store.reader.Query("EXPLAIN QUERY PLAN " + query)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}

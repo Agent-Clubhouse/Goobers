@@ -59,50 +59,80 @@ func TestEveryURLReachableCombinationIsSupportedOrRefused(t *testing.T) {
 	}
 }
 
-// TestRefusalNamesTheNearestNeighbours pins that the refusal is actionable.
-//
-// Distance is symmetric difference — how many dimensions would have to be added
-// or dropped — because that answers "what is the closest thing I can actually
-// ask?", which is what a user holding a stale URL needs.
 func TestRefusalNamesTheNearestNeighbours(t *testing.T) {
-	// stage is not supported in any combination: it is the dimension that would
-	// become a residual filter, and the one #1782 shows is reachable from an
-	// Insight drill-through click today.
-	_, err := Require([]Dim{DimGaggle, DimStage})
+	// workflow+stage is the refusal that survives #1782. Stage-scoped queries
+	// drive from run_stage, and workflow is NOT denormalised onto it -- so
+	// combining them would put workflow back as a residual predicate on the
+	// joined run row, which is the shape the closed set exists to refuse.
+	_, err := Require([]Dim{DimGaggle, DimWorkflow, DimStage})
 	if err == nil {
-		t.Fatal("a stage filter was accepted; it has no covering index and would be walked")
+		t.Fatal("workflow+stage was accepted; workflow is not on run_stage, so it would be walked")
 	}
 	var unsupported *UnsupportedCombinationError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("err = %v, want a typed refusal", err)
 	}
-	// The nearest neighbour to {gaggle, stage} is {gaggle}: drop one dimension.
-	if len(unsupported.Neighbours) == 0 || Key(unsupported.Neighbours[0]) != "gaggle" {
-		t.Errorf("nearest neighbour to {gaggle+stage} = %v, want {gaggle}", unsupported.Neighbours)
+	// Nearest neighbours are one dimension away: drop workflow, or drop stage.
+	if len(unsupported.Neighbours) == 0 {
+		t.Fatal("refusal offered no neighbours")
+	}
+	nearest := Key(unsupported.Neighbours[0])
+	if nearest != "gaggle+workflow" && nearest != "gaggle+stage" {
+		t.Errorf("nearest neighbour to {gaggle+workflow+stage} = %q, want one of "+
+			"{gaggle+workflow} or {gaggle+stage}", nearest)
 	}
 	if !strings.Contains(err.Error(), "supported neighbours") {
 		t.Errorf("refusal message does not offer alternatives: %v", err)
 	}
 }
 
-// TestPopulationAndOutcomeAreRefusedNotWalked pins the two dimensions that are
-// reachable from a user click today and would be residual predicates.
+// TestStageAndPopulationAreServedNotWalked is the inverse of the test it
+// replaces (#1782).
 //
-// #1782 documents the cost: a single `?stage=X` request that matches nothing
-// reads ~143 MB, performs ~1M unmarshals, and opens ~19,852 journals — and with
-// population set, ~19,852 extra SQLite queries on top, inside one HTTP request.
-// Refusing is the honest answer until they have covering support.
-func TestPopulationAndOutcomeAreRefusedNotWalked(t *testing.T) {
+// That test pinned stage, outcome, and population as REFUSED, on the reasoning
+// that refusing was more honest than walking: a single `?stage=X` request that
+// matched nothing read ~143 MB, performed ~1M unmarshals, and opened ~19,852
+// journals -- with population set, ~19,852 extra SQLite queries on top, inside
+// one HTTP request.
+//
+// They are served now because they have covering support: the stage predicate,
+// the gaggle scope, and the run-recency ordering all live on run_stage, and the
+// four populations are partial indexes at both grains. The old assertion is
+// inverted rather than deleted, so the property it protected -- that these are
+// never merely WALKED -- is still what the test is about.
+func TestStageAndPopulationAreServedNotWalked(t *testing.T) {
 	for _, dims := range [][]Dim{
+		{DimStage},
+		{DimGaggle, DimStage},
+		{DimStage, DimPopulation},
 		{DimPopulation},
-		{DimOutcome},
 		{DimGaggle, DimPopulation},
-		{DimGaggle, DimWorkflow, DimOutcome},
-		{DimStage, DimPopulation, DimOutcome},
+		{DimGaggle, DimStage, DimPopulation, DimSince, DimUntil},
 	} {
-		if _, err := Require(dims); err == nil {
-			t.Errorf("{%s} was accepted; it has no covering index and would relocate the candidate "+
-				"loop into the query planner rather than removing it", Key(dims))
+		if _, err := Require(dims); err != nil {
+			t.Errorf("{%s} was refused; #1782 gives it a covering index: %v", Key(dims), err)
+		}
+	}
+}
+
+// TestCombinationsWithoutCoveringSupportAreStillRefused pins what #1782 did NOT
+// make servable, so the closed set does not quietly become open.
+func TestCombinationsWithoutCoveringSupportAreStillRefused(t *testing.T) {
+	for _, c := range []struct {
+		dims []Dim
+		why  string
+	}{
+		{[]Dim{DimOutcome}, "run-level outcome has no recency index of its own"},
+		{[]Dim{DimGaggle, DimWorkflow, DimOutcome}, "same, and workflow is not on run_stage"},
+		{[]Dim{DimStage, DimOutcome},
+			"run_stage keeps only the LAST attempt's status; the reference matches ANY attempt's"},
+		{[]Dim{DimGaggle, DimStage, DimOutcome}, "same"},
+		{[]Dim{DimStage, DimPopulation, DimOutcome}, "same, and no index leads with all three"},
+		{[]Dim{DimWorkflow, DimStage}, "workflow is not denormalised onto run_stage"},
+		{[]Dim{DimPhase, DimStage}, "phase is not on run_stage either"},
+	} {
+		if _, err := Require(c.dims); err == nil {
+			t.Errorf("{%s} was accepted, but %s", Key(c.dims), c.why)
 		}
 	}
 }
@@ -132,30 +162,56 @@ func TestCanonicalKeyIgnoresOrder(t *testing.T) {
 // pass every other test while silently walking rows in production.
 func TestEverySupportedCombinationNamesARealIndex(t *testing.T) {
 	store := openTestStore(t)
-	rows, err := store.readDB().Query(
-		`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'run'`)
+	rows, err := store.reader.Query(
+		`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('run', 'run_stage')`)
 	if err != nil {
 		t.Fatalf("list indexes: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	existing := map[string]bool{}
+	// Both tables: stage-scoped combinations are served by indexes on run_stage,
+	// which is the whole point of #1782 -- the stage predicate, the gaggle scope,
+	// and the run-recency ordering have to live on one index, and only run_stage
+	// carries all three.
+	existing := map[string]string{}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, table string
+		if err := rows.Scan(&name, &table); err != nil {
 			t.Fatal(err)
 		}
-		existing[name] = true
+		existing[name] = table
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, c := range SupportedCombinations() {
-		if !existing[c.Index] {
-			t.Errorf("combination {%s} names index %q, which does not exist on the run table",
+		if existing[c.Index] == "" {
+			t.Errorf("combination {%s} names index %q, which exists on neither run nor run_stage",
 				Key(c.Dims), c.Index)
+			continue
+		}
+		// A stage-scoped combination served by an index on `run` would be a
+		// residual-predicate bug wearing a covering index's name, so the table is
+		// asserted rather than just the name.
+		wantTable := "run"
+		if hasDim(c.Dims, DimStage) {
+			wantTable = "run_stage"
+		}
+		if existing[c.Index] != wantTable {
+			t.Errorf("combination {%s} names index %q on table %q, want %q",
+				Key(c.Dims), c.Index, existing[c.Index], wantTable)
 		}
 	}
+}
+
+// hasDim reports whether a dimension set contains a dimension.
+func hasDim(dims []Dim, want Dim) bool {
+	for _, d := range dims {
+		if d == want {
+			return true
+		}
+	}
+	return false
 }
 
 // dimsForMask expands a bitmask into a dimension set.

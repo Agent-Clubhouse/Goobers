@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -52,12 +53,16 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
-const validateHelp = "Usage: goobers validate [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). --source-tree validates a checked-in config source tree\n" +
 	"using instance.yaml.example and the path itself as config/. " +
 	"--strict treats config warnings as validation errors. " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
+	"--github-annotations additionally writes each finding to stderr as a\n" +
+	"GitHub Actions ::error/::warning file annotation (#687), so a\n" +
+	"config-repo PR check surfaces failures directly on the PR diff; " +
+	"composes with --json since stdout stays untouched. " +
 	"--check-harness additionally preflights every agent harness\n" +
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
@@ -97,6 +102,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
+	githubAnnotations := fs.Bool("github-annotations", false, "also write each finding to stderr as a GitHub Actions file annotation (#687)")
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
@@ -120,6 +126,8 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		diagnostics = &diagnosticCollector{}
 		humanOut = io.Discard
 		humanErr = io.Discard
+	} else if *githubAnnotations {
+		diagnostics = &diagnosticCollector{}
 	}
 	code := runValidateConfig(validateOptions{
 		root:         root,
@@ -128,6 +136,9 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		checkRepos:   *checkRepos,
 		strict:       *strict,
 	}, humanOut, humanErr, diagnostics)
+	if *githubAnnotations {
+		emitGitHubAnnotations(stderr, diagnostics)
+	}
 	if !*asJSON {
 		return code
 	}
@@ -231,6 +242,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		)
 	}
 	printValidationWarnings(stdout, codedWarnings)
+	skillWarnings, err := appendSkillPackageCollisionWarnings(configDir, report, goobers)
+	if err != nil {
+		pf(stderr, "error: inspect skill package collisions: %v\n", err)
+		return 2
+	}
+	for _, warning := range skillWarnings {
+		diagnostics.add(
+			diagnosticFile(root, filepath.Join(configDir, "gaggles", strings.TrimPrefix(warning.Scope, "Gaggle/"), "skills")),
+			"/",
+			string(warning.Code),
+			string(warning.Severity),
+			warning.Explanation,
+		)
+	}
+	printValidationWarnings(stdout, skillWarnings)
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
@@ -259,6 +285,18 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 
+	// CONF-6/#2079: a workflow's provider-capability requirements (declared or
+	// derived from the stages it uses) must be satisfiable by its gaggle's
+	// connected provider. Checked at validate time for the same reason as
+	// CheckCapabilityRequirements's daemon-startup check: an unmet
+	// requirement can never self-heal at runtime, so it should fail here
+	// rather than at the first mid-run ErrUnsupported.
+	if err := instance.CheckProviderCapabilityRequirements(set); err != nil {
+		pf(stdout, "\nINVALID workflow: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/spec/requires/capabilities", "PROV001", string(validate.Error), err.Error())
+		return 1
+	}
+
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
@@ -282,9 +320,35 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
 	}
+	printResolvedLargeRepoPresets(stdout, cfg.Repos)
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {
+	for _, repo := range repos {
+		if !repo.LargeRepo {
+			continue
+		}
+		workspace := "worktrees"
+		mirrorRefspec := "all"
+		if repo.Pinned() {
+			workspace = "pinned"
+			mirrorRefspec = "heads+tags"
+		}
+		pathLength := "disabled"
+		if repo.PathLength != nil && !repo.PathLength.Disabled {
+			maximum := repo.PathLength.MaxPathLength
+			if maximum == 0 {
+				maximum = worktree.DefaultMaxPathLength
+			}
+			pathLength = fmt.Sprintf("enabled (max %d)", maximum)
+		}
+		pf(out, "Resolved large-repo preset for %s/%s: workspace=%s, cleanPolicy=%s, serial=%t, defaultStageTimeout=%s, stalledRunTimeout=%s, maxRunDuration=%s, pathLength=%s, mirrorRefspec=%s\n",
+			repo.Owner, repo.Name, workspace, repo.WorkspaceCleanPolicy(), repo.Pinned(),
+			repo.DefaultStageTimeout, repo.RunControls.StalledRunTimeout, repo.RunControls.MaxRunDuration, pathLength, mirrorRefspec)
+	}
 }
 
 func configSourceDiagnosticFile(root, configDir, source string) string {
@@ -460,7 +524,7 @@ const (
 // field, in KB) above which `--check-repos` warns at validate time (#1547).
 // 1 GiB is large enough that a full clone/checkout of the repo measurably
 // slows down provisioning; sparse/partial checkout (AdditionalRepos, or
-// project.checkout.sparse once #649 ships) is the recommended remediation.
+// project.checkout.sparse, #649) is the recommended remediation.
 const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
@@ -611,7 +675,7 @@ func repoUsesToken(repo instance.RepoRef) bool {
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
-		provider, err := adoauth.Provider(repo, nil, nil, nil, stores)
+		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err
 		}

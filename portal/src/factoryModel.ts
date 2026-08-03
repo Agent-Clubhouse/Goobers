@@ -186,6 +186,8 @@ export interface FactoryConveyor {
   kind: FactoryConveyorKind;
   fromStationId: string;
   toId: string;
+  /** Declared parallel branch name. Presence is topology, not execution state. */
+  branch?: string;
   outcome?: string;
   terminal?: GraphTerminal;
   path: string;
@@ -1156,6 +1158,7 @@ function buildConveyors(
         kind: "terminal",
         fromStationId: source.id,
         toId: dock.id,
+        branch: edge.branch,
         outcome: edge.outcome,
         terminal: edge.terminal,
         path: elbowPath(source.x + source.width, y1, dock.x, y2, midX),
@@ -1180,10 +1183,11 @@ function buildConveyors(
         kind: "forward",
         fromStationId: source.id,
         toId: target.id,
+        branch: edge.branch,
         outcome: edge.outcome,
         path: elbowPath(source.x + source.width, y1, target.x, y2, midX),
-        labelX: midX,
-        labelY: Math.min(y1, y2) - 8,
+        labelX: edge.branch ? midX + Math.min(28, Math.abs(y2 - y1) / 4) : midX,
+        labelY: edge.branch ? (y1 + y2) / 2 - 8 : Math.min(y1, y2) - 8,
         active: false,
       });
       return;
@@ -1199,6 +1203,7 @@ function buildConveyors(
       kind: "repass",
       fromStationId: source.id,
       toId: target.id,
+      branch: edge.branch,
       outcome: edge.outcome,
       path: `M ${round(x1)} ${round(source.y + source.height + STATION_APRON_HEIGHT - 8)} L ${round(x1)} ${round(laneY)} L ${round(x2)} ${round(laneY)} L ${round(x2)} ${round(target.y + target.height + STATION_APRON_HEIGHT - 8)}`,
       labelX: (x1 + x2) / 2,
@@ -1706,6 +1711,8 @@ export function stageKindLabel(kind: GraphNodeKind): string {
       return "Deterministic stage";
     case "gate":
       return "Gate";
+    case "parallel":
+      return "Parallel stage";
   }
 }
 

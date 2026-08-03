@@ -8,7 +8,7 @@ import "io"
 // checks, same exit codes — so an automated gate and a developer at a terminal
 // can never get contradictory verdicts from two drifting validators (the #252
 // footgun). Anything `validate` accepts, `lint` accepts identically.
-const lintHelp = "Usage: goobers lint [--json] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
+const lintHelp = "Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Lint an instance's instance.yaml and config/ directory (default path\n" +
 	"\".\") against the single authoritative validation engine. This is an\n" +
 	"alias for `goobers validate`: identical flags, identical checks, and\n" +
@@ -16,7 +16,9 @@ const lintHelp = "Usage: goobers lint [--json] [--check-harness] [--check-repos]
 	"path instead of drifting between ad-hoc checks. --source-tree lints a\n" +
 	"checked-in config source tree using instance.yaml.example and the path\n" +
 	"itself as config/. --json emits the same versioned findings envelope as\n" +
-	"`goobers validate --json`. --strict treats warnings as validation errors. " +
+	"`goobers validate --json`. --github-annotations writes each finding to\n" +
+	"stderr as a GitHub Actions file annotation (#687), for use as a\n" +
+	"config-repo PR check. --strict treats warnings as validation errors. " +
 	"--check-harness additionally preflights every agent\n" +
 	"harness referenced by a goober (GBO-011). --check-repos resolves each\n" +
 	"target repository's token and verifies authenticated git access. Exit\n" +

@@ -36,9 +36,10 @@ import (
 // Re-checks out the PR's own branch first (checkoutExistingBranch, shared
 // with gather-pr-context): this stage gets its OWN fresh worktree — see
 // checkoutExistingBranch's doc comment — so it cannot assume gather-pr-
-// context's checkout survived. A conflict made only of distinct entries
-// inserted into the same existing line-oriented list is resolved
-// mechanically; all other conflicts retain the agentic path.
+// context's checkout survived. A conflict confined to the generated portal
+// bundle is resolved by rebuilding that bundle, and a conflict made only of
+// distinct entries inserted into the same existing line-oriented list is
+// resolved mechanically; all other conflicts retain the agentic path.
 const rebasePRHelp = "Usage: goobers rebase-pr [path]\n\n" +
 	"Check out the selected PR's branch, attempt a rebase onto its base\n" +
 	"(force-with-lease is mandatory for the eventual push — never a bare\n" +
@@ -80,7 +81,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", "rebase-result.json")
 	selectedNumber := providerInput("selectedNumber", "")
 	head := providerInput("head", "")
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
 	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
@@ -116,12 +117,18 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	provider := newGitHubProvider(issuesToken)
+	provider, err := remediationStageProvider(root, repo, issuesToken, false)
+	if err != nil {
+		return fail(err)
+	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		return fail(err)
 	}
-	handoffProvider := newGitHubProvider(prToken)
+	handoffProvider, err := remediationStageProvider(root, repo, prToken, false)
+	if err != nil {
+		return fail(err)
+	}
 
 	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
@@ -383,7 +390,7 @@ type trustedSiblingHandoffs struct {
 
 func trustedSiblingOverlapHandoffs(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	selectedNumber string,
 	targetHeadSHA string,
@@ -464,11 +471,11 @@ func isSiblingOverlapHandoff(handoff postMergeRemediationHandoff) bool {
 	return len(handoff.OverlappingFiles) > 0 || strings.HasPrefix(handoff.Reason, "file-overlap:")
 }
 
-// attemptRebase resolves only the narrow case where both sides added one
-// distinct entry to the same existing line-oriented list at an unambiguous
-// ancestor position, ordering the base branch's addition before the PR's.
-// Every other conflict is inspected for structural-collision evidence,
-// aborted cleanly, and reported for the existing agentic path.
+// attemptRebase mechanically resolves conflicts confined to the generated
+// portal bundle, plus the narrow case where both sides added one distinct
+// entry to the same existing line-oriented list at an unambiguous ancestor
+// position. Every other conflict is inspected for structural-collision
+// evidence, aborted cleanly, and reported for the existing agentic path.
 func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseConflictLocation, rebaseBaseSHA string, err error) {
 	url, err := originURL(dir)
 	if err != nil {
@@ -489,7 +496,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 	}
 	rebaseBaseSHA = strings.TrimSpace(string(baseOut))
 
-	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
+	rebase := exec.Command("git", rebaseFetchHeadArgs(dir)...)
 	rebase.Dir = dir
 	out, rerr := rebase.CombinedOutput()
 	if rerr == nil {
@@ -498,7 +505,10 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 
 	observedConflict := false
 	for {
-		status, resolveErr := resolveAdjacentLineConflicts(dir)
+		status, resolveErr := resolvePortalDistConflicts(dir)
+		if status == rebaseConflictAbsent && resolveErr == nil {
+			status, resolveErr = resolveAdjacentLineConflicts(dir)
+		}
 		observedConflict = observedConflict || status != rebaseConflictAbsent
 		if resolveErr != nil {
 			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, resolveErr)
@@ -540,6 +550,16 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 	}
 }
 
+func rebaseFetchHeadArgs(dir string) []string {
+	help := exec.Command("git", "rebase", "-h")
+	help.Dir = dir
+	out, _ := help.CombinedOutput()
+	if strings.Contains(string(out), "reapply-cherry-picks") {
+		return []string{"rebase", "--no-reapply-cherry-picks", "FETCH_HEAD"}
+	}
+	return []string{"rebase", "FETCH_HEAD"}
+}
+
 type rebaseConflictStatus uint8
 
 const (
@@ -561,6 +581,42 @@ type rebaseConflictFile struct {
 type rebaseResolution struct {
 	path string
 	data []byte
+}
+
+const portalDistPath = "cmd/goobers/portal-dist"
+
+func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
+	files, err := unmergedConflictFiles(dir)
+	if err != nil {
+		return rebaseConflictAbsent, err
+	}
+	if len(files) == 0 {
+		return rebaseConflictAbsent, nil
+	}
+	for _, file := range files {
+		if !strings.HasPrefix(file.path, portalDistPath+"/") {
+			return rebaseConflictAbsent, nil
+		}
+	}
+
+	build := exec.Command("make", "portal-build")
+	build.Dir = dir
+	if out, err := build.CombinedOutput(); err != nil {
+		return rebaseConflictUnsafe, fmt.Errorf("regenerate portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	add := exec.Command("git", "--literal-pathspecs", "add", "-A", "--", portalDistPath)
+	add.Dir = dir
+	if out, err := add.CombinedOutput(); err != nil {
+		return rebaseConflictUnsafe, fmt.Errorf("stage regenerated portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	remaining, err := unmergedConflictFiles(dir)
+	if err != nil {
+		return rebaseConflictUnsafe, err
+	}
+	if len(remaining) != 0 {
+		return rebaseConflictUnsafe, fmt.Errorf("stage regenerated portal bundle: %d paths remain unmerged", len(remaining))
+	}
+	return rebaseConflictResolved, nil
 }
 
 // resolveAdjacentLineConflicts inspects Git's three index stages rather than

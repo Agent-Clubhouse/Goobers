@@ -419,6 +419,10 @@ func executableName(name string) string {
 }
 
 func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
+	excluded := map[string]string{
+		"GOOBERS_OTLP_ENDPOINT": "",
+		"GOOBERS_OTLP_INSECURE": "",
+	}
 	overrides := map[string]string{
 		"CC":          compilerName,
 		"GO":          executableName("go"),
@@ -436,6 +440,9 @@ func hermeticEnvironment(base []string, toolPath, compilerName string) []string 
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, variable := range base {
 		name := environmentName(variable)
+		if _, excluded := environmentOverride(excluded, name); excluded {
+			continue
+		}
 		if _, overridden := environmentOverride(overrides, name); !overridden {
 			result = append(result, variable)
 		}

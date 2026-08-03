@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
+import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import {
@@ -8,7 +9,9 @@ import {
   type WorkflowGraphFullscreenMode,
 } from "../components/WorkflowTopologyGraph";
 import {
+  deriveBranchStates,
   deriveNodeStates,
+  deriveTraversedEdges,
   evidenceVisit,
   evidenceDecision,
   eventHeading,
@@ -19,26 +22,33 @@ import {
   formatTimestamp,
   isMajorJournalEvent,
   isInspectableEvidenceEvent,
+  eventStage,
   journalEntries,
   orderRunEvents,
+  runFailure,
   type JournalEntry,
+  runEventStages,
+  UNSCOPED_EVENT_STAGE,
   type JournalEventGroup,
   type RunNodeState,
   useRunDetail,
 } from "../runDetailData";
-import type { Navigate } from "../routing";
+import { routeHash, type Navigate } from "../routing";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
+import { useCobrand } from "../cobrand";
 
 export function RunPage({
   client,
   navigate,
+  revealRun,
   runId,
   standalone,
 }: {
   client: DaemonClient;
   navigate: Navigate;
+  revealRun: (runId: string) => Promise<void>;
   runId: string;
   standalone: boolean;
 }) {
@@ -100,6 +110,7 @@ export function RunPage({
         events={query.state.data.events}
         key={query.state.data.run.id}
         navigate={navigate}
+        revealRun={revealRun}
         run={query.state.data.run}
         runId={runId}
       />
@@ -111,26 +122,31 @@ function RunDetailWorkspace({
   client,
   events,
   navigate,
+  revealRun,
   run,
   runId,
 }: {
   client: DaemonClient;
   events: RunEvent[];
   navigate: Navigate;
+  revealRun: (runId: string) => Promise<void>;
   run: RunDetail;
   runId: string;
 }) {
   const latestEvent = events.at(-1);
   const initialSeq = latestEvent?.seq ?? 0;
-  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
+  const latestNodeId =
     eventNodeAtSequence(events, initialSeq, {
       branch: latestEvent?.branch,
       runId,
-    }) ?? run.currentStage,
-  );
+    }) ?? run.currentStage;
+  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(latestNodeId);
   const [followingLatest, setFollowingLatest] = useState(true);
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
+  const [revealPending, setRevealPending] = useState(false);
+  const [revealError, setRevealError] = useState<string>();
+  const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
@@ -138,6 +154,8 @@ function RunDetailWorkspace({
   const nodeStates = run.graph
     ? deriveNodeStates(run.graph, events, selectedSeq, runId)
     : {};
+  const traversedEdges = deriveTraversedEdges(run.transitions, selectedSeq);
+  const branchStates = deriveBranchStates(events, selectedSeq);
   const selectedNode = run.graph?.nodes.find((node) => node.id === selectedNodeId);
   const selectedEvidence = events.find((event) => event.seq === selectedEvidenceSeq);
   const selectedEvidenceVisit = selectedEvidence
@@ -158,20 +176,16 @@ function RunDetailWorkspace({
       return;
     }
     setSelectedSeq(initialSeq);
-    setSelectedNodeId(
-      eventNodeAtSequence(events, initialSeq, {
-        branch: latestEvent?.branch,
-        runId,
-      }) ?? run.currentStage,
-    );
+    setSelectedNodeId(latestNodeId);
     setSelectedEvidenceSeq(
       latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
     );
-  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage, runId]);
+  }, [events, followingLatest, initialSeq, latestEvent, latestNodeId, runId]);
 
   const selectNode = (nodeId: string, shouldRevealInspector = false) => {
     setSelectedNodeId(nodeId);
     setSelectedEvidenceSeq(undefined);
+    setFollowingLatest(nodeId === latestNodeId);
     if (shouldRevealInspector) {
       revealInspector();
     }
@@ -212,6 +226,24 @@ function RunDetailWorkspace({
   const focusCausalEvent =
     causalEventSeq === undefined ? undefined : () => replaySeek(causalEventSeq);
 
+  const failure = runFailure(run, events);
+  const failureCausalEvent =
+    failure?.causalEventSeq === undefined
+      ? undefined
+      : events.find((event) => event.seq === failure.causalEventSeq);
+
+  const revealFiles = async () => {
+    setRevealPending(true);
+    setRevealError(undefined);
+    try {
+      await revealRun(runId);
+    } catch (error) {
+      setRevealError(error instanceof Error ? error.message : "The run directory could not be opened.");
+    } finally {
+      setRevealPending(false);
+    }
+  };
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -223,7 +255,7 @@ function RunDetailWorkspace({
       </nav>
 
       <header className="run-heading">
-        <div>
+        <div className="run-heading-main">
           <div className="run-title-line">
             <StatusBadge status={run.phase} />
             <span className="mono run-id">{run.id}</span>
@@ -232,6 +264,14 @@ function RunDetailWorkspace({
           <p>
             {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
           </p>
+          {!portalConfigLoading && portalConfig.capabilities.revealRun && (
+            <div className="run-file-actions">
+              <button disabled={revealPending} onClick={() => void revealFiles()} type="button">
+                {revealPending ? "Opening…" : "Reveal run files"}
+              </button>
+              {revealError && <span role="alert">{revealError}</span>}
+            </div>
+          )}
         </div>
         <dl className="run-meta">
           <div>
@@ -279,6 +319,27 @@ function RunDetailWorkspace({
         />
       )}
 
+      {failure && (
+        <FailurePanel
+          causalEvent={failureCausalEvent}
+          errorsHref={routeHash({
+            page: "errors",
+            filters: {
+              gaggle: run.gaggle,
+              workflow: run.workflow,
+              stage: failure.stage,
+              code: failure.code,
+            },
+          })}
+          failure={failure}
+          onFocusCausalEvent={
+            failure.causalEventSeq === undefined
+              ? undefined
+              : () => replaySeek(failure.causalEventSeq!)
+          }
+        />
+      )}
+
       <section
         className="run-detail-workspace"
         data-scroll-owner="page"
@@ -310,6 +371,7 @@ function RunDetailWorkspace({
           >
             {run.graphStatus === "pinned" && run.graph ? (
               <WorkflowTopologyGraph
+                branchStates={branchStates}
                 causalNodeId={causalNodeId}
                 fullscreenTargetRef={fullscreenRootRef}
                 graph={run.graph}
@@ -318,6 +380,7 @@ function RunDetailWorkspace({
                 onSelectStage={selectNode}
                 selectedStageId={selectedNodeId}
                 stateSeq={selectedSeq}
+                traversedEdges={traversedEdges}
               />
             ) : (
               <div className="empty-detail" role="status">
@@ -377,12 +440,18 @@ function EventLedger({
   selectedSeq: number;
 }) {
   const [view, setView] = useState<"major" | "all">("major");
+  const [stageFilter, setStageFilter] = useState<string>("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const grouped = journalEntries(events, run.id);
+  const stages = runEventStages(events);
+  // A filter naming a stage this run never visited would silently empty the
+  // ledger; treat it as unset instead.
+  const activeStage = stageFilter && stages.includes(stageFilter) ? stageFilter : "";
+  const visible = activeStage ? events.filter((event) => eventStage(event) === activeStage) : events;
+  const grouped = journalEntries(visible, run.id);
   const rows: JournalEntry[] =
     view === "all"
-      ? orderRunEvents(events).map((event) => ({ kind: "event", event }))
+      ? orderRunEvents(visible).map((event) => ({ kind: "event", event }))
       : grouped.flatMap((entry) =>
           entry.kind === "group" && expandedGroups.has(entry.id)
             ? [entry, ...entry.events.map((event) => ({ kind: "event" as const, event }))]
@@ -464,6 +533,22 @@ function EventLedger({
               All events ({events.length})
             </button>
           </div>
+          {stages.length > 1 && (
+            <label className="journal-stage-filter">
+              <span>Stage</span>
+              <select
+                onChange={(changeEvent) => setStageFilter(changeEvent.target.value)}
+                value={activeStage}
+              >
+                <option value="">All stages</option>
+                {stages.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </div>
       {events.length === 0 ? (
@@ -504,6 +589,7 @@ function EventLedger({
                       Seq {first.seq}
                       {last.seq === first.seq ? "" : `–${last.seq}`}
                     </span>
+                    <span className="ledger-stage mono">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
                     <span className="ledger-type mono">Supporting</span>
                     <span className="ledger-time mono">{entry.events.length} records</span>
                     <span className="ledger-attempt">{scope}</span>
@@ -542,7 +628,7 @@ function EventLedger({
               >
                 <button
                   aria-current={selected ? "true" : undefined}
-                  aria-label={`Select sequence ${event.seq}: ${heading}. ${summary}`}
+                  aria-label={`Select sequence ${event.seq}: ${eventStage(event)}. ${heading}. ${summary}`}
                   className="run-ledger-button"
                   onClick={() => onSelect(event, true)}
                   onKeyDown={(keyboardEvent) => handleRowKeyDown(keyboardEvent, index)}
@@ -556,6 +642,7 @@ function EventLedger({
                   type="button"
                 >
                   <span className="ledger-seq mono">Seq {event.seq}</span>
+                  <span className="ledger-stage mono">{eventStage(event)}</span>
                   <span className="ledger-type mono">Type {event.type}</span>
                   <span className="ledger-time mono">
                     Elapsed {formatElapsed(run.startedAt, event.time)}

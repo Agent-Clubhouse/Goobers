@@ -39,6 +39,7 @@ const (
 var (
 	dashboardAttachTimeout = 30 * time.Second
 	launchDashboardBrowser = openDashboardBrowser
+	launchRunDirectory     = openFilesystemPath
 )
 
 //go:embed portal-dist
@@ -391,14 +392,53 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
+	// The standalone dashboard had NO projection at all (#1933, §11.2): no
+	// Telemetry, no ReadModel, so every list was a full scan of all history —
+	// and this is the configuration a new user meets first.
+	//
+	// Open the read model, building it if empty. On a read-only volume this
+	// degrades EXPLICITLY rather than silently falling back to the scan.
+	topology := readservice.TopologyConfig{
+		Topology: readservice.TopologyStandalone,
+		Layout:   layout,
+	}
+	readStore, readMode, _ := readservice.OpenReadModel(topology)
+	if readStore != nil {
+		// No measurement source here, and that is deliberate (#1782).
+		//
+		// The obvious move is to attach one -- the population flags come from the
+		// telemetry rollup, and without a source they project as zero. But
+		// standalone is contractually required to leave the instance
+		// BYTE-IDENTICAL, and opening a SQLite database creates its -wal and -shm
+		// alongside the file. TestStandaloneDashboardAPILeavesInstanceUnchanged
+		// caught exactly that.
+		//
+		// Attaching is also unnecessary. Standalone constructs its service with
+		// Telemetry nil, and listRunsUnannotated refuses a telemetry-backed
+		// population filter with ErrTelemetryUnavailable BEFORE it dispatches to
+		// the read model. So the zeroed flags are unreachable: the filter is
+		// refused with a typed error rather than answered wrongly with an empty
+		// page, which is the same behaviour standalone had before this change.
+		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
+			// A failed build degrades rather than fails: single-run routes still
+			// work, and saying so beats refusing to start.
+			readMode = readservice.ReadModeDegraded
+		}
+	}
+
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
 		Config:      config,
 		Definitions: definitions,
 		Validation:  report,
+		ReadModel:   readStore,
 	}, func() bool { return true })
 	if err != nil {
 		return dashboardAPI{}, err
+	}
+	reads.SetReadMode(readMode)
+	if readStore != nil {
+		reads.EnableReadModelReads()
 	}
 	manifestInstance := definitions.Manifest.Spec.Instance
 	reader := standaloneDashboardReader{
@@ -409,23 +449,30 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		},
 		loadedAt: time.Now().UTC(),
 	}
-	events, err := httpapi.NewEventStream(layout, errorLog)
-	if err != nil {
-		return dashboardAPI{}, err
+	// Standalone serves live updates from the change feed too (#1929), using
+	// the read model #1933 attaches. When none could be opened (a read-only
+	// volume with no writable cache directory) there is no SSE, and the
+	// freshness surface already renders that as degraded.
+	var streamOpts []httpapi.HandlerOption
+	if readStore != nil {
+		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
 	}
-	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, httpapi.WithEventStream(events))
+	streamOpts = append(streamOpts, httpapi.WithRunRevealer(runDirectoryRevealer(layout)))
+	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, streamOpts...)
 	if err != nil {
-		events.Close()
 		return dashboardAPI{}, err
 	}
 	return dashboardAPI{
 		handler: handler,
 		mode:    dashboardModeStandalone,
+		// The read model is the only thing to close now that the poller is gone
+		// (#1929); the change-feed stream holds no goroutine of its own beyond
+		// each subscription, which the handler cancels.
 		close: func() error {
-			events.Close()
-			waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			return events.Wait(waitCtx)
+			if readStore != nil {
+				return readStore.Close()
+			}
+			return nil
 		},
 	}, nil
 }
@@ -557,27 +604,45 @@ func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api d
 }
 
 func openDashboardBrowser(ctx context.Context, address string) error {
+	return openNativeTarget(ctx, address, "browser launcher")
+}
+
+func openFilesystemPath(ctx context.Context, path string) error {
+	return openNativeTarget(ctx, path, "file browser launcher")
+}
+
+func openNativeTarget(ctx context.Context, target, launcherName string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.CommandContext(ctx, "open", address)
+		command = exec.CommandContext(ctx, "open", target)
 	case "windows":
-		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", address)
+		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target)
 	default:
-		command = exec.CommandContext(ctx, "xdg-open", address)
+		command = exec.CommandContext(ctx, "xdg-open", target)
 	}
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {
 		switch {
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return errors.New("browser launcher timed out")
+			return fmt.Errorf("%s timed out", launcherName)
 		case errors.Is(ctx.Err(), context.Canceled):
 			return ctx.Err()
 		}
 		return err
 	}
 	return nil
+}
+
+func runDirectoryRevealer(layout instance.Layout) func(context.Context, string) error {
+	return func(ctx context.Context, runID string) error {
+		dir, err := layout.FindRunDir(runID)
+		if err != nil {
+			return err
+		}
+		return launchRunDirectory(ctx, dir)
+	}
 }

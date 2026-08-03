@@ -1,0 +1,17 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: echo
+spec:
+  gaggle: example
+  role: echo
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - copilot-echo

@@ -1,5 +1,5 @@
-// Package providerfixture records, normalizes, replays, and compares GitHub
-// provider contract fixtures.
+// Package providerfixture records, normalizes, replays, and compares provider
+// contract fixtures.
 package providerfixture
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,18 +38,19 @@ var ErrContractAssertion = errors.New("provider contract assertion failed")
 // ErrFixtureDrift identifies a material normalized difference from the baseline.
 var ErrFixtureDrift = errors.New("material normalized fixture drift")
 
-// Repository identifies the designated GitHub fixture repository.
+// Repository identifies the normalized provider fixture scope.
 type Repository struct {
 	Owner string `json:"owner"`
 	Name  string `json:"name"`
 }
 
-// Fixture contains normalized responses for the GitHub provider contract request set.
+// Fixture contains normalized responses for a provider contract request set.
 type Fixture struct {
 	SchemaVersion string     `json:"schemaVersion"`
 	Provider      string     `json:"provider"`
 	Repository    Repository `json:"repository"`
-	Issue         string     `json:"issue"`
+	Issue         string     `json:"issue,omitempty"`
+	PullRequest   string     `json:"pullRequest,omitempty"`
 	Exchanges     []Exchange `json:"exchanges"`
 }
 
@@ -60,7 +62,7 @@ type Exchange struct {
 	Response FixtureResponse `json:"response"`
 }
 
-// FixtureResponse is the replayable portion of a GitHub API response.
+// FixtureResponse is the replayable portion of a provider API response.
 type FixtureResponse struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
@@ -74,11 +76,12 @@ type HTTPClient interface {
 
 // RefreshConfig selects the live fixture source and HTTP transport.
 type RefreshConfig struct {
-	Repository Repository
-	Issue      string
-	Token      string
-	BaseURL    string
-	Client     HTTPClient
+	Repository  Repository
+	Issue       string
+	PullRequest string
+	Token       string
+	BaseURL     string
+	Client      HTTPClient
 }
 
 type requestSpec struct {
@@ -92,9 +95,9 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (Fixture, error) {
 	if cfg.Repository.Owner == "" || cfg.Repository.Name == "" {
 		return Fixture{}, fmt.Errorf("repository owner and name are required")
 	}
-	issueNumber, err := strconv.Atoi(cfg.Issue)
-	if err != nil || issueNumber <= 0 {
-		return Fixture{}, fmt.Errorf("issue must be a positive number")
+	target, err := fixtureTarget(cfg.Issue, cfg.PullRequest)
+	if err != nil {
+		return Fixture{}, err
 	}
 	if cfg.Token == "" {
 		return Fixture{}, fmt.Errorf("dedicated provider fixture token is required")
@@ -111,12 +114,13 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (Fixture, error) {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 
-	specs := contractRequestSet(cfg.Repository, cfg.Issue)
+	specs := target.requestSet(cfg.Repository)
 	fixture := Fixture{
 		SchemaVersion: SchemaVersion,
 		Provider:      "github",
 		Repository:    Repository{Owner: normalizedOwner, Name: normalizedRepo},
 		Issue:         cfg.Issue,
+		PullRequest:   cfg.PullRequest,
 		Exchanges:     make([]Exchange, 0, len(specs)),
 	}
 	for _, spec := range specs {
@@ -199,11 +203,21 @@ func Write(path string, fixture Fixture) error {
 	return nil
 }
 
-// CheckContract replays a fixture through the GitHub provider and checks its mappings.
+// CheckContract replays a fixture through its provider and checks its mappings.
 func CheckContract(ctx context.Context, fixture Fixture) error {
 	if err := validate(fixture); err != nil {
 		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
 	}
+	if fixture.Provider == "ado" {
+		return checkADOContract(ctx, fixture)
+	}
+	if fixture.PullRequest != "" {
+		return checkPullRequestContract(ctx, fixture)
+	}
+	return checkIssueContract(ctx, fixture)
+}
+
+func checkIssueContract(ctx context.Context, fixture Fixture) error {
 	client := &replayClient{exchanges: fixture.Exchanges, used: make([]bool, len(fixture.Exchanges))}
 	provider := providers.NewGitHubProvider(
 		"fixture-token",
@@ -257,6 +271,56 @@ func CheckContract(ctx context.Context, fixture Fixture) error {
 	return nil
 }
 
+func checkPullRequestContract(ctx context.Context, fixture Fixture) error {
+	client := &replayClient{exchanges: fixture.Exchanges, used: make([]bool, len(fixture.Exchanges))}
+	provider := providers.NewGitHubProvider(
+		"fixture-token",
+		func(p *providers.GitHubProvider) { p.BaseURL = "https://fixture.invalid" },
+		providers.WithHTTPClient(client),
+		providers.WithMaxTransientRetries(0),
+	)
+	repo := providers.RepositoryRef{Owner: fixture.Repository.Owner, Name: fixture.Repository.Name}
+	items, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository:     repo,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: ListPullRequests: %w", ErrContractAssertion, err)
+	}
+	item, err := provider.GetPullRequest(ctx, repo, fixture.PullRequest)
+	if err != nil {
+		return fmt.Errorf("%w: GetPullRequest: %w", ErrContractAssertion, err)
+	}
+	if item.ID != fixture.PullRequest || item.Number <= 0 {
+		return fmt.Errorf("%w: mapped pull request identity = %s/%d, want %s", ErrContractAssertion, item.ID, item.Number, fixture.PullRequest)
+	}
+	if strings.TrimSpace(item.URL) == "" || strings.TrimSpace(item.Head) == "" || strings.TrimSpace(item.Base) == "" {
+		return fmt.Errorf("%w: mapped pull request must have a URL, head, and base", ErrContractAssertion)
+	}
+	if strings.TrimSpace(item.Author) == "" || len(item.Assignees) == 0 || len(item.RequestedReviewers) == 0 {
+		return fmt.Errorf("%w: mapped pull request must preserve creator, assignees, and requested reviewers", ErrContractAssertion)
+	}
+	found := false
+	for _, listed := range items {
+		if listed.ID != fixture.PullRequest {
+			continue
+		}
+		found = true
+		if listed.URL != item.URL || listed.State != item.State || listed.Author != item.Author ||
+			!slices.Equal(listed.Assignees, item.Assignees) ||
+			!slices.Equal(listed.RequestedReviewers, item.RequestedReviewers) {
+			return fmt.Errorf("%w: list/get mappings disagree for pull request %s", ErrContractAssertion, fixture.PullRequest)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: ListPullRequests did not return fixture pull request %s", ErrContractAssertion, fixture.PullRequest)
+	}
+	if err := client.verifyConsumed(); err != nil {
+		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
+	}
+	return nil
+}
+
 // CheckDrift reports whether two normalized fixtures differ materially.
 func CheckDrift(baseline, candidate Fixture) error {
 	baselineRaw, err := canonical(baseline)
@@ -289,6 +353,57 @@ func contractRequestSet(repo Repository, issue string) []requestSpec {
 		{name: "list-open-issues", method: http.MethodGet, path: fmt.Sprintf("/repos/%s/%s/issues?%s", owner, name, query)},
 		{name: "get-issue", method: http.MethodGet, path: fmt.Sprintf("/repos/%s/%s/issues/%s", owner, name, url.PathEscape(issue))},
 	}
+}
+
+func pullRequestContractRequestSet(repo Repository, pullRequest string) []requestSpec {
+	owner := url.PathEscape(repo.Owner)
+	name := url.PathEscape(repo.Name)
+	query := url.Values{
+		"per_page": {"100"},
+		"state":    {"open"},
+	}.Encode()
+	return []requestSpec{
+		{name: "list-open-prs", method: http.MethodGet, path: fmt.Sprintf("/repos/%s/%s/pulls?%s", owner, name, query)},
+		{name: "get-pr", method: http.MethodGet, path: fmt.Sprintf("/repos/%s/%s/pulls/%s", owner, name, url.PathEscape(pullRequest))},
+	}
+}
+
+type targetKind int
+
+const (
+	issueTarget targetKind = iota
+	pullRequestTarget
+)
+
+type target struct {
+	kind   targetKind
+	number string
+}
+
+func fixtureTarget(issue, pullRequest string) (target, error) {
+	if (issue == "") == (pullRequest == "") {
+		return target{}, fmt.Errorf("exactly one of issue or pull request is required")
+	}
+	kind := issueTarget
+	number := issue
+	name := "issue"
+	if pullRequest != "" {
+		kind = pullRequestTarget
+		number = pullRequest
+		name = "pull request"
+	}
+	parsed, err := strconv.Atoi(number)
+	if err != nil || parsed <= 0 {
+		return target{}, fmt.Errorf("%s must be a positive number", name)
+	}
+	return target{kind: kind, number: number}, nil
+}
+
+func (t target) requestSet(repo Repository) []requestSpec {
+	if t.kind == pullRequestTarget {
+		return pullRequestContractRequestSet(repo, t.number)
+	}
+	return contractRequestSet(repo, t.number)
 }
 
 func normalizeJSON(raw []byte, repo Repository) (json.RawMessage, error) {
@@ -395,14 +510,15 @@ func validate(fixture Fixture) error {
 	if fixture.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("fixture schemaVersion = %q, want %q", fixture.SchemaVersion, SchemaVersion)
 	}
-	if fixture.Provider != "github" {
-		return fmt.Errorf("fixture provider = %q, want github", fixture.Provider)
+	if fixture.Provider != "github" && fixture.Provider != "ado" {
+		return fmt.Errorf("fixture provider = %q, want github or ado", fixture.Provider)
 	}
 	if fixture.Repository.Owner == "" || fixture.Repository.Name == "" {
 		return fmt.Errorf("fixture repository owner and name are required")
 	}
-	if _, err := strconv.Atoi(fixture.Issue); err != nil {
-		return fmt.Errorf("fixture issue must be numeric")
+	target, err := fixtureTarget(fixture.Issue, fixture.PullRequest)
+	if err != nil {
+		return fmt.Errorf("fixture %w", err)
 	}
 	if len(fixture.Exchanges) == 0 {
 		return fmt.Errorf("fixture has no exchanges")
@@ -423,7 +539,14 @@ func validate(fixture Fixture) error {
 			return fmt.Errorf("fixture exchange %q has invalid JSON body", exchange.Name)
 		}
 	}
-	for _, required := range []string{"list-open-issues", "get-issue"} {
+	requiredExchanges := []string{"list-open-issues", "get-issue"}
+	switch {
+	case fixture.Provider == "ado":
+		requiredExchanges = []string{"list-open-work-items", "get-work-item"}
+	case target.kind == pullRequestTarget:
+		requiredExchanges = []string{"list-open-prs", "get-pr"}
+	}
+	for _, required := range requiredExchanges {
 		if _, ok := names[required]; !ok {
 			return fmt.Errorf("fixture is missing %q exchange", required)
 		}

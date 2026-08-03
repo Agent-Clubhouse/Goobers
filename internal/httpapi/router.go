@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -171,11 +173,23 @@ type Router struct {
 	authenticator Authenticator
 	authorizer    Authorizer
 	routes        []apicontract.Route
+
+	// admission bounds concurrency per cost class (#1926). Lazily created so
+	// every existing Router construction keeps working without threading a
+	// constructor argument through each one.
+	admissionOnce sync.Once
+	admission     *admissionController
+}
+
+// ensureAdmission creates the controller on first use.
+func (r *Router) ensureAdmission() {
+	r.admissionOnce.Do(func() { r.admission = newAdmissionController() })
 }
 
 type handlerConfig struct {
 	events        eventSource
 	authenticator Authenticator
+	runRevealer   func(context.Context, string) error
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -184,25 +198,15 @@ type HandlerOption func(*handlerConfig) error
 // WithChangeFeedStream registers the SSE endpoint backed by the read model's
 // change feed (#1929).
 //
-// Preferred over WithEventStream wherever a read model exists. The two differ
-// in what they can promise: this one is ordered, durable, and bounded by active
-// work, because it tails rows the projector wrote in the same transaction as
-// the facts they describe. The filesystem poller remains for topologies with no
-// read model, which #1933 removes.
+// The only SSE source (#1929). It tails rows the projector wrote in the same
+// transaction as the facts they describe, so it is ordered, durable, and
+// bounded by active work.
+//
+// A topology with no read model registers no stream at all rather than falling
+// back to a second detector; the freshness surface reports that as degraded.
 func WithChangeFeedStream(store *readmodel.Store) HandlerOption {
 	return func(h *handlerConfig) error {
 		h.events = newFeedStream(store)
-		return nil
-	}
-}
-
-// WithEventStream registers the resumable SSE invalidation endpoint.
-func WithEventStream(stream *EventStream) HandlerOption {
-	return func(config *handlerConfig) error {
-		if stream == nil {
-			return errors.New("http API event stream is required")
-		}
-		config.events = stream
 		return nil
 	}
 }
@@ -214,6 +218,18 @@ func WithAuthenticator(authenticator Authenticator) HandlerOption {
 			return errors.New("http API authenticator is required")
 		}
 		config.authenticator = authenticator
+		return nil
+	}
+}
+
+// WithRunRevealer enables the local-only action that opens a run directory in
+// the host file browser.
+func WithRunRevealer(reveal func(context.Context, string) error) HandlerOption {
+	return func(config *handlerConfig) error {
+		if reveal == nil {
+			return errors.New("run revealer is required")
+		}
+		config.runRevealer = reveal
 		return nil
 	}
 }
@@ -252,6 +268,7 @@ func newRouter(authenticator Authenticator, authorizer Authorizer) (*Router, err
 // Handle registers a typed contract route. Other methods receive the structured
 // error envelope rather than net/http's plain-text method error.
 func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
+	r.ensureAdmission()
 	route, ok := apicontract.V1Route(routeID)
 	if !ok {
 		panic(fmt.Sprintf("unknown API route ID %q", routeID))
@@ -273,6 +290,20 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 		}
 		if err := r.authorizer.Authorize(request); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
+			return
+		}
+		// Admission control (#1926). Applied AFTER auth for the same reason the
+		// budget is — an unauthenticated request must not consume a slot — and
+		// BEFORE the budget, because a refused request should not have started
+		// its budget clock at all.
+		//
+		// Shed at admission rather than accept-and-timeout: queue wait counts
+		// against the budget, so a saturated class that accepts work it cannot
+		// finish burns the caller's whole budget and returns nothing anyway.
+		if release, admitted := r.admission.admit(route.Cost); admitted {
+			defer release()
+		} else {
+			writeAdmissionRefusal(w, route.Cost)
 			return
 		}
 		// Bound the request (#1917). Applied here rather than per handler so a
@@ -325,7 +356,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	registerV1Routes(router, reader, errorLog)
+	registerV1Routes(router, reader, errorLog, config)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -343,7 +374,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig) {
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -354,19 +385,40 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		writeJSON(w, http.StatusOK, health)
 	})
 	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
-		config, err := reader.PortalConfig(request.Context())
+		portalConfig, err := reader.PortalConfig(request.Context())
 		if err != nil {
 			errorLog.Printf("portal config read failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "read_error", "portal config could not be read")
 			return
 		}
+		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
 		w.Header().Set("Cache-Control", "no-cache")
-		writeJSON(w, http.StatusOK, config)
+		writeJSON(w, http.StatusOK, portalConfig)
 	})
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router)
+	registerRunRevealRoute(router, config.runRevealer, errorLog)
+}
+
+func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteRunReveal, func(w http.ResponseWriter, request *http.Request) {
+		if reveal == nil {
+			writeError(w, http.StatusNotFound, "not_available", "run reveal is not available for this deployment")
+			return
+		}
+		if err := reveal(request.Context(), request.PathValue("run")); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "not_found", "requested run data was not found")
+				return
+			}
+			errorLog.Printf("reveal run failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "reveal_error", "run directory could not be opened")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
@@ -472,6 +524,13 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 			return readservice.RunListOptions{}, fmt.Errorf("%w: latestPerWorkflow must be a boolean", readservice.ErrInvalidArgument)
 		}
 	}
+	showNoWork := false
+	if value := query.Get("showNoWork"); value != "" {
+		showNoWork, err = strconv.ParseBool(value)
+		if err != nil {
+			return readservice.RunListOptions{}, fmt.Errorf("%w: showNoWork must be a boolean", readservice.ErrInvalidArgument)
+		}
+	}
 	options := readservice.RunListOptions{
 		Gaggle:            query.Get("gaggle"),
 		Workflow:          query.Get("workflow"),
@@ -484,6 +543,7 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 		Until:             until,
 		Cursor:            query.Get("cursor"),
 		LatestPerWorkflow: latestPerWorkflow,
+		ShowNoWork:        showNoWork,
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

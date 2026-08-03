@@ -44,12 +44,102 @@ type ListOptions struct {
 	Until    time.Time
 	Limit    int
 	Cursor   ListCursor
+
+	// Stage, StageOutcome, and Population are the three filters that used to be
+	// residual predicates evaluated after a journal open (#1782). They are
+	// answered from run_stage now.
+	//
+	// There is deliberately no stage-outcome field. run_stage carries
+	// last_status, but the reference matches on ANY attempt's status, so an
+	// equality test on the last one silently under-matches -- see queryset.go.
+	Stage      string
+	Population Population
+
+	// IncludeNoWork includes runs whose disposition is DispositionNoWork
+	// (#2188). False (the default) excludes them via a plain WHERE term
+	// alongside whatever covering index the other dims choose — not yet a
+	// dedicated covering index of its own, since that indexed contract is
+	// #1429/#1439's to design; see disposition's doc comment in schema.go.
+	IncludeNoWork bool
+
+	// OrderBy selects the recency axis (#1777).
+	//
+	// Two axes, not one, because they answer different operator questions. The
+	// default — when a run BEGAN — is what a history page wants. The other is
+	// when a run last DID something, which is what an attention list wants: a
+	// run that started days ago and escalated a minute ago is the most urgent
+	// thing on the instance and the least recent by started_at.
+	//
+	// Additive: the zero value is the existing behaviour, so no current caller
+	// changes meaning by this field existing.
+	OrderBy Order
+}
+
+// Order is the recency axis a list is filtered and sorted on.
+type Order string
+
+const (
+	// OrderStartedAt sorts by when the run began. The zero value, so existing
+	// callers keep their behaviour.
+	OrderStartedAt Order = ""
+	// OrderLastActivity sorts by the run's most recent journal event.
+	OrderLastActivity Order = "last-activity"
+)
+
+// column returns the ordering column for an axis.
+func (o Order) column() string {
+	if o == OrderLastActivity {
+		return "last_activity_at"
+	}
+	return "started_at"
+}
+
+// Population is one of the four measurement filters.
+type Population string
+
+// The populations, matching the URL values the portal's router parses.
+const (
+	PopulationTokenMeasured   Population = "token-measured"
+	PopulationPremiumMeasured Population = "premium-measured"
+	PopulationCostMeasured    Population = "cost-measured"
+	PopulationRetryWaste      Population = "retry-waste"
+)
+
+// stageColumn returns the run_stage flag column for a population.
+func (p Population) stageColumn() (string, bool) {
+	switch p {
+	case PopulationTokenMeasured:
+		return "token_measured", true
+	case PopulationPremiumMeasured:
+		return "premium_measured", true
+	case PopulationCostMeasured:
+		return "cost_measured", true
+	case PopulationRetryWaste:
+		return "retry_waste", true
+	default:
+		return "", false
+	}
+}
+
+// runColumn returns the run-level rollup column for a population.
+func (p Population) runColumn() (string, bool) {
+	col, ok := p.stageColumn()
+	if !ok {
+		return "", false
+	}
+	return "any_" + col, true
 }
 
 // ListCursor is a keyset position: the ordering key of the last row returned.
+//
+// Key is the value of whichever column the query ordered by — started_at by
+// default, last_activity_at under OrderLastActivity (#1777). It is deliberately
+// NOT named for either: a cursor named StartedAt that sometimes held a
+// last-activity timestamp is how a paginating client silently skips or repeats
+// rows when the axis changes underneath it.
 type ListCursor struct {
-	StartedAt time.Time
-	RunID     string
+	Key   time.Time
+	RunID string
 }
 
 // Zero reports whether the cursor is unset — a first page.
@@ -82,6 +172,15 @@ func (o ListOptions) Dims() []Dim {
 	}
 	if !o.Until.IsZero() {
 		dims = append(dims, DimUntil)
+	}
+	if o.Stage != "" {
+		dims = append(dims, DimStage)
+	}
+	if o.Population != "" {
+		dims = append(dims, DimPopulation)
+	}
+	if o.OrderBy == OrderLastActivity {
+		dims = append(dims, DimActivity)
 	}
 	return dims
 }
@@ -117,7 +216,12 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 	}
 
 	query, args := listQuery(options, limit)
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("readmodel: list runs: %w", err)
 	}
@@ -142,7 +246,11 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 	}
 	if len(page.Runs) > 0 {
 		last := page.Runs[len(page.Runs)-1]
-		page.Next = ListCursor{StartedAt: last.StartedAt, RunID: last.RunID}
+		key := last.StartedAt
+		if options.OrderBy == OrderLastActivity {
+			key = last.LastActivity
+		}
+		page.Next = ListCursor{Key: key, RunID: last.RunID}
 	}
 	return page, nil
 }
@@ -153,7 +261,31 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 // A plan test that rebuilt the SQL independently would test its own copy, and
 // the covering indexes are worth nothing unless the planner picks them for the
 // real query.
+// listQuery builds the page query for a combination already known to be
+// supported.
+//
+// # Two drivers, chosen by whether a stage is named
+//
+// Without a stage, the query drives from `run` and every predicate is on a
+// leading column of a run index. With a stage, it drives from `run_stage` and
+// joins `run` by primary key for the row body — because the stage predicate,
+// the gaggle scope, and the ordering must all be served by ONE index, and only
+// run_stage has all three (§5.7). Joining the other way round would make the
+// stage a residual predicate on an unbounded candidate set, which is the bug
+// #1782 reports.
+//
+// The join costs one primary-key lookup per returned row: limit+1, never more.
+// That is the difference from the old candidate loop, which did one journal open
+// per row EXAMINED, with nothing bounding how many that was.
 func listQuery(options ListOptions, limit int) (string, []any) {
+	if options.Stage != "" {
+		return stageScopedListQuery(options, limit)
+	}
+	return runScopedListQuery(options, limit)
+}
+
+// runScopedListQuery answers a page with no stage filter, driving from run.
+func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 	var (
 		where []string
 		args  []any
@@ -173,20 +305,40 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 		where = append(where, "phase = ?")
 		args = append(args, string(options.Phase))
 	}
+	if column, ok := options.Population.runColumn(); ok {
+		// Interpolated, not bound. The matching index is PARTIAL on this exact
+		// literal, and SQLite will not use a partial index whose predicate is
+		// expressed with a bound parameter. The value is not user input: it comes
+		// from runColumn's closed switch over four constants.
+		where = append(where, column+" = 1")
+	}
+	if !options.IncludeNoWork {
+		where = append(where, "disposition != ?")
+		args = append(args, DispositionNoWork)
+	}
+	// The filter, the cursor, and the ORDER BY all use the SAME column (#1777).
+	//
+	// That is not a tidiness preference. Keyset pagination works by asking for
+	// "rows past this position in the sort order"; if since/until bounded
+	// started_at while the sort ran on last_activity_at, the predicate would
+	// exclude rows the cursor had not yet reached and admit rows it had already
+	// passed — so a client paging through would silently skip and repeat runs.
+	order := options.OrderBy.column()
 	if !options.Since.IsZero() {
-		where = append(where, "started_at >= ?")
+		where = append(where, order+" >= ?")
 		args = append(args, formatTime(options.Since))
 	}
 	if !options.Until.IsZero() {
-		where = append(where, "started_at <= ?")
+		where = append(where, order+" <= ?")
 		args = append(args, formatTime(options.Until))
 	}
 	if !options.Cursor.Zero() {
-		// The keyset predicate mirrors the ordering exactly — descending on
-		// started_at, ascending on run_id as the tiebreak — so the index can seek
-		// straight to the position instead of scanning to it.
-		cursorAt := formatTime(options.Cursor.StartedAt)
-		where = append(where, "(started_at < ? OR (started_at = ? AND run_id > ?))")
+		// The keyset predicate mirrors the ordering exactly — descending on the
+		// ordering column, ascending on run_id as the tiebreak — so the index can
+		// seek straight to the position instead of scanning to it.
+		cursorAt := formatTime(options.Cursor.Key)
+		where = append(where,
+			"("+order+" < ? OR ("+order+" = ? AND run_id > ?))")
 		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
 	}
 
@@ -195,8 +347,62 @@ func listQuery(options ListOptions, limit int) (string, []any) {
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY started_at DESC, run_id ASC LIMIT ?"
+	query += " ORDER BY " + order + " DESC, run_id ASC LIMIT ?"
 	// limit+1 so the lookahead row answers "is there more" without a COUNT.
+	args = append(args, limit+1)
+	return query, args
+}
+
+// stageScopedListQuery answers a page filtered by stage, driving from run_stage.
+//
+// Every predicate and the whole ORDER BY are on run_stage columns, so one index
+// serves the seek AND the order. The joined run row contributes no predicate —
+// if it did, that predicate would be residual and the page would stop being
+// bounded.
+// Stage-scoped queries are started_at-ordered only. run_stage carries
+// run_started_at but not a run_last_activity copy, so ordering them by activity
+// would sort against the joined run row — a sort rather than a seek, which is
+// the unbounded shape §5.7 refuses. The closed set therefore does not pair
+// DimStage with the last-activity axis, and Require refuses the combination
+// rather than serving it slowly.
+func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
+	var (
+		where []string
+		args  []any
+	)
+	if options.Gaggle != "" {
+		where = append(where, "s.gaggle = ?")
+		args = append(args, options.Gaggle)
+	}
+	where = append(where, "s.stage = ?")
+	args = append(args, options.Stage)
+	if column, ok := options.Population.stageColumn(); ok {
+		// Literal for the same partial-index reason as the run-scoped path.
+		where = append(where, "s."+column+" = 1")
+	}
+	if !options.IncludeNoWork {
+		where = append(where, "r.disposition != ?")
+		args = append(args, DispositionNoWork)
+	}
+	if !options.Since.IsZero() {
+		where = append(where, "s.run_started_at >= ?")
+		args = append(args, formatTime(options.Since))
+	}
+	if !options.Until.IsZero() {
+		where = append(where, "s.run_started_at <= ?")
+		args = append(args, formatTime(options.Until))
+	}
+	if !options.Cursor.Zero() {
+		cursorAt := formatTime(options.Cursor.Key)
+		where = append(where,
+			"(s.run_started_at < ? OR (s.run_started_at = ? AND s.run_id > ?))")
+		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
+	}
+
+	query := `SELECT ` + runColumns + `
+	FROM run_stage s JOIN run r ON r.run_id = s.run_id
+	WHERE ` + strings.Join(where, " AND ") +
+		" ORDER BY s.run_started_at DESC, s.run_id ASC LIMIT ?"
 	args = append(args, limit+1)
 	return query, args
 }

@@ -30,6 +30,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -71,6 +72,7 @@ func DefaultVerifier() *Verifier {
 		"node":   commandProber{bin: "node", args: []string{"--version"}, parse: parseNodeVersion},
 		"python": commandProber{bin: pythonProbeBin(v.goos), args: []string{"--version"}, parse: parseLastField},
 		"go":     commandProber{bin: "go", args: []string{"version"}, parse: parseGoVersion},
+		"java":   commandProber{bin: "java", args: []string{"-version"}, parse: parseJavaVersion},
 		"os":     osProber{goos: func() string { return v.goos }},
 	}
 	return v
@@ -224,6 +226,16 @@ func parseGoVersion(output string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no go1.x token in %q", strings.TrimSpace(output))
+}
+
+var javaVersionPattern = regexp.MustCompile(`^[^\r\n]*\bversion\s+"([^"]+)"`)
+
+func parseJavaVersion(output string) (string, error) {
+	match := javaVersionPattern.FindStringSubmatch(output)
+	if len(match) != 2 {
+		return "", fmt.Errorf("no quoted version token on first line of %q", strings.TrimSpace(output))
+	}
+	return match[1], nil
 }
 
 func plural(n int) string {

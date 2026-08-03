@@ -890,7 +890,7 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -907,7 +907,10 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 
 			available := copilotAvailableTools(RunRequest{Tools: curator.Spec.Tools})
 			for _, required := range []string{
+				"github-mcp-server-add_issue_comment",
 				"github-mcp-server-issue_read",
+				"github-mcp-server-issue_write",
+				"github-mcp-server-sub_issue_write",
 				"view",
 				"bash",
 			} {
@@ -922,7 +925,7 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "nominator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -939,7 +942,9 @@ func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testin
 
 			available := copilotAvailableTools(RunRequest{Tools: nominator.Spec.Tools})
 			for _, required := range []string{
+				"github-mcp-server-add_issue_comment",
 				"github-mcp-server-issue_write",
+				"github-mcp-server-sub_issue_write",
 				"view",
 				"bash",
 			} {
@@ -1945,6 +1950,74 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight should pass when signed in: %v", err)
+	}
+}
+
+// TestCopilotAdapterPreflightCarriesAmbientModelToken is the headless-PAT fix:
+// Preflight has no RunRequest, so it cannot resolve the agent:model credential
+// credentialEnv injects at run time — the sign-in probe would fail a valid
+// headless setup whose Copilot token is supplied by env (COPILOT_GITHUB_TOKEN).
+// When that token is present in the ambient environment, the probe must carry
+// it so preflight reflects the same auth the run will use.
+func TestCopilotAdapterPreflightCarriesAmbientModelToken(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-headless-xyz")
+	var authProbeEnv []string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass with an ambient model token: %v", err)
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-headless-xyz" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should carry the ambient COPILOT_GITHUB_TOKEN; got %v", authProbeEnv)
+	}
+}
+
+// TestCopilotAdapterPreflightFallsBackToGHToken confirms the ambient-token probe
+// also honors GH_TOKEN/GITHUB_TOKEN, the conventional fallbacks the Copilot CLI
+// accepts, when COPILOT_GITHUB_TOKEN itself is unset.
+func TestCopilotAdapterPreflightFallsBackToGHToken(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "gh-fallback-abc")
+	var authProbeEnv []string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass with a GH_TOKEN fallback: %v", err)
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=gh-fallback-abc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should map GH_TOKEN into COPILOT_GITHUB_TOKEN; got %v", authProbeEnv)
 	}
 }
 

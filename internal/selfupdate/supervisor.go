@@ -151,7 +151,7 @@ func performUpdate(
 			return process, err
 		}
 	}
-	if err := requestDaemonStop(opts.Root); err != nil {
+	if err := RequestDaemonStop(opts.Root); err != nil {
 		return process, err
 	}
 	if err := waitOrKill(process, opts.DrainTimeout); err != nil {
@@ -293,7 +293,7 @@ func rollbackAndRestart(
 	reason string,
 ) (process, error) {
 	if process != nil {
-		if err := requestDaemonStop(opts.Root); err != nil {
+		if err := RequestDaemonStop(opts.Root); err != nil {
 			return nil, err
 		}
 		if err := waitOrKill(process, opts.DrainTimeout); err != nil {
@@ -462,7 +462,19 @@ func rejectInvalidRequest(opts SupervisorOptions, requestErr error) error {
 	}
 	return reportErr
 }
-func requestDaemonStop(root string) error {
+
+// RequestDaemonStop drops a pending drain-shutdown request for the live
+// `goobers up` daemon rooted at root. The daemon's supervisor-stop sweep
+// (cmd/goobers/up.go, ConsumeStopRequest below) picks it up on its next
+// delegationSweepInterval tick and drives the identical drain path
+// SIGINT/SIGTERM already trigger. Originally internal to the self-update
+// supervisor's own stop-for-restart flow; exported so `goobers down`
+// (#2072) — a plain, non-restarting shutdown request — can reuse the exact
+// same file-based mechanism rather than inventing a second one: the
+// daemon's response is identical either way, since nothing about restarting
+// is encoded in this request file itself (that orchestration lives entirely
+// in the supervisor process, not here).
+func RequestDaemonStop(root string) error {
 	if err := os.MkdirAll(updatesDir(root), 0o755); err != nil {
 		return err
 	}
@@ -481,7 +493,7 @@ func ConsumeStopRequest(root string) (bool, error) {
 	return err == nil, err
 }
 func stopForService(process process, opts SupervisorOptions) error {
-	if err := requestDaemonStop(opts.Root); err != nil {
+	if err := RequestDaemonStop(opts.Root); err != nil {
 		return err
 	}
 	err := waitOrKill(process, opts.DrainTimeout)

@@ -27,20 +27,27 @@ import (
 
 // DefaultClaimLease bounds how long a claimed item stays held before
 // localscheduler.ClaimLedger.RecoverExpired (wired into `goobers up`, #131)
-// releases it back to the pool. Raised from the original 2h to 6h (issue
-// #235, edge 2): a real implementation run is implement -> reviewer gate ->
-// make ci -> open-pr -> ci-poll, and ci-poll alone can legitimately run
-// close to its own DefaultPollTimeout (30m) *per attempt*, retried — the old
-// 2h default was reachable by a real run, not just a theoretical bound,
-// which meant RecoverExpired's known liveness-unaware hazard (see its own
-// doc comment) could fire on a still-live run in the shipped config, not
-// only on a genuinely abandoned one. 6h is comfortably above that realistic
-// ceiling while still bounding a genuinely abandoned claim (a crashed run
-// whose lease never gets explicitly released) to a reasonable stuck time.
+// releases it back to the pool.
+//
+// Shrunk from 6h to 30m by issue #2014, now that a live run's lease is
+// periodically renewed (renewLiveClaims, cmd/goobers' claimTicker) rather
+// than needing to outlast the run's entire realistic duration in one shot —
+// the 6h figure existed only because nothing renewed the lease (see #2014's
+// change to RecoverExpired's own doc for that history). 30m is sized off
+// claimRecoverInterval (5m): 6x that gives a wide margin for a missed tick or
+// slow lock acquisition under shared-host load before a still-renewing run's
+// claim could ever reach its own expiry, while still bounding a genuinely
+// abandoned claim (a crashed run, or a daemon restart slower than 30m) to a
+// reasonable stuck time — down from the old 6h ceiling, not eliminated: a
+// restart that takes longer than this can still reap a claim its own
+// resumeInterruptedRunsWithRunners would have renewed seconds later, exactly
+// as raising DefaultClaimLease to 6h never fully eliminated the analogous gap
+// for a slow run either.
+//
 // Overridable via the leaseDuration Task.Input (a time.ParseDuration
 // string) — must be positive; see the leaseDuration parsing below and
 // localscheduler.ClaimLedger.Claim's own fail-closed check.
-const DefaultClaimLease = 6 * time.Hour
+const DefaultClaimLease = 30 * time.Minute
 
 // backlogScanCeiling is the floor on how many candidates a backlog query
 // fetches from the provider, independent of maxItems (#532) — "how many to
@@ -59,6 +66,17 @@ type backlogScanCursor struct {
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 
+// blockedOnlyCompletionAnnotation marks a cycle that claimed nothing solely
+// because every remaining candidate was skipped as blocked (#1907): without
+// this, such a cycle's run.finished(status=completed) is byte-identical to a
+// cycle that found a genuinely empty backlog, or one that did real work —
+// the exact ambiguity that let a 3.5h claim-selection stall go undetected
+// until someone cross-referenced claim.acquired counts against run.finished
+// status by hand. One annotation per run (not per skipped item, unlike
+// blockedEligibilitySkipAnnotation above) gives a watcher/telemetry query a
+// single, unambiguous signal to filter or alert on.
+const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
+
 const inReviewStatusLabel = "goobers/status:in-review"
 
 type backlogClaimLedger interface {
@@ -71,11 +89,18 @@ var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOpti
 	return localscheduler.OpenClaimLedger(path, opts...)
 }
 
+func backlogQueryToken(readOnly bool) (string, error) {
+	if readOnly {
+		return providerToken(capability.GitHubIssuesRead)
+	}
+	return providerToken(capability.GitHubIssuesWrite)
+}
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -86,7 +111,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
-	"a plain list (no --claim) does not require it.\n\n" +
+	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
+	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
+	"and uses only the github:issues:read capability.\n\n" +
 	"With --release, removes the provider-visible claim marker and then releases\n" +
 	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
 	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
@@ -120,6 +147,14 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"(default 24h), and rotates within selectionPriority tiers. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
+	"respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the\n" +
+	"assignee field is ignored entirely, exactly as today). Once true,\n" +
+	"assignedTo selects the mode: a real identity (either a literal login, or\n" +
+	"left undeclared so the runner's configured self identity fills it in at\n" +
+	"run time) makes only items assigned to that identity eligible — assigned\n" +
+	"to anyone else, or unassigned, is excluded. assignedTo declared with no\n" +
+	"value is the null/unassigned-only mode: only items with no assignee at\n" +
+	"all are eligible.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
 	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
 	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
@@ -130,6 +165,7 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
@@ -141,7 +177,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		fs.Usage()
 		return 2
 	}
-	if boolCount(*claim, *reconcile, *release) > 1 {
+	if boolCount(*readOnly, *claim, *reconcile, *release) > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -185,24 +221,32 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		issueProvider = adoProvider
 	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		var opts []func(*providers.GiteaProvider)
+		if !*readOnly {
+			opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, opts...)
 		if gerr != nil {
 			pf(stderr, "error: %v\n", gerr)
 			return 1
 		}
 		issueProvider = giteaProvider
 	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if *readOnly {
+			ghIssueProvider = newGitHubProvider(token)
+		} else {
+			ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
 		issueProvider = ghIssueProvider
 	default:
 		pf(stderr, "error: backlog-query does not support repository provider %q\n", repo.Provider)
@@ -240,6 +284,21 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// list, highest priority first. Empty (the default) preserves #350's
 	// plain FIFO claim order unchanged — priority is strictly additive.
 	selectionPriority := splitLabelList(providerInput("selectionPriority", ""))
+	// respectAssignee/assignedTo (#1820, COORD-2): opt-in claim-scoping
+	// filter, mirroring how trustLabel/requireLabels/excludeLabels already
+	// work. Unset (the default) is byte-identical to today — assignedTo is
+	// read but never consulted below unless respectAssignee is explicitly
+	// "true". Once opted in, assignedTo's resolved value selects the mode:
+	// a real identity — a literal login, or the runner's configured self
+	// identity when the task leaves assignedTo undeclared
+	// (defaultBacklogQueryAssignedTo, internal/runner/run.go) — requires an
+	// exact match; empty (declared with no value, or undeclared with no
+	// self identity configured) is the null/unassigned-only mode. Both
+	// modes are the same equality check (item.Assignee == assignedTo): "must
+	// equal <login>" and "must be empty" are the same comparison, so there
+	// is no separate null-mode branch to get wrong.
+	respectAssignee := providerInput("respectAssignee", "") == "true"
+	assignedTo := providerInput("assignedTo", "")
 	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
@@ -313,6 +372,22 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	if *readOnly {
+		return runReadOnlyBacklogQuery(
+			ctx,
+			issueProvider,
+			backlogRepo,
+			trustLabel,
+			labelFilter,
+			fieldFilter,
+			fieldOrder,
+			selectionPriority,
+			respectAssignee,
+			assignedTo,
+			stdout,
+			stderr,
+		)
+	}
 	observedAt := time.Now().UTC()
 
 	if curationRun || *reconcile {
@@ -325,6 +400,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			if *reconcile {
 				resultFile = "backlog-reconciliation.json"
 			}
+
 			return failProviderStage(stderr, "reconcile backlog metadata", fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog"), resultFile)
 		}
 		reconciled, reconcileErr := reconcileBacklogMetadata(
@@ -374,10 +450,19 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		labels = append(labels, trustLabel)
 	}
 	labels = append(labels, labelFilter.RequiredLabels()...)
+	// queryAssignee narrows the provider query server-side only for a real
+	// identity (fixed or runtime-derived) — providers' Assignee request
+	// field means "must equal this login", so it has no way to express
+	// "must be unassigned"; the null/unassigned-only mode (assignedTo=="")
+	// relies entirely on the client-side re-verify below instead.
+	queryAssignee := ""
+	if respectAssignee && assignedTo != "" {
+		queryAssignee = assignedTo
+	}
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	cursorPath := backlogScanCursorPath(
 		l.SchedulerDir(), backlogRepo, trustLabel, labelExpression, fieldExpression,
-		requireLabels, excludeLabels,
+		requireLabels, excludeLabels, queryAssignee,
 	)
 	exhaustiveScan := fieldOrder.Configured()
 	scanCursor := backlogScanCursor{}
@@ -389,7 +474,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 	}
 	items, nextScanCursor, err := listBacklogScanWindow(
-		ctx, issueProvider, backlogRepo, labels, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
+		ctx, issueProvider, backlogRepo, labels, queryAssignee, fieldFilter, scanLimit, scanCursor, exhaustiveScan,
 	)
 	if err != nil {
 		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
@@ -398,9 +483,15 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// Re-verify eligibility in code (SEC-047: backlog content is untrusted
 	// input on a public repo) rather than trusting the provider query's
 	// labels filter alone — a defense-in-depth check, not a redundant one.
+	// The assignee check follows the same discipline and is the sole
+	// enforcement for the null/unassigned-only mode (queryAssignee above
+	// narrows nothing when assignedTo is empty).
 	var eligible []providers.WorkItem
 	for _, item := range items {
 		if trustLabel != "" && !item.HasLabel(trustLabel) {
+			continue
+		}
+		if respectAssignee && item.Assignee != assignedTo {
 			continue
 		}
 		matched, matchErr := labelFilter.Matches(item.Labels)
@@ -485,6 +576,19 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		// parked when its provider state cannot be resolved.
 		pf(stderr, "warning: blocked records: %s\n", warning)
 	}
+	// Re-affirm cycle escalation on every tick (#1405), using the freshest,
+	// post-self-heal record set: a fully skip-parked cycle member is never
+	// reclaimed and so never re-runs its own blocked-handler to notice a
+	// sibling whose labels drifted without a blocked.json change. Best-effort
+	// and warn-only, like filterBlockedEligibility above — a config load or
+	// provider hiccup here must not block the eligibility scan itself.
+	if needsHumanAssignee, cfgErr := needsHumanAssigneeFor(l); cfgErr != nil {
+		pf(stderr, "warning: blocked cycle reconciliation: %v\n", cfgErr)
+	} else {
+		for _, warning := range reconcileBlockedCycleLabels(ctx, issueProvider, remainingRecords, needsHumanAssignee) {
+			pf(stderr, "warning: blocked cycle reconciliation: %s\n", warning)
+		}
+	}
 	verifiedSkips := make(map[string]blockedEligibilitySkip, len(observedSkips))
 	for _, skip := range observedSkips {
 		verifiedSkips[skip.ItemID] = skip
@@ -510,7 +614,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	var (
 		readOnlyResweep      []providers.WorkItem
-		resweepModeByID      map[string]string
+		curationModeByID     map[string]string
 		resweepState         backlogResweepState
 		resweepStatePath     string
 		resweepStateObserved uint64
@@ -528,11 +632,84 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		resweepStateObserved = resweepState.Generation
 		if backlogResweepDue(resweepState, observedAt, resweepPolicy.interval) {
+			curationModeByID = make(map[string]string)
+			blockedCandidates, nextBlockedCursor, listErr := listBacklogScanWindow(
+				ctx,
+				issueProvider,
+				repo,
+				compactLabels(trustLabel, blockedOnSiblingLabel),
+				"",
+				fieldFilter,
+				backlogScanCeiling,
+				backlogScanCursor{Cursor: resweepState.BlockedCursor},
+				false,
+			)
+			if listErr != nil {
+				return failProviderStage(stderr, "list blocked items for dependency recheck", listErr, "claimed-items.json")
+			}
+			filteredBlocked := blockedCandidates[:0]
+			for _, item := range blockedCandidates {
+				if !item.HasLabel(trustLabel) ||
+					!item.HasLabel(blockedOnSiblingLabel) ||
+					item.HasLabel(providers.LabelNeedsHuman) ||
+					(item.State != "" && !strings.EqualFold(item.State, "open")) {
+					continue
+				}
+				item.Integrity = providers.IntegrityForLabels(item.Labels, trustLabel)
+				filteredBlocked = append(filteredBlocked, item)
+			}
+			blockedCandidates = filteredBlocked
+			if err := sortBacklogResweepCandidates(
+				blockedCandidates,
+				selectionPriority,
+				fieldOrder,
+				resweepState.LastSweptAt,
+			); err != nil {
+				pf(stderr, "error: order blocked dependency rechecks: %v\n", err)
+				return 1
+			}
+			if len(blockedCandidates) > resweepPolicy.maxItems {
+				blockedCandidates = blockedCandidates[:resweepPolicy.maxItems]
+			}
+			selectedResweepItems = append(selectedResweepItems, blockedCandidates...)
+			dependencyRecheckBudget := maxItems - len(eligible)
+			for _, item := range blockedCandidates {
+				blockers, blockerErr := ghIssueProvider.ListWorkItemBlockers(ctx, repo, item.ID)
+				if blockerErr != nil {
+					pf(stderr, "warning: dependency recheck item %s: %v\n", item.ID, blockerErr)
+					continue
+				}
+				if len(blockers) == 0 {
+					pf(stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
+					continue
+				}
+				actionable := true
+				for _, blocker := range blockers {
+					if blocker.State != "" && strings.EqualFold(blocker.State, "open") {
+						if blocker.HasLabel(providers.LabelNeedsHuman) {
+							continue
+						}
+						actionable = false
+						break
+					}
+				}
+				if actionable && dependencyRecheckBudget > 0 {
+					eligible = append(eligible, item)
+					curationModeByID[item.ID] = "dependency-recheck"
+					dependencyRecheckBudget--
+				}
+			}
+			resweepState.BlockedCursor = nextBlockedCursor.Cursor
+
 			resweepCandidates, nextResweepCursor, listErr := listBacklogScanWindow(
 				ctx,
 				issueProvider,
 				repo,
 				compactLabels(trustLabel, resweepPolicy.readyLabel),
+				// Re-sweep is read-only visibility across already in-flight
+				// items regardless of assignee, not new claim eligibility —
+				// respectAssignee does not apply here.
+				"",
 				fieldFilter,
 				backlogScanCeiling,
 				backlogScanCursor{Cursor: resweepState.Cursor},
@@ -574,17 +751,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				resweepCandidates = resweepCandidates[:resweepBudget]
 			}
 			selectedResweepItems = append(selectedResweepItems, resweepCandidates...)
-			resweepModeByID = make(map[string]string, len(resweepCandidates))
 			for _, item := range resweepCandidates {
 				if item.HasLabel(inReviewStatusLabel) ||
 					item.HasLabel(providers.LabelClaimed) ||
 					openIssues[item.ID] {
 					readOnlyResweep = append(readOnlyResweep, item)
-					resweepModeByID[item.ID] = "read-only"
+					curationModeByID[item.ID] = "read-only"
 					continue
 				}
 				eligible = append(eligible, item)
-				resweepModeByID[item.ID] = "resweep"
+				curationModeByID[item.ID] = "resweep"
 			}
 			resweepState = recordBacklogResweep(
 				resweepState,
@@ -906,7 +1082,25 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
+		reason := "no eligible item to claim"
+		if len(observedSkips) > 0 {
+			// This cycle's only candidate(s) were all blocked — distinct from a
+			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
+			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
+			if jerr := instanceLog.Append(journal.Event{
+				Type:     journal.EventRunnerAnnotation,
+				Workflow: workflow,
+				RunID:    runID,
+				Reason:   reason,
+				Runner: map[string]any{
+					"annotation":     blockedOnlyCompletionAnnotation,
+					"skippedBlocked": len(observedSkips),
+				},
+			}); jerr != nil {
+				pf(stderr, "warning: journal blocked-only completion summary: %v\n", jerr)
+			}
+		}
+		return writeNoWorkResult(stdout, stderr, reason)
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
 	// tick (#233), not an error: exit 0 with the structured noWork result the
@@ -940,7 +1134,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
 		}
 		for i := range curationItems {
-			curationItems[i].CurationMode = resweepModeByID[curationItems[i].ID]
+			curationItems[i].CurationMode = curationModeByID[curationItems[i].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
 			ctx,
@@ -1039,6 +1233,80 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 	return 0
 }
 
+func runReadOnlyBacklogQuery(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	trustLabel string,
+	labelFilter *labelpredicate.Predicate,
+	fieldFilter *fieldpredicate.Predicate,
+	fieldOrder fieldpredicate.Order,
+	selectionPriority []string,
+	respectAssignee bool,
+	assignedTo string,
+	stdout, stderr io.Writer,
+) int {
+	labels := compactLabels(trustLabel)
+	labels = append(labels, labelFilter.RequiredLabels()...)
+	queryAssignee := ""
+	if respectAssignee && assignedTo != "" {
+		queryAssignee = assignedTo
+	}
+	items, _, err := listBacklogScanWindow(
+		ctx,
+		provider,
+		repo,
+		labels,
+		queryAssignee,
+		fieldFilter,
+		backlogScanCeiling,
+		backlogScanCursor{},
+		false,
+	)
+	if err != nil {
+		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
+	}
+
+	eligible := items[:0]
+	for _, item := range items {
+		if trustLabel != "" && !item.HasLabel(trustLabel) {
+			continue
+		}
+		if respectAssignee && item.Assignee != assignedTo {
+			continue
+		}
+		matched, matchErr := labelFilter.Matches(item.Labels)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched {
+			continue
+		}
+		matched, matchErr = fieldFilter.Matches(item.Fields)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		eligible = append(eligible, item)
+	}
+	if err := sortEligibleByFields(eligible, selectionPriority, fieldOrder); err != nil {
+		pf(stderr, "error: apply fieldOrder: %v\n", err)
+		return 1
+	}
+	if len(eligible) == 0 {
+		pln(stdout, "no eligible items")
+		return 0
+	}
+	for _, item := range eligible {
+		pf(stdout, "%s\t%s\n", item.ID, item.Title)
+	}
+	return 0
+}
+
 // backlogIssueProvider is the provider surface backlog-query's provider-neutral
 // path needs: the eligibility scan (ListWorkItems/GetWorkItem), the best-effort
 // claim/release markers, native-dependency and ready-age checks. Both
@@ -1046,14 +1314,21 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 // loop runs against either backend once the provider is resolved from the routed
 // repo. GitHub-only extras (curation, the open-PR backstop) keep the concrete
 // *providers.GitHubProvider and are skipped for ADO.
+//
+// It embeds the full providers.Provider (not just BacklogProvider) so
+// filterDeclaredDependencyEligibility can wrap it in a providers.Dispatcher
+// (CONF-5, #2078): the native-dependency check goes through
+// backlog.blockers instead of calling HasOpenWorkItemBlocker directly, so a
+// provider that doesn't declare the capability fails closed with
+// ErrUnsupported instead of risking a silent fail-open answer (#2059).
 type backlogIssueProvider interface {
-	providers.BacklogProvider
+	providers.Provider
 	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
-	HasOpenWorkItemBlocker(context.Context, providers.RepositoryRef, string) (bool, error)
 }
 
 func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIssueProvider, repo providers.RepositoryRef, eligible []providers.WorkItem) ([]providers.WorkItem, []string) {
+	dispatcher := providers.NewDispatcher(provider)
 	filtered := eligible[:0]
 	var warnings []string
 	for _, item := range eligible {
@@ -1061,7 +1336,7 @@ func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIs
 			filtered = append(filtered, item)
 			continue
 		}
-		blocked, err := provider.HasOpenWorkItemBlocker(ctx, repo, item.ID)
+		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, item.ID)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
 			continue
@@ -1269,6 +1544,7 @@ func backlogScanCursorPath(
 	repo providers.RepositoryRef,
 	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
+	queryAssignee string,
 ) string {
 	key, _ := json.Marshal(struct {
 		Repository      providers.RepositoryRef `json:"repository"`
@@ -1277,6 +1553,15 @@ func backlogScanCursorPath(
 		FieldExpression string                  `json:"fieldExpression,omitempty"`
 		RequireLabels   []string                `json:"requireLabels,omitempty"`
 		ExcludeLabels   []string                `json:"excludeLabels,omitempty"`
+		// Assignee (#1820): only ever non-empty when respectAssignee narrows
+		// the provider query server-side (a real-identity mode); omitempty
+		// keeps the cache key — and therefore the cursor file path — byte-
+		// identical to before this field existed for any gaggle that hasn't
+		// opted in, so an in-flight scan's cursor isn't invalidated by this
+		// change. Distinct assignee values get distinct cursors so a
+		// narrowed scan's pagination progress never cross-contaminates a
+		// differently-scoped one over the same labels/predicates.
+		Assignee string `json:"assignee,omitempty"`
 	}{
 		Repository:      repo,
 		TrustLabel:      trustLabel,
@@ -1284,6 +1569,7 @@ func backlogScanCursorPath(
 		FieldExpression: fieldExpression,
 		RequireLabels:   requireLabels,
 		ExcludeLabels:   excludeLabels,
+		Assignee:        queryAssignee,
 	})
 	sum := sha256.Sum256(key)
 	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
@@ -1342,6 +1628,7 @@ func listBacklogScanWindow(
 	provider providers.BacklogProvider,
 	repo providers.RepositoryRef,
 	labels []string,
+	assignee string,
 	fieldFilter *fieldpredicate.Predicate,
 	limit int,
 	cursor backlogScanCursor,
@@ -1361,6 +1648,7 @@ func listBacklogScanWindow(
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 			Repository:     repo,
 			Labels:         labels,
+			Assignee:       assignee,
 			FieldPredicate: fieldFilter,
 			State:          "open",
 			Limit:          pageLimit,
@@ -1371,10 +1659,17 @@ func listBacklogScanWindow(
 		if err != nil {
 			return nil, cursor, err
 		}
-		if pageInfo.CandidateCount < 0 || pageInfo.CandidateCount > pageLimit {
+		// CandidateCount may legitimately exceed pageLimit (#2067): a
+		// provider now scans more raw candidates than pageLimit in one
+		// call when a filter it can't fully push server-side (ADO's state
+		// normalization, its Labels/hasAllLabels substring-match recheck)
+		// could reject the candidate a naive pageLimit-sized fetch would
+		// have truncated on — the exact under-matching bug #2067 fixed.
+		// Only a negative count is still a real provider bug.
+		if pageInfo.CandidateCount < 0 {
 			return nil, cursor, fmt.Errorf(
-				"provider returned invalid work-item candidate count %d for limit %d",
-				pageInfo.CandidateCount, pageLimit,
+				"provider returned invalid work-item candidate count %d",
+				pageInfo.CandidateCount,
 			)
 		}
 		items = append(items, pageItems...)
@@ -1386,6 +1681,14 @@ func listBacklogScanWindow(
 		}
 		cursor.Cursor = pageInfo.NextCursor
 		if !exhaustive {
+			// limit is a raw-candidate scan budget, not a match target
+			// (scanLimit is floored to backlogScanCeiling by the caller
+			// specifically so a rejecting filter still gets a full window
+			// examined). Decrementing by the actual CandidateCount stays
+			// correct now that it can exceed pageLimit (#2067): the same
+			// total-candidate budget is still consumed, just via fewer,
+			// larger provider calls instead of many pageLimit-sized ones —
+			// not an under-scan, just fewer round trips to reach it.
 			limit -= pageInfo.CandidateCount
 			if limit <= 0 {
 				break

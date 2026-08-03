@@ -39,7 +39,12 @@ func OpenRead(dir string) (*Reader, error) {
 // Dir returns the run directory.
 func (r *Reader) Dir() string { return r.dir }
 
-// Identity parses run.yaml.
+// Identity parses run.yaml. An unknown schema version is refused rather than
+// returned with fields silently zero-valued (#2054) — the same "refuse
+// loudly" policy cmd/goobers/tutorholdout.go and respondtofindings.go already
+// apply to their own single-document schema stamps, extended here since
+// run.yaml is written once at Create and never migrated in place: an older
+// reader has no way to safely interpret a shape it does not own.
 func (r *Reader) Identity() (RunIdentity, error) {
 	b, err := os.ReadFile(filepath.Join(r.dir, fileRunYAML))
 	if err != nil {
@@ -49,12 +54,18 @@ func (r *Reader) Identity() (RunIdentity, error) {
 	if err := yaml.Unmarshal(b, &id); err != nil {
 		return RunIdentity{}, fmt.Errorf("journal: parse run.yaml: %w", err)
 	}
+	if !id.KnownSchema() {
+		return RunIdentity{}, fmt.Errorf("journal: run.yaml has unknown schema %q (want %q)", id.Schema, RunSchema)
+	}
 	return id, nil
 }
 
 // State parses the state.json checkpoint. A missing or unparseable checkpoint is
 // not fatal — it is derived and always reconstructable from the event log
 // (Recover) — so callers that only need it as a hint can tolerate the error.
+// An unknown schema version is refused the same way Identity refuses one
+// (#2054): a checkpoint reshaped by a newer build must not be silently
+// misread as zero-valued fields of the current shape.
 func (r *Reader) State() (State, error) {
 	b, err := os.ReadFile(filepath.Join(r.dir, fileState))
 	if err != nil {
@@ -63,6 +74,9 @@ func (r *Reader) State() (State, error) {
 	var st State
 	if err := json.Unmarshal(b, &st); err != nil {
 		return State{}, fmt.Errorf("journal: parse state.json: %w", err)
+	}
+	if !st.KnownSchema() {
+		return State{}, fmt.Errorf("journal: state.json has unknown schema %q (want %q)", st.Schema, StateSchema)
 	}
 	return st, nil
 }
@@ -363,7 +377,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventStageRerunRequested, EventRunResumed:
+		case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
 			return PhaseRunning
 		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
@@ -380,7 +394,7 @@ func reconstructPhase(events []Event) RunPhase {
 func reconstructReason(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventStageRerunRequested, EventRunResumed:
+		case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
 			return ""
 		case EventRunFinished:
 			if events[i].Error != nil {
@@ -395,7 +409,7 @@ func reconstructReason(events []Event) string {
 func latestActiveResume(events []Event) (Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventRunResumed:
+		case EventRunResumed, EventGateOverridden:
 			return events[i], true
 		case EventRunFinished:
 			return Event{}, false

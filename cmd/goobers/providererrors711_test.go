@@ -251,6 +251,21 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 			},
 		},
 		{
+			name:       "blocked dependency recheck listing",
+			operation:  "list blocked items for dependency recheck",
+			args:       []string{"--claim"},
+			resultFile: "claimed-items.json",
+			setup: func(t *testing.T, _ string, server *fakeGitHubServer) {
+				server.addIssue(7, "Blocked item", "goobers:approved", blockedOnSiblingLabel)
+				configureCurationResweep(t, "2", "1", "24h")
+			},
+			match: func(r *http.Request) bool {
+				return r.Method == http.MethodGet &&
+					r.URL.Path == issueCollection &&
+					strings.Contains(r.URL.Query().Get("labels"), blockedOnSiblingLabel)
+			},
+		},
+		{
 			name:       "ready item re-sweep listing",
 			operation:  "list ready items for re-sweep",
 			args:       []string{"--claim"},

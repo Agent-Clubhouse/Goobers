@@ -67,6 +67,18 @@ describe("HttpDaemonClient", () => {
     expect(finish).toHaveBeenCalledWith(200);
   });
 
+  it("posts the run reveal action", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await client.revealRun("run-1");
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/v1/runs/run-1/reveal",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("maps every available daemon read route and preserves empty lists", async () => {
     const requests: string[] = [];
     const { baseUrl } = await startServer((request, response) => {

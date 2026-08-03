@@ -35,8 +35,9 @@ func TestRunDetachedTriggerHelperProcess(t *testing.T) {
 	case "":
 		return
 	case "async":
+		_, _ = fmt.Fprintln(os.Stdout, "warning: Windows large-repo preflight could not verify the workcopies root")
 		_, _ = fmt.Fprintln(os.Stdout, "created run async-1 (workflow=demo gaggle=test)")
-		time.Sleep(time.Second)
+		time.Sleep(time.Second) // Intentional child lifetime proves the parent command detaches before completion.
 		if err := os.WriteFile(os.Getenv(detachedRunHelperMarker), nil, 0o600); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
@@ -83,6 +84,9 @@ func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
 		!strings.Contains(stdout.String(), "inspect with: goobers trace async-1 "+root) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "warning: Windows large-repo preflight") {
+		t.Fatalf("stdout = %q, want the detached worker's preflight warning", stdout.String())
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("child completed before detached trigger returned, err = %v", err)
 	}
@@ -95,7 +99,7 @@ func TestRunDetachedTriggerReturnsAtDispatchWhileChildContinues(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("detached child did not continue after trigger returned")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for the detached process marker.
 	}
 }
 
@@ -147,11 +151,12 @@ func TestDetachedRunWorkerReleasesLockWhenRunPauses(t *testing.T) {
 }
 
 func TestDetachedRunCreatedRequiresCompleteLine(t *testing.T) {
-	if _, _, ok := detachedRunCreated([]byte("created run partial-id")); ok {
+	if _, _, _, ok := detachedRunCreated([]byte("created run partial-id")); ok {
 		t.Fatal("accepted a partially written created-run line")
 	}
-	line, runID, ok := detachedRunCreated([]byte("created run complete-id (workflow=demo)\n"))
-	if !ok || line != "created run complete-id (workflow=demo)" || runID != "complete-id" {
-		t.Fatalf("line = %q, runID = %q, ok = %v", line, runID, ok)
+	line, runID, warnings, ok := detachedRunCreated([]byte("warning: preflight\ncreated run complete-id (workflow=demo)\n"))
+	if !ok || line != "created run complete-id (workflow=demo)" || runID != "complete-id" ||
+		len(warnings) != 1 || warnings[0] != "warning: preflight" {
+		t.Fatalf("line = %q, runID = %q, warnings = %q, ok = %v", line, runID, warnings, ok)
 	}
 }

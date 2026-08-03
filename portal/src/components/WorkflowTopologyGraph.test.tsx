@@ -10,6 +10,12 @@ import {
 } from "../workflowGraph";
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph";
 
+// traversedEdgesFrom builds a TraversedEdges map from edge keys alone, for
+// tests that only care about membership, not the specific causal sequence.
+function traversedEdgesFrom(keys: string[]): Map<string, number> {
+  return new Map(keys.map((key, index) => [key, index + 1]));
+}
+
 const cyclicGraph: WorkflowGraph = {
   name: "implementation",
   version: 7,
@@ -286,7 +292,14 @@ describe("workflow topology graph", () => {
     expect(selected).toHaveAttribute("aria-pressed", "true");
 
     const firstFocusable = screen.getByRole("button", { name: "Zoom in" });
-    screen.getByRole("button", { name: /^stage-16,/ }).focus();
+    // #1431's graph legend adds one more focusable stop (a native <summary>)
+    // after the last graph node — it, not stage-16, is now the trap's actual
+    // last element. The trap only intercepts the wrap-around edges (it
+    // otherwise relies on the browser's native tab order between stops, which
+    // jsdom's synthetic keydown does not simulate), so focus the legend
+    // directly here rather than tabbing from stage-16 to it.
+    const legendSummary = screen.getByText("Graph legend");
+    legendSummary.focus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(firstFocusable).toHaveFocus();
 
@@ -465,6 +478,88 @@ function terminalGraph(): WorkflowGraph {
   };
 }
 
+describe("workflow topology graph traversed edges (#1430)", () => {
+  it("emphasizes only the edges actually crossed, not every edge whose endpoints were visited", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review=>complete"])}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
+    // query -> implement -> review -> complete: the taken path.
+    expect(edges[0]).toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[1]).toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[2]).toHaveClass("workflow-graph-edge-traversed");
+    // review -> implement (needs-changes, a repass): never crossed this run,
+    // even though both review and implement show non-pending states above —
+    // the exact false positive #1430 exists to eliminate. Still dashed
+    // (repass is a declared-graph property, independent of execution).
+    expect(edges[3]).not.toHaveClass("workflow-graph-edge-traversed");
+    expect(edges[3]).toHaveClass("workflow-graph-edge-repass");
+    // review -> @escalate: declared but not taken.
+    expect(edges[4]).not.toHaveClass("workflow-graph-edge-traversed");
+  });
+
+  it("emphasizes an actually-taken repass as both dashed and traversed", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review->implement"])}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
+    const repass = edges[3]; // review -> implement (needs-changes)
+    expect(repass).toHaveClass("workflow-graph-edge-repass");
+    expect(repass).toHaveClass("workflow-graph-edge-traversed");
+  });
+
+  it("reflects traversal in the accessible topology list, not color alone", () => {
+    render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+        traversedEdges={traversedEdgesFrom(["query->implement", "implement->review", "review=>complete"])}
+      />,
+    );
+    const topology = screen.getByRole("list", { name: "implementation accessible topology" });
+    const reviewItem = within(topology)
+      .getAllByRole("listitem")
+      .find((item) => item.textContent?.startsWith("review,"));
+    expect(reviewItem?.textContent).toContain(
+      "approve to Complete terminal, configured forward route, traversed at sequence 3",
+    );
+    // The untaken repass gets no traversed qualifier, and is explicitly named
+    // as a configured repass route rather than a forward one.
+    expect(reviewItem?.textContent).toContain(
+      "needs-changes to implement, configured repass route, not traversed",
+    );
+  });
+
+  it("never emphasizes an edge when transitions are unavailable, even with matching node states", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        nodeStates={{ query: "completed", implement: "completed", review: "completed" }}
+        onSelectStage={() => {}}
+        stateSeq={4}
+      />,
+    );
+    const edges = container.querySelectorAll<SVGPathElement>(".workflow-graph-edges path.workflow-graph-edge");
+    for (const edge of edges) {
+      expect(edge).not.toHaveClass("workflow-graph-edge-traversed");
+    }
+  });
+});
+
 describe("workflow topology graph escalation cause (DASH-21)", () => {
   const graph: WorkflowGraph = {
     name: "impl",
@@ -493,5 +588,102 @@ describe("workflow topology graph escalation cause (DASH-21)", () => {
     expect(
       screen.getByRole("button", { name: /implement, agentic, Completed at sequence 9$/ }),
     ).not.toHaveClass("run-node-causal");
+  });
+});
+
+describe("workflow topology graph parallel/branch lanes (#1567)", () => {
+  const parallelGraph: WorkflowGraph = {
+    name: "fanout-review",
+    version: 1,
+    digest: "sha256:fanout",
+    start: "fanout",
+    nodes: [
+      { id: "fanout", kind: "parallel" },
+      { id: "security-review", kind: "agentic", owner: "security" },
+      { id: "perf-review", kind: "agentic", owner: "perf" },
+      { id: "join", kind: "gate", evaluator: "automated" },
+    ],
+    edges: [
+      { source: "fanout", target: "security-review", branch: "security-lens" },
+      { source: "fanout", target: "perf-review", branch: "perf-lens" },
+      { source: "security-review", target: "join", outcome: "join" },
+      { source: "perf-review", target: "join", outcome: "join" },
+    ],
+  };
+
+  it("renders a parallel node distinctly and its branches as independent lanes", () => {
+    render(
+      <WorkflowTopologyGraph
+        graph={parallelGraph}
+        onSelectStage={() => {}}
+      />,
+    );
+    const node = screen.getByRole("button", {
+      name: "fanout, Parallel, Fans out into declared branches, configured",
+    });
+    expect(node).toHaveAttribute("data-node-kind", "parallel");
+    expect(node).toHaveClass("workflow-node-parallel");
+    // Each declared branch is named on its own fan-out edge.
+    expect(screen.getByText("security-lens", { selector: "text" })).toBeInTheDocument();
+    expect(screen.getByText("perf-lens", { selector: "text" })).toBeInTheDocument();
+  });
+
+  it("names a branch's terminal state on its fan-out edge, distinct by label and dash pattern (not color alone)", () => {
+    const { container } = render(
+      <WorkflowTopologyGraph
+        branchStates={
+          new Map([
+            ["security-lens", { state: "failed", seq: 9 }],
+            ["perf-lens", { state: "cancelled", seq: 9 }],
+          ])
+        }
+        graph={parallelGraph}
+        nodeStates={{
+          fanout: "completed",
+          "security-review": "failed",
+          "perf-review": "aborted",
+          join: "pending",
+        }}
+        onSelectStage={() => {}}
+        stateSeq={9}
+      />,
+    );
+
+    expect(screen.getByText("security-lens — Failed", { selector: "text" })).toBeInTheDocument();
+    expect(screen.getByText("perf-lens — Cancelled", { selector: "text" })).toBeInTheDocument();
+
+    const edges = container.querySelectorAll<SVGPathElement>(
+      ".workflow-graph-edges path.workflow-graph-edge",
+    );
+    const failedEdge = [...edges].find(
+      (edge) => edge.getAttribute("data-branch-status") === "failed",
+    );
+    const cancelledEdge = [...edges].find(
+      (edge) => edge.getAttribute("data-branch-status") === "cancelled",
+    );
+    expect(failedEdge).toHaveClass("workflow-graph-edge-branch-failed");
+    expect(cancelledEdge).toHaveClass("workflow-graph-edge-branch-cancelled");
+    // The two are visually distinguishable from each other by class alone,
+    // independent of whatever color each resolves to.
+    expect(failedEdge?.className.baseVal).not.toBe(cancelledEdge?.className.baseVal);
+  });
+
+  it("names the branch and its state in the accessible topology list", () => {
+    render(
+      <WorkflowTopologyGraph
+        branchStates={new Map([["security-lens", { state: "succeeded", seq: 9 }]])}
+        graph={parallelGraph}
+        onSelectStage={() => {}}
+        stateSeq={9}
+        traversedEdges={new Map([["fanout->security-review", 9]])}
+      />,
+    );
+    const topology = screen.getByRole("list", { name: "fanout-review accessible topology" });
+    const fanoutItem = within(topology)
+      .getAllByRole("listitem")
+      .find((item) => item.textContent?.includes("fanout,"));
+    expect(fanoutItem?.textContent).toContain(
+      "branch security-lens — Succeeded to security-review, configured forward route, traversed at sequence 9",
+    );
   });
 });

@@ -132,3 +132,18 @@ func TestIsMergeConflictError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsIdempotentHTTPMethod(t *testing.T) {
+	for method, want := range map[string]bool{
+		http.MethodGet:    true,
+		http.MethodHead:   true,
+		http.MethodPut:    true,
+		http.MethodDelete: true,
+		http.MethodPost:   false,
+		http.MethodPatch:  false,
+	} {
+		if got := isIdempotentHTTPMethod(method); got != want {
+			t.Errorf("isIdempotentHTTPMethod(%s) = %v, want %v", method, got, want)
+		}
+	}
+}

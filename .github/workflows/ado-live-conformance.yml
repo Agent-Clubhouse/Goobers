@@ -1,0 +1,79 @@
+name: ADO Live Conformance
+
+# CONF-4 (#2077, design doc §5): a scheduled, read-only smoke test against a
+# real Azure DevOps organization/project, complementing the fixture-backed
+# provider conformance suite (providers/ado_test.go, ado_landing_test.go,
+# test/providers). Fixtures pin behavior against recorded API shapes; this
+# leg catches drift from the genuine live API those fixtures can't see.
+#
+# ADO_ORG_URL / ADO_PROJECT (vars) and ADO_PAT (secret) are provisioned. A
+# failure here means the ADO test-org's real behavior has diverged from
+# what providers/ado.go assumes — check it against
+# providers/capability_matrix.go's knownGaps registry and update it (there
+# is no automated coupling between this leg's result and the generated
+# matrix; CONF-2 (#2075) intentionally left that hand-maintained).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 8 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ado-live-conformance
+  cancel-in-progress: true
+
+jobs:
+  ado-live-smoke:
+    name: ADO live read-only smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify explicit provisioning
+        env:
+          ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          missing=""
+          [ -n "$ADO_ORG_URL" ] || missing="$missing ADO_ORG_URL"
+          [ -n "$ADO_PROJECT" ] || missing="$missing ADO_PROJECT"
+          [ -n "$ADO_PAT" ] || missing="$missing ADO_PAT"
+          if [ -n "$missing" ]; then
+            echo "::error title=ADO live leg is not provisioned::Missing:$missing. Provision the ADO test-org organization/project vars and PAT secret to re-enable this schedule (CONF-4, #2077)."
+            exit 1
+          fi
+
+      - name: Derive live-repo target
+        env:
+          ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          # ADO_REPOSITORY is optional — ADO auto-creates a default
+          # repository named after the project, so that's the fallback.
+          # Set the ADO_REPOSITORY variable explicitly if the test-org's
+          # repository has a different name.
+          ADO_REPOSITORY: ${{ vars.ADO_REPOSITORY }}
+        run: |
+          org="${ADO_ORG_URL##*/}"
+          repo="${ADO_REPOSITORY:-$ADO_PROJECT}"
+          if [ -z "$org" ]; then
+            echo "::error title=ADO live leg misconfigured::ADO_ORG_URL ($ADO_ORG_URL) has no organization segment after the last /."
+            exit 1
+          fi
+          echo "GOOBERS_ADO_LIVE_REPO=$org/$ADO_PROJECT/$repo" >> "$GITHUB_ENV"
+
+      - name: Run live smoke test
+        env:
+          GOOBERS_ADO_LIVE_TOKEN: ${{ secrets.ADO_PAT }}
+        run: go test -tags=integration ./providers/... -run TestIntegrationADOLiveSmoke -v

@@ -270,4 +270,210 @@ CREATE TABLE IF NOT EXISTS tombstone (
 );
 CREATE INDEX IF NOT EXISTS idx_tombstone_started ON tombstone(started_at);
 `,
+
+	// v5: day and month aggregate buckets (#1931, §5.6).
+	//
+	// Without pre-aggregation an all-time Insight query scans all matching
+	// history, so "zero timeouts" does not hold on the analytics surface. A day
+	// bucket makes even the widest window a bounded number of rows.
+	//
+	// # Recompute, not accumulate
+	//
+	// When a run in day D changes, D is marked dirty and its buckets are
+	// RECOMPUTED by aggregating that day's indexed run rows. Bounded by runs in
+	// a day, and idempotent — which serves the determinism property for free.
+	//
+	// Reversible deltas were considered and rejected: they require storing each
+	// run's prior contribution and subtracting it on reprojection, which is
+	// fiddly, easy to get wrong, and silently drifts when it is. A recompute
+	// cannot drift, because it does not carry state between passes.
+	`
+CREATE TABLE IF NOT EXISTS bucket_day (
+	day         TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (day, gaggle, workflow, phase, outcome)
+);
+
+-- Recency-ordered so a windowed query seeks rather than scans, and gaggle-led
+-- for the same reason the run indexes are: scope has to be a predicate inside
+-- the indexed query, never a filter applied after LIMIT.
+CREATE INDEX IF NOT EXISTS idx_bucket_day_recency ON bucket_day(day DESC, gaggle, workflow);
+CREATE INDEX IF NOT EXISTS idx_bucket_day_gaggle ON bucket_day(gaggle, day DESC);
+
+-- Month rollups recompute from the dailies on the same rule, so the same
+-- idempotence argument covers both tiers.
+CREATE TABLE IF NOT EXISTS bucket_month (
+	month       TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (month, gaggle, workflow, phase, outcome)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_month_recency ON bucket_month(month DESC, gaggle, workflow);
+
+-- dirty_day is the recompute queue.
+--
+-- A queue rather than a recompute-on-write: a run finishing writes one row here
+-- instead of re-aggregating its whole day inside the projection transaction,
+-- which would put an O(runs-in-day) scan on the commit path. It is also what
+-- lets bucket recompute be the FIRST thing shed under projector overload
+-- (PRA-3b) — the work is durable and can wait, because it is derived from data
+-- that is itself already durable.
+CREATE TABLE IF NOT EXISTS dirty_day (
+	day     TEXT PRIMARY KEY,
+	marked_at TEXT NOT NULL
+);
+`,
+
+	// v6: stage, stage-outcome, and population pushdown (#1782, §5.7).
+	//
+	// These three were the residual predicates the closed set refused. Serving
+	// them meant hydrating every candidate journal AFTER the index had picked it,
+	// with no cap on candidates — so a filter matching few runs walked the entire
+	// indexed history. On the live instance that is ~19,852 journal opens, ~143 MB
+	// read and ~1M unmarshals, in ONE request.
+	//
+	// # Why the columns land on run_stage, not only on run
+	//
+	// The filters are stage-SCOPED. `stage=build&population=cost-measured` asks
+	// whether the BUILD stage has cost recorded, not whether the run has cost
+	// anywhere. A run-level rollup answers the unscoped question only, so using it
+	// for the scoped one would silently WIDEN the filter — returning runs whose
+	// cost came from some other stage. Both grains are stored: run_stage answers
+	// the scoped question, and run carries the OR across stages so the unscoped
+	// question is a direct seek rather than a correlated subquery.
+	//
+	// # Why gaggle and the run's started_at are duplicated onto run_stage
+	//
+	// A stage-filtered list is still GAGGLE-scoped and still ordered by RUN
+	// recency. Without both columns here, a stage-scoped query drives from
+	// run_stage and then evaluates gaggle and the ordering against the joined run
+	// row — which is a residual predicate plus a sort, the exact shape §5.7
+	// exists to refuse. §5.5 additionally requires gaggle to be a query predicate
+	// rather than a post-filter, so a gaggle-scoped principal that could not
+	// combine gaggle with stage would simply lose stage filtering.
+	//
+	// run_stage.started_at is the STAGE's own start and is a different clock, so
+	// it cannot serve run-recency ordering. Hence run_started_at alongside it.
+	//
+	// The duplication cannot drift: run_stage rows are deleted and rewritten
+	// wholesale on every projection of their run (write.go), rather than
+	// incrementally maintained.
+	//
+	// # On the index count
+	//
+	// Sixteen indexes is the honest price of a closed set: §5.7 requires every
+	// supported combination to ship a covering index, and refusing to pay it
+	// would mean either fewer answers or a residual predicate pretending to be
+	// one. Twelve of the sixteen are PARTIAL — they contain only rows where a
+	// measurement flag is set, which is a minority of stage rows — so the write
+	// amplification is far below what the count suggests.
+	//
+	// The partial predicates are LITERAL (`= 1`). SQLite requires that; a bound
+	// parameter makes a partial index unusable, and it does not say so when it
+	// declines to use one.
+	`
+ALTER TABLE run_stage ADD COLUMN gaggle TEXT NOT NULL DEFAULT '';
+ALTER TABLE run_stage ADD COLUMN run_started_at TEXT;
+ALTER TABLE run_stage ADD COLUMN token_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN premium_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN cost_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN retry_waste INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE run ADD COLUMN any_token_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_premium_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_cost_measured INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run ADD COLUMN any_retry_waste INTEGER NOT NULL DEFAULT 0;
+
+-- Stage-scoped ordering indexes. Each leads with its equality columns and then
+-- the run's recency, so a page is a seek plus limit+1 rows.
+CREATE INDEX IF NOT EXISTS idx_run_stage_recency
+	ON run_stage(stage, run_started_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_recency
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC);
+
+-- One partial index per population, at each grain. Partial rather than a
+-- four-column composite because the predicates are independent booleans: a
+-- composite would have to be probed with three wildcards, which is a scan of the
+-- whole stage range.
+CREATE INDEX IF NOT EXISTS idx_run_stage_token
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_token
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_premium
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_premium
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_cost
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_cost
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_retry_waste
+	ON run_stage(stage, run_started_at DESC, run_id ASC) WHERE retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_retry_waste
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC) WHERE retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_token
+	ON run(started_at DESC, run_id ASC) WHERE any_token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_token
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_token_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_premium
+	ON run(started_at DESC, run_id ASC) WHERE any_premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_premium
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_premium_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_cost
+	ON run(started_at DESC, run_id ASC) WHERE any_cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_cost
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_cost_measured = 1;
+CREATE INDEX IF NOT EXISTS idx_run_any_retry_waste
+	ON run(started_at DESC, run_id ASC) WHERE any_retry_waste = 1;
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_any_retry_waste
+	ON run(gaggle, started_at DESC, run_id ASC) WHERE any_retry_waste = 1;
+`,
+
+	// v7: the last-activity recency axis (#1777).
+	//
+	// # Why a second axis rather than a different default
+	//
+	// The two orderings answer different operator questions and both are wanted.
+	// started_at is when a run BEGAN, which is what a history page shows.
+	// last_activity_at is when it last DID something, which is what an attention
+	// list needs — a run that started days ago and escalated a minute ago is the
+	// most urgent thing on the instance and the least recent by started_at.
+	//
+	// #1199 could not be built portal-side precisely because of that: a run with
+	// an old start is excluded from a bounded page BEFORE the portal sees it, and
+	// no client-side filter can recover a row that was never sent.
+	//
+	// # Why these mirror the started_at indexes exactly
+	//
+	// A keyset page needs its equality columns first and its ordering column
+	// last. Reusing the started_at indexes for an activity-ordered query would
+	// give the planner an index that seeks the right rows and then has to SORT
+	// them — bounded in returned rows, unbounded in examined ones, which is the
+	// exact failure §5.7's closed set exists to prevent.
+	//
+	// NULL last_activity_at (a run projected from identity with no events) sorts
+	// last under DESC and is excluded by any since-filter. That is the correct
+	// semantic — no recorded activity is not recent activity — and it is why
+	// these are not COALESCE expressions, which would make the index unusable.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_activity
+	ON run(last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_activity
+	ON run(gaggle, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_workflow_activity
+	ON run(gaggle, workflow, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_phase_activity
+	ON run(phase, last_activity_at DESC, run_id ASC);
+CREATE INDEX IF NOT EXISTS idx_run_gaggle_phase_activity
+	ON run(gaggle, phase, last_activity_at DESC, run_id ASC);
+`,
 }

@@ -126,6 +126,8 @@ export function shortKind(station: FactoryStation): string {
       return "agentic";
     case "deterministic":
       return "deterministic";
+    case "parallel":
+      return "parallel";
   }
 }
 

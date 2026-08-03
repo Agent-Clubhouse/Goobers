@@ -39,7 +39,7 @@ more contributors.
 ## 1. Why this exists — the incident that names the gap
 
 On 2026-07-18 the live instance's hand-maintained workflow config
-(`~/source/goobers-instances/goobers`) was reconciled to the shipped selfhost reference in a single
+(`~/source/goobers-instances/goobers`) was reconciled to the shipped workflow reference in a single
 287-line `merge-review.yaml` diff. The headline finding:
 
 > the fork routed the review gate `pass → merge-pr`; the shipped definition had moved to

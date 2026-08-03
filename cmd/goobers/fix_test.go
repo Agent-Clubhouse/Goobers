@@ -28,7 +28,7 @@ spec:
         kind: "ci-poll"
         prNumber: "1"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       next: ci
   gates:
     - name: ci

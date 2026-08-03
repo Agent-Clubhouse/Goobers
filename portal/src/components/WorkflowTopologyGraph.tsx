@@ -8,8 +8,16 @@ import {
   useState,
 } from "react";
 import type { RefObject } from "react";
-import type { WorkflowGraph, WorkflowGraphNode } from "../api/types";
-import type { RunNodeState } from "../runDetailData";
+import type { WorkflowGraph, WorkflowGraphEdge, WorkflowGraphNode } from "../api/types";
+import {
+  branchStateLabel,
+  edgeTraversed,
+  traversedEdgeSeq,
+  type BranchStateEntry,
+  type RunNodeState,
+  type TraversedEdges,
+} from "../runDetailData";
+import { WorkflowGraphLegend } from "./WorkflowGraphLegend";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -17,6 +25,7 @@ import {
   fitGraphZoom,
   layoutWorkflowGraph,
   terminalLabel,
+  type WorkflowLayoutEdge,
 } from "../workflowGraph";
 
 const FALLBACK_VIEWPORT_WIDTH = 720;
@@ -49,12 +58,6 @@ interface PendingScroll {
   zoom: number;
 }
 
-// A node counts as traversed — its incoming edge is on the executed path — once
-// it has been entered (any state other than the two the run never visited).
-function nodeTraversed(state: RunNodeState | undefined): boolean {
-  return state !== undefined && state !== "pending" && state !== "skipped";
-}
-
 function runStateLabel(state: RunNodeState): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
@@ -65,6 +68,8 @@ export function WorkflowTopologyGraph({
   selectedStageId,
   nodeStates,
   stateSeq,
+  traversedEdges,
+  branchStates,
   causalNodeId,
   fullscreenTargetRef,
   onFullscreenModeChange,
@@ -76,6 +81,16 @@ export function WorkflowTopologyGraph({
   // as-of-sequence run state and the executed path is emphasized (DASH-19).
   nodeStates?: Record<string, RunNodeState>;
   stateSeq?: number;
+  // The declared edges actually crossed as of stateSeq, from the run's exact
+  // transition history (#1427) via deriveTraversedEdges — never inferred from
+  // both endpoints being visited, which false-positives on a cyclic
+  // workflow's untaken repass edges (#1430).
+  traversedEdges?: TraversedEdges;
+  // Per-declared-branch execution state (#1567), keyed by WorkflowGraphEdge's
+  // branch name — the same key a parallel's fan-out edges carry. Read off
+  // branch.started/branch.finished events directly, since a branch has no
+  // single graph node of its own to hang a nodeStates entry off of.
+  branchStates?: Map<string, BranchStateEntry>;
   // The single node the authoritative escalation cause points at (DASH-21).
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
@@ -610,10 +625,13 @@ export function WorkflowTopologyGraph({
                 </marker>
               </defs>
               {layout.edges.map((edge) => {
-                const traversed =
-                  nodeStates !== undefined &&
-                  nodeTraversed(nodeStates[edge.edge.source]) &&
-                  nodeTraversed(nodeStates[edge.edge.target]);
+                const traversed = edgeTraversed(traversedEdges, edge.edge);
+                const branchState = edge.edge.branch
+                  ? branchStates?.get(edge.edge.branch)
+                  : undefined;
+                const label = edge.edge.branch
+                  ? branchEdgeLabel(edge.edge.branch, branchState)
+                  : edge.edge.outcome;
                 return (
                 <g key={edge.id}>
                   <path
@@ -622,19 +640,21 @@ export function WorkflowTopologyGraph({
                       edge.repass ? "workflow-graph-edge-repass" : "",
                       nodeStates ? "workflow-graph-edge-declared" : "",
                       traversed ? "workflow-graph-edge-traversed" : "",
+                      branchState ? `workflow-graph-edge-branch-${branchState.state}` : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                     d={edge.path}
+                    data-branch-status={branchState?.state}
                     markerEnd={`url(#${markerId})`}
                   />
-                  {edge.edge.outcome && (
+                  {label && (
                     <text
                       className="workflow-graph-edge-label"
                       x={edge.labelX}
                       y={edge.labelY}
                     >
-                      {edge.edge.outcome}
+                      {label}
                     </text>
                   )}
                 </g>
@@ -722,7 +742,14 @@ export function WorkflowTopologyGraph({
             })}
           </div>
         </div>
-        <TopologyList graph={graph} stageOrder={layout.stageOrder} />
+        <TopologyList
+          branchStates={branchStates}
+          graph={graph}
+          layoutEdges={layout.edges}
+          stageOrder={layout.stageOrder}
+          traversedEdges={traversedEdges}
+        />
+        <WorkflowGraphLegend />
       </div>
     </div>
   );
@@ -739,22 +766,60 @@ function distance(left: PointerPosition, right: PointerPosition): number {
   return Math.hypot(right.x - left.x, right.y - left.y);
 }
 
+// branchEdgeLabel is the non-color-dependent text for a parallel's fan-out
+// edge — naming the branch, and once it has a recorded state, appending it
+// ("security-lens — Failed") so a cancelled branch reads differently from a
+// failed one by the words alone, per #1567's acceptance criteria.
+function branchEdgeLabel(branchName: string, state: BranchStateEntry | undefined): string {
+  return state ? `${branchName} — ${branchStateLabel(state.state)}` : branchName;
+}
+
+// edgeDescription is the accessible, non-color-dependent explanation of one
+// edge's declared shape and (when a run overlay is active) execution state —
+// #1431's "Configured repass route; not traversed" / "Traversed at sequence
+// 23" wording, so the topology list communicates the same two independent
+// dimensions the visual encoding does (repass vs. forward; traversed vs.
+// declared-only) rather than a bare boolean.
+function edgeDescription(
+  layoutEdge: WorkflowLayoutEdge,
+  traversedEdges: TraversedEdges | undefined,
+  branchStates: Map<string, BranchStateEntry> | undefined,
+): string {
+  const { edge } = layoutEdge;
+  const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
+  const route = edge.branch
+    ? `branch ${branchEdgeLabel(edge.branch, branchStates?.get(edge.branch))} to ${target}`
+    : `${edge.outcome || "next"} to ${target}`;
+  const shape = layoutEdge.repass ? "repass route" : "forward route";
+  if (traversedEdges === undefined) {
+    // No run overlay active (the configured-topology page): only the
+    // declared shape is meaningful, execution state does not apply.
+    return `${route}, configured ${shape}`;
+  }
+  const seq = traversedEdgeSeq(traversedEdges, edge);
+  const state = seq === undefined ? "not traversed" : `traversed at sequence ${seq}`;
+  return `${route}, configured ${shape}, ${state}`;
+}
+
 function TopologyList({
   graph,
+  layoutEdges,
   stageOrder,
+  traversedEdges,
+  branchStates,
 }: {
   graph: WorkflowGraph;
+  layoutEdges: WorkflowLayoutEdge[];
   stageOrder: WorkflowGraphNode[];
+  traversedEdges?: TraversedEdges;
+  branchStates?: Map<string, BranchStateEntry>;
 }) {
   return (
     <ol aria-label={`${graph.name} accessible topology`} className="sr-only">
       {stageOrder.map((node) => {
-        const outgoing = graph.edges
-          .filter((edge) => edge.source === node.id)
-          .map((edge) => {
-            const target = edge.terminal ? `${terminalLabel(edge.terminal)} terminal` : edge.target;
-            return `${edge.outcome || "next"} to ${target}`;
-          });
+        const outgoing = layoutEdges
+          .filter((layoutEdge) => layoutEdge.edge.source === node.id)
+          .map((layoutEdge) => edgeDescription(layoutEdge, traversedEdges, branchStates));
         return (
           <li key={`topology-${node.id}`}>
             {node.id === graph.start ? "Start stage. " : ""}
@@ -775,6 +840,8 @@ function nodeKindLabel(node: WorkflowGraphNode): string {
       return "Deterministic task";
     case "gate":
       return "Gate";
+    case "parallel":
+      return "Parallel";
   }
 }
 
@@ -785,6 +852,9 @@ function nodeActor(node: WorkflowGraphNode): string {
   }
   if (node.kind === "agentic") {
     return node.owner ? `Owned by ${node.owner}` : "Owner not declared";
+  }
+  if (node.kind === "parallel") {
+    return "Fans out into declared branches";
   }
   return "Runs deterministically";
 }

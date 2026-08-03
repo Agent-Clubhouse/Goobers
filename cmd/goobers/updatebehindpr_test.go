@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -23,6 +24,7 @@ type updateBehindServer struct {
 	mergeable       *bool
 	labels          []string
 	comments        []map[string]interface{}
+	checkState      string
 	updateCalls     int
 	updateStatus    int
 	current         bool
@@ -53,7 +55,17 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		}})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, _ *http.Request) {
-		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+		state := s.checkState
+		if state == "" {
+			state = "success"
+		}
+		writeFakeJSON(w, map[string]interface{}{
+			"state": state,
+			"statuses": []map[string]string{{
+				"context": "required-ci",
+				"state":   state,
+			}},
+		})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
@@ -161,6 +173,9 @@ func setupUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (root, wor
 	root = initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-720")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", updateBehindPRToken)
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", updateBehindIssuesToken)
 	workspace = t.TempDir()
@@ -214,6 +229,96 @@ func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "updated behind branch through GitHub API") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
+	state := &updateBehindServer{
+		checkState: "failure",
+		current:    true,
+	}
+	stdout, _, result := runUpdateBehindPRTest(t, state)
+
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0 for current PR", state.updateCalls)
+	}
+	if result["needsFullRemediation"] != "true" || result["selectedNumber"] != "55" {
+		t.Fatalf("result = %v, want failing PR routed to full remediation", result)
+	}
+	if len(state.labels) != 0 {
+		t.Fatalf("labels = %v, want unlabeled candidate unchanged", state.labels)
+	}
+	if !strings.Contains(stdout, "requires full remediation") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestUpdateBehindPRFailingCurrentUnlabeledHandoffReachesGatherPRContext(t *testing.T) {
+	state := &updateBehindServer{
+		checkState: "failure",
+		current:    true,
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	code, stdout, stderr, updateResult := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 0 {
+		t.Fatalf("update-behind-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if updateResult["needsFullRemediation"] != "true" {
+		t.Fatalf("update result = %v, want full remediation", updateResult)
+	}
+	if state.updateCalls != 0 || len(state.labels) != 0 {
+		t.Fatalf("update calls = %d, labels = %v, want current unlabeled candidate unchanged", state.updateCalls, state.labels)
+	}
+
+	const prBranch = "goobers/implementation/run-55"
+	origin, _, baseSHA := initPRBranchOrigin(t, prBranch)
+	work := filepath.Join(filepath.Dir(origin), "work")
+	runGitT(t, work, "checkout", prBranch)
+	runGitT(t, work, "merge", "--no-edit", "origin/main")
+	runGitT(t, work, "push", "origin", prBranch)
+	headSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+
+	gatherServer := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 55, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		checkState: "failure",
+	}.start(t)
+	newGitHubProvider = mergePRTestServer{url: gatherServer.URL}.newGitHubProvider
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-720", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-720",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	t.Setenv(executor.InputEnvVar("selectedNumber"), updateResult["selectedNumber"])
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "repo-push-token")
+	t.Chdir(wt.Path)
+	code, stdout, stderr = runArgs(t, "gather-pr-context", root)
+	if code != 0 {
+		t.Fatalf("gather-pr-context: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
+	if err != nil {
+		t.Fatalf("read remediation brief: %v", err)
+	}
+	var brief apiv1.RemediationBrief
+	if err := json.Unmarshal(data, &brief); err != nil {
+		t.Fatalf("decode remediation brief: %v", err)
+	}
+	if brief.SelectedNumber != updateResult["selectedNumber"] ||
+		brief.HasFailingCI != "true" ||
+		brief.IsBehindBase {
+		t.Fatalf("remediation brief = %+v, want selected failing current PR", brief)
 	}
 }
 

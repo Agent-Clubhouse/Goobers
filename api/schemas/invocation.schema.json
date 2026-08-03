@@ -20,6 +20,10 @@
       "type": "string",
       "description": "The gaggle's run-branch namespace root (GaggleSpec.BranchNamespace); empty means the default 'goobers/'. Injected as GOOBERS_BRANCH_NAMESPACE (#965/#1010)."
     },
+    "baseBranch": {
+      "type": "string",
+      "description": "The gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.Branch); empty means the default 'main'. Injected as GOOBERS_BASE_BRANCH (#2087)."
+    },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
     "instructionAddendum": {
       "type": "string",
@@ -37,6 +41,15 @@
       "type": "array",
       "description": "Read-only checkouts of the gaggle's reference repos (GaggleSpec.AdditionalRepos, MGV-11 #1286). The stage may read them; no push credential is provisioned, so they are read-only by construction. Surfaced as GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<path>.",
       "items": { "$ref": "#/$defs/additionalWorkspace" }
+    },
+    "checkoutCones": {
+      "type": "object",
+      "description": "Present only when the runner honored a project.checkout.sparse declaration (#649): repo-relative path cones actually materialized, keyed by workspace identity ('' for the primary workspace, else the matching additionalWorkspaces[i].name). A workspace absent from this object has a full checkout.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1
+      }
     },
     "contextPointers": {
       "type": "array",
@@ -56,9 +69,11 @@
         "enum": [
           "repo:read",
           "repo:push",
+          "github:issues:read",
           "github:issues:write",
           "github:milestones:write",
           "github:issues:approve",
+          "provider:pr:write",
           "github:pr:write",
           "github:pr:review",
           "github:branch:delete",

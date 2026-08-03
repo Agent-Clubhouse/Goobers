@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { RunEvent, WorkflowGraph } from "./api/types";
+import type { RunEvent, RunTransition, WorkflowGraph } from "./api/types";
 import {
+  branchStateLabel,
+  deriveBranchStates,
   deriveNodeStates,
+  deriveTraversedEdges,
+  edgeTraversed,
   evidenceVisit,
   evidenceDecision,
   eventHeading,
   eventNodeAtSequence,
   eventNodeId,
+  eventStage,
   eventSummary,
   journalEntries,
   orderRunEvents,
+  runEventStages,
+  UNSCOPED_EVENT_STAGE,
 } from "./runDetailData";
 
 const graph: WorkflowGraph = {
@@ -379,6 +386,54 @@ describe("run detail projection", () => {
     expect(eventSummary(ref)).toBe("GitHub opened pull request #42.");
   });
 
+  it("classifies and describes parallel/branch lifecycle events readably (#1567)", () => {
+    const parallelGraph: WorkflowGraph = {
+      ...graph,
+      nodes: [...graph.nodes, { id: "fanout", kind: "parallel" }],
+    };
+    const started = event(3, "parallel.started", { parallel: "fanout" });
+    const branchStarted = event(4, "branch.started", {
+      branch: 1,
+      parallel: "fanout",
+      branchName: "security-lens",
+    });
+    const branchFinished = event(9, "branch.finished", {
+      branch: 1,
+      parallel: "fanout",
+      branchName: "security-lens",
+      branchStatus: "failed",
+    });
+    const finished = event(14, "parallel.finished", {
+      parallel: "fanout",
+      completeness: [
+        { branch: 1, name: "security-lens", status: "failed", artifacts: 0 },
+        { branch: 2, name: "perf-lens", status: "succeeded", artifacts: 1 },
+      ],
+    });
+
+    expect(eventHeading(started)).toBe("Parallel started");
+    expect(eventSummary(started)).toBe("Parallel fanout started.");
+    expect(eventHeading(branchStarted)).toBe("Branch started");
+    expect(eventSummary(branchStarted)).toBe("Branch security-lens started.");
+    expect(eventHeading(branchFinished)).toBe("Branch finished");
+    expect(eventSummary(branchFinished)).toBe("Branch security-lens finished as failed.");
+    expect(eventHeading(finished)).toBe("Parallel finished");
+    expect(eventSummary(finished)).toBe(
+      "Parallel fanout finished — 1/2 branches succeeded (security-lens: failed, perf-lens: succeeded).",
+    );
+
+    // eventNodeId: the parallel container is its own graph node; a branch
+    // event has no single node of its own.
+    expect(eventNodeId(started)).toBe("fanout");
+    expect(eventNodeId(finished)).toBe("fanout");
+    expect(eventNodeId(branchStarted)).toBeUndefined();
+
+    // deriveNodeStates: the container tracks "did execution reach the join",
+    // not what any individual branch did.
+    expect(deriveNodeStates(parallelGraph, [started], 3).fanout).toBe("running");
+    expect(deriveNodeStates(parallelGraph, [started, finished], 14).fanout).toBe("completed");
+  });
+
   it("correlates unscoped verdict evidence within its parallel branch", () => {
     const reviewSecurity = event(1, "gate.started", {
       branch: 1,
@@ -471,5 +526,187 @@ describe("run detail projection", () => {
       implement: "completed",
       review: "skipped",
     });
+  });
+});
+
+function transition(
+  seq: number,
+  source: string,
+  fields: Partial<RunTransition> = {},
+): RunTransition {
+  return { branch: 0, occurrence: 0, seq, source, ...fields };
+}
+
+// The cyclic implement<->review graph from workflowGraph.test.ts's "cyclic"
+// fixture, reused here so an edge computed by deriveTraversedEdges matches a
+// real declared graph shape rather than an ad hoc one.
+const cyclicGraph: WorkflowGraph = {
+  name: "cyclic",
+  version: 1,
+  digest: "sha256:cyclic",
+  start: "implement",
+  nodes: [
+    { id: "implement", kind: "agentic", owner: "builder" },
+    { id: "review", kind: "gate", evaluator: "agentic", owner: "reviewer" },
+  ],
+  edges: [
+    { source: "implement", target: "review" },
+    { source: "review", target: "", outcome: "approve", terminal: "complete" },
+    { source: "review", target: "implement", outcome: "needs-changes" },
+  ],
+};
+
+describe("deriveTraversedEdges", () => {
+  it("emphasizes the taken forward edge and never the untaken repass edge (#1430 first-pass criterion)", () => {
+    const transitions = [
+      transition(3, "implement", { target: "review" }),
+      transition(4, "review", { target: "", terminal: true, status: "completed", verdict: "approve" }),
+    ];
+    const traversed = deriveTraversedEdges(transitions, 4);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[0])).toBe(true); // implement -> review
+    expect(edgeTraversed(traversed, cyclicGraph.edges[2])).toBe(false); // review -> implement (never crossed)
+    expect(edgeTraversed(traversed, cyclicGraph.edges[1])).toBe(true); // review -> complete
+  });
+
+  it("emphasizes the dotted repass edge only at and after its causal gate sequence (scrubbing)", () => {
+    const transitions = [
+      transition(3, "implement", { target: "review" }),
+      transition(4, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(7, "implement", { target: "review" }),
+      transition(8, "review", { target: "", terminal: true, status: "completed", verdict: "approve" }),
+    ];
+    const repassEdge = cyclicGraph.edges[2];
+
+    // Before the gate decision, the repass has not happened yet.
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 3), repassEdge)).toBe(false);
+    // At and after the causal gate.evaluated sequence, it has.
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 4), repassEdge)).toBe(true);
+    expect(edgeTraversed(deriveTraversedEdges(transitions, 8), repassEdge)).toBe(true);
+  });
+
+  it("does not create phantom duplicate edges for a repeatedly traversed repass", () => {
+    const transitions = [
+      transition(4, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(8, "review", { target: "implement", verdict: "needs-changes" }),
+      transition(12, "review", { target: "implement", verdict: "needs-changes" }),
+    ];
+    const traversed = deriveTraversedEdges(transitions, 12);
+    expect(traversed.size).toBe(1);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[2])).toBe(true);
+  });
+
+  it("reflects a terminal transition only under its actual outcome, from recorded data alone", () => {
+    const escalateEdge = { source: "review", target: "@escalate", terminal: "escalate" as const };
+    const abortEdge = { source: "review", target: "@abort", terminal: "abort" as const };
+
+    const escalated = deriveTraversedEdges(
+      [transition(9, "review", { terminal: true, status: "escalated", verdict: "fail" })],
+      9,
+    );
+    expect(edgeTraversed(escalated, escalateEdge)).toBe(true);
+    expect(edgeTraversed(escalated, abortEdge)).toBe(false);
+
+    // A bare task failure with no declared gate route has no matching
+    // terminal edge at all (#1427's task-sourced terminal case) — this must
+    // never be fabricated as a highlighted edge on some other terminal.
+    const failed = deriveTraversedEdges(
+      [transition(2, "implement", { terminal: true, status: "failed" })],
+      2,
+    );
+    expect(edgeTraversed(failed, escalateEdge)).toBe(false);
+    expect(edgeTraversed(failed, abortEdge)).toBe(false);
+  });
+
+  it("returns an empty, always-false set when transitions are unavailable (legacy runs)", () => {
+    const traversed = deriveTraversedEdges(undefined, 999);
+    expect(traversed.size).toBe(0);
+    expect(edgeTraversed(traversed, cyclicGraph.edges[0])).toBe(false);
+    expect(edgeTraversed(undefined, cyclicGraph.edges[0])).toBe(false);
+  });
+});
+
+describe("deriveBranchStates", () => {
+  it("tracks each declared branch independently, keyed by name (#1567)", () => {
+    const events = [
+      event(4, "branch.started", { branch: 1, parallel: "fanout", branchName: "security-lens" }),
+      event(5, "branch.started", { branch: 2, parallel: "fanout", branchName: "perf-lens" }),
+      event(9, "branch.finished", {
+        branch: 1,
+        parallel: "fanout",
+        branchName: "security-lens",
+        branchStatus: "failed",
+      }),
+      event(11, "branch.finished", {
+        branch: 2,
+        parallel: "fanout",
+        branchName: "perf-lens",
+        branchStatus: "succeeded",
+      }),
+    ];
+
+    // Before either branch starts, nothing is tracked yet.
+    expect(deriveBranchStates(events, 3).size).toBe(0);
+    // Both running once started, before either finishes.
+    expect(deriveBranchStates(events, 8).get("security-lens")?.state).toBe("running");
+    expect(deriveBranchStates(events, 8).get("perf-lens")?.state).toBe("running");
+    // Scrubbing to exactly the failure sequence reflects it; the sibling is
+    // unaffected — one branch's outcome never bleeds into another's.
+    expect(deriveBranchStates(events, 9).get("security-lens")?.state).toBe("failed");
+    expect(deriveBranchStates(events, 9).get("perf-lens")?.state).toBe("running");
+    // Both terminal once past the join.
+    const final = deriveBranchStates(events, 14);
+    expect(final.get("security-lens")).toEqual({ state: "failed", seq: 9 });
+    expect(final.get("perf-lens")).toEqual({ state: "succeeded", seq: 11 });
+  });
+
+  it("labels every BranchState in words, never relying on color to distinguish cancelled from failed", () => {
+    expect(branchStateLabel("running")).toBe("Running");
+    expect(branchStateLabel("succeeded")).toBe("Succeeded");
+    expect(branchStateLabel("failed")).toBe("Failed");
+    expect(branchStateLabel("timed-out")).toBe("Timed out");
+    expect(branchStateLabel("cancelled")).toBe("Cancelled");
+    expect(branchStateLabel("no-output")).toBe("No output");
+    expect(branchStateLabel("cancelled")).not.toBe(branchStateLabel("failed"));
+  });
+});
+
+describe("eventStage", () => {
+  it("reports the producing stage", () => {
+    expect(eventStage(event(1, "stage.started", { stage: "implement", attempt: 1 }))).toBe("implement");
+  });
+
+  // A gate event carries `gate`, not `stage`. One column has to carry either,
+  // or half the ledger reads as unscoped.
+  it("falls back to the evaluating gate", () => {
+    expect(eventStage(event(2, "gate.evaluated", { gate: "review", verdict: "pass" }))).toBe("review");
+  });
+
+  it("marks run-level events as unscoped", () => {
+    expect(eventStage(event(3, "run.started", {}))).toBe(UNSCOPED_EVENT_STAGE);
+  });
+});
+
+describe("runEventStages", () => {
+  it("lists each scope once in durable order, unscoped last", () => {
+    const events: RunEvent[] = [
+      event(1, "run.started", {}),
+      event(2, "stage.started", { stage: "implement", attempt: 1 }),
+      event(3, "stage.finished", { stage: "implement", attempt: 1 }),
+      event(4, "gate.evaluated", { gate: "review", verdict: "needs-changes" }),
+      event(5, "stage.started", { stage: "implement", attempt: 2 }),
+      event(6, "run.finished", {}),
+    ];
+
+    expect(runEventStages(events)).toEqual(["implement", "review", UNSCOPED_EVENT_STAGE]);
+  });
+
+  it("omits the unscoped bucket when every event is scoped", () => {
+    expect(runEventStages([event(1, "stage.started", { stage: "implement", attempt: 1 })])).toEqual([
+      "implement",
+    ]);
+  });
+
+  it("is empty for no events", () => {
+    expect(runEventStages([])).toEqual([]);
   });
 });

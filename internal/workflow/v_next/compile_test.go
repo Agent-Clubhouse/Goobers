@@ -742,7 +742,7 @@ func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	}
 }
 
-func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
+func TestCompileCIPollRequiresProviderPRWrite(t *testing.T) {
 	cases := []struct {
 		name    string
 		caps    []string
@@ -750,11 +750,21 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 	}{
 		{
 			name:    "missing required capability",
-			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "github:pr:write"`,
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
 		},
 		{
 			name: "required capability declared",
-			caps: []string{string(capability.GitHubPRWrite)},
+			caps: []string{string(capability.ProviderPRWrite)},
+		},
+		{
+			name:    "provider-specific capability does not satisfy provider-neutral routing",
+			caps:    []string{string(capability.GitHubPRWrite)},
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
+		},
+		{
+			name:    "provider-neutral and provider-specific capabilities conflict",
+			caps:    []string{string(capability.ProviderPRWrite), string(capability.ADOPRWrite)},
+			wantErr: `task "poll" declares mutually exclusive provider-neutral and provider-specific PR write capabilities`,
 		},
 	}
 
@@ -806,8 +816,25 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 		}}
 	}
 
-	_, err := compileAcknowledged(definition("missing-eviction-capability", queueTask))
-	want := `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
+	readOnlyTask := apiv1.Task{
+		Name:         "read-backlog",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "confirm backlog access",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+		Capabilities: []string{string(capability.GitHubIssuesWrite)},
+	}
+	_, err := compileAcknowledged(definition("write-only-backlog-read", readOnlyTask))
+	want := `task "read-backlog" invokes built-in subcommand "backlog-query" but does not declare capability "github:issues:read"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+	readOnlyTask.Capabilities = append(readOnlyTask.Capabilities, string(capability.GitHubIssuesRead))
+	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {
+		t.Fatalf("read-only backlog-query with explicit read capability should compile: %v", err)
+	}
+
+	_, err = compileAcknowledged(definition("missing-eviction-capability", queueTask))
+	want = `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
@@ -960,6 +987,61 @@ func TestCompilePolicyBearingCommandRequiresActionDeclarations(t *testing.T) {
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
 	if err == nil || !strings.Contains(err.Error(), `task "apply" command "goobers apply-verdict" prescribes policy action "close-pr" but policyActions does not declare it`) {
 		t.Fatalf("Compile error = %v, want missing policy-action declaration", err)
+	}
+}
+
+func TestCompileSetMilestoneRequiresRoadmapPolicy(t *testing.T) {
+	task := apiv1.Task{
+		Name:         "milestone",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "assign roadmap milestone",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "set-milestone"}},
+		Capabilities: []string{string(capability.GitHubMilestonesWrite)},
+	}
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `task "milestone" command "goobers set-milestone" prescribes policy action "assign-milestone" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"assign-milestone"}
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `task "milestone" policy action "assign-milestone" requires capability "github:milestones:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+}
+
+func TestCompilePrSelectRequiresFoundationCouplingPolicy(t *testing.T) {
+	task := apiv1.Task{
+		Name:         "select",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "select and classify the PR",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "pr-select"}},
+		Capabilities: []string{string(capability.GitHubPRWrite)},
+	}
+	spec := apiv1.WorkflowSpec{Gaggle: "web", Start: task.Name, Tasks: []apiv1.Task{task}}
+
+	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantAction = `task "select" command "goobers pr-select" prescribes policy action "flag-foundation-coupling" but policyActions does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantAction) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantAction)
+	}
+
+	spec.Tasks[0].PolicyActions = []string{"flag-foundation-coupling"}
+	spec.Tasks[0].Capabilities = nil
+	_, err = compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
+	const wantCapability = `task "select" policy action "flag-foundation-coupling" requires capability "github:pr:write", but the task does not declare it`
+	if err == nil || !strings.Contains(err.Error(), wantCapability) {
+		t.Fatalf("Compile error = %v, want containing %q", err, wantCapability)
+	}
+
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubPRWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared pr-select action and capability should compile: %v", err)
 	}
 }
 

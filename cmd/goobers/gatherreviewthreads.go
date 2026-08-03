@@ -58,7 +58,11 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	provider, err := remediationStageProvider(root, repo, token, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 

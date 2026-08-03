@@ -174,6 +174,55 @@ func TestResolveElectionOutcomeGenuinePass(t *testing.T) {
 	})
 }
 
+// TestResolveElectionOutcomeRacePolicy is #2268's fast-track lane at the
+// resolveElectionOutcome level: a critical-lane PR with no defect of its own
+// must land without waiting on an unrelated, live sibling's own blocker —
+// including the reported case of a sibling stuck goobers:needs-human, which
+// can block a lane indefinitely under fifo (PR #2266 blocked behind #2265 in
+// the issue's evidence). "race" elects unconditionally the moment thisPR's
+// own review clears; it never depends on which siblings are blocked or why.
+func TestResolveElectionOutcomeRacePolicy(t *testing.T) {
+	t.Run("critical-vs-routine: elects immediately despite lower-numbered live siblings", func(t *testing.T) {
+		// Under fifo this exact input parks (see the mirror case in
+		// TestResolveElectionOutcomeGenuinePass: PR #12 with predecessors
+		// #10/#11 is NOT elected). race elects it anyway.
+		elected, rationale := resolveElectionOutcome(12, apiv1.VerdictPass, []apiv1.Finding{blockedFinding(10, 11)}, "", []int{10, 11}, nil, electedRace, "race")
+		if !elected {
+			t.Fatalf("resolveElectionOutcome(race) = elected=false, want true — race must not wait on siblings' turn")
+		}
+		if !strings.Contains(rationale, "race") {
+			t.Errorf("rationale = %q, want it to name the race policy", rationale)
+		}
+	})
+
+	t.Run("critical-vs-blocked-routine: elects despite a needs-human-stuck sibling that would block fifo forever", func(t *testing.T) {
+		// A sibling parked goobers:needs-human never self-resolves — under fifo
+		// a higher-numbered critical PR blocked on it would wait indefinitely
+		// (the exact #2268 failure mode). The sibling's own stuck state is not
+		// even consulted here: election is a pure function of {thisPR,
+		// blockers}, and race ignores blockers entirely.
+		const needsHumanStuckSibling = 2265
+		const criticalPR = 2266
+		elected, _ := resolveElectionOutcome(criticalPR, apiv1.VerdictPass, []apiv1.Finding{blockedFinding(needsHumanStuckSibling)}, "", []int{needsHumanStuckSibling}, nil, electedRace, "race")
+		if !elected {
+			t.Fatalf("resolveElectionOutcome(race) = elected=false, want true — a needs-human sibling must not indefinitely block the critical lane")
+		}
+	})
+
+	t.Run("a real defect on thisPR's own review is never elected, race included", func(t *testing.T) {
+		elected, rationale := resolveElectionOutcome(10, apiv1.VerdictNeedsChanges, []apiv1.Finding{
+			blockedFinding(11),
+			{Severity: apiv1.SeverityError, Message: "nil deref", Class: apiv1.FindingSubstantive},
+		}, "", []int{11}, nil, electedRace, "race")
+		if elected {
+			t.Fatal("race policy elected a PR carrying its own real defect — #1071 safety invariant violated")
+		}
+		if rationale != "" {
+			t.Errorf("rationale = %q, want empty for a needs-changes case with a real defect", rationale)
+		}
+	})
+}
+
 // TestResolveElectionOutcomeAgreesWithElectLander pins the one real hazard in
 // re-deriving the election inside apply-verdict rather than threading it: two
 // stages could drift and disagree about who was crowned.
@@ -288,6 +337,88 @@ func TestApplyVerdictGenuinePassOverlapEndToEnd(t *testing.T) {
 			}
 			if !posted.OverlapCluster {
 				t.Fatalf("posted.OverlapCluster = false, want true")
+			}
+			if posted.Elected != tc.wantElected {
+				t.Fatalf("posted.Elected = %v, want %v", posted.Elected, tc.wantElected)
+			}
+			if tc.wantLabel != "" && !hasAllLabels(issue.labels, []string{tc.wantLabel}) {
+				t.Fatalf("labels = %v, want %q", issue.labels, tc.wantLabel)
+			}
+		})
+	}
+}
+
+// TestApplyVerdictRaceElectsOverNeedsHumanSibling is #2268's end-to-end
+// reproduction, mirrored on the PR numbers from the issue's own evidence
+// (#2266 blocked behind #2265, which carried goobers:needs-human): a
+// critical-lane PR (electionPolicy: race) whose own review is clean must
+// reach merge-pr as an elected pass even though it deterministically overlaps
+// a live sibling stuck goobers:needs-human — contrasted with the same input
+// under fifo, which parks it blocked-on-sibling exactly as #2266 was.
+func TestApplyVerdictRaceElectsOverNeedsHumanSibling(t *testing.T) {
+	const stuckSibling = 2265 // lower number, would win fifo — carries goobers:needs-human
+	const criticalPR = 2266
+
+	for _, tc := range []struct {
+		name         string
+		policy       string
+		wantDecision apiv1.VerdictDecision
+		wantLabel    string
+		wantElected  bool
+	}{
+		{
+			name:         "fifo: parked behind the needs-human sibling (the reported bug)",
+			policy:       "fifo",
+			wantDecision: apiv1.VerdictNeedsChanges,
+			wantLabel:    blockedOnSiblingLabel,
+			wantElected:  false,
+		},
+		{
+			name:         "race: elected and lands despite the needs-human sibling",
+			policy:       "race",
+			wantDecision: apiv1.VerdictPass,
+			wantElected:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(criticalPR, "Critical PR")
+			server.addOpenPR(criticalPR, "goobers/implementation-critical/run-x", "main", "shacriticalhead", "shamainbase", false, nil, nil)
+			server.addIssue(stuckSibling, "Stuck sibling", "goobers:needs-human")
+			server.addOpenPR(stuckSibling, "goobers/implementation/run-2265", "main", "sha2265head", "shamainbase", false, []string{"goobers:needs-human"}, nil)
+
+			runID := "run-2268-" + tc.policy
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+			t.Setenv("GOOBERS_WORKFLOW", "merge-review-critical")
+			t.Setenv("GOOBERS_GAGGLE", "goobers")
+			t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+			t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", strconv.Itoa(criticalPR))
+			t.Setenv("GOOBERS_INPUT_OVERLAPPINGSIBLINGS", strconv.Itoa(stuckSibling))
+			t.Setenv("GOOBERS_INPUT_ELECTIONPOLICY", tc.policy)
+
+			seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+				Decision: apiv1.VerdictPass, Summary: "clean, no defect of its own", HeadSHA: "shacriticalhead", BaseSHA: "shamainbase",
+			})
+
+			applyDir := t.TempDir()
+			t.Chdir(applyDir)
+			if code, _, stderr := runArgs(t, "apply-verdict", root); code != 0 {
+				t.Fatalf("apply-verdict: code = %d, stderr = %q", code, stderr)
+			}
+
+			server.mu.Lock()
+			issue := server.issues[criticalPR]
+			server.mu.Unlock()
+			if len(issue.comments) == 0 {
+				t.Fatalf("no verdict comment posted")
+			}
+			posted, ok := parseVerdictComment(issue.comments[len(issue.comments)-1])
+			if !ok {
+				t.Fatalf("posted comment has no recoverable verdict payload: %q", issue.comments[len(issue.comments)-1])
+			}
+			if posted.Decision != tc.wantDecision {
+				t.Fatalf("posted.Decision = %q, want %q", posted.Decision, tc.wantDecision)
 			}
 			if posted.Elected != tc.wantElected {
 				t.Fatalf("posted.Elected = %v, want %v", posted.Elected, tc.wantElected)

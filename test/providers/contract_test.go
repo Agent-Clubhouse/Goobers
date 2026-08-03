@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -135,6 +137,104 @@ func newADOBackend(t *testing.T) (backend, func()) {
 		repo:     providers.RepositoryRef{Name: "repo", Project: "project"},
 		kind:     providers.ProviderADO,
 	}, srv.Close
+}
+
+// newGitHubLimitMeansMatchesBackend serves three raw candidates behind a
+// single Limit=1 fetch: a pull request (always excluded), an issue with the
+// wrong label, and an issue with the wanted label — in that order, so a
+// naive "Limit truncates the raw fetch" implementation would see only the
+// pull request and miss the real match two candidates later (#2067).
+func newGitHubLimitMeansMatchesBackend(t *testing.T) (backend, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 1, "number": 1, "title": "a pr", "state": "open", "pull_request": map[string]string{"url": "pr-url"}},
+			{"id": 2, "number": 2, "title": "wrong label", "state": "open", "labels": []map[string]string{{"name": "other"}}},
+			{"id": 3, "number": 3, "title": "wanted", "state": "open", "labels": []map[string]string{{"name": "wanted"}}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	p := providers.NewGitHubProvider("token", func(p *providers.GitHubProvider) { p.BaseURL = srv.URL })
+	return backend{
+		name: "github", provider: p,
+		repo: providers.RepositoryRef{Owner: "acme", Name: "app"}, kind: providers.ProviderGitHub,
+	}, srv.Close
+}
+
+// newADOLimitMeansMatchesBackend is newGitHubLimitMeansMatchesBackend's ADO
+// counterpart: three WIQL candidates, only the third carries the wanted tag.
+func newADOLimitMeansMatchesBackend(t *testing.T) (backend, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 1}, {"id": 2}, {"id": 3}}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/org/project/_apis/wit/workitems/")
+		tags := "other"
+		if id == "3" {
+			tags = "wanted"
+		}
+		numericID, err := strconv.Atoi(id)
+		if err != nil {
+			t.Fatalf("parse work item id %q: %v", id, err)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": numericID,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Active", "System.Title": "item " + id,
+				"System.State": "Active", "System.Tags": tags,
+			},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "Active", "category": "InProgress"},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	p := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = srv.URL })
+	return backend{
+		name: "ado", provider: p,
+		repo: providers.RepositoryRef{Name: "repo", Project: "project"}, kind: providers.ProviderADO,
+	}, srv.Close
+}
+
+// TestContract_ListWorkItemsLimitMeansMatches pins the "Limit = up to N
+// matches, not N raw records" semantic (#2067) as a cross-provider
+// contract: GitHub's #532 history shows this class of bug is not
+// ADO-specific, so both must honor it identically. A bounded fetch (Limit=1
+// + LabelPredicate) whose true match sits behind earlier nonmatching
+// candidates must still find it in one call, for both providers.
+func TestContract_ListWorkItemsLimitMeansMatches(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("compile label predicate: %v", err)
+	}
+	factories := []backendFactory{
+		{"github", newGitHubLimitMeansMatchesBackend},
+		{"ado", newADOLimitMeansMatchesBackend},
+	}
+	for _, bf := range factories {
+		t.Run(bf.name, func(t *testing.T) {
+			b, done := bf.make(t)
+			defer done()
+			pageInfo := &providers.ListWorkItemsPageInfo{}
+			items, err := b.provider.ListWorkItems(context.Background(), providers.ListWorkItemsRequest{
+				Repository: b.repo, LabelPredicate: predicate, Limit: 1, PageInfo: pageInfo,
+			})
+			if err != nil {
+				t.Fatalf("ListWorkItems: %v", err)
+			}
+			if len(items) != 1 {
+				t.Fatalf("len(items)=%d, want 1 (the wanted candidate, even though it isn't the first fetched)", len(items))
+			}
+			if !items[0].HasLabel("wanted") {
+				t.Errorf("returned item does not carry the wanted label: %v", items[0].Labels)
+			}
+		})
+	}
 }
 
 type backendFactory struct {

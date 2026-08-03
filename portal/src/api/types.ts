@@ -10,7 +10,8 @@ export type InstanceStatus = "starting" | "ready" | "degraded";
 export type DefinitionStatus = "configured";
 export type Harness = "copilot" | "claude-code";
 export type EvaluatorKind = "automated" | "agentic" | "human";
-export type GraphNodeKind = "deterministic" | "agentic" | "gate";
+export type GraphNodeKind = "deterministic" | "agentic" | "gate" | "parallel";
+export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | "no-output";
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
@@ -291,6 +292,13 @@ export interface WorkflowGraphEdge {
   target: string;
   outcome?: string;
   terminal?: GraphTerminal;
+  /** The declared parallel branch this edge belongs to; empty on ordinary sequential edges. */
+  branch?: string;
+}
+
+export interface RetryPolicy {
+  maxAttempts: number;
+  backoffSeconds?: number;
 }
 
 export interface StageDefinition {
@@ -300,6 +308,15 @@ export interface StageDefinition {
   owner: GooberReference | null;
   evaluator: EvaluatorKind | "";
   capabilities: string[];
+  timeoutSeconds?: number;
+  retry?: RetryPolicy | null;
+  policyActions?: string[];
+  onTimeout?: string;
+  requiredCapabilities?: string[];
+  branches?: Record<string, string>;
+  maxRepasses?: number;
+  /** The stage's Task/Gate config as actually loaded, marshaled back to YAML — ground truth for values like timeout (#2185). */
+  rawYaml: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -325,6 +342,8 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
+  showNoWork?: boolean;
 }
 
 export interface RunList {
@@ -358,6 +377,8 @@ export interface RunSummary {
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
+  noWork: boolean;
 }
 
 export interface RunDetail extends RunSummary {
@@ -366,6 +387,22 @@ export interface RunDetail extends RunSummary {
   escalation?: EscalationCause;
   /** The business decision a completed run reached, distinct from phase (the execution axis). */
   outcome?: RunOutcome;
+  /** The run's exact executed workflow-graph transition history — never inferred from "both endpoint nodes were visited". */
+  transitions?: RunTransition[];
+  transitionsStatus: "projected" | "unavailable";
+}
+
+/** One executed transition in a run's workflow graph (source -> target), including terminal and repass edges. */
+export interface RunTransition {
+  branch: number;
+  occurrence: number;
+  seq: number;
+  source: string;
+  target?: string;
+  verdict?: string;
+  terminal?: boolean;
+  status?: string;
+  repass?: boolean;
 }
 
 /** Present only when phase is "completed"; all-empty when no gate decided the completion. */
@@ -423,7 +460,11 @@ export type KnownRunEventType =
   | "config.reload.rejected"
   | "daemon.started"
   | "daemon.clean_shutdown"
-  | "daemon.dirty_restart";
+  | "daemon.dirty_restart"
+  | "parallel.started"
+  | "parallel.finished"
+  | "branch.started"
+  | "branch.finished";
 
 export type RunEventType = KnownRunEventType | (string & Record<never, never>);
 
@@ -469,7 +510,23 @@ export interface RunEvent {
   workflow?: string;
   runId?: string;
   reason?: string;
+  /** The parallel state this event concerns; set on parallel.started/finished and branch.started/finished. */
+  parallel?: string;
+  /** The declared branch name; set on branch.started/branch.finished. */
+  branchName?: string;
+  /** The branch's terminal status; set on branch.finished. */
+  branchStatus?: BranchStatus;
+  /** The branch completeness record; set on parallel.finished, one entry per declared branch. */
+  completeness?: BranchOutcome[];
   raw?: JsonValue;
+}
+
+/** One entry in a parallel's completeness record (one per declared branch). */
+export interface BranchOutcome {
+  branch: number;
+  name: string;
+  status: BranchStatus;
+  artifacts: number;
 }
 
 export interface ExternalRef {
@@ -560,6 +617,7 @@ export interface TelemetryStatsResult {
 }
 
 export interface TelemetryCurationStats {
+  everRecorded: boolean;
   runs: number;
   reportedRuns: number;
   ready: number;
@@ -574,6 +632,7 @@ export interface TelemetryCurationStats {
 }
 
 export interface TelemetryReadyPool {
+  sampleEverRecorded: boolean;
   observedAt?: string;
   depth?: number;
   averageAgeSeconds?: number;
@@ -581,7 +640,11 @@ export interface TelemetryReadyPool {
   starved?: boolean;
   claimAgeSamples: number;
   averageClaimAgeSeconds?: number;
+  bounceEverRecorded: boolean;
   bounceRate?: number;
+  inFlightClaimSamples: number;
+  averageInFlightClaimAgeSeconds: number;
+  oldestInFlightClaimAgeSeconds: number;
   forwardCurationThroughput: number;
   implementationDemand: number;
 }
@@ -748,6 +811,9 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  capabilities: {
+    revealRun: boolean;
+  };
 }
 
 export interface DaemonClient {
@@ -765,6 +831,7 @@ export interface DaemonClient {
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;
   getArtifact(runId: string, digest: string, options?: RequestOptions): Promise<ArtifactContent>;

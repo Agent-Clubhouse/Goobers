@@ -6,16 +6,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -54,9 +56,13 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"available) exits 0 because it does not observe a terminal phase.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
 	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
-	"`run cancel` instead asks a live daemon to stop a run it is actively\n" +
-	"executing (active-stage cancel + worktree/claim teardown + aborted) — the\n" +
-	"live counterpart to `run abort`'s daemon-down journal repair.\n"
+	"If a live `goobers up` daemon already holds that run's journal lock, abort\n" +
+	"delegates to it instead of failing (#2270), the same way `run <workflow>`\n" +
+	"delegates triggering (#343) — dispatched through the live-cancel path\n" +
+	"either way. `run cancel` instead asks a live daemon to stop a run it is\n" +
+	"actively executing (active-stage cancel + worktree/claim teardown +\n" +
+	"aborted) — the live counterpart to `run abort`'s daemon-down journal\n" +
+	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -123,6 +129,9 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if warning := windowsLargeRepoEnvironmentWarning(setup.Config, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
 	}
 	shutdownOnReturn := true
 	defer func() {
@@ -262,9 +271,8 @@ func runFlagArgs(args []string) []string {
 // issue #135's sanctioned recovery path for a run resumeInterruptedRuns
 // can't resolve on its own (e.g. its workflow was renamed/removed from
 // config, so `goobers up` skips it with a warning forever rather than
-// erroring at startup). Works on the run's journal alone — it doesn't need
-// the run's workflow to still exist in config, unlike everything else in
-// this file.
+// erroring at startup). It doesn't need the run's workflow or gaggle to still
+// exist, but uses the owning gaggle's placement config when available.
 
 const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
@@ -314,7 +322,39 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
-	wtMgr, err := worktree.NewManager(runLayout.WorkcopiesDir())
+	cfg := &instance.Config{}
+	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
+		cfg = loaded
+	} else if !errors.Is(loadErr, iofs.ErrNotExist) {
+		pf(stderr, "warning: load instance config for workcopies placement: %v; continuing with default workcopies layout\n", loadErr)
+	}
+	if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, nil); resolveErr == nil {
+		runLayout = configured
+	} else {
+		pf(stderr, "warning: resolve instance workcopies placement: %v; continuing with default workcopies layout\n", resolveErr)
+	}
+	workcopiesRoot := runLayout.WorkcopiesDir()
+	if runLayout.Gaggle() != "" {
+		set, report, loadErr := loadConfigDirectory(l.ConfigDir())
+		if loadErr != nil {
+			printValidationIssues(stderr, report)
+			pf(stderr, "warning: load config directory for workcopies placement: %v; continuing without gaggle placement\n", loadErr)
+		} else {
+			gaggle := configuredGaggle(set, runLayout.Gaggle())
+			if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle); resolveErr == nil {
+				runLayout = configured
+				workcopiesRoot = runLayout.WorkcopiesDir()
+				if gaggle != nil {
+					if repo, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
+						workcopiesRoot = runLayout.WorkcopiesBaseDir()
+					}
+				}
+			} else {
+				pf(stderr, "warning: resolve gaggle workcopies placement: %v; continuing without gaggle placement\n", resolveErr)
+			}
+		}
+	}
+	wtMgr, err := worktree.NewManager(workcopiesRoot)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -327,7 +367,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+			if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
@@ -339,6 +379,11 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	registrar, scrubber := journal.DefaultScrubber()
 	run, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
 	if err != nil {
+		if errors.Is(err, journal.ErrLockTimeout) {
+			if code, handled := delegateAbortToLiveDaemon(l, runID, identity, stdout, stderr); handled {
+				return code
+			}
+		}
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -350,13 +395,89 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+	// #2191: an aborted run advanced its journal just like a normal terminal
+	// run, but unlike the daemon's ingestRunTelemetry call this one-shot CLI
+	// path never opens the intake store — so the dashboard never learns the
+	// abort happened until the repair sweep eventually finds it.
+	if watermarks, err := intake.Open(runLayout.IntakeDB()); err != nil {
+		pf(stderr, "warning: open intake store for run %s: %v\n", runID, err)
+	} else {
+		recordRunIntake(watermarks, runLayout, runID, nil)
+		_ = watermarks.Close()
+	}
+	if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}
 
 	pf(stdout, "aborted run %s\n", runID)
 	return 0
+}
+
+func configuredGaggle(set *instance.ConfigSet, name string) *apiv1.Gaggle {
+	if set == nil {
+		return nil
+	}
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == name {
+			return &set.Gaggles[i]
+		}
+	}
+	return nil
+}
+
+// delegateAbortToLiveDaemon is invoked when journal.Recover fails because a
+// live `goobers up` daemon already holds the run's journal lock (#2270):
+// without this, abort would surface a confusing 30s lock-timeout error
+// instead of doing what the operator actually wants. It routes the request
+// through the same live-cancel protocol `run cancel` uses, mirroring
+// `run <workflow>`'s existing trigger-delegation pattern (#343) — the
+// mechanisms stay separate, only the CLI's choice of which one to use
+// becomes automatic. handled is false when there turns out to be no live
+// daemon after all (a stale/contended lock some other way, or the daemon
+// released the run between the failed Recover and this check), in which case
+// the caller should fall back to reporting the original journal error
+// unchanged.
+func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal.RunIdentity, stdout, stderr io.Writer) (code int, handled bool) {
+	running, _, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil || !running {
+		return 0, false
+	}
+
+	requestID, err := writeCancelRequest(l.SchedulerDir(), cancelRequest{
+		RunID:    runID,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Actor:    "cli",
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	resp, err := pollCancelResponse(context.Background(), l.SchedulerDir(), requestID, cancelDelegationTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	switch {
+	case resp.Error != "":
+		pf(stderr, "error: %s\n", resp.Error)
+		return 1, true
+	case resp.Code == cancelCodeAborted:
+		pf(stdout, "aborted run %s (delegated to live daemon)\n", runID)
+		return 0, true
+	case resp.Code == cancelCodeTerminal:
+		pf(stderr, "error: run %s finished before it could be aborted (phase=%s)\n", runID, resp.Phase)
+		return 1, true
+	case resp.Code == cancelCodeNotRunning:
+		// The daemon was live when we inspected the lock but no longer owns
+		// this run by the time the sweep picked up the request — fall back to
+		// the original journal error rather than claiming success.
+		return 0, false
+	default:
+		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
+		return 1, true
+	}
 }
 
 const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
@@ -559,7 +680,7 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 		if err == nil {
 			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
 		}
-		if !errors.Is(err, fs.ErrNotExist) {
+		if !errors.Is(err, iofs.ErrNotExist) {
 			return journal.PhaseRunning, err
 		}
 		reporter.heartbeat(time.Now())

@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "v1",
+  "provider": "ado",
+  "repository": {
+    "owner": "fixture-org",
+    "name": "fixture-project"
+  },
+  "issue": "7",
+  "exchanges": [
+    {
+      "name": "list-open-work-items",
+      "method": "POST",
+      "path": "/fixture-org/fixture-project/_apis/wit/wiql?api-version=7.1",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-RateLimit-Remaining": "0"
+        },
+        "body": {
+          "asOf": "2000-01-01T00:00:00Z",
+          "workItems": [
+            {
+              "id": 7,
+              "url": "https://dev.azure.com/fixture-org/fixture-project/_apis/wit/workItems/7"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "list-open-work-items-2",
+      "method": "GET",
+      "path": "/fixture-org/fixture-project/_apis/wit/workitems/7?%24expand=Relations\u0026api-version=7.1",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-RateLimit-Remaining": "0"
+        },
+        "body": {
+          "fields": {
+            "System.AssignedTo": {
+              "descriptor": "NORMALIZED",
+              "displayName": "Fixture User",
+              "id": "NORMALIZED",
+              "imageUrl": "NORMALIZED"
+            },
+            "System.ChangedDate": "2000-01-01T00:00:00Z",
+            "System.CreatedDate": "2000-01-01T00:00:00Z",
+            "System.Description": "Stable fixture body.",
+            "System.State": "Active",
+            "System.Tags": "goobers:ready",
+            "System.Title": "Stable fixture work item",
+            "System.WorkItemType": "Issue"
+          },
+          "id": 7,
+          "rev": 0,
+          "url": "https://dev.azure.com/fixture-org/fixture-project/_workitems/edit/7"
+        }
+      }
+    },
+    {
+      "name": "list-open-work-items-3",
+      "method": "GET",
+      "path": "/fixture-org/fixture-project/_apis/wit/workitemtypes/Issue/states?api-version=7.1",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-RateLimit-Remaining": "0"
+        },
+        "body": {
+          "value": [
+            {
+              "category": "InProgress",
+              "name": "Active"
+            },
+            {
+              "category": "Completed",
+              "name": "Closed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "get-work-item",
+      "method": "GET",
+      "path": "/fixture-org/fixture-project/_apis/wit/workitems/7?%24expand=Relations\u0026api-version=7.1",
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-RateLimit-Remaining": "0"
+        },
+        "body": {
+          "fields": {
+            "System.AssignedTo": {
+              "descriptor": "NORMALIZED",
+              "displayName": "Fixture User",
+              "id": "NORMALIZED",
+              "imageUrl": "NORMALIZED"
+            },
+            "System.ChangedDate": "2000-01-01T00:00:00Z",
+            "System.CreatedDate": "2000-01-01T00:00:00Z",
+            "System.Description": "Stable fixture body.",
+            "System.State": "Active",
+            "System.Tags": "goobers:ready",
+            "System.Title": "Stable fixture work item",
+            "System.WorkItemType": "Issue"
+          },
+          "id": 7,
+          "rev": 0,
+          "url": "https://dev.azure.com/fixture-org/fixture-project/_workitems/edit/7"
+        }
+      }
+    }
+  ]
+}

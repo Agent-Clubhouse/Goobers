@@ -7,9 +7,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 type schemaFixture struct {
@@ -38,6 +40,17 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 		"remediation-brief": {
 			schema: schemas.RemediationBrief,
 			value:  completeRemediationBrief(),
+		},
+		// journal-event is not in schemas.Envelope (it's schemas.Journal, a
+		// distinct wire contract — ARCHITECTURE.md §4), but the same
+		// producer/schema drift this guard exists to prevent applies to it
+		// exactly as it does to the four Envelope kinds: #2042 was a real
+		// instance of the #1700/#1704 class (DataSchema added to
+		// journal.Event with no matching schema property) that this
+		// completeness check did not yet cover.
+		"journal-event": {
+			schema: schemas.Journal["event"],
+			value:  completeJournalEvent(),
 		},
 	}
 
@@ -80,6 +93,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		TriggerRef:          "github:issue:1704",
 		Gaggle:              "goobers",
 		BranchNamespace:     "goobers/",
+		BaseBranch:          "main",
 		Goal:                "implement the claimed issue",
 		InstructionAddendum: "Preserve the public contract.",
 		Workspace:           "/workspace",
@@ -96,6 +110,10 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Name: "reference",
 			Path: "/workspace-reference",
 		}},
+		CheckoutCones: map[string][]string{
+			"":          {"services/web"},
+			"reference": {"docs"},
+		},
 		Item: &apiv1.BacklogItem{
 			ID:        "1704",
 			Provider:  apiv1.ProviderGitHub,
@@ -262,6 +280,78 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				Integrity: apiv1.IntegrityMaintainer,
 			}},
 		},
+	}
+}
+
+// completeJournalEvent populates every exported journal.Event field at once —
+// no single real event carries all of these together (e.g. Gate/Verdict and
+// Stage/Attempt never co-occur), the same non-realistic-but-structurally-
+// complete convention the other fixtures in this file already use. Its
+// purpose is solely to prove every Go field has a schema counterpart (#2042):
+// DataSchema is the field that fixture would have caught before it shipped.
+func completeJournalEvent() journal.Event {
+	return journal.Event{
+		Schema:              "goobers.dev/journal/event/v1",
+		Seq:                 1,
+		Type:                journal.EventSpanRecorded,
+		Branch:              1,
+		Time:                time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Stage:               "impl",
+		Attempt:             1,
+		AttemptClass:        journal.AttemptPolicy,
+		Actor:               "maintainer@example.com",
+		InstructionAddendum: "Reuse the existing parser.",
+		Rationale:           "The nondeterministic result was manually reviewed.",
+		Gate:                "review",
+		Verdict:             "needs-changes",
+		Target:              "implement",
+		Escalated:           true,
+		Status:              "success",
+		WorkflowVersion:     1,
+		WorkflowDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Outputs:             map[string]any{"ciStatus": "success"},
+		Artifacts: []journal.Ref{{
+			Path:      "artifacts/sha256/aa/plan.txt",
+			Digest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Size:      10,
+			MediaType: "text/plain",
+			Integrity: apiv1.IntegrityTrusted,
+		}},
+		Integrity:        apiv1.IntegrityTrusted,
+		MinimumIntegrity: apiv1.IntegrityMaintainer,
+		Ref: &journal.Ref{
+			Path:      "spans/sha256/bb/transcript.json",
+			Digest:    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			Size:      20,
+			MediaType: "application/json",
+			Integrity: apiv1.IntegrityDerived,
+		},
+		Name: "transcript",
+		// The field #2042 was filed over: a span.recorded event's schema
+		// identifier, populated on essentially every agentic run
+		// (internal/harness/executor.go defaults TranscriptSchema to
+		// telemetry.GenAIEventSchema whenever the adapter leaves it empty).
+		DataSchema:  "goobers.dev/telemetry/genai-event/v1",
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42"},
+		Error:       &journal.ErrorDetail{Code: "boom", Message: "detail"},
+		Redaction: &journal.RedactionInfo{
+			Target:    "artifacts/sha256/cc/leak.txt",
+			OldDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			NewDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			Reason:    "secret detected",
+		},
+		Runner:       map[string]any{"posture": "enforced"},
+		Parallel:     "fanout",
+		BranchName:   "east",
+		BranchStatus: journal.BranchSucceeded,
+		Completeness: []journal.BranchOutcome{{
+			Branch: 1, Name: "east", Status: journal.BranchSucceeded, Artifacts: 1,
+		}},
+		Workflow:  "implementation",
+		Gaggle:    "goobers",
+		RunID:     "run-123",
+		Reason:    "manual trigger",
+		SkipCount: 1,
 	}
 }
 

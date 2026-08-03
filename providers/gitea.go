@@ -171,6 +171,26 @@ func (p *GiteaProvider) Kind() ProviderKind {
 	return ProviderGitea
 }
 
+// Capabilities declares Gitea's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074). Gitea
+// is a community adapter (§2), not the blessed tier — it declares only
+// what it genuinely implements: no native merge queue (EnqueuePullRequest/
+// PollMergeQueueEntry return ErrGiteaMergeQueueUnsupported) and no repo-policy
+// read. Review threads are declared (CapPRReviewThreads) but degrade: Gitea's
+// REST review-comment payload does not expose thread resolution/outdatedness
+// (see ListPullRequestReviewThreads in gitea_review_threads.go).
+func (p *GiteaProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(
+		CapPRCompare,
+		CapPRReviewSubmit,
+		CapPRReviewThreads,
+		CapPRMerge, CapPRLandingDetectPolicy,
+		CapPRUpdateBranch, CapBranchDelete,
+		CapPRStatusPublish,
+		CapBacklogBlockers,
+	)
+}
+
 // ready surfaces the deferred constructor error (empty baseURL).
 func (p *GiteaProvider) ready() error {
 	return p.initErr
@@ -1018,26 +1038,176 @@ func (p *GiteaProvider) ListPullRequests(ctx context.Context, req ListPullReques
 				return nil, err
 			}
 		}
-		out = append(out, PullRequestSummary{
-			ID:         strconv.Itoa(pr.Number),
-			Number:     pr.Number,
-			URL:        pr.HTMLURL,
-			State:      pr.State,
-			Merged:     pr.Merged || pr.MergedAt != nil,
-			Head:       pr.Head.Ref,
-			Base:       pr.Base.Ref,
-			HeadSHA:    pr.Head.SHA,
-			BaseSHA:    pr.Base.SHA,
-			MergeSHA:   pr.MergeCommitSHA,
-			Draft:      isWIPTitle(pr.Title),
-			Labels:     giteaLabelNames(pr.Labels),
-			CheckState: checkState,
-			UpdatedAt:  pr.UpdatedAt,
-			Body:       pr.Body,
-			Integrity:  apiintegrity.Unapproved,
-		})
+		out = append(out, summarizeGiteaPull(pr, checkState))
 	}
 	return out, nil
+}
+
+// summarizeGiteaPull maps a decoded Gitea pull request to the provider-neutral
+// PullRequestSummary, pairing it with an already-resolved check state (empty
+// when the caller skips check-state resolution). The Gitea analog of
+// summarizePullRequest.
+func summarizeGiteaPull(pr giteaPull, checkState CheckState) PullRequestSummary {
+	return PullRequestSummary{
+		ID:         strconv.Itoa(pr.Number),
+		Number:     pr.Number,
+		URL:        pr.HTMLURL,
+		State:      pr.State,
+		Merged:     pr.Merged || pr.MergedAt != nil,
+		Head:       pr.Head.Ref,
+		Base:       pr.Base.Ref,
+		HeadSHA:    pr.Head.SHA,
+		BaseSHA:    pr.Base.SHA,
+		MergeSHA:   pr.MergeCommitSHA,
+		Draft:      isWIPTitle(pr.Title),
+		Labels:     giteaLabelNames(pr.Labels),
+		CheckState: checkState,
+		UpdatedAt:  pr.UpdatedAt,
+		Body:       pr.Body,
+		Integrity:  apiintegrity.Unapproved,
+	}
+}
+
+// GetPullRequest returns one pull request's current state and metadata without
+// resolving reviews, comments, or check runs.
+func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pullID string) (PullRequestSummary, error) {
+	if err := p.ready(); err != nil {
+		return PullRequestSummary{}, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return PullRequestSummary{}, err
+	}
+	if pullID == "" {
+		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+	}
+	pr, err := p.getPull(ctx, repo, pullID)
+	if err != nil {
+		return PullRequestSummary{}, err
+	}
+	return summarizeGiteaPull(pr, ""), nil
+}
+
+// ListRecentlyClosedPullRequests lists pull requests closed or merged since
+// updatedSince. It is the bounded terminal-PR complement to ListPullRequests
+// used when a workflow needs current state for recently relevant siblings.
+// Gitea's pulls listing is paged (page/limit) and sorted most-recently-updated
+// first (sort=recentupdate), so the scan stops at the first item updated before
+// the window. Gitea has no Check Runs, so check state is never resolved here.
+func (p *GiteaProvider) ListRecentlyClosedPullRequests(ctx context.Context, req ListPullRequestsRequest, updatedSince time.Time) ([]PullRequestSummary, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return nil, err
+	}
+	if updatedSince.IsZero() {
+		return nil, fmt.Errorf("updatedSince is required")
+	}
+	out := make([]PullRequestSummary, 0)
+	const limit = 50
+	for page := 1; ; page++ {
+		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+		if err != nil {
+			return nil, err
+		}
+		values := url.Values{
+			"state": []string{"closed"},
+			"sort":  []string{"recentupdate"},
+			"page":  []string{strconv.Itoa(page)},
+			"limit": []string{strconv.Itoa(limit)},
+		}
+		if req.Base != "" {
+			values.Set("base", stripOwnerPrefix(req.Base))
+		}
+		endpoint, err = addQuery(endpoint, values)
+		if err != nil {
+			return nil, err
+		}
+		var pageOut []giteaPull
+		if err := p.do(ctx, http.MethodGet, endpoint, nil, &pageOut); err != nil {
+			return nil, err
+		}
+		stop := false
+		for _, pr := range pageOut {
+			if pr.UpdatedAt.Before(updatedSince) {
+				stop = true
+				break
+			}
+			closedRecently := pr.ClosedAt != nil && !pr.ClosedAt.Before(updatedSince)
+			mergedRecently := pr.MergedAt != nil && !pr.MergedAt.Before(updatedSince)
+			if !closedRecently && !mergedRecently {
+				continue
+			}
+			if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
+				continue
+			}
+			out = append(out, summarizeGiteaPull(pr, ""))
+		}
+		if stop || len(pageOut) < limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// CIFailures returns the failing checks for ref as CI failure evidence.
+//
+// Documented degradation: Gitea exposes only the legacy commit-status model (no
+// Check Runs), so there are no annotations to fetch — Annotations is always the
+// empty (non-nil) slice, mirroring what GitHub's own legacy statuses produce.
+// gather-ci-failures degrades to name/conclusion/URL/summary evidence only,
+// which the brief schema fully permits.
+func (p *GiteaProvider) CIFailures(ctx context.Context, repo RepositoryRef, ref string) ([]CIFailureDetail, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	_, checks, err := p.combinedCheckState(ctx, repo, ref)
+	if err != nil {
+		return nil, err
+	}
+	failures := make([]CIFailureDetail, 0)
+	for _, check := range checks {
+		if check.State != CheckStateFailing {
+			continue
+		}
+		failures = append(failures, CIFailureDetail{
+			CheckDetail: check,
+			Annotations: []CheckAnnotation{},
+			Integrity:   apiintegrity.Unapproved,
+		})
+	}
+	return failures, nil
+}
+
+// BranchTipSHA resolves the current commit SHA at the tip of branch via a direct
+// branch read. It uses p.do (not GetBranch), so a missing branch surfaces as an
+// error rather than GetBranch's found=false swallow — matching GitHub, where the
+// merge-escalated self-heal check needs a deleted base branch to fail loudly.
+func (p *GiteaProvider) BranchTipSHA(ctx context.Context, repo RepositoryRef, branch string) (string, error) {
+	if err := p.ready(); err != nil {
+		return "", err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return "", fmt.Errorf("branch name is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "branches", branch)
+	if err != nil {
+		return "", err
+	}
+	var b giteaBranch
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &b); err != nil {
+		return "", err
+	}
+	return b.Commit.ID, nil
 }
 
 // PullRequestFiles lists the files a pull request touches. Gitea returns no
@@ -1635,6 +1805,7 @@ type giteaPull struct {
 	HTMLURL        string        `json:"html_url"`
 	Merged         bool          `json:"merged"`
 	MergedAt       *time.Time    `json:"merged_at"`
+	ClosedAt       *time.Time    `json:"closed_at"`
 	Mergeable      *bool         `json:"mergeable"`
 	MergeCommitSHA string        `json:"merge_commit_sha"`
 	Labels         []giteaLabel  `json:"labels"`

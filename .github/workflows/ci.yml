@@ -27,6 +27,12 @@ name: CI
 # platform slices, the Windows gate, the vulnerability scan, and the journal
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
+#
+# Pull requests and merge groups run that complete matrix. A push to main has
+# already passed the merge-group gate, so it runs only `checks` against the
+# exact landed SHA and `unit-macos`, which publishes the canonical main-branch
+# timing and coverage artifacts used for trend comparisons. Keeping this
+# post-merge lane small avoids paying for the full matrix twice.
 
 on:
   push:
@@ -55,6 +61,7 @@ jobs:
   # per-OS step of the old monolith; nothing about it is OS-specific).
   deadcode:
     name: dead-code analysis
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -125,16 +132,23 @@ jobs:
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
 
-  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, both on cheap
+  # golangci-lint (staticcheck/govet/revive/...) per target GOOS, all on cheap
   # Linux runners. golangci-lint honours GOOS, so it sees each platform's
-  # build-tagged sources (the darwin-only files internal/{sandbox,executor}) are
-  # linted under GOOS=darwin from Linux — no macOS runner required.
+  # build-tagged sources (the darwin-only files internal/{sandbox,executor},
+  # the windows-only files internal/{winsvc,platform/proc,platform/lock,
+  # platform/durability}, safeopen_windows.go, test/windowsvalidate, etc.) are
+  # linted under GOOS=darwin/windows from Linux — no macOS or Windows runner
+  # required. #2016: before this leg existed, every windows-only file was
+  # staticcheck/revive-exempt (build+vet only), which is exactly the class of
+  # gap the repo has already been bitten by once (SA4032 via build-tag-dead
+  # branches).
   lint:
     name: lint (${{ matrix.goos }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin]
+        goos: [linux, darwin, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -193,6 +207,7 @@ jobs:
   # runtime is exercised by the unit/shipped/sandbox macOS jobs.
   darwin-build:
     name: darwin gate (build · vet)
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -236,6 +251,7 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -374,6 +390,7 @@ jobs:
   # shipped-workflows step and the separate non-race shipped-workflows job.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -415,6 +432,7 @@ jobs:
 
   integration:
     name: declared-dependency integration
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -425,6 +443,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
 
       - name: Download modules
         # Explicit bash: the Windows runner defaults to PowerShell, which
@@ -441,18 +466,21 @@ jobs:
 
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
-      - name: Provision declared dependencies (bash, bwrap, dirname, head, mkdir, sh, sleep, yes)
+      - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash
+          sudo apt-get install --yes bash bubblewrap coreutils dash maven
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Run strict integration tier
+        env:
+          GOOBERS_JAVA_E2E: "1"
         run: make test-integration-strict
 
   conformance:
     name: journal conformance
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -491,8 +519,20 @@ jobs:
   # fixable Windows regression — never as an expected-red. The focused tests
   # exercise platform seams, then the node validation drives the real foreground
   # daemon and canonical fake-harness implementation workflow end to end.
+  #
+  # #2048: that "never an expected-red" contract briefly went false — two
+  # focused tests (proc's attach/resume test, dashboard's port-increment
+  # test) carried fixed timeouts/ephemeral-port assumptions too tight for a
+  # loaded Windows runner's real process-spawn latency and Hyper-V/WinNAT's
+  # dynamic-port-range exclusions, each evicting a merge_group entry. Both
+  # were root-caused and fixed at the source (a generous, still-deterministic
+  # wait deadline; a fixed low test port outside the dynamic range) rather
+  # than quarantined — #664's quarantine machinery doesn't exist in this repo
+  # yet, and per its own scope note explicitly excludes required-gate jobs
+  # like this one regardless. The contract stands restored, not weakened.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
+    if: ${{ github.event_name != 'push' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -560,6 +600,24 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
+      # The read model and its sibling stores open SQLite files BY PATH, which
+      # is the single operation whose behaviour differs most between Windows and
+      # POSIX — and none of these packages were covered here until #1997.
+      #
+      # That bug was `file:` + url.URL{Path: "C:/dir/intake.db"}.String(), which
+      # yields `file:./C:/...` because url.URL prefixes `./` to any first
+      # segment containing a colon. SQLite answered SQLITE_CANTOPEN, the daemon
+      # logged a warning, and the intake store was silently unavailable on every
+      # Windows install. `go build` and `go vet` cannot see it: the expression is
+      # valid Go, and the fault only appears when something CONSTRUCTS a URI from
+      # a Windows path at runtime.
+      #
+      # POSIX paths begin with `/`, so the first segment is empty and the bug is
+      # unreachable on Linux and macOS — which is exactly why a full green suite
+      # on those platforms proved nothing about this.
+      - name: Windows read model and stores
+        run: go test ./internal/readmodel/... ./internal/readservice
+
       - name: Windows worktree and event stream
         env:
           GIT_CONFIG_COUNT: "2"
@@ -567,7 +625,7 @@ jobs:
           GIT_CONFIG_VALUE_0: "false"
           GIT_CONFIG_KEY_1: core.safecrlf
           GIT_CONFIG_VALUE_1: "false"
-        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit|TestSyncObservedFileDoesNotBlockAtomicReplacement'
+        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit'
 
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
@@ -588,6 +646,7 @@ jobs:
 
   vulnerability-scan:
     name: Go vulnerability scan
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -604,8 +663,14 @@ jobs:
 
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
-    if: ${{ always() }}
-    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance]
+    if: ${{ always() && github.event_name != 'push' }}
+    # integration, sandbox, and linux-validation joined this list in #2019:
+    # all three ran on every PR already (full runner cost) but a red result
+    # never blocked merge (zero enforcement) until now — the worst of both
+    # worlds the issue documented, and ten recent runs (40 job instances)
+    # showed no flakiness in any of the three that would argue against
+    # requiring them.
+    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -620,6 +685,9 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
           VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          SANDBOX_RESULT: ${{ needs.sandbox.result }}
+          LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
         run: |
           fail=0
           check() {
@@ -629,7 +697,7 @@ jobs:
             fi
           }
           check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
-          check "lint (golangci-lint, linux+darwin)" "$LINT_RESULT"
+          check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit behavioral suite (macos)"      "$UNIT_MACOS_RESULT"
@@ -638,10 +706,14 @@ jobs:
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
           check "journal conformance"                "$CONFORMANCE_RESULT"
+          check "declared-dependency integration"    "$INTEGRATION_RESULT"
+          check "sandbox confinement"                "$SANDBOX_RESULT"
+          check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
           exit "$fail"
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -676,9 +748,12 @@ jobs:
   # Linux node validation (#636): prove the shipped binary end to end on Linux —
   # an offline demo run to completion plus the full daemon start/status/stop
   # lifecycle under a real SIGTERM — and cross-compile the Windows supervision
-  # handler (#639). Deterministic and offline, so it is a reliable required gate.
+  # handler (#639). Deterministic and offline; required-ci's needs (#2019)
+  # actually makes it a required gate — this comment previously claimed that
+  # while the job was still excluded from required-ci's needs list.
   linux-validation:
     name: linux node validation (#636/#639)
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

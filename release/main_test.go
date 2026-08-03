@@ -119,6 +119,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"docs/guides/quickstart-linux.md",
 		"docs/man/goobers.1",
 		"onboarding/manifest.json",
+		"onboarding/templates/canonical/README.md",
 		"onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml",
 		"onboarding/templates/quickstart@v1/gaggles/example/workflows/quickstart.yaml",
 		"onboarding/samples/getting-started-task-api@1.0.0/sample.json",
@@ -144,6 +145,7 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
+		"Linux or macOS with mock providers",
 		"The release installer already ran guided setup at the requested instance path",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
@@ -152,6 +154,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"replace `goobers-v1.2.3`\nbelow with `./goobers`",
 		"goobers-v1.2.3 init --template=quickstart ./tutorial-instance",
 		"goobers-v1.2.3 run " + instance.GuidedWorkflowImplementation + " ./my-instance",
+		"[`config-examples/`](onboarding/templates/canonical/README.md)",
 	} {
 		if !strings.Contains(string(readme), want) {
 			t.Errorf("README.md missing installed onboarding command %q:\n%s", want, readme)
@@ -189,12 +192,17 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
+		"goobers-v1.2.3 init --demo ./demo-instance",
+		"goobers-v1.2.3 run demo ./demo-instance",
+		"goobers-v1.2.3 trace <run-id> ./demo-instance",
 		"goobers-v1.2.3 onboarding stub-sample",
 		"--destination ./getting-started-task-api",
 		"--json",
 		"embeds the release-matched sample",
 		"--work-tracking owner/repo",
 		"GOOBERS_GITHUB_ISSUES_TOKEN",
+		"[`config-examples` reference layout](../../onboarding/templates/canonical/README.md)",
+		"[`implementation` workflow](../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml)",
 		"requested instance path",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
@@ -226,11 +234,12 @@ func TestRunEndToEnd(t *testing.T) {
 		"bundled quickstart direct onboarding",
 		string(quickstart),
 		"goobers-v1.2.3 --version",
+		"goobers-v1.2.3 init --demo ./demo-instance",
+		"goobers-v1.2.3 onboarding stub-sample",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
 		"goobers-v1.2.3 init --guided ./my-instance",
-		"goobers-v1.2.3 onboarding stub-sample",
 		"goobers-v1.2.3 validate ./my-instance",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)
@@ -243,7 +252,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"## 1. Install runtime prerequisites",
 		"source-only Linux validation harness is not included in release archives",
 		"## 2. Confirm the installed binary",
-		"goobers init ./my-instance",
+		"[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root)",
 		"every tool used by your configured workflows",
 		"bundled [Daemon supervision]",
 	} {
@@ -261,6 +270,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"../../CONTRIBUTING.md",
 		"../../packaging/systemd/goobers.service",
 		".github/workflows/ci.yml",
+		"goobers init ./my-instance",
 		"`make ci`",
 		"`golangci-lint`",
 	} {

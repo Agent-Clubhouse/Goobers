@@ -35,9 +35,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
-	_ "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
+	sqlite "modernc.org/sqlite" // pure-Go driver, matching the rest of the tree
 )
 
 // FileName is read.db's name within an instance root.
@@ -66,6 +67,11 @@ const readerDSNParams = "?_pragma=busy_timeout(5000)&mode=ro"
 
 // Store is an open handle to read.db.
 type Store struct {
+	// measurement supplies the telemetry-derived flags the journal cannot
+	// provide (#1782). Nil is a supported configuration: a topology with no
+	// telemetry projects everything except the population flags.
+	measurement MeasurementSource
+
 	// writer is the sole writable handle. §5.2/§6.1: the projector owns the only
 	// write path to projected facts, and one connection is what keeps the
 	// first-open WAL switch and migrations single-threaded.
@@ -76,11 +82,20 @@ type Store struct {
 	reader *sql.DB
 	path   string
 
+	// handles guards writer and reader, which Close mutates and every query
+	// reads. A read lock on the query path is uncontended in the common case and
+	// is the difference between a clean shutdown and a data race.
+	handles sync.RWMutex
+	closed  bool
+
 	// clock stamps the one change row that cannot be derived from a journal:
 	// run.removed, whose whole point is that the journal is gone. Injectable so
 	// a test can assert removal ordering without sleeping.
 	clock func() time.Time
 }
+
+// ErrClosed is returned when an operation starts after the store is closed.
+var ErrClosed = errors.New("readmodel: store is closed")
 
 // now returns the store's clock, defaulting to the wall clock.
 func (s *Store) now() time.Time {
@@ -119,38 +134,104 @@ func Open(path string) (*Store, error) {
 	writer.SetMaxOpenConns(1)
 
 	store := &Store{writer: writer, path: path}
-	if err := store.migrate(context.Background()); err != nil {
+	if err := store.migrateWithBusyRetry(context.Background()); err != nil {
 		_ = writer.Close()
 		return nil, err
 	}
 	// The reader pool opens only after migrations: a read-only handle cannot
 	// create the database, switch it to WAL, or run a migration.
-	store.reader = openReaderPool(path)
+	store.reader = resolveReadHandle(writer, openReaderPool(path))
 	return store, nil
 }
 
-// Close releases both handles, reader first so no query is in flight against a
-// database whose writer is going away.
+// migrateWithBusyRetry is a thin backstop for SQLITE_BUSY_SNAPSHOT (issue
+// #2032) — the one case busy_timeout's C-level handler cannot wait out (a
+// stale read snapshot can only be abandoned and retaken, not blocked on),
+// same rationale and shape as internal/telemetry/rollup's migrate/#1128 fix.
+// Should rarely, if ever, be reached: migrateOnce's write lock is acquired
+// at BEGIN, so the far more common case — two openers contending for that
+// lock — is a straight acquisition busy_timeout already waits on cleanly.
+func (s *Store) migrateWithBusyRetry(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		if err = s.migrateOnce(ctx); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	return err
+}
+
+// busyRetryMaxAttempts mirrors internal/telemetry/rollup's constant of the
+// same name and rationale — sized with real headroom, not the tightest value
+// that happened to pass a few runs.
+const busyRetryMaxAttempts = 12
+
+// isSQLiteBusy reports whether err (or a wrapped cause) is SQLITE_BUSY (5) or
+// SQLITE_LOCKED (6). Mirrors internal/telemetry/rollup's helper of the same
+// name: modernc.org/sqlite's Error.Code() returns the EXTENDED result code
+// (e.g. 517 = SQLITE_BUSY_SNAPSHOT = 5 | (2<<8)), which must be masked with
+// &0xFF before comparing against the primary code.
+func isSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xFF
+	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
+}
+
+// Close waits for leased operations, then releases both handles.
 func (s *Store) Close() error {
+	s.handles.Lock()
+	defer s.handles.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.closeHandles()
+}
+
+// readHandle leases the resolved read handle for the full SQL operation.
+func (s *Store) readHandle() (*sql.DB, func(), error) {
+	s.handles.RLock()
+	if s.closed {
+		s.handles.RUnlock()
+		return nil, nil, ErrClosed
+	}
+	return s.reader, s.handles.RUnlock, nil
+}
+
+// writeHandle leases the writer for the full SQL operation.
+func (s *Store) writeHandle() (*sql.DB, func(), error) {
+	s.handles.RLock()
+	if s.closed {
+		s.handles.RUnlock()
+		return nil, nil, ErrClosed
+	}
+	return s.writer, s.handles.RUnlock, nil
+}
+
+// closeHandles closes both handles while the caller holds handles exclusively.
+func (s *Store) closeHandles() error {
 	var readerErr error
-	if s.reader != nil {
+	if s.reader != nil && s.reader != s.writer {
 		readerErr = s.reader.Close()
-		s.reader = nil
+	}
+	if s.writer == nil {
+		return readerErr
 	}
 	return errors.Join(readerErr, s.writer.Close())
 }
 
-// readDB returns the handle queries should use.
-func (s *Store) readDB() *sql.DB {
-	if s.reader != nil {
-		return s.reader
-	}
-	return s.writer
-}
-
 // State returns the store's projection state.
 func (s *Store) State(ctx context.Context) (State, error) {
-	row := s.readDB().QueryRowContext(ctx, `
+	db, release, err := s.readHandle()
+	if err != nil {
+		return State{}, err
+	}
+	defer release()
+	row := db.QueryRowContext(ctx, `
 		SELECT schema_version, epoch, min_change_seq, projection_floor, last_sweep_at, built_at
 		FROM projection_state WHERE id = 1`)
 	var (
@@ -160,7 +241,6 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	if err := row.Scan(&st.SchemaVersion, &st.Epoch, &st.MinChangeSeq, &floor, &sweep, &built); err != nil {
 		return State{}, fmt.Errorf("readmodel: read projection state: %w", err)
 	}
-	var err error
 	if st.ProjectionFloor, err = optionalTime(floor); err != nil {
 		return State{}, err
 	}
@@ -175,9 +255,32 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	return st, nil
 }
 
-// migrate applies pending forward migrations and seeds projection_state.
-func (s *Store) migrate(ctx context.Context) error {
-	version, err := s.schemaVersion(ctx)
+// migrateOnce reads the schema version and applies every pending migration
+// inside ONE immediate-mode write transaction (issue #2032, mirroring
+// internal/telemetry/rollup's migrateOnce/#1128 fix).
+//
+// This is not just symmetry with rollup — TestConcurrentFirstOpenSucceeds
+// caught a real bug in the prior per-migration-transaction shape: several
+// migrations are `ALTER TABLE ... ADD COLUMN`, which is NOT idempotent like
+// this store's `CREATE TABLE/INDEX IF NOT EXISTS` statements. Reading the
+// version in its own autocommit statement (the old schemaVersion) let two
+// concurrent first-openers both read version=0, then each independently
+// start applying migrations from scratch — the second one's ALTER TABLE
+// crashing on "duplicate column name" once it reached a migration the first
+// opener had already committed. Folding the read into the SAME transaction
+// as every migration it gates means only one opener can ever observe a given
+// version and decide what to apply from it; a second opener blocked on the
+// immediate write lock re-reads the version fresh, inside its own
+// transaction, once unblocked — by which point migrations already applied
+// are no longer pending.
+func (s *Store) migrateOnce(ctx context.Context) error {
+	tx, err := s.writer.BeginTx(ctx, nil) // BEGIN IMMEDIATE via _txlock=immediate (dsnParams)
+	if err != nil {
+		return fmt.Errorf("readmodel: begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	version, err := schemaVersionTx(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -189,29 +292,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			version, len(migrations))
 	}
 	for i := version; i < len(migrations); i++ {
-		tx, err := s.writer.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("readmodel: begin migration %d: %w", i+1, err)
-		}
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("readmodel: apply migration %d: %w", i+1, err)
 		}
 		if err := seedState(ctx, tx, i+1); err != nil {
-			_ = tx.Rollback()
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("readmodel: commit migration %d: %w", i+1, err)
-		}
 	}
-	return nil
+	return tx.Commit()
 }
 
-// schemaVersion reports how many migrations have run, or 0 for a fresh store.
-func (s *Store) schemaVersion(ctx context.Context) (int, error) {
+// schemaVersionTx reads the recorded schema version within the migration
+// transaction (so the read shares the write lock migrateOnce already holds —
+// see migrateOnce's doc for why a separate autocommit read was the bug),
+// or 0 for a fresh store whose projection_state table does not exist yet.
+func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
 	var version int
-	err := s.writer.QueryRowContext(ctx,
+	err := tx.QueryRowContext(ctx,
 		`SELECT schema_version FROM projection_state WHERE id = 1`).Scan(&version)
 	switch {
 	case err == nil:
@@ -322,6 +419,13 @@ func openReaderPool(path string) *sql.DB {
 		return nil
 	}
 	return readDB
+}
+
+func resolveReadHandle(writer, reader *sql.DB) *sql.DB {
+	if reader != nil {
+		return reader
+	}
+	return writer
 }
 
 // readerPoolSize bounds the read pool (§5.2: NumCPU), with a floor so a

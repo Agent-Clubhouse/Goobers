@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { DaemonClient } from "../api/types";
 import { FactoryFloor } from "../components/FactoryFloor";
 import { FactoryInspector } from "../components/FactoryInspector";
 import { FactoryPlant } from "../components/FactoryPlant";
+import { FactoryViewport } from "../components/FactoryViewport";
 import { useFactoryFloor, type FactoryFloorData } from "../factoryData";
+import { CLASSIC_PLANT_HEIGHT, CLASSIC_PLANT_WIDTH } from "../factoryClassicPlant";
 import {
   DEFAULT_FACTORY_LAYOUT,
   FACTORY_LAYOUTS,
@@ -51,6 +53,8 @@ export function FactoryPage({
   const query = useFactoryFloor(client, requested);
   const reducedMotion = usePrefersReducedMotion();
   const [selection, setSelection] = useState<FactorySelection>(overviewSelection);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const inspectorToggleRef = useRef<HTMLButtonElement>(null);
   const transitionModel =
     query.state.status === "ready" || query.state.status === "stale"
       ? query.state.data.model
@@ -93,79 +97,121 @@ export function FactoryPage({
     <div className="factory-page">
       <FactoryHeader
         data={data}
+        inspectorOpen={inspectorOpen}
         layout={layout}
         lens={lens}
         navigate={navigate}
+        onToggleInspector={() => setInspectorOpen((open) => !open)}
         standalone={standalone}
+        toggleRef={inspectorToggleRef}
       />
 
-      {error && (
-        <div className="workflow-stale-error" role="alert">
-          <span>
-            <strong>Floor refresh failed</strong>
-            <small>Showing the last confirmed plant state.</small>
-          </span>
-          <button className="text-button" onClick={query.retry} type="button">
-            Try again
-          </button>
-        </div>
-      )}
+      <div className="factory-notices">
+        {error && (
+          <div className="workflow-stale-error" role="alert">
+            <span>
+              <strong>Floor refresh failed</strong>
+              <small>Showing the last confirmed plant state.</small>
+            </span>
+            <button className="text-button" onClick={query.retry} type="button">
+              Try again
+            </button>
+          </div>
+        )}
 
-      {(data.droppedScope.gaggle || data.droppedScope.workflow) && (
-        <p className="factory-scope-notice" role="status">
-          {data.droppedScope.gaggle
-            ? `Gaggle "${data.droppedScope.gaggle}" is not configured on this instance. `
-            : ""}
-          {data.droppedScope.workflow
-            ? `Workflow "${data.droppedScope.workflow}" is not configured in the selected scope. `
-            : ""}
-          Showing the floor without it.
-        </p>
-      )}
+        {(data.droppedScope.gaggle || data.droppedScope.workflow) && (
+          <p className="factory-scope-notice" role="status">
+            {data.droppedScope.gaggle
+              ? `Gaggle "${data.droppedScope.gaggle}" is not configured on this instance. `
+              : ""}
+            {data.droppedScope.workflow
+              ? `Workflow "${data.droppedScope.workflow}" is not configured in the selected scope. `
+              : ""}
+            Showing the floor without it.
+          </p>
+        )}
+      </div>
 
       <FactoryStatusStrip model={data.model} />
 
       <div className="factory-layout">
         <div className="factory-stage-area">
+          <div className="factory-stage-notices">
+            {data.model.emptyReason === "no-active-runs" && (
+              <p className="factory-idle-note" role="status">
+                Plant ready. No active runs are on the floor.
+              </p>
+            )}
+          </div>
           {data.model.emptyReason === "no-gaggles" ||
           data.model.emptyReason === "no-workflows" ? (
             <FactoryEmptyState data={data} standalone={standalone} />
           ) : (
-            <>
-              {data.model.emptyReason === "no-active-runs" && (
-                <p className="factory-idle-note" role="status">
-                  Plant ready. No active runs are on the floor.
-                </p>
-              )}
-              {layout === "plant" ? (
-                <FactoryPlant
-                  animateTransitions={animateTransitions}
-                  lens={lens}
-                  model={data.model}
-                  onSelect={setSelection}
-                  reducedMotion={reducedMotion}
-                  selection={selection}
-                />
+            layout === "plant" ? (
+                <FactoryViewport
+                  key="plant"
+                  label="Factory plant"
+                  worldHeight={CLASSIC_PLANT_HEIGHT}
+                  worldWidth={CLASSIC_PLANT_WIDTH}
+                >
+                  <FactoryPlant
+                    animateTransitions={animateTransitions}
+                    lens={lens}
+                    model={data.model}
+                    onSelect={(next) => {
+                      setSelection(next);
+                      setInspectorOpen(true);
+                    }}
+                    reducedMotion={reducedMotion}
+                    selection={selection}
+                  />
+                </FactoryViewport>
               ) : (
-                <FactoryFloor
-                  animateTransitions={animateTransitions}
-                  lens={lens}
-                  model={data.model}
-                  onSelect={setSelection}
-                  reducedMotion={reducedMotion}
-                  selection={selection}
-                />
-              )}
-            </>
+                <FactoryViewport
+                  key="lines"
+                  label="Factory lines"
+                  worldHeight={data.model.height}
+                  worldWidth={data.model.width}
+                >
+                  <FactoryFloor
+                    animateTransitions={animateTransitions}
+                    lens={lens}
+                    model={data.model}
+                    onSelect={(next) => {
+                      setSelection(next);
+                      setInspectorOpen(true);
+                    }}
+                    reducedMotion={reducedMotion}
+                    selection={selection}
+                  />
+                </FactoryViewport>
+              )
           )}
           <FloorLegend layout={layout} model={data.model} stale={stale} />
         </div>
-        <FactoryInspector
-          data={data}
-          freshness={freshnessFor(stale, Boolean(error))}
-          onSelect={setSelection}
-          selection={selection}
-        />
+        <div
+          aria-hidden={!inspectorOpen}
+          className={inspectorOpen ? "factory-inspector-drawer is-open" : "factory-inspector-drawer"}
+          inert={!inspectorOpen}
+        >
+          <button
+            aria-label="Close factory inspector"
+            className="factory-inspector-close"
+            onClick={() => {
+              setInspectorOpen(false);
+              window.requestAnimationFrame(() => inspectorToggleRef.current?.focus());
+            }}
+            type="button"
+          >
+            ×
+          </button>
+          <FactoryInspector
+            data={data}
+            freshness={freshnessFor(stale, Boolean(error))}
+            onSelect={setSelection}
+            selection={selection}
+          />
+        </div>
       </div>
     </div>
   );
@@ -262,16 +308,22 @@ function freshnessFor(
 
 function FactoryHeader({
   data,
+  inspectorOpen,
   layout,
   lens,
   navigate,
+  onToggleInspector,
   standalone,
+  toggleRef,
 }: {
   data: FactoryFloorData;
+  inspectorOpen: boolean;
   layout: FactoryLayout;
   lens: FactoryLens;
   navigate: Navigate;
+  onToggleInspector: () => void;
   standalone: boolean;
+  toggleRef: RefObject<HTMLButtonElement | null>;
 }) {
   const gaggles = data.inventories.map((inventory) => inventory.gaggle);
   const workflows = data.inventories
@@ -296,11 +348,11 @@ function FactoryHeader({
     });
 
   return (
-    <header className="page-heading page-heading-row factory-heading">
-      <div>
+    <header className="factory-heading">
+      <div className="factory-heading-title">
         <p className="page-kicker">Operations floor</p>
         <h1>Factory</h1>
-        <p>
+        <p className="sr-only">
           {standalone
             ? "Every configured line, its machines, and the work standing on them, read from this instance."
             : "Every configured line, its machines, and the work standing on them, read live from the daemon."}
@@ -375,6 +427,15 @@ function FactoryHeader({
               </button>
             ))}
           </div>
+          <button
+            aria-pressed={inspectorOpen}
+            className="factory-inspector-toggle"
+            onClick={onToggleInspector}
+            ref={toggleRef}
+            type="button"
+          >
+            Inspector
+          </button>
         </div>
         <div className="factory-segmented-control">
           <span className="factory-control-caption">Lens</span>

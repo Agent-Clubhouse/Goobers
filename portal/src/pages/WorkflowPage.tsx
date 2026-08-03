@@ -201,6 +201,7 @@ function WorkflowDetailWorkspace({
 }
 
 function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
+  const [view, setView] = useState<"fields" | "yaml">("fields");
   const actor =
     stage.kind === "gate"
       ? stage.evaluator
@@ -227,18 +228,96 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
         </div>
       </div>
       <p className="inspector-description">{stage.goal || "No stage goal declared."}</p>
-      <dl className="property-list">
-        <div>
-          <dt>{stage.kind === "gate" ? "Evaluator" : "Owner"}</dt>
-          <dd>{actor}</dd>
-        </div>
-        <div>
-          <dt>Capabilities</dt>
-          <dd>
-            {stage.capabilities.length > 0 ? stage.capabilities.join(", ") : "None declared"}
-          </dd>
-        </div>
-      </dl>
+      <div className="definition-view-toggle" role="tablist" aria-label="Stage config view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "fields"}
+          className={view === "fields" ? "active" : undefined}
+          onClick={() => setView("fields")}
+        >
+          Fields
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "yaml"}
+          className={view === "yaml" ? "active" : undefined}
+          onClick={() => setView("yaml")}
+        >
+          Raw YAML
+        </button>
+      </div>
+      {view === "fields" ? (
+        <dl className="property-list">
+          <div>
+            <dt>{stage.kind === "gate" ? "Evaluator" : "Owner"}</dt>
+            <dd>{actor}</dd>
+          </div>
+          <div>
+            <dt>Capabilities</dt>
+            <dd>
+              {stage.capabilities.length > 0 ? stage.capabilities.join(", ") : "None declared"}
+            </dd>
+          </div>
+          <div>
+            <dt>Timeout</dt>
+            <dd>{stage.timeoutSeconds ? `${stage.timeoutSeconds}s` : "Default"}</dd>
+          </div>
+          <div>
+            <dt>Retry</dt>
+            <dd>
+              {stage.retry
+                ? `${stage.retry.maxAttempts} attempt${stage.retry.maxAttempts === 1 ? "" : "s"}, ${stage.retry.backoffSeconds ?? 0}s backoff`
+                : "No retry declared"}
+            </dd>
+          </div>
+          {stage.kind !== "gate" && (
+            <>
+              <div>
+                <dt>Policy actions</dt>
+                <dd>
+                  {stage.policyActions && stage.policyActions.length > 0
+                    ? stage.policyActions.join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>Required runner capabilities</dt>
+                <dd>
+                  {stage.requiredCapabilities && stage.requiredCapabilities.length > 0
+                    ? stage.requiredCapabilities.join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>On timeout</dt>
+                <dd>{stage.onTimeout || "fail (default)"}</dd>
+              </div>
+            </>
+          )}
+          {stage.kind === "gate" && (
+            <>
+              <div>
+                <dt>Branches</dt>
+                <dd>
+                  {stage.branches && Object.keys(stage.branches).length > 0
+                    ? Object.entries(stage.branches)
+                        .map(([outcome, target]) => `${outcome} → ${target || "(terminal)"}`)
+                        .join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>Max repasses</dt>
+                <dd>{stage.maxRepasses || "Inherited"}</dd>
+              </div>
+            </>
+          )}
+        </dl>
+      ) : (
+        <pre className="code-block">{stage.rawYaml || "No YAML available."}</pre>
+      )}
     </Inspector>
   );
 }
@@ -308,5 +387,7 @@ function stageKindLabel(stage: StageDefinition): string {
       return "Deterministic task";
     case "gate":
       return "Gate";
+    case "parallel":
+      return "Parallel";
   }
 }

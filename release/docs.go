@@ -8,44 +8,45 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
-	readmeSourceInstall = "Install an exact tagged release on Linux or macOS and let its guided flow create\n" +
-		"and validate a release-pinned instance:\n\n" +
-		"```sh\n" +
-		"VERSION=v1.2.3 # replace with the exact release to install\n" +
-		"/bin/sh -c \"$(curl -fsSL \"https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh\")\" \\\n" +
-		"  -- \"$VERSION\" ./my-instance\n\n"
-	quickstartSourceBuild = "## 1. Build the binary\n\n```sh\n" +
+	readmeSourceInstall = "Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered\n" +
+		"first-run path: a credential-free local demo, a disposable GitHub-backed run,\n" +
+		"and then a regular instance using the\n" +
+		"[production-oriented configuration examples](config-examples/README.md).\n"
+	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
-	quickstartSourceInit = "## 2. `init` — scaffold an instance root\n\n" +
+	quickstartSourceInit = "## 3. `init` — scaffold a regular instance root\n\n" +
 		"```sh\n" +
 		"bin/goobers init ./my-instance\n" +
 		"```\n\n" +
 		"Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one\n" +
-		"implement-only workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
+		"`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
 		"`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each\n" +
-		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run — existing\n" +
-		"pieces are left untouched.\n\n"
-	quickstartInstalledInit = "## 2. Use or create a guided instance\n\n" +
+		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —\n" +
+		"existing pieces are left untouched.\n\n"
+	quickstartInstalledInit = "## 3. Use or create a guided instance\n\n" +
 		"The release installer already ran guided setup at the requested instance path\n" +
 		"(default `./goobers-instance`). If you used the installer, do not initialize that\n" +
 		"instance again. In the commands below, replace `./my-instance` with that same path,\n" +
 		"quoting it if needed.\n\n" +
 		"If you already followed the bundled README and created `./my-instance`, continue\n" +
-		"with step 3 below. Otherwise, create that guided instance now:\n\n" +
+		"with step 4 below. Otherwise, create that guided instance now:\n\n" +
 		"```sh\n" +
 		"goobers init --guided ./my-instance\n" +
 		"```\n\n" +
 		"Keep the default workflow selection, or explicitly select `implementation`, so\n" +
 		"the first manual run below uses the workflow the guided setup created. Guided\n" +
 		"setup validates the instance and refuses an already configured target.\n\n"
-	quickstartSourceOnboardingAssets = "For a first autonomous run against a disposable tutorial target, seed the\n" +
-		"versioned `quickstart@v1` template and copy its paired sample into a separate\n" +
-		"throwaway directory:\n\n" +
+	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
+		"against a disposable GitHub repository. This path requires a GitHub token and\n" +
+		"an authenticated Copilot CLI. Copy the paired sample into a separate throwaway\n" +
+		"directory:\n\n" +
 		"```sh\n" +
 		"bin/goobers onboarding stub-sample \\\n" +
 		"  --destination ./getting-started-task-api \\\n" +
@@ -59,14 +60,17 @@ const (
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
 		"sample without network access. It never creates or pushes a remote.\n\n"
+	quickstartSourceGraduationWorkflow = "Continue with section 3 to scaffold a regular instance and run its starter\n" +
+		"`default-implement` workflow."
+	quickstartInstalledGraduationWorkflow = "Continue with section 3 to use a regular guided instance and run its\n" +
+		"`implementation` workflow."
 	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
-	linuxQuickstartSourceIntro        = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
-		"build, configure credentials, and drive a first run. This is the Linux-specific\n" +
-		"companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI\n" +
-		"surface is identical; this page calls out the few things that are Linux-specific\n" +
-		"and records the exact environment Goobers is validated on.\n\n"
+	linuxQuickstartSourceIntro        = "Use this page for Linux host prerequisites, isolation, credentials, and\n" +
+		"supervision differences only. Follow the platform-neutral\n" +
+		"[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI\n" +
+		"walkthrough.\n\n"
 	linuxQuickstartSourceCIJob      = "CI job (`.github/workflows/ci.yml`), which runs the shipped binary end to end —\n"
 	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |\n"
 	linuxQuickstartSourceValidation = "> **Linux delta — deterministic `network: none` stages use user namespaces.** On\n" +
@@ -204,26 +208,52 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 	}{
 		{
 			path: "README.md",
-			sections: []onboardingSectionRewrite{{
-				source: readmeSourceInstall,
-				installed: fmt.Sprintf(
-					"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
-						"a newer release cannot change this walkthrough:\n\n"+
-						"```sh\n%s --version\n```\n\n"+
-						"The release installer already ran guided setup at the requested instance path\n"+
-						"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
-						"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
-						"quoting it if needed.\n\n"+
-						"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
-						"below with `./goobers` and create the guided instance now:\n\n"+
-						"```sh\n%s init --guided ./my-instance\n\n",
-					version,
-					releaseCommand,
-					releaseCommand,
-					releaseCommand,
-				),
-			}},
-			sourceCommandPrefix:  "$HOME/.local/bin/goobers",
+			sections: []onboardingSectionRewrite{
+				{
+					source: readmeSourceInstall,
+					installed: fmt.Sprintf(
+						"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
+							"a newer release cannot change this walkthrough:\n\n"+
+							"```sh\n%s --version\n```\n\n"+
+							"The fastest first run is the hermetic demo:\n\n"+
+							"```sh\n"+
+							"%s init --demo ./demo-instance\n"+
+							"%s run demo ./demo-instance\n"+
+							"%s trace <run-id> ./demo-instance\n"+
+							"```\n\n"+
+							"The demo runs the full curate -> implement -> review -> merge-preview loop on\n"+
+							"Linux or macOS with mock providers, no credentials, and no network writes. From\n"+
+							"there, graduate to\n"+
+							"the token-bearing `quickstart@v1` template with\n"+
+							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
+							"instance and the\n"+
+							"production-oriented definitions under\n"+
+							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
+							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
+							"The release installer already ran guided setup at the requested instance path\n"+
+							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
+							"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
+							"quoting it if needed.\n\n"+
+							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
+							"below with `./goobers` and create the guided instance now:\n\n"+
+							"```sh\n"+
+							"%s init --guided ./my-instance\n"+
+							"%s run %s ./my-instance\n"+
+							"```\n",
+						version,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						releaseCommand,
+						instance.GuidedWorkflowImplementation,
+					),
+				},
+			},
+			sourceCommandPrefix:  "bin/goobers",
 			installedCommandName: releaseCommand,
 		},
 		{
@@ -241,12 +271,24 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				{
 					source: quickstartSourceBuild,
 					installed: fmt.Sprintf(
-						"## 1. Confirm the installed binary\n\n"+
+						"## Confirm the installed binary\n\n"+
 							"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
 							"```sh\n%s --version\n```\n\n",
 						version,
 						releaseCommand,
 					),
+				},
+				{
+					source:    quickstartSourceGraduationWorkflow,
+					installed: quickstartInstalledGraduationWorkflow,
+				},
+				{
+					source:    "../../config-examples/README.md",
+					installed: "../../onboarding/templates/canonical/README.md",
+				},
+				{
+					source:    "../../config-examples/gaggles/acme-web/workflows/implementation.yaml",
+					installed: "../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml",
 				},
 				{
 					source: quickstartSourceInit,

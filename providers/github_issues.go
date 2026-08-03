@@ -724,6 +724,27 @@ func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id
 	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
 }
 
+// CreateWorkItemComment appends one issue comment and returns its provider
+// identity. Retry-safe callers perform exact-marker adoption around this raw
+// non-idempotent POST.
+func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return Comment{}, err
+	}
+	if id == "" {
+		return Comment{}, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment githubComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	return mapGitHubComment(comment), nil
+}
+
 type githubComment struct {
 	ID        int64      `json:"id"`
 	Body      string     `json:"body"`

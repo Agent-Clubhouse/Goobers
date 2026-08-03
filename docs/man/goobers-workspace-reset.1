@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKSPACE RESET" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workspace reset \- tear down and re-materialize a pinned repository workspace
+.SH SYNOPSIS
+\fBgoobers workspace reset\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workspace reset <repo> [path]
+
+Tear down and re-materialize the pinned workspace for <repo>. The repo may
+be selected by name, owner/name, or (for ADO) owner/project/name. A live
+run lease makes the command fail without changing the workspace.
+Exit codes: 0 = reset complete, 1 = reset refused/failed, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers workspace reset my-repo
+goobers workspace reset acme/my-repo ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

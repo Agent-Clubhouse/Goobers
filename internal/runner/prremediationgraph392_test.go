@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -101,7 +101,7 @@ func (g *remediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (a
 // synthetic re-statement of it that could drift away from the YAML silently.
 func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -128,7 +128,7 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	m, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"output-equals", "status-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -161,6 +161,7 @@ func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.Invocat
 type remediationWalkOptions struct {
 	maxRepasses      int
 	validationStatus apiv1.ResultStatus
+	beforePushStatus apiv1.ResultStatus
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -168,9 +169,18 @@ type remediationWalkOptions struct {
 // gather-pr-context reports (the selected PR's head).
 func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoober, options ...remediationWalkOptions) (Result, []string, string) {
 	t.Helper()
-	opts := remediationWalkOptions{validationStatus: apiv1.ResultSuccess}
+	opts := remediationWalkOptions{
+		validationStatus: apiv1.ResultSuccess,
+		beforePushStatus: apiv1.ResultSuccess,
+	}
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	if opts.validationStatus == "" {
+		opts.validationStatus = apiv1.ResultSuccess
+	}
+	if opts.beforePushStatus == "" {
+		opts.beforePushStatus = apiv1.ResultSuccess
 	}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -236,6 +246,11 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 			"continueRemediation": "true", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
 		}},
+		runID + ":guard-before-agent-context": {status: apiv1.ResultSuccess},
+		runID + ":guard-before-implement":     {status: apiv1.ResultSuccess},
+		runID + ":guard-before-review":        {status: apiv1.ResultSuccess},
+		runID + ":guard-before-local-ci":      {status: apiv1.ResultSuccess},
+		runID + ":guard-before-push":          {status: opts.beforePushStatus},
 		runID + ":gather-review-threads": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
@@ -258,6 +273,8 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":respond-to-findings": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
 		},
+		runID + ":release-claim":                  {status: apiv1.ResultSuccess},
+		runID + ":release-escalated-claim":        {status: apiv1.ResultSuccess},
 		runID + ":park-escalated":                 {status: apiv1.ResultSuccess},
 		runID + ":park-invalid-finding-responses": {status: apiv1.ResultSuccess},
 	}
@@ -321,13 +338,19 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"gather-sibling-context",
 		"rebase-pr",
 		"remediation-checkpoint",
+		"guard-before-agent-context",
 		"gather-review-threads",
 		"gather-issue-context",
+		"guard-before-implement",
 		"implement",
 		"validate-finding-responses",
+		"guard-before-review",
+		"guard-before-local-ci",
 		"local-ci",
+		"guard-before-push",
 		"push-remediated",
 		"respond-to-findings",
+		"release-claim",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
@@ -366,6 +389,7 @@ func TestShippedPRRemediationAPIUpdateProvisionsNoWorktree(t *testing.T) {
 				"selectedNumber": "77", "needsFullRemediation": "false",
 			},
 		},
+		runID + ":release-claim": {status: apiv1.ResultSuccess},
 	}
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
@@ -397,8 +421,8 @@ func TestShippedPRRemediationAPIUpdateProvisionsNoWorktree(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
-	if strings.Join(visited, ",") != "update-behind-pr" {
-		t.Fatalf("dispatched stages = %v, want only update-behind-pr", visited)
+	if strings.Join(visited, ",") != "update-behind-pr,release-claim" {
+		t.Fatalf("dispatched stages = %v, want update-behind-pr then release-claim", visited)
 	}
 	if cloneURLCalls != 0 {
 		t.Fatalf("RepoCloneURL called %d times, want 0 worktree provisions", cloneURLCalls)
@@ -417,8 +441,8 @@ func TestShippedPRRemediationAPIUpdateProvisionsNoWorktree(t *testing.T) {
 			started = append(started, event.Stage)
 		}
 	}
-	if strings.Join(started, ",") != "update-behind-pr" {
-		t.Fatalf("journaled stages = %v, want no rebase stage", started)
+	if strings.Join(started, ",") != "update-behind-pr,release-claim" {
+		t.Fatalf("journaled stages = %v, want update-behind-pr then release-claim", started)
 	}
 }
 
@@ -443,8 +467,27 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	if implements != 2 {
 		t.Errorf("implement dispatched %d times, want 2 (visited: %v)", implements, visited)
 	}
-	if visited[len(visited)-1] != "respond-to-findings" {
-		t.Errorf("last stage = %q, want respond-to-findings after the remediated branch was published", visited[len(visited)-1])
+	if visited[len(visited)-1] != "release-claim" {
+		t.Errorf("last stage = %q, want release-claim after the remediated branch was published", visited[len(visited)-1])
+	}
+}
+
+func TestShippedPRRemediationStopsBeforePushWhenPRClosesDuringLocalCI(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-closed-after-ci", goober, remediationWalkOptions{
+		beforePushStatus: apiv1.ResultNoWork,
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	if visited[len(visited)-1] != "guard-before-push" {
+		t.Fatalf("last stage = %q, want guard-before-push (visited: %v)", visited[len(visited)-1], visited)
+	}
+	for _, stage := range visited {
+		if stage == "push-remediated" || stage == "respond-to-findings" {
+			t.Errorf("terminal PR reached %s after local CI", stage)
+		}
 	}
 }
 
@@ -459,8 +502,8 @@ func TestShippedPRRemediationEscalatesOnReviewerFail(t *testing.T) {
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseEscalated, visited)
 	}
-	if visited[len(visited)-1] != "park-escalated" {
-		t.Errorf("last stage = %q, want park-escalated", visited[len(visited)-1])
+	if visited[len(visited)-1] != "release-escalated-claim" {
+		t.Errorf("last stage = %q, want release-escalated-claim", visited[len(visited)-1])
 	}
 	for _, s := range visited {
 		if s == "push-remediated" {
@@ -479,8 +522,8 @@ func TestShippedPRRemediationParksOnFindingResponseValidationExhaustion(t *testi
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseEscalated, visited)
 	}
-	if visited[len(visited)-1] != "park-invalid-finding-responses" {
-		t.Errorf("last stage = %q, want park-invalid-finding-responses", visited[len(visited)-1])
+	if visited[len(visited)-1] != "release-escalated-claim" {
+		t.Errorf("last stage = %q, want release-escalated-claim", visited[len(visited)-1])
 	}
 	if goober.reviewed != 0 {
 		t.Errorf("reviewer invoked %d times, want 0 for invalid finding responses", goober.reviewed)
@@ -697,7 +740,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 
 func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
 	if err != nil {
 		t.Fatalf("read implementation.yaml: %v", err)
@@ -721,7 +764,7 @@ func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	machine, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "status-equals", "ci-status", "output-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -821,7 +864,7 @@ func (g *implementationGoober) Review(context.Context, apiv1.InvocationEnvelope)
 // currentBranch reports the git branch a stage's workspace is checked out on.
 func currentBranch(t *testing.T, dir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd := testgit.Command("rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

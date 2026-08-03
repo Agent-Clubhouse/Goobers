@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
@@ -1069,6 +1069,110 @@ func TestGitHubProviderOpenPullRequestIsIdempotentOnRepass(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderOpenPullRequestRecoversFromCreateRace is #1767's fix: two
+// concurrent OpenPullRequest calls for the same head/base can both pass the
+// idempotency check (neither sees the other's PR yet), so the loser's POST
+// gets GitHub's 422 "already exists" refusal. OpenPullRequest's own doc
+// comment already promises convergence on the PR that exists rather than a
+// duplicate — this proves that promise holds for the race, not just the
+// sequential-repass case TestGitHubProviderOpenPullRequestIsIdempotentOnRepass
+// covers: the classified 422 triggers a second lookup, which now finds the
+// winner's PR, and OpenPullRequest converges onto it via a PATCH exactly like
+// an ordinary repass.
+func TestGitHubProviderOpenPullRequestRecoversFromCreateRace(t *testing.T) {
+	var lookups, posts, patches int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			lookups++
+			if lookups == 1 {
+				// The race window: the concurrent winner's PR isn't visible yet.
+				writeJSON(t, w, []map[string]interface{}{})
+				return
+			}
+			writeJSON(t, w, []map[string]interface{}{
+				{"number": 9, "html_url": "https://github.com/acme/app/pull/9"},
+			})
+		case http.MethodPost:
+			posts++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","field":"head","message":"A pull request already exists for acme:goobers/impl/run-1."}]}`))
+		default:
+			t.Fatalf("unexpected method %s on /pulls", r.Method)
+		}
+	})
+	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		patches++
+		writeJSON(t, w, map[string]interface{}{"number": 9, "html_url": "https://github.com/acme/app/pull/9"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13", Body: "Adds PR polling.", Head: "goobers/impl/run-1", Base: "main",
+		RunID: "run-1",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v, want it to recover onto the winner's PR", err)
+	}
+	if result.Number != 9 {
+		t.Fatalf("result.Number = %d, want 9 (the concurrent winner's PR)", result.Number)
+	}
+	if posts != 1 {
+		t.Fatalf("expected exactly one POST attempt, got %d", posts)
+	}
+	if patches != 1 {
+		t.Fatalf("expected the recovery to PATCH the winner's PR, got %d PATCH calls", patches)
+	}
+}
+
+// TestGitHubProviderOpenPullRequestKeepsUnrelated422AsError is #1767's
+// explicit classification constraint, mirroring #1751's own false-positive
+// guard: GitHub's pull-creation endpoint uses 422 for many unrelated
+// validation failures, so the status code alone must never be read as an
+// already-exists race. An unrecognized 422 must propagate as an ordinary
+// error rather than triggering a recovery lookup that could silently return
+// the wrong PR.
+func TestGitHubProviderOpenPullRequestKeepsUnrelated422AsError(t *testing.T) {
+	var lookups, posts int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			lookups++
+			writeJSON(t, w, []map[string]interface{}{})
+		case http.MethodPost:
+			posts++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","field":"base","message":"No commits between main and goobers/impl/run-1."}]}`))
+		default:
+			t.Fatalf("unexpected method %s on /pulls", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		Title:      "Implement #13", Body: "Adds PR polling.", Head: "goobers/impl/run-1", Base: "main",
+		RunID: "run-1",
+	})
+	if err == nil {
+		t.Fatal("OpenPullRequest returned nil error, want the unrelated 422 to propagate")
+	}
+	if IsPullRequestAlreadyExistsError(err) {
+		t.Fatalf("error unexpectedly classified as already-exists: %v", err)
+	}
+	if lookups != 1 {
+		t.Fatalf("expected exactly one lookup (no recovery re-check for an unrelated 422), got %d", lookups)
+	}
+}
+
 func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	mux := http.NewServeMux()
 	mergeable := true
@@ -1079,6 +1183,11 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 			"mergeable_state": "unstable",
 			"html_url":        "https://github.com/acme/app/pull/9",
 			"head":            map[string]interface{}{"sha": "deadbeef"},
+			"user":            map[string]string{"login": "octocat"},
+			"assignees":       []map[string]string{{"login": "maintainer"}},
+			"requested_reviewers": []map[string]string{
+				{"login": "reviewer"},
+			},
 		})
 	})
 	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
@@ -1150,6 +1259,10 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if result.MergeableState != MergeableStateUnstable {
 		t.Fatalf("MergeableState = %q, want %q (mergeable_state passed through for #961's advisory-check gating)", result.MergeableState, MergeableStateUnstable)
+	}
+	if result.Author != "octocat" || len(result.Assignees) != 1 || result.Assignees[0] != "maintainer" ||
+		len(result.RequestedReviewers) != 1 || result.RequestedReviewers[0] != "reviewer" {
+		t.Fatalf("pull request identities = author %q, assignees %v, requested reviewers %v", result.Author, result.Assignees, result.RequestedReviewers)
 	}
 	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
 		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
@@ -1360,6 +1473,22 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 				"head":       map[string]interface{}{"ref": "goobers/implementation/run-1", "sha": "aaa111"},
 				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
 				"labels":     []map[string]string{{"name": "goobers:needs-remediation"}},
+				"user":       map[string]string{"login": "octocat"},
+				"assignees":  []map[string]string{{"login": "maintainer"}},
+				"requested_reviewers": []map[string]string{
+					{"login": "reviewer"},
+				},
+			},
+			{
+				"number": 12, "html_url": "https://github.com/acme/app/pull/12", "draft": false,
+				"updated_at": "2026-07-15T00:00:00Z",
+				"head":       map[string]interface{}{"ref": "goobers/implementation/run-2", "sha": "ccc333"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
+				"user":       map[string]string{"login": "someone-else"},
+				"assignees":  []map[string]string{{"login": "maintainer"}},
+				"requested_reviewers": []map[string]string{
+					{"login": "reviewer"},
+				},
 			},
 			{
 				// A human-authored PR (no goobers/ prefix) must be excluded.
@@ -1384,6 +1513,7 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
 	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main", HeadPrefix: "goobers/",
+		Author: "octocat", Assignee: "maintainer", RequestedReviewer: "reviewer",
 	})
 	if err != nil {
 		t.Fatalf("ListPullRequests: %v", err)
@@ -1401,6 +1531,10 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 	}
 	if pr.CheckState != CheckStatePassing {
 		t.Fatalf("CheckState = %q, want passing", pr.CheckState)
+	}
+	if pr.Author != "octocat" || len(pr.Assignees) != 1 || pr.Assignees[0] != "maintainer" ||
+		len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0] != "reviewer" {
+		t.Fatalf("unexpected pull request identities: %+v", pr)
 	}
 }
 
@@ -2525,8 +2659,8 @@ func containsString(items []string, want string) bool {
 
 func runGitTest(t *testing.T, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", args...)
-	command.Env = append(os.Environ(),
+	command := testgit.Command(args...)
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",

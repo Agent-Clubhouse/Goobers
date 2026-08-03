@@ -115,6 +115,7 @@ function detail(): WorkflowDetail {
         owner: null,
         evaluator: "",
         capabilities: [],
+        rawYaml: "",
       },
       {
         name: "implement",
@@ -123,6 +124,7 @@ function detail(): WorkflowDetail {
         owner: { gaggle: "core", name: "implementer" },
         evaluator: "",
         capabilities: [],
+        rawYaml: "",
       },
       {
         name: "review",
@@ -131,6 +133,7 @@ function detail(): WorkflowDetail {
         owner: null,
         evaluator: "agentic",
         capabilities: [],
+        rawYaml: "",
       },
     ],
   } as unknown as WorkflowDetail;
@@ -148,6 +151,7 @@ function run(id: string, stage: string | undefined, minute: number): RunSummary 
     trigger: { kind: "item", ref: "ref" },
     phase: "running",
     terminal: false,
+    noWork: false,
     currentStage: stage,
     startedAt,
     durationMillis: 60_000,

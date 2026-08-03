@@ -12,7 +12,9 @@ Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
-"."). Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
+"."). Remediation escalations include the typed outcome, attempted flag,
+and attempted causes in the text summary and JSON `escalation.remediation`
+object. Exit codes: 0 = OK, 1 = run/transcript not found, 2 = usage/IO
 error, 130 = interrupted while following.
 .fi
 .SH EXAMPLES

@@ -36,6 +36,18 @@ Layout is presentation only. Both layouts:
 * share accessible names, built once in `factoryLabels.ts`
 * honour the same truncation, overflow, alarm, and unknown-topology rules
 
+Factory is a dedicated viewport workspace inside the portal shell. It consumes
+the full area below the global top bar rather than inheriting the padded,
+maximum-width document layout used by report pages. `FactoryViewport.tsx`
+measures that area, fits the complete world on first render and resize, clips
+the scene without scrollbars, and provides explicit zoom, drag-to-pan, and Fit
+All controls. Fit and resize change only the camera and never replay work
+motion.
+
+The shared inspector is an overlay drawer on desktop and a bottom sheet on
+narrow screens. It does not reserve a permanent column or reduce the floor's
+fit calculation. Inspector content is the only Factory region that may scroll.
+
 Switching layout must not trigger a daemon read, rebuild the model, change the
 scope, change the lens, or drop a selection. There is no layout-specific data
 contract and no layout-specific daemon field.
@@ -102,6 +114,9 @@ Any change to either layout must keep these true:
 * a real stage change moves that one run in either layout and leaves siblings
   still
 * a layout toggle never replays a transition from the current model
+* both layouts start in Fit All with no nested canvas scrollbars
+* zoom and pan change only the camera; Fit All restores the complete scene
+* opening the inspector overlays the floor instead of resizing its camera
 * blocked and human-hold alarms carry text as well as colour in both layouts
 * overflow, 50-run truncation, unknown topology and idle states stay honest in
   both layouts

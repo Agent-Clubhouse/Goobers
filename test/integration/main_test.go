@@ -216,8 +216,8 @@ func TestIntegrationTool(t *testing.T) {
 
 func TestValidateInventory(t *testing.T) {
 	if err := validateInventory(map[string]bool{
-		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true,
-		"head": true, "mkdir": true, "sh": true, "sleep": true, "yes": true,
+		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true, "git": true,
+		"head": true, "java": true, "mkdir": true, "mvn": true, "python3": true, "sh": true, "sleep": true, "yes": true,
 		"xcodebuild": true, "xcrun": true,
 	}); err != nil {
 		t.Fatalf("validateInventory exact match: %v", err)
@@ -234,8 +234,12 @@ func TestValidateInventory(t *testing.T) {
 		`inventory dependency "copilot" is not required`,
 		`inventory dependency "dirname" is not required`,
 		`inventory dependency "dotnet" is not required`,
+		`inventory dependency "git" is not required`,
 		`inventory dependency "head" is not required`,
+		`inventory dependency "java" is not required`,
 		`inventory dependency "mkdir" is not required`,
+		`inventory dependency "mvn" is not required`,
+		`inventory dependency "python3" is not required`,
 		`inventory dependency "sleep" is not required`,
 		`inventory dependency "yes" is not required`,
 		`inventory dependency "xcodebuild" is not required`,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -308,6 +309,7 @@ func TestGitHubListComments(t *testing.T) {
 	m.comments = []map[string]interface{}{
 		{"id": 1, "body": "first", "user": map[string]string{"login": "dependabot[bot]", "type": "Bot"}, "created_at": created, "html_url": "c1"},
 	}
+
 	p, repo := newIssueProvider(t, m)
 	comments, err := p.ListComments(context.Background(), repo, "7")
 	if err != nil {
@@ -319,6 +321,105 @@ func TestGitHubListComments(t *testing.T) {
 	}
 	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(created) {
 		t.Fatalf("expected created_at preserved, got %#v", comments[0].CreatedAt)
+	}
+}
+
+func TestGitHubFindWorkItemsByMarkerUsesExactAuthoritativeListing(t *testing.T) {
+	const marker = "<!-- goobers-action:v1 key=Y2hpbGQ -->"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "all" {
+			t.Fatalf("state = %q, want all", r.URL.Query().Get("state"))
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 101, "number": 11, "title": "exact", "body": "body\n\n" + marker, "state": "open"},
+			{"id": 102, "number": 12, "title": "substring", "body": "prefix " + marker, "state": "open"},
+			{"id": 103, "number": 13, "title": "pr", "body": marker, "state": "open", "pull_request": map[string]string{"url": "pull"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	items, err := provider.FindWorkItemsByMarker(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, marker)
+	if err != nil {
+		t.Fatalf("FindWorkItemsByMarker: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "11" {
+		t.Fatalf("items = %#v, want exact issue 11 only", items)
+	}
+}
+
+func TestGitHubCreateWorkItemCommentReturnsIdentity(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{
+			"id": 81, "body": "prepared", "html_url": "https://github.test/comments/81",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	comment, err := provider.CreateWorkItemComment(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7", "prepared")
+	if err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	if comment.ID != "81" || comment.Body != "prepared" {
+		t.Fatalf("comment = %#v", comment)
+	}
+}
+
+func TestGitHubAttachWorkItemChildGuardsRevisions(t *testing.T) {
+	const revision = "2026-08-03T12:00:00Z"
+	var posts int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"id": 70, "number": 7, "title": "parent", "state": "open", "updated_at": revision,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/8", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"id": 80, "number": 8, "title": "child", "state": "open", "updated_at": revision,
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/issues/7/sub_issues", func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		var body map[string]int64
+		decodeJSON(t, r, &body)
+		if body["sub_issue_id"] != 80 {
+			t.Fatalf("sub_issue_id = %d, want 80", body["sub_issue_id"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	if err := provider.AttachWorkItemChild(context.Background(), AttachWorkItemChildRequest{
+		Repository: repo, ParentID: "7", ChildID: "8",
+		ExpectedParentRevision: revision, ExpectedChildRevision: revision,
+	}); err != nil {
+		t.Fatalf("AttachWorkItemChild: %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1", posts)
+	}
+
+	err := provider.AttachWorkItemChild(context.Background(), AttachWorkItemChildRequest{
+		Repository: repo, ParentID: "7", ChildID: "8",
+		ExpectedParentRevision: "stale", ExpectedChildRevision: revision,
+	})
+	var conflict *RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want RevisionConflictError", err)
+	}
+	if posts != 1 {
+		t.Fatalf("stale revision caused a mutation; posts = %d", posts)
 	}
 }
 
@@ -1026,6 +1127,10 @@ func TestGitHubListWorkItemsFiltersAndPagination(t *testing.T) {
 	if len(items) != 1 || items[0].ID != "7" {
 		t.Fatalf("expected only the issue (PR excluded), got %#v", items)
 	}
+	// per_page stays the requested Limit (50): plain Labels is reliably
+	// server-filtered via GitHub's own `labels` query param (#2067's
+	// oversized-scan trigger is LabelPredicate/FieldPredicate only — Labels
+	// alone never needs it, on either provider's shared check).
 	if gotQuery["assignee"] != "mona" || gotQuery["since"] != "2026-07-01T00:00:00Z" ||
 		gotQuery["page"] != "2" || gotQuery["per_page"] != "50" || gotQuery["labels"] != LabelReady {
 		t.Fatalf("query params not wired: %#v", gotQuery)
@@ -1065,55 +1170,90 @@ func TestGitHubListWorkItemsLimitSkipsPRsAcrossPages(t *testing.T) {
 	}
 }
 
-func TestGitHubListWorkItemsPageInfoCountsRawCandidatesBeforePredicate(t *testing.T) {
+// TestGitHubListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary is
+// #2067's regression test for GitHub's caller-paged path: with Limit=1 and
+// a LabelPredicate, the first two raw candidates fail the predicate (one is
+// a pull request, one carries the wrong label) but a third matches. Before
+// the fix, per_page was pinned to min(req.Limit, 100) = 1, so the single
+// fetched candidate was the pull request and ListWorkItems returned zero
+// items despite a real match existing two candidates later — silently
+// breaking "Limit = up to N matches". The fix gives the fetch GitHub's own
+// 100-per-page ceiling whenever a post-fetch filter (here, LabelPredicate)
+// is active, so the match is found in one request.
+func TestGitHubListWorkItemsOversizedScanFindsMatchBeyondTruncationBoundary(t *testing.T) {
 	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 	requests := 0
+	var gotPerPage string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.URL.Query().Get("page") == "2" {
-			writeJSON(t, w, []map[string]interface{}{{
-				"id": 3, "number": 3, "title": "issue", "state": "open",
-				"labels": []map[string]string{{"name": "wanted"}},
-			}})
-			return
-		}
+		gotPerPage = r.URL.Query().Get("per_page")
 		writeJSON(t, w, []map[string]interface{}{
 			{"id": 1, "number": 1, "title": "pr 1", "state": "open", "pull_request": map[string]string{"url": "pr-1"}},
-			{
-				"id": 2, "number": 2, "title": "other issue", "state": "open",
-				"labels": []map[string]string{{"name": "other"}},
-			},
+			{"id": 2, "number": 2, "title": "other issue", "state": "open", "labels": []map[string]string{{"name": "other"}}},
+			{"id": 3, "number": 3, "title": "wanted issue", "state": "open", "labels": []map[string]string{{"name": "wanted"}}},
 		})
 	}))
 	defer server.Close()
 	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = server.URL })
 	repo := RepositoryRef{Owner: "acme", Name: "app"}
 
-	firstPage := &ListWorkItemsPageInfo{}
+	pageInfo := &ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
-		Repository: repo, LabelPredicate: predicate, Limit: 2, PageInfo: firstPage,
+		Repository: repo, LabelPredicate: predicate, Limit: 1, PageInfo: pageInfo,
 	})
 	if err != nil {
-		t.Fatalf("ListWorkItems first page: %v", err)
+		t.Fatalf("ListWorkItems: %v", err)
 	}
-	if len(items) != 0 || firstPage.CandidateCount != 2 ||
-		!firstPage.HasNext || firstPage.NextCursor != "2" {
-		t.Fatalf("items = %#v, page info = %+v; want two filtered raw candidates and a next cursor", items, firstPage)
+	if len(items) != 1 || items[0].ID != "3" || requests != 1 {
+		t.Fatalf("items = %#v, requests = %d; want issue 3 found in a single request", items, requests)
 	}
+	if gotPerPage != "100" {
+		t.Fatalf("per_page = %q, want 100 (oversized: LabelPredicate is active)", gotPerPage)
+	}
+	if pageInfo.HasNext {
+		t.Fatalf("page info = %+v, want HasNext=false (every fetched candidate was scanned, and the fetch wasn't itself capped)", pageInfo)
+	}
+}
 
-	secondPage := &ListWorkItemsPageInfo{}
-	items, err = provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
-		Repository: repo, LabelPredicate: predicate, Limit: 2,
-		Cursor: firstPage.NextCursor, PageInfo: secondPage,
+// TestGitHubListWorkItemsPageInfoHasNextWhenFetchItselfCapped proves the
+// OTHER half of #2067's HasNext contract: even when every fetched candidate
+// was scanned without finding Limit matches, HasNext must still be true if
+// the fetch itself hit the per-page ceiling — GitHub may hold further
+// candidates beyond what this round asked for.
+func TestGitHubListWorkItemsPageInfoHasNextWhenFetchItselfCapped(t *testing.T) {
+	predicate, err := labelpredicate.Compile(`"wanted" in labels`, nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	const pageSize = 100
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		issues := make([]map[string]interface{}, pageSize)
+		for i := range issues {
+			issues[i] = map[string]interface{}{
+				"id": i + 1, "number": i + 1, "title": "issue", "state": "open",
+				"labels": []map[string]string{{"name": "other"}},
+			}
+		}
+		writeJSON(t, w, issues)
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(provider *GitHubProvider) { provider.BaseURL = server.URL })
+
+	pageInfo := &ListWorkItemsPageInfo{}
+	items, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, LabelPredicate: predicate, Limit: 1, PageInfo: pageInfo,
 	})
 	if err != nil {
-		t.Fatalf("ListWorkItems second page: %v", err)
+		t.Fatalf("ListWorkItems: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "3" || requests != 2 || secondPage.HasNext {
-		t.Fatalf("items = %#v, requests = %d, page info = %+v; want issue 3 on final page", items, requests, secondPage)
+	if len(items) != 0 {
+		t.Fatalf("items = %#v, want none (no candidate carries the wanted label)", items)
+	}
+	if !pageInfo.HasNext || pageInfo.NextCursor != strconv.Itoa(pageSize) {
+		t.Fatalf("page info = %+v, want HasNext=true NextCursor=%d (the fetch itself hit the per-page ceiling)", pageInfo, pageSize)
 	}
 }
 

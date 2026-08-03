@@ -63,6 +63,25 @@
           "properties": {
             "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
           }
+        },
+        "workcopies": {
+          "description": "Per-gaggle override for managed working-copy placement. The gaggle name and repository key are appended beneath this base path.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root"],
+          "properties": {
+            "root": { "type": "string", "minLength": 1, "description": "Absolute base path for this gaggle's managed mirrors and worktrees. Overrides instance.yaml workcopies.root." }
+          }
+        },
+        "requireLabels": {
+          "description": "Default requireLabels value every workflow's backlog-query task in this gaggle inherits unless the task declares its own requireLabels input (full replace, not merge — same shape as branchNamespace/headPrefix) (MIRC-2, #1901).",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "siblings": {
+          "description": "Other gaggles/instances known to independently work the same target repo, for the sibling-overlap validation warning (MIRC-2, #1901).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/gaggleSibling" }
         }
       }
     }
@@ -109,6 +128,21 @@
         }
       }
     },
+    "gaggleSibling": {
+      "type": "object",
+      "description": "Another gaggle/instance known to independently work the same target repo — identified by target repo, never by gaggle name (MIRC-2, #1901).",
+      "additionalProperties": false,
+      "required": ["project"],
+      "properties": {
+        "project": { "$ref": "#/$defs/repoRef", "description": "Repo the sibling gaggle targets — the sole match key (provider/owner/name)." },
+        "label": { "type": "string", "description": "Human-readable name for the sibling, used only in warning messages." },
+        "requireLabels": {
+          "description": "This gaggle's own trusted declaration of the sibling's effective required-label scope.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "runnerCapability": {
       "description": "A free-form, version-parameterized runner capability token (e.g. dotnet@8, xcode, os=windows) — distinct from a credential capability. An alphanumeric start then letters, digits, and any of . _ - + @ =, no whitespace.",
       "type": "string",
@@ -120,7 +154,8 @@
       "additionalProperties": false,
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
-        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
     },
     "backlogRef": {

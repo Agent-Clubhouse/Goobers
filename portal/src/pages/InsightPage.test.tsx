@@ -41,6 +41,8 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
     expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
     expect(screen.getByText("8 / 6")).toBeInTheDocument();
+    expect(screen.getByText("In flight now")).toBeInTheDocument();
+    expect(screen.getByText("1h 30m 0s average · 2 claimed")).toBeInTheDocument();
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
@@ -375,6 +377,7 @@ describe("Insight page", () => {
       usage: [],
       models: [],
       curation: {
+        everRecorded: false,
         runs: 0,
         reportedRuns: 0,
         ready: 0,
@@ -388,7 +391,12 @@ describe("Insight page", () => {
         bounced: 0,
       },
       readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
         claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
         forwardCurationThroughput: 0,
         implementationDemand: 0,
       },
@@ -426,5 +434,96 @@ describe("Insight page", () => {
 
     expect(await screen.findByRole("heading", { name: "Daemon unavailable" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Success and failure" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a never-recorded writer from an empty window and from measured data", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    // The initial populated-fixture render (asserted in the first test above)
+    // covers the fully measured state; this test isolates the two "no value"
+    // states that otherwise look identical to an operator.
+    await screen.findByRole("heading", { name: "Ready-pool health" });
+
+    // Curation ran and reported real outputs, but the ready-pool-sample and
+    // bounce-cohort writers never once fired for this scope — the exact
+    // #2277 bug shape (one writer dead, a sibling writer fine).
+    getTelemetryStats.mockResolvedValueOnce({
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [],
+      curation: {
+        everRecorded: true,
+        runs: 2,
+        reportedRuns: 2,
+        ready: 3,
+        needsHuman: 1,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 3,
+        implementationDemand: 0,
+      },
+    });
+    await user.selectOptions(screen.getByLabelText("Time window"), "24h");
+
+    expect(await screen.findByText("3 ready · 1 needs human · 0 closed")).toBeInTheDocument();
+    expect(screen.getByText("3 / 0")).toBeInTheDocument();
+    expect(screen.getAllByText("Never recorded")).toHaveLength(3); // ready depth, oldest ready, bounce rate
+
+    // Same writers HAVE fired historically, but this window has no rows —
+    // must read differently from "never recorded" above.
+    getTelemetryStats.mockResolvedValueOnce({
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [],
+      curation: {
+        everRecorded: true,
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: true,
+        bounceEverRecorded: true,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
+    });
+    await user.selectOptions(screen.getByLabelText("Time window"), "30d");
+
+    // ready depth, oldest ready, age before claim (unscoped by #2278, always
+    // reads "No data in window" when absent), and bounce rate.
+    expect(await screen.findAllByText("No data in window")).toHaveLength(4);
+    expect(screen.queryByText("Never recorded")).not.toBeInTheDocument();
   });
 });

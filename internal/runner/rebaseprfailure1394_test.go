@@ -76,6 +76,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 			"continueRemediation": "false", "selectedNumber": "77",
 			"head": rebindBranch, "headSha": "deadbeef",
 		}},
+		runID + ":release-claim": {status: apiv1.ResultSuccess},
 	}
 
 	r, err := New(Config{
@@ -106,7 +107,7 @@ func TestShippedPRRemediationFailedRebaseReachesCheckpoint(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
-	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "gather-sibling-context", "rebase-pr", "remediation-checkpoint"}
+	want := []string{"update-behind-pr", "gather-pr-context", "gather-ci-failures", "gather-sibling-context", "rebase-pr", "remediation-checkpoint", "release-claim"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Fatalf("stage order = %v, want %v", visited, want)
 	}

@@ -53,10 +53,12 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"tidy-check",
 		"no-phone-home",
 		"vet",
+		"flake-policy",
 		"build-config-sync",
 		"portal-install",
 		"portal-build",
 		"portal-dist-diff",
+		"portal-dist-untracked",
 		"build-goobers",
 		"validate-configs",
 		"build-scheduler",
@@ -69,6 +71,8 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-contract-diff",
 		"portal-contract-typecheck",
 		"portal-contract-test",
+		"manifests-generate",
+		"manifests-diff",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("check order = %q, want %q", got, want)
@@ -100,7 +104,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	wantTestArgs := []string{
 		"run", "./test/hermetic", "--go-command", "custom-go", "--",
-		"-race", "-timeout", "20m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+		"-race", "-timeout", "30m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
@@ -258,10 +262,15 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		"windows",
 		"",
 	)
-	if args := filepath.ToSlash(strings.Join(got[7].args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
+	// Looked up by label, not position: a hardcoded index here previously
+	// broke silently whenever a check was inserted earlier in the list (the
+	// same class of drift TestChecksPreserveMergeGateOrder's own comment
+	// warns about, and exactly what happened when portal-dist-untracked
+	// (#2056) shifted these two checks from 7/8 to 8/9).
+	if args := filepath.ToSlash(strings.Join(checkByLabel(t, got, "build-goobers").args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
 	}
-	if args := filepath.ToSlash(strings.Join(got[8].args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
+	if args := filepath.ToSlash(strings.Join(checkByLabel(t, got, "validate-configs").args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
 	}
 	for _, current := range got {
@@ -288,7 +297,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet build-scheduler portal-install portal-build portal-dist-diff shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet flake-policy build-scheduler portal-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -328,6 +337,101 @@ func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
 	}
 	if want := []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
 		t.Errorf("portal-dist-diff args = %q, want %q", guard.args, want)
+	}
+}
+
+// TestPortalDistUntrackedGuardCatchesNewAssets locks the #2056 guard:
+// portal-dist-diff only reports tracked-file changes, so it runs immediately
+// after portal-dist-diff and is a `git status --porcelain` that must be
+// empty, closing the blind spot where a newly added, never-`git add`-ed
+// asset (e.g. the first plain portal/public/ file) would pass the diff
+// clean yet still be missing from every other checkout.
+func TestPortalDistUntrackedGuardCatchesNewAssets(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	var untrackedIdx, diffIdx = -1, -1
+	for i, current := range got {
+		switch current.label {
+		case "portal-dist-untracked":
+			untrackedIdx = i
+		case "portal-dist-diff":
+			diffIdx = i
+		}
+	}
+	if untrackedIdx == -1 {
+		t.Fatal("portal-dist-untracked check is missing")
+	}
+	if untrackedIdx != diffIdx+1 {
+		t.Fatalf("portal-dist-untracked at %d, want immediately after portal-dist-diff at %d", untrackedIdx, diffIdx)
+	}
+	guard := got[untrackedIdx]
+	if guard.command != "git" {
+		t.Errorf("portal-dist-untracked command = %q, want git", guard.command)
+	}
+	if want := []string{"status", "--porcelain", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
+		t.Errorf("portal-dist-untracked args = %q, want %q", guard.args, want)
+	}
+	if !guard.capture || !guard.expectEmpty {
+		t.Errorf("portal-dist-untracked capture=%v expectEmpty=%v, want both true", guard.capture, guard.expectEmpty)
+	}
+}
+
+// TestManifestsDriftGuardRunsGitDiff locks the #2013 guard: the CRD manifest
+// drift check runs immediately after its own regen step and is a
+// `git diff --exit-code -- config/crd/bases`, so a regenerated manifest that
+// differs from the committed one fails the gate — the same
+// generate-then-diff shape as portal-dist-diff/portal-contract-diff.
+func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	var diffIdx, generateIdx = -1, -1
+	for i, current := range got {
+		switch current.label {
+		case "manifests-diff":
+			diffIdx = i
+		case "manifests-generate":
+			generateIdx = i
+		}
+	}
+	if generateIdx == -1 {
+		t.Fatal("manifests-generate check is missing")
+	}
+	if diffIdx == -1 {
+		t.Fatal("manifests-diff check is missing")
+	}
+	if diffIdx != generateIdx+1 {
+		t.Fatalf("manifests-diff at %d, want immediately after manifests-generate at %d", diffIdx, generateIdx)
+	}
+	generate := got[generateIdx]
+	if generate.command != "go" {
+		t.Errorf("manifests-generate command = %q, want go", generate.command)
+	}
+	if want := []string{
+		"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+		"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
+	}; !reflect.DeepEqual(generate.args, want) {
+		t.Errorf("manifests-generate args = %q, want %q", generate.args, want)
+	}
+	guard := got[diffIdx]
+	if guard.command != "git" {
+		t.Errorf("manifests-diff command = %q, want git", guard.command)
+	}
+	if want := []string{"diff", "--exit-code", "--", "config/crd/bases"}; !reflect.DeepEqual(guard.args, want) {
+		t.Errorf("manifests-diff args = %q, want %q", guard.args, want)
 	}
 }
 
@@ -419,7 +523,7 @@ func TestExecuteChecksRejectsUnformattedFiles(t *testing.T) {
 		{label: "fmt-check", expectEmpty: true},
 		{label: "vet"},
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "not gofmt-clean") {
+	if err == nil || !strings.Contains(err.Error(), "expected no output") {
 		t.Fatalf("executeChecks() error = %v", err)
 	}
 	if len(exec.calls) != 1 {
@@ -427,6 +531,35 @@ func TestExecuteChecksRejectsUnformattedFiles(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "bad.go") {
 		t.Fatalf("stdout missing unformatted file:\n%s", &stdout)
+	}
+}
+
+// TestExecuteChecksRejectsUntrackedPortalDistAssets locks the #2056 gate at
+// the executeChecks level (not just the check's own definition): a
+// git status --porcelain hit — an untracked file under cmd/goobers/portal-dist
+// that portal-dist-diff's tracked-only diff would miss — fails the stage via
+// the same generic expectEmpty contract fmt-check uses.
+func TestExecuteChecksRejectsUntrackedPortalDistAssets(t *testing.T) {
+	t.Parallel()
+	exec := &fakeExecutor{
+		outputs: map[string][]byte{
+			"portal-dist-untracked": []byte("?? cmd/goobers/portal-dist/public/new-asset.svg\n"),
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	err := executeChecks(exec, []check{
+		{label: "portal-dist-diff"},
+		{label: "portal-dist-untracked", expectEmpty: true},
+		{label: "build-goobers"},
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "portal-dist-untracked: expected no output") {
+		t.Fatalf("executeChecks() error = %v", err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("executed %d checks, want 2 (stopped before build-goobers)", len(exec.calls))
+	}
+	if !strings.Contains(stdout.String(), "new-asset.svg") {
+		t.Fatalf("stdout missing untracked asset:\n%s", &stdout)
 	}
 }
 
@@ -461,7 +594,7 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 		if current.label != "test" {
 			continue
 		}
-		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 20m -covermode=atomic -coverprofile=coverage.out ./..."
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -covermode=atomic -coverprofile=coverage.out ./..."
 		if args := strings.Join(current.args, " "); args != want {
 			t.Fatalf("timed test args = %q, want %q", args, want)
 		}
@@ -851,4 +984,65 @@ func checkByLabel(t *testing.T, all []check, label string) check {
 		t.Fatalf("checks with label %q = %d, want exactly 1", label, len(found))
 	}
 	return found[0]
+}
+
+// TestLintIsSafeAcrossConcurrentWorktrees proves concurrent local CI runs queue
+// on golangci-lint's process lock and never share its path-sensitive cache.
+func TestLintIsSafeAcrossConcurrentWorktrees(t *testing.T) {
+	t.Parallel()
+	lint := checkByLabel(t, mergeGateChecks(), "lint")
+
+	if !slices.Contains(lint.args, "--allow-serial-runners") {
+		t.Fatalf("lint args = %q, want --allow-serial-runners to queue concurrent local CI runs", lint.args)
+	}
+
+	var cache string
+	for _, variable := range lint.env {
+		if name, value, found := strings.Cut(variable, "="); found && name == "GOLANGCI_LINT_CACHE" {
+			cache = value
+		}
+	}
+	if cache == "" {
+		t.Fatal("lint check does not pin GOLANGCI_LINT_CACHE; concurrent worktrees would share one cache and one lock")
+	}
+	if !filepath.IsAbs(cache) {
+		t.Fatalf("GOLANGCI_LINT_CACHE = %q, want an absolute path", cache)
+	}
+
+	workdir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if strings.HasPrefix(cache, workdir+string(os.PathSeparator)) {
+		t.Fatalf("GOLANGCI_LINT_CACHE = %q lives inside the worktree; the checkout must stay clean", cache)
+	}
+}
+
+// TestGolangciCacheIsDistinctPerWorkingDirectory proves the key is the working
+// directory, so two sibling run worktrees can never collide, while repeated runs
+// in one checkout keep a warm cache.
+// Not parallel: t.Chdir is incompatible with a parallel test, and the working
+// directory is exactly what this asserts on.
+func TestGolangciCacheIsDistinctPerWorkingDirectory(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+
+	cacheFor := func(dir string) string {
+		t.Helper()
+		t.Chdir(dir)
+		env := golangciCacheEnvironment()
+		if len(env) != 1 {
+			t.Fatalf("golangciCacheEnvironment() = %v, want exactly one variable", env)
+		}
+		return env[0]
+	}
+
+	firstCache := cacheFor(first)
+	secondCache := cacheFor(second)
+	if firstCache == secondCache {
+		t.Fatal("two working directories resolved to one golangci-lint cache; sibling worktrees would share a lock and a path space")
+	}
+	if repeat := cacheFor(first); repeat != firstCache {
+		t.Fatalf("one working directory resolved to two golangci-lint caches (%q then %q); the cache would never stay warm", firstCache, repeat)
+	}
 }

@@ -107,6 +107,22 @@ describe("operational overview", () => {
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
   });
 
+  it("labels a failed attention row with its coded telemetry reason", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const failedRow = await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
+    expect(
+      await within(failedRow).findByText(
+        "harness.crash · Harness exited before producing a result envelope.",
+      ),
+    ).toBeInTheDocument();
+
+    const escalatedRow = screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
+    expect(
+      within(escalatedRow).getByText("Run escalated and needs human review."),
+    ).toBeInTheDocument();
+  });
+
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
     const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 60 }));
     const listRuns = vi.spyOn(client, "listRuns");
@@ -143,6 +159,29 @@ describe("operational overview", () => {
 });
 
 describe("workflow and gaggle inventory", () => {
+  it("formats webhook triggers without introducing an empty label", async () => {
+    window.location.hash = "#/workflows";
+    const fixtures = populatedDaemonFixtures();
+    const coreWorkflow = fixtures.workflows?.core?.items[0];
+    const toolsWorkflow = fixtures.workflows?.tools?.items[0];
+    if (!coreWorkflow || !toolsWorkflow) {
+      throw new Error("Populated fixtures must include core and tools workflows.");
+    }
+    coreWorkflow.triggers = [
+      { type: "webhook", events: ["pull_request", "synchronize"] },
+      { type: "schedule", schedule: "* * * * *" },
+    ];
+    toolsWorkflow.triggers = [{ type: "webhook" }];
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("Webhook · pull_request/synchronize, Schedule · * * * * *"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Webhook")).toBeInTheDocument();
+    expect(screen.queryByText(/^, Schedule/)).not.toBeInTheDocument();
+  });
+
   it("renders multiple gaggles, duplicate names, roster contracts, and unique deep links", async () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

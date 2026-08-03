@@ -200,7 +200,7 @@ func waitForStarterCount(t *testing.T, starter *daemonGateStarter, want int) {
 		if starter.count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the test starter's synchronized call count.
 	}
 	t.Fatalf("starter calls = %d, want at least %d", starter.count(), want)
 }

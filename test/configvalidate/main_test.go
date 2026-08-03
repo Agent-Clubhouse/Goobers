@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestValidateCheckedInTreesRunsEveryTreeWithoutPollutingRepository(t *testing.T) {
@@ -86,6 +88,43 @@ func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "config-under-test") {
 		t.Fatalf("failure did not identify the offending config tree:\n%s", &stderr)
+	}
+}
+
+// TestValidateGateInvalidFixtureFailsClosed is #687's deliberately-failing
+// fixture (test/fixtures/validate-gate/invalid): the config-repo PR gate's
+// self-test workflow (.github/actions/validate) exercises this fixture
+// expecting a non-zero exit, and this test pins that expectation at the Go
+// level so a change that accidentally makes the fixture valid — or breaks it
+// in some OTHER way than the intended one — is caught here rather than only
+// surfacing as a confusing CI-workflow failure.
+func TestValidateGateInvalidFixtureFailsClosed(t *testing.T) {
+	module := moduleRoot(t)
+	root := t.TempDir()
+	source := filepath.Join(root, "config-under-test")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(module, "test", "fixtures", "validate-gate", "invalid")
+	if err := os.CopyFS(source, os.DirFS(fixture)); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepository(t, root)
+
+	var stdout, stderr bytes.Buffer
+	code := validateTrees(
+		root,
+		[]checkedInTree{{path: "config-under-test", sourceTree: true}},
+		validatorCommand{path: buildValidator(t, module)},
+		&stdout,
+		&stderr,
+	)
+	if code != 1 {
+		t.Fatalf("validateTrees code=%d, want 1; stdout=%q stderr=%q", code, &stdout, &stderr)
+	}
+	want := `spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("validator diagnostic was not preserved:\n%s", &stdout)
 	}
 }
 
@@ -180,8 +219,10 @@ func TestValidatorHelperProcess(t *testing.T) {
 	}
 	if warning := os.Getenv("GO_CONFIGVALIDATE_WARNING"); warning != "" {
 		_, _ = fmt.Fprintln(os.Stdout, warning)
-	} else if filepath.Base(target) == "selfhost" {
-		_, _ = fmt.Fprintln(os.Stdout, docsUpdaterInertWarning)
+	} else if filepath.Base(target) == "reference-workflows" {
+		for _, warning := range checkedInTrees[0].allowedWarnings {
+			_, _ = fmt.Fprintln(os.Stdout, warning)
+		}
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)
@@ -236,7 +277,7 @@ func moduleRoot(t *testing.T) string {
 
 func initGitRepository(t *testing.T, root string) {
 	t.Helper()
-	cmd := exec.Command("git", "init", "-q", root)
+	cmd := testgit.Command("init", "-q", root)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
 	}

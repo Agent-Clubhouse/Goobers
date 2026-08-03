@@ -211,3 +211,28 @@ func TestDefaultMatrixExcludesWindowsArm64(t *testing.T) {
 		t.Error("DefaultTargets must NOT include windows/arm64 (deferred: never-run binary)")
 	}
 }
+
+// TestDefaultMatrixShipsArchesNeverExecutedByRecordedDecision pins the #2039
+// decision: linux/arm64 and darwin/amd64 ship in DefaultTargets even though no
+// CI leg or release step ever runs either binary — deliberately, per
+// docs/guides/releases.md "linux/arm64 and darwin/amd64 (shipped, never
+// executed)", not by accident of the release workflow's history. If either
+// arch is ever dropped, this test (and that doc section) needs a matching
+// update, not just a silent DefaultTargets edit.
+func TestDefaultMatrixShipsArchesNeverExecutedByRecordedDecision(t *testing.T) {
+	var hasLinuxArm64, hasDarwinAmd64 bool
+	for _, tgt := range DefaultTargets {
+		switch tgt.String() {
+		case "linux/arm64":
+			hasLinuxArm64 = true
+		case "darwin/amd64":
+			hasDarwinAmd64 = true
+		}
+	}
+	if !hasLinuxArm64 {
+		t.Error("DefaultTargets must include linux/arm64 (#2039 recorded decision)")
+	}
+	if !hasDarwinAmd64 {
+		t.Error("DefaultTargets must include darwin/amd64 (#2039 recorded decision)")
+	}
+}

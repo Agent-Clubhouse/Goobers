@@ -2,6 +2,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -293,6 +295,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
+		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 	}
 
 	portalPrepared := false
@@ -360,7 +363,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testArgs = append(testArgs,
 		"--",
 		"-race",
-		"-timeout", "20m",
+		"-timeout", "30m",
 		"-covermode=atomic",
 		"-coverprofile=coverage.out",
 		"./...",
@@ -368,14 +371,14 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testCheck := check{
 		label:   "test",
 		command: tools.goCommand,
-		// -timeout 20m raises the per-package ceiling above Go's 10m default
+		// -timeout 30m raises the per-package ceiling above Go's 10m default
 		// purely as headroom against macOS hosted-runner contention (#1124):
 		// the cmd/goobers integration package legitimately runs long under a
-		// loaded runner, and a timeout there panics the whole suite. This is
-		// not masking a hang — the affected tests pass locally at high
-		// -count and the OTLP-flush blocking that compounded it is fixed in
-		// this change (telemetry soft-fails an unreachable collector). Normal
-		// runs finish in ~2m, so the higher ceiling never slows a green run.
+		// loaded runner, and a timeout there panics the whole suite. The hermetic
+		// environment also excludes an ambient OTLP collector so unavailable
+		// infrastructure cannot consume this headroom with exporter retries.
+		// Normal runs finish much sooner, so the higher ceiling never slows a
+		// green run.
 		args: testArgs,
 		env: append(
 			append([]string(nil), testEnvironment...),
@@ -402,7 +405,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		shippedWorkflowCheck,
 		schemaDescriptionCoverageCheck,
 		testCheck,
-		check{label: "lint", command: tools.golangciCommand, args: []string{"run"}, group: groupLint},
+		check{
+			label:   "lint",
+			command: tools.golangciCommand,
+			args:    []string{"run", "--allow-serial-runners"},
+			env:     golangciCacheEnvironment(),
+			group:   groupLint,
+		},
 		check{
 			label:        "portal-test",
 			command:      tools.npmCommand,
@@ -439,6 +448,28 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			args:         []string{"--prefix", "portal", "run", "test:contract"},
 			windowsBatch: true,
 			group:        groupChecks,
+		},
+		// The CRD manifests are a published contract — a field present in the
+		// Go API types but absent from config/crd/bases is a contract that
+		// silently lies about the DSL, and the manifests have drifted before
+		// with nothing going red. Mirrors portal-contract-generate/-diff: a
+		// pinned-tool regen (controller-gen@v0.16.5, matching Makefile's
+		// CONTROLLER_GEN_VERSION — keep both in sync) followed by a git diff
+		// that fails the gate on any drift.
+		check{
+			label:   "manifests-generate",
+			command: tools.goCommand,
+			args: []string{
+				"run", "sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5",
+				"crd:allowDangerousTypes=true", "paths=./api/v1alpha1/...", "output:crd:dir=config/crd/bases",
+			},
+			group: groupChecks,
+		},
+		check{
+			label:   "manifests-diff",
+			command: tools.gitCommand,
+			args:    []string{"diff", "--exit-code", "--", "config/crd/bases"},
+			group:   groupChecks,
 		},
 	)
 	return result
@@ -513,6 +544,21 @@ func portalPreparationChecks(tools toolchain) []check {
 			args:    []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"},
 			group:   groupChecks,
 		},
+		// portal-dist-diff above only reports TRACKED-file changes — a newly
+		// added file the build produced (e.g. the first plain, non-hashed
+		// portal/public/ asset vite copies verbatim, referenced by no hashed
+		// chunk) sits untracked and passes that diff clean, even though it's
+		// missing from every other checkout's git history until someone
+		// remembers to `git add` it. `git status --porcelain` reports
+		// untracked files too, closing that blind spot. #2056.
+		{
+			label:       "portal-dist-untracked",
+			command:     tools.gitCommand,
+			args:        []string{"status", "--porcelain", "--", "cmd/goobers/portal-dist"},
+			capture:     true,
+			expectEmpty: true,
+			group:       groupChecks,
+		},
 	}
 }
 
@@ -541,12 +587,16 @@ func executeChecksAt(
 			return fmt.Errorf("%s: %w", current.label, err)
 		}
 		if current.expectEmpty && strings.TrimSpace(string(output)) != "" {
-			_, _ = fmt.Fprintln(stdout, "These files are not gofmt-clean:")
+			// expectEmpty is a generic "this command's output must be empty
+			// or the gate fails" contract (fmt-check's gofmt -l, #2056's
+			// portal-dist-untracked git status --porcelain, ...) — the
+			// message names the check, not any one consumer's meaning.
+			_, _ = fmt.Fprintf(stdout, "%s produced unexpected output:\n", current.label)
 			_, _ = stdout.Write(output)
 			if output[len(output)-1] != '\n' {
 				_, _ = fmt.Fprintln(stdout)
 			}
-			return fmt.Errorf("%s: files are not gofmt-clean", current.label)
+			return fmt.Errorf("%s: expected no output", current.label)
 		}
 	}
 	return nil
@@ -579,6 +629,30 @@ func commandInvocation(current check, goos string, getenv func(string) string) (
 	args = append(args, "/d", "/s", "/c", current.command)
 	args = append(args, current.args...)
 	return envOrDefault(getenv, "ComSpec", "cmd.exe"), args
+}
+
+// golangciCacheEnvironment pins golangci-lint to a cache directory derived from
+// the working directory, because its cache is neither concurrency-safe nor
+// path-safe and Goobers runs N worktrees against one host at a time.
+//
+// A cached analysis result carries the path it was computed against, so a run in
+// worktree A can be handed a diagnostic naming a file in sibling worktree B — a
+// violation the failing run cannot fix, because the file is not in its checkout.
+// The separate process-wide runner lock is handled by --allow-serial-runners.
+//
+// Keying on the working directory rather than minting a fresh directory keeps
+// the cache warm for the common case of repeated runs in one checkout, while
+// giving every worktree its own lock and its own path space. Falls back to
+// inheriting the ambient environment when the working directory cannot be
+// resolved: a shared cache is the status quo, not a regression.
+func golangciCacheEnvironment() []string {
+	workdir, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(workdir))
+	cache := filepath.Join(os.TempDir(), "goobers-golangci-lint", hex.EncodeToString(digest[:])[:16])
+	return []string{"GOLANGCI_LINT_CACHE=" + cache}
 }
 
 func mergeEnvironment(base, overrides []string, caseInsensitive bool) []string {

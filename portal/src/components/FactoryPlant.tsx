@@ -70,6 +70,7 @@ export function FactoryPlant({
       data-motion={reducedMotion ? "reduced" : "full"}
       data-responsive-layout="fit"
       role="group"
+      style={{ height: `${CLASSIC_PLANT_HEIGHT}px`, width: `${CLASSIC_PLANT_WIDTH}px` }}
     >
       <div className="factory-plant-scene">
         <img

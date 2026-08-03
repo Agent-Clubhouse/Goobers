@@ -66,6 +66,12 @@ type CreateOptions struct {
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
+	// Sparse declares repo-relative path cones (project.checkout.sparse,
+	// #649): when non-empty, Create materializes a cone-mode sparse checkout
+	// containing only these cones plus root-level files, instead of the full
+	// tree. Empty (the default) is a full checkout — byte-identical to Create
+	// without this field.
+	Sparse []string
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -102,6 +108,12 @@ type Worktree struct {
 	// (see Manager.checkSymlinkSupport, #643); empty on darwin/linux. The
 	// runner journals any entries as a runner.annotation event.
 	Warnings []string
+	// PinnedWorkspaceCreated reports whether PreparePinned/AcquirePinned
+	// materialized the stable workspace during this call (a fresh clone) as
+	// opposed to reusing an existing one. Always false for disposable
+	// worktrees. Callers (e.g. the large-repo benchmark harness) use this to
+	// distinguish cold-start from warm-reuse timing.
+	PinnedWorkspaceCreated bool
 
 	manager  *Manager
 	key      string
@@ -113,6 +125,9 @@ type Worktree struct {
 	// remote operation needing the credential environment and transient-
 	// failure classification, exactly like Create's own checkout.
 	partialMirror bool
+	pinned        bool
+	repoDir       string
+	assetGuard    bool
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -130,7 +145,7 @@ func validRunID(id string) bool {
 // needed) and adds a new worktree off it for opts.BaseRef, keyed by
 // opts.RunID. Two calls with different RunIDs against the same repo may run
 // concurrently and never observe each other's worktree contents.
-func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, error) {
+func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, retErr error) {
 	if opts.RunID == "" {
 		return nil, fmt.Errorf("worktree: RunID is required")
 	}
@@ -157,6 +172,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		return nil, err
 	}
 	key := repoKey(opts.RepoURL)
+	directory := worktreeDirectoryName(opts.RunID)
+	path := filepath.Join(m.runsDirForKey(key), directory)
 
 	// Worktree add mutates the repo's administrative worktree list; serialize
 	// it per repo alongside clone/fetch so concurrent Creates for the same
@@ -170,7 +187,22 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 	}()
 
-	path := filepath.Join(m.runsDirForKey(key), opts.RunID)
+	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
+	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
+		refs := []string{opts.BaseRef}
+		if existingBranch {
+			refs[0] = opts.Branch
+			if opts.SyncBase {
+				refs = append(refs, opts.BaseRef)
+			}
+		}
+		for _, ref := range refs {
+			if err := preflightPathLength(ctx, repoDir, ref, path, limit); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
 		// worktree at this exact key can only be a previous attempt of the
@@ -182,7 +214,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// concurrent second attempt of the same (run, stage) never happens
 		// — so it is always safe to clear it and start fresh rather than
 		// refusing forever until an operator does disk surgery.
-		if err := m.forceClear(ctx, key, path); err != nil {
+		if err := m.forceClear(ctx, key, path, opts.RunID); err != nil {
 			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -198,8 +230,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// worktree. That is what makes local-ci and the reviewer gate evaluate the
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
+	sparse := len(opts.Sparse) > 0
 	args := []string{"worktree", "add"}
-	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
+	if sparse {
+		// Skip materializing the full tree here; sparse-checkout is configured
+		// below, before the explicit checkout that actually populates the
+		// working directory, so only the declared cones are ever written to
+		// disk (#649).
+		args = append(args, "--no-checkout")
+	}
+	checkoutTarget := opts.BaseRef
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
@@ -209,6 +249,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		// branch in two live worktrees, which holds here because stages run
 		// sequentially and each stage's worktree is removed before the next.
 		args = append(args, path, opts.Branch)
+		checkoutTarget = opts.Branch
 	case opts.RequireExistingBranch:
 		// Never silently substitute a fresh branch off BaseRef for a branch
 		// the caller asserted already exists — see RequireExistingBranch.
@@ -216,7 +257,40 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	default:
 		// First stage of the run: create the run branch off BaseRef.
 		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
+		checkoutTarget = opts.Branch
 	}
+
+	pid := os.Getpid()
+	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
+	mk := marker{
+		RunID:        opts.RunID,
+		OwnerRunID:   opts.OwnerRunID,
+		Directory:    directory,
+		Branch:       opts.Branch,
+		PID:          pid,
+		PIDStartedAt: startedAt,
+		CreatedAt:    time.Now(),
+		Status:       statusActive,
+	}
+	// Persist ownership before git creates the directory so a crash during
+	// worktree add never leaves an opaque hash that cleanup cannot resolve.
+	ownershipPath := m.ownershipPath(key, directory)
+	if err := writeMarker(ownershipPath, mk); err != nil {
+		return nil, fmt.Errorf("worktree: persist ownership for run %s: %w", opts.RunID, err)
+	}
+	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
+		_ = os.Remove(ownershipPath)
+		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
+	}
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		if err := m.forceClear(context.WithoutCancel(ctx), key, path, opts.RunID); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("worktree: clean up failed create for run %s: %w", opts.RunID, err))
+		}
+	}()
+
 	partialMirror := m.partialClone && mirrorIsPartial(ctx, repoDir)
 	if partialMirror {
 		// Materializing a tree from a blobless mirror fetches missing blobs
@@ -232,8 +306,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	startRef, err := gitOutput(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
-		cleanupErr := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
-		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, errors.Join(err, cleanupErr))
+		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
 
 	// A bot identity local to THIS worktree's own .git/config (`git config`
@@ -245,6 +318,27 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	}
 	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	}
+	if sparse {
+		// Cone mode only, per the design (path-list "legacy" sparse-checkout
+		// patterns are out of scope, #649): a plain, fast set of directory
+		// prefixes rather than full gitignore-style pattern matching.
+		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
+		if err := runGit(ctx, path, setArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
+		}
+		// The actual materialization: --no-checkout above left the working
+		// directory empty, so this checkout is what populates it — and, with
+		// sparse-checkout already configured, populates only the declared
+		// cones plus root-level files instead of the full tree.
+		checkoutArgs := []string{"checkout", checkoutTarget}
+		if partialMirror {
+			if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
+				return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+			}
+		} else if err := runGit(ctx, path, checkoutArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+		}
 	}
 	if opts.SyncBase && existingBranch {
 		mergeArgs := []string{"merge", "--ff", "--no-edit", opts.BaseRef}
@@ -262,8 +356,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 		}
 		if mergeErr != nil {
 			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
-			cleanupErr := m.forceClear(ctx, key, path)
-			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, cleanupErr)
+			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, nil)
 		}
 	}
 
@@ -273,23 +366,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	// no-op on darwin/linux, where symlinks check out natively.
 	warnings, err := m.checkSymlinkSupport(ctx, path)
 	if err != nil {
-		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 		return nil, fmt.Errorf("worktree: inspect symlinks for run %s: %w", opts.RunID, err)
 	}
 
-	mk := marker{
-		RunID:      opts.RunID,
-		OwnerRunID: opts.OwnerRunID,
-		Branch:     opts.Branch,
-		StartRef:   startRef,
-		PID:        os.Getpid(),
-		CreatedAt:  time.Now(),
-		Status:     statusActive,
-	}
+	mk.StartRef = startRef
 	if err := writeMarker(m.markerPath(key, opts.RunID), mk); err != nil {
-		// Without a marker, Reap can never distinguish this worktree from an
-		// orphan, so don't leave it behind half-registered.
-		_ = runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 		return nil, fmt.Errorf("worktree: register run %s: %w", opts.RunID, err)
 	}
 
@@ -309,6 +390,31 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Worktree, er
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string, limit PathLengthLimit) error {
+	out, err := rawGitOutput(ctx, repoDir, nil, "ls-tree", "-r", "-z", "--name-only", ref)
+	if err != nil {
+		return fmt.Errorf("worktree: path-length preflight list tracked paths at %q: %w", ref, err)
+	}
+	var deepest string
+	for _, entry := range strings.Split(string(out), "\x00") {
+		if len(filepath.FromSlash(entry)) > len(filepath.FromSlash(deepest)) {
+			deepest = entry
+		}
+	}
+	if deepest == "" {
+		return nil
+	}
+	available := limit.MaxPathLength - len(checkoutPath) - 1 - limit.BuildOutputAllowance
+	required := len(filepath.FromSlash(deepest))
+	if required <= available {
+		return nil
+	}
+	return fmt.Errorf(
+		"worktree: path-length preflight refused checkout: tracked path %q requires %d characters but only %d are available (maximum %d, checkout prefix %d, build-output allowance %d); shorten the instance root, raise repos[].pathLength.maxPathLength, reduce the allowance, or set repos[].pathLength.disabled: true",
+		deepest, required, available, limit.MaxPathLength, len(checkoutPath)+1, limit.BuildOutputAllowance,
+	)
 }
 
 func mergeConflictFiles(ctx context.Context, path string) ([]string, error) {
@@ -346,6 +452,10 @@ func baseSyncFailure(opts CreateOptions, mergeErr error, conflictingFiles []stri
 // workspace, allowing crash recovery to distinguish it from a stage for which
 // the same path is ordinary repository content.
 func (wt *Worktree) ActivateAssetPathGuard() error {
+	if wt.pinned {
+		wt.assetGuard = true
+		return nil
+	}
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
 	mk, err := readMarker(markerPath)
 	if err != nil {
@@ -362,6 +472,9 @@ func (wt *Worktree) ActivateAssetPathGuard() error {
 // directory into the index or any commit it added, rewinding those commits so
 // the reserved content cannot cross the shared run-branch boundary.
 func (wt *Worktree) ValidateReservedPaths(ctx context.Context) error {
+	if wt.pinned && !wt.assetGuard {
+		return nil
+	}
 	collision := fmt.Errorf("%w: %s must not be tracked on the run branch", gooberassets.ErrWorkspaceCollision, gooberassets.WorkspaceDir)
 	branchRef, branchCommitted, err := wt.inspectReservedBranch(ctx)
 	if err != nil {
@@ -402,7 +515,7 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 	if wt.Branch == "" {
 		return "", false, nil
 	}
-	repoDir := wt.manager.repoDirForKey(wt.key)
+	repoDir := wt.backingRepoDir()
 	refName := "refs/heads/" + wt.Branch
 	currentRef, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", refName)
 	if err != nil {
@@ -418,12 +531,19 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 func (wt *Worktree) rollbackBranch(ctx context.Context, currentRef string) error {
 	return runGit(
 		ctx,
-		wt.manager.repoDirForKey(wt.key),
+		wt.backingRepoDir(),
 		"update-ref",
 		"refs/heads/"+wt.Branch,
 		wt.startRef,
 		currentRef,
 	)
+}
+
+func (wt *Worktree) backingRepoDir() string {
+	if wt.repoDir != "" {
+		return wt.repoDir
+	}
+	return wt.manager.repoDirForKey(wt.key)
 }
 
 func (wt *Worktree) restoreReservedBranch(ctx context.Context) error {
@@ -466,6 +586,9 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if baseRef == "" {
 		return nil, fmt.Errorf("worktree: Diff requires a baseRef")
 	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
 	args := []string{"diff", baseRef + "...HEAD"}
 	var out []byte
 	var err error
@@ -485,6 +608,28 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	return out, nil
 }
 
+// HasCommitsAheadOf reports whether HEAD contains commits not reachable from
+// baseRef.
+func (wt *Worktree) HasCommitsAheadOf(ctx context.Context, baseRef string) (bool, error) {
+	if baseRef == "" {
+		return false, fmt.Errorf("worktree: HasCommitsAheadOf requires a baseRef")
+	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
+	commit, err := gitOutput(ctx, wt.Path, "rev-list", "--max-count=1", baseRef+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect commits ahead of %s for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return commit != "", nil
+}
+
+// HasNewCommits reports whether this stage attempt committed work after the
+// HEAD at which its worktree was created.
+func (wt *Worktree) HasNewCommits(ctx context.Context) (bool, error) {
+	return wt.HasCommitsAheadOf(ctx, wt.startRef)
+}
+
 // forceClear tears down whatever is left at path from a previous, never-torn-
 // down attempt at this same worktree key (issue #136's adopt-and-reset),
 // so Create can proceed as if the key were fresh. Tries git's own worktree
@@ -494,9 +639,8 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 // git's record but left the directory), falls back to removing the
 // directory directly and pruning git's administrative state. The marker is
 // cleared too — Create writes a fresh one immediately after.
-func (m *Manager) forceClear(ctx context.Context, key, path string) error {
+func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error {
 	repoDir := m.repoDirForKey(key)
-	runID := filepath.Base(path)
 	markerPath := m.markerPath(key, runID)
 	mk, markerErr := readMarker(markerPath)
 	switch {
@@ -507,8 +651,10 @@ func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	}
-	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
-		if err := os.RemoveAll(path); err != nil {
+	if err := retryOnFileLock(ctx, func() error {
+		return runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+	}); err != nil {
+		if err := retryOnFileLock(ctx, func() error { return os.RemoveAll(path) }); err != nil {
 			return fmt.Errorf("remove stale worktree directory: %w", err)
 		}
 		if err := runGit(ctx, repoDir, "worktree", "prune"); err != nil {
@@ -517,6 +663,9 @@ func (m *Manager) forceClear(ctx context.Context, key, path string) error {
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale marker: %w", err)
+	}
+	if err := os.Remove(m.ownershipPath(key, filepath.Base(path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale ownership record: %w", err)
 	}
 	return nil
 }
@@ -533,6 +682,10 @@ type RemoveOptions struct {
 // disk and unregisters it; with RemoveOptions.Keep it leaves the worktree in
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
+	if wt.pinned {
+		wt.assetGuard = false
+		return nil
+	}
 	repoDir := wt.manager.repoDirForKey(wt.key)
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
 
@@ -571,7 +724,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return nil
 	}
 
-	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path); err != nil {
+	if err := retryOnFileLock(ctx, func() error {
+		return runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path)
+	}); err != nil {
 		if worktreeMeasured && markerErr == nil {
 			if usageErr := writeMarker(markerPath, mk); usageErr != nil {
 				measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))
@@ -581,6 +736,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: unregister run %s: %w", wt.RunID, err)
+	}
+	if err := os.Remove(wt.manager.ownershipPath(wt.key, filepath.Base(wt.Path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: remove ownership record for run %s: %w", wt.RunID, err)
 	}
 	return nil
 }

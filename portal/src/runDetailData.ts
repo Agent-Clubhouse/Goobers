@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
+  BranchStatus,
   DaemonClient,
+  GraphTerminal,
   RunDetail,
   RunEvent,
+  RunTransition,
   WorkflowGraph,
+  WorkflowGraphEdge,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
@@ -185,6 +189,70 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
   return [...events].sort((left, right) => left.seq - right.seq || left.branch - right.branch);
 }
 
+/**
+ * The single authoritative "why" for a failed run, mirroring what EscalationPanel
+ * gives an escalated run and RunOutcome gives a completed one. A failed run's
+ * RunDetail carries no escalation/outcome cause (readservice only populates those
+ * for the escalated/completed phases), so — until the read model projects a
+ * FailureCause of its own — the portal derives it here from the durable journal:
+ * the failing stage attempt carries the coded ErrorDetail (the same field
+ * readservice reads in stageEscalationReason). This is what turns the run page
+ * from "it failed, go dig" into "failed: harness.crash — Harness exited before
+ * producing a result envelope" at a glance.
+ */
+export interface RunFailure {
+  /** Human-readable failure reason, always non-empty. */
+  message: string;
+  /** Coded error, when the failing event recorded one (e.g. "harness.crash"). */
+  code?: string;
+  /** Stage that failed, when the failure was attributable to one. */
+  stage?: string;
+  /** Attempt number of the failing stage visit, when recorded. */
+  attempt?: number;
+  /** Sequence of the durable event that carried the failure, for deep-linking. */
+  causalEventSeq?: number;
+}
+
+export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | undefined {
+  // Escalated runs get EscalationPanel and completed runs get RunOutcome; this is
+  // strictly the failed axis, so the two banners never fight over the same run.
+  if (run.phase !== "failed") {
+    return undefined;
+  }
+
+  let errored: RunEvent | undefined;
+  let failingStage: RunEvent | undefined;
+  let finished: RunEvent | undefined;
+  for (const event of orderRunEvents(events)) {
+    if (event.error && (event.error.code || event.error.message)) {
+      errored = event;
+    }
+    if (
+      event.type === "stage.finished" &&
+      (event.status === "failure" || event.status === "blocked")
+    ) {
+      failingStage = event;
+    }
+    if (event.type === "run.finished") {
+      finished = event;
+    }
+  }
+
+  const causal = errored ?? failingStage ?? finished;
+  const stage = errored?.stage ?? failingStage?.stage;
+  const attempt = errored?.attempt ?? failingStage?.attempt;
+  const code = errored?.error?.code?.trim() || undefined;
+  const errorText = errored?.error?.message?.trim() || errored?.error?.code?.trim();
+  const message =
+    errorText ||
+    finished?.reason?.trim() ||
+    (stage
+      ? `Stage ${humanize(stage)} failed without a recorded reason.`
+      : "The run failed without a recorded reason.");
+
+  return { message, code, stage, attempt, causalEventSeq: causal?.seq };
+}
+
 export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
   if (event.stage) {
     if (!isTranscriptEvent(event)) {
@@ -194,6 +262,13 @@ export function eventNodeId(event: RunEvent, runId?: string): string | undefined
     return runPrefix && event.stage.startsWith(runPrefix)
       ? event.stage.slice(runPrefix.length)
       : event.stage;
+  }
+  if (event.type === "parallel.started" || event.type === "parallel.finished") {
+    // A parallel container is its own graph node (id === declared name);
+    // branch.* events have no single node of their own — a branch spans
+    // multiple stage nodes, so they are attributed via deriveBranchStates
+    // instead, keyed by branch name rather than a graph node id.
+    return event.parallel;
   }
   return event.artifact?.stage || event.gate;
 }
@@ -369,6 +444,7 @@ export function deriveNodeStates(
     switch (event.type) {
       case "stage.started":
       case "gate.started":
+      case "parallel.started":
         states[nodeId] = "running";
         break;
       case "stage.finished":
@@ -376,6 +452,13 @@ export function deriveNodeStates(
         break;
       case "gate.evaluated":
         states[nodeId] = stateFromGate(event);
+        break;
+      case "parallel.finished":
+        // The container's own pending/running/completed axis tracks whether
+        // execution REACHED the join, not what the branches inside it did —
+        // per-branch outcome (succeeded/failed/cancelled/...) is a separate
+        // signal carried by deriveBranchStates, not smashed into this state.
+        states[nodeId] = "completed";
         break;
     }
   }
@@ -394,6 +477,150 @@ export function deriveNodeStates(
   }
 
   return states;
+}
+
+function traversedEdgeKey(source: string, target: string): string {
+  return `${source}->${target}`;
+}
+
+function traversedTerminalKey(source: string, terminal: GraphTerminal): string {
+  return `${source}=>${terminal}`;
+}
+
+// A terminal transition's TerminalStatus is the run's/branch's actual outcome
+// (journal.RunPhase or journal.BranchStatus on the Go side); this maps it to
+// the declared graph's own terminal vocabulary. "failed" has no entry: a bare
+// stage failure with no declared gate route (#1427's task-sourced terminal
+// case) never corresponds to a declared edge, and #1427/#1430 both require
+// never fabricating one.
+const TERMINAL_STATUS_TO_GRAPH_TERMINAL: Partial<Record<string, GraphTerminal>> = {
+  completed: "complete",
+  aborted: "abort",
+  escalated: "escalate",
+};
+
+// TraversedEdges maps an edge key (see traversedEdgeKey/traversedTerminalKey)
+// to the causal sequence of its LAST crossing at or before the playhead — the
+// edge-level analogue of deriveNodeStates' state map. The value, not just
+// membership, is what lets a per-edge description read "Traversed at
+// sequence 23" (#1431) rather than a bare yes/no.
+export type TraversedEdges = Map<string, number>;
+
+// deriveTraversedEdges is deriveNodeStates' edge-level counterpart: it answers
+// "which DECLARED edges has the run actually crossed, as of selectedSeq, and
+// at what sequence" from the run's exact transition history (#1427) — never
+// by inferring an edge was taken merely because both endpoints were visited,
+// which false-positives on any cyclic workflow (#1430): a forward path
+// visits both endpoints of an untaken repass edge for unrelated reasons.
+export function deriveTraversedEdges(
+  transitions: RunTransition[] | undefined,
+  selectedSeq: number,
+): TraversedEdges {
+  const traversed: TraversedEdges = new Map();
+  if (!transitions) {
+    return traversed;
+  }
+  // #1427's ProjectTransitions sorts rows by causal sequence before
+  // returning, so the same "break once past the playhead" idiom
+  // deriveNodeStates uses above applies here unchanged — and a repeatedly
+  // traversed edge's key is overwritten with its LATEST occurrence's
+  // sequence, so repeated repasses never create phantom/duplicate edges.
+  for (const transition of transitions) {
+    if (transition.seq > selectedSeq) {
+      break;
+    }
+    if (transition.terminal) {
+      const terminal = transition.status
+        ? TERMINAL_STATUS_TO_GRAPH_TERMINAL[transition.status]
+        : undefined;
+      if (terminal) {
+        traversed.set(traversedTerminalKey(transition.source, terminal), transition.seq);
+      }
+      continue;
+    }
+    if (transition.target) {
+      traversed.set(traversedEdgeKey(transition.source, transition.target), transition.seq);
+    }
+  }
+  return traversed;
+}
+
+// edgeTraversed reports whether a declared graph edge is on the executed path,
+// per the map deriveTraversedEdges produced.
+export function edgeTraversed(
+  traversedEdges: TraversedEdges | undefined,
+  edge: WorkflowGraphEdge,
+): boolean {
+  return traversedEdgeSeq(traversedEdges, edge) !== undefined;
+}
+
+// traversedEdgeSeq returns the causal sequence a declared graph edge was last
+// crossed at, or undefined when it was never crossed as of the playhead.
+export function traversedEdgeSeq(
+  traversedEdges: TraversedEdges | undefined,
+  edge: WorkflowGraphEdge,
+): number | undefined {
+  if (!traversedEdges) {
+    return undefined;
+  }
+  return edge.terminal
+    ? traversedEdges.get(traversedTerminalKey(edge.source, edge.terminal))
+    : traversedEdges.get(traversedEdgeKey(edge.source, edge.target));
+}
+
+// BranchState is a declared branch's execution state as of the playhead:
+// "running" once its branch.started event has fired, or its terminal
+// BranchStatus once branch.finished has. Keyed by BranchName (what
+// WorkflowGraphEdge.branch carries on a parallel's fan-out edges), not by
+// the numeric branch id — the two graphs (declared vs. executed) only share
+// the name.
+export type BranchState = "running" | BranchStatus;
+
+export interface BranchStateEntry {
+  state: BranchState;
+  seq: number;
+}
+
+// deriveBranchStates is deriveNodeStates'/deriveTraversedEdges' per-branch
+// counterpart: a declared branch has no single graph node of its own (it
+// spans however many stage nodes it declares), so its state is read directly
+// off branch.started/branch.finished events rather than off any node id.
+export function deriveBranchStates(
+  events: RunEvent[],
+  selectedSeq: number,
+): Map<string, BranchStateEntry> {
+  const states = new Map<string, BranchStateEntry>();
+  for (const event of orderRunEvents(events)) {
+    if (event.seq > selectedSeq) {
+      break;
+    }
+    if (event.type === "branch.started" && event.branchName) {
+      states.set(event.branchName, { state: "running", seq: event.seq });
+    } else if (event.type === "branch.finished" && event.branchName && event.branchStatus) {
+      states.set(event.branchName, { state: event.branchStatus, seq: event.seq });
+    }
+  }
+  return states;
+}
+
+// branchStateLabel is the non-color-dependent text for a BranchState — the
+// primary way #1567 distinguishes e.g. a cancelled branch from a failed one:
+// by what the label literally says, not by hue.
+export function branchStateLabel(state: BranchState): string {
+  switch (state) {
+    case "running":
+      return "Running";
+    case "succeeded":
+      return "Succeeded";
+    case "failed":
+      return "Failed";
+    case "timed-out":
+      return "Timed out";
+    case "cancelled":
+      return "Cancelled";
+    case "no-output":
+      return "No output";
+  }
 }
 
 export function eventHeading(event: RunEvent): string {
@@ -422,6 +649,10 @@ export function eventHeading(event: RunEvent): string {
     repaired: "Journal repaired",
     "runner.annotation": "Runner annotation",
     "span.recorded": "Span recorded",
+    "parallel.started": "Parallel started",
+    "parallel.finished": "Parallel finished",
+    "branch.started": "Branch started",
+    "branch.finished": "Branch finished",
   };
   return headings[event.type] ?? humanize(event.type);
 }
@@ -488,6 +719,28 @@ export function eventSummary(
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
+    case "parallel.started":
+      return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
+    case "branch.started":
+      return event.branchName ? `Branch ${event.branchName} started.` : "A branch started.";
+    case "branch.finished":
+      if (!event.branchName) {
+        return "A branch finished.";
+      }
+      return event.branchStatus
+        ? `Branch ${event.branchName} finished as ${event.branchStatus}.`
+        : `Branch ${event.branchName} finished.`;
+    case "parallel.finished": {
+      const label = event.parallel ? `Parallel ${event.parallel}` : "The parallel state";
+      if (!event.completeness || event.completeness.length === 0) {
+        return `${label} finished.`;
+      }
+      const succeeded = event.completeness.filter((branch) => branch.status === "succeeded").length;
+      const detail = event.completeness
+        .map((branch) => `${branch.name}: ${branch.status}`)
+        .join(", ");
+      return `${label} finished — ${succeeded}/${event.completeness.length} branches succeeded (${detail}).`;
+    }
     default:
       return event.reason || event.name || event.target || "Durable journal event.";
   }
@@ -656,4 +909,39 @@ function stateFromStatus(
 function humanize(value: string): string {
   const words = value.replace(/[._-]+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+}
+
+// UNSCOPED_EVENT_STAGE labels a journal event that belongs to the run itself
+// rather than to any one stage or gate — run.started, run.finished, and the
+// bare artifact records the runner writes between stages.
+export const UNSCOPED_EVENT_STAGE = "—";
+
+// eventStage is the scope a journal row is scanned by: the stage that produced
+// the event, or the gate that evaluated it. Both exist on RunEvent and only one
+// is ever set, so a single column can carry either — which is what makes the
+// ledger scannable at all. Reading a run means finding "the second implement
+// attempt", and until this was a column that meant reading every row's prose.
+export function eventStage(event: RunEvent): string {
+  return event.stage ?? event.gate ?? UNSCOPED_EVENT_STAGE;
+}
+
+// runEventStages lists every distinct scope present in a run, in first-seen
+// durable order, so a filter can offer exactly the stages this run visited
+// rather than every stage the workflow declares. The unscoped bucket sorts
+// last: it is a fallback, never something a reader is looking for first.
+export function runEventStages(events: RunEvent[]): string[] {
+  const seen = new Set<string>();
+  const stages: string[] = [];
+  for (const event of orderRunEvents(events)) {
+    const stage = eventStage(event);
+    if (stage === UNSCOPED_EVENT_STAGE || seen.has(stage)) {
+      continue;
+    }
+    seen.add(stage);
+    stages.push(stage);
+  }
+  if (events.some((event) => eventStage(event) === UNSCOPED_EVENT_STAGE)) {
+    stages.push(UNSCOPED_EVENT_STAGE);
+  }
+  return stages;
 }

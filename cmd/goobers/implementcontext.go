@@ -107,7 +107,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	provider := newGitHubProvider(token)
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	openTouches, err := openPRTouches(ctx, provider, repo, base)
 	if err != nil {
 		return failProviderStage(stderr, "gather implementation hot-file map", err, implementationContextResultFile)
@@ -173,6 +173,9 @@ func shippedReviewerVerdictTaxonomy() reviewerVerdictTaxonomyDigest {
 			{Class: apiv1.FindingRebaseNeeded, Meaning: "the base advanced and the pull request must be rebased"},
 			{Class: apiv1.FindingConflict, Meaning: "a rebase does not apply cleanly and requires conflict resolution"},
 			{Class: apiv1.FindingSubstantive, Meaning: "a defect, regression, drift, or review concern requires a code change"},
+			{Class: apiv1.FindingMissingTests, Meaning: "new or changed behavior lacks required test coverage"},
+			{Class: apiv1.FindingScopeCreep, Meaning: "changes outside the requested scope must be removed"},
+			{Class: apiv1.FindingContractChange, Meaning: "an unauthorized load-bearing contract change requires correction or escalation"},
 			{Class: apiv1.FindingCrossPRBlocked, Meaning: "the change is correct in isolation but must wait for named sibling pull requests"},
 		},
 	}

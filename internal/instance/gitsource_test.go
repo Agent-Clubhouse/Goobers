@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestGitSourceLocalTracksCommittedMain(t *testing.T) {
@@ -324,11 +325,11 @@ func assertGitSourceTestFile(t *testing.T, root, name, want string) {
 
 func runGitSourceTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=3",
 		"GIT_CONFIG_KEY_0=core.fsync",
 		"GIT_CONFIG_VALUE_0=none",

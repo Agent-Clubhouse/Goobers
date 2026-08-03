@@ -44,6 +44,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"record-merge-refusal":          {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"record-remediation-checkpoint": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -56,12 +57,15 @@ var policyActionContracts = map[string]policyActionContract{
 
 var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
+	"backlog-assignment":     {"update-issue"},
+	"check-issue-staleness":  {"route-verdict"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
 	"merge-queue-poll":       {"watch-merge-queue", "route-queue-outcome", "delete-branch"},
 	"open-pr":                {"open-or-update-pr"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
+	"pr-claim":               {"release-pr-claim"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},

@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha7` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha8` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -122,6 +122,14 @@ The runner hands the stage an `InvocationEnvelope`:
   fields only: config-side declarations such as `project.checkout` (B2, #649)
   are consumed by the runner before a stage runs and never ride the envelope
   (`RepoRef.EnvelopeRef`).
+- `checkoutCones` — present only when the runner honored a
+  `project.checkout.sparse` declaration (#649): the repo-relative path cones
+  actually materialized, keyed by workspace identity (`""` for the primary
+  `workspace`, else the matching `additionalWorkspaces[i].name`). Absent (the
+  common case) means every workspace has a full checkout. This is how a
+  partial checkout is declared to a stage — deliberately a sibling of
+  `repoRef` rather than a field on it, so `repoRef`'s own shape never changes
+  regardless of checkout config.
 
 ## Where a stage writes its output
 
@@ -677,7 +685,7 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
 | `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
-| `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked `goobers:needs-human` with its ready/claimed markers removed (#539's convention). If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
+| `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked with its ready/claimed markers removed (#539's convention). The park label depends on whether `outputs.blockedBy` named a blocker (#2028): a named, non-cyclic blocker parks `goobers:blocked-on-sibling` (self-healing — see below); an unattributed block, or a detected circular dependency, parks `goobers:needs-human`. If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
 | `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
@@ -719,10 +727,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > (§"Where a stage writes its output" above), so do **not** attempt an array
 > or object here; a prior live occurrence tried exactly that and was
 > schema-rejected, burning a whole attempt for nothing. Omit `outputs.blockedBy`
-> when the block isn't attributable to specific open issues. Every blocked
-> result parks the driving issue `goobers:needs-human`; `blockedBy` additionally
-> prevents premature re-selection if a human re-promotes it while a named
-> dependency remains open.
+> when the block isn't attributable to specific open issues — that case parks
+> `goobers:needs-human` (nothing to reason about but a human). Naming a
+> blocker instead parks `goobers:blocked-on-sibling` (#2028: a self-healing
+> dependency wait, not a decision), and `blockedBy` additionally prevents
+> premature re-selection if the item is re-promoted while a named dependency
+> remains open. See `docs/design/needs-human-taxonomy.md` for the full model,
+> including the circular-dependency exception (still `goobers:needs-human` —
+> it can't self-heal).
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a
@@ -775,7 +787,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha7` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha8` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -786,7 +798,9 @@ from the diff alone.
   pointers used at parallel joins; `v1alpha6` admits the optional `repoRef.project`
   invocation field for Azure DevOps repository identity; `v1alpha7` adds
   input-integrity grades to invocation items, context pointers, and artifact
-  pointers, plus the stage's declared minimum.
+  pointers, plus the stage's declared minimum; `v1alpha8` adds the optional
+  `checkoutCones` invocation field declaring a stage's sparse-checkout cones
+  (project.checkout.sparse, #649).
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

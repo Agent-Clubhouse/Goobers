@@ -12,7 +12,15 @@ import (
 // The read-model cutover (design §6.6 step 3).
 //
 // "Cut reads over behind a config flag, defaulting on, with the old path
-// intact." Rollback is a flag flip or deleting a file; no journal is touched.
+// intact." Rollback is DisableReadModelReads below, wired to `goobers up
+// --disable-read-model-reads` (#2036) — a flag flip or deleting read.db; no
+// journal is touched.
+//
+// For why the default is ON now (it was OFF through Waves 2 and early 3,
+// until the projector and bidirectional repair sweep made completeness
+// something the store could establish rather than assume), see the
+// readModelReads field's doc comment on Local, in readservice.go — the single
+// source for that reasoning, not duplicated here.
 //
 // # What it removes
 //
@@ -22,21 +30,6 @@ import (
 // journal. That is the diagnosis's "lists open and parse a journal per returned
 // row", and it is the last uncorrected item from it. The read-model path opens
 // zero.
-//
-// # Why the default is OFF here, against the design's "defaulting on"
-//
-// The design's step 3 assumes steps 1-2 leave the store continuously current.
-// They do not yet. read.db is built on first start and updated by the writer
-// seam when a run finishes, which matches telemetry.db's freshness — but §6.1's
-// projector, driven by a durable intake watermark, is Wave 3. Until it exists,
-// runs written while the daemon was down are invisible to both stores, and the
-// read model has no repair sweep to notice.
-//
-// Defaulting on before that would trade a slow-but-complete answer for a fast
-// one that can silently omit — which is precisely the failure §14.7 exists to
-// prevent, and a worse trade than the latency it buys. The flag flips to on in
-// Wave 3, when the projector and bidirectional repair make completeness
-// something the store can establish rather than assume.
 
 // ErrReadModelUnavailable reports that the read-model path was requested but the
 // store is not attached.
@@ -61,9 +54,18 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		Since:    options.Since,
 		Until:    options.Until,
 		Limit:    limit,
+		Stage:    options.Stage,
+		// Population is validated by canonicalStagePopulation upstream, and the
+		// read model refuses any value its own switch does not recognise, so a
+		// bad value cannot reach the query as a column name.
+		Population:    readmodel.Population(options.StagePopulation),
+		IncludeNoWork: options.ShowNoWork,
+	}
+	if options.OrderByActivity {
+		request.OrderBy = readmodel.OrderLastActivity
 	}
 	if cursor != nil {
-		request.Cursor = readmodel.ListCursor{StartedAt: cursor.StartedAt, RunID: cursor.RunID}
+		request.Cursor = readmodel.ListCursor{Key: cursor.StartedAt, RunID: cursor.RunID}
 	}
 
 	page, err := s.sources.ReadModel.ListRuns(ctx, request)
@@ -119,6 +121,7 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		RetryCount:       row.RetryCount,
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
+		NoWork:           row.Disposition == readmodel.DispositionNoWork,
 		Stages:           row.Stages,
 	}
 }
@@ -150,11 +153,18 @@ func (s *Local) readModelEligible(options RunListOptions) bool {
 // readModelDims maps a list request to the filter dimensions the closed set is
 // keyed on.
 //
-// Stage, outcome, and stage-population are deliberately mapped to dimensions
-// that are NOT in the supported set, so a request carrying them is judged
-// ineligible and takes the journal path. They are the residual predicates §5.7
-// refuses, and #1782 measures what serving them costs: ~143 MB read, ~1M
-// unmarshals, ~19,852 journal opens in one request.
+// Stage and stage-population are in the supported set as of #1782: they are
+// answered from run_stage, which carries the stage predicate, the gaggle scope,
+// and the run's own recency on one index. They used to be mapped deliberately
+// OUT of the set so a request carrying them took the journal path, because
+// serving them there cost ~143 MB read, ~1M unmarshals and ~19,852 journal opens
+// in a single request.
+//
+// Outcome -- in EITHER sense -- and trigger are still outside the set and still
+// resolve to a refusal here. Stage-scoped outcome looks servable from
+// run_stage.last_status and is not: the reference matches on ANY attempt's
+// status and last_status is only the final one, so an equality test silently
+// under-matches. queryset.go carries the full argument.
 func readModelDims(options RunListOptions) []readmodel.Dim {
 	var dims []readmodel.Dim
 	if options.Gaggle != "" {
@@ -174,6 +184,9 @@ func readModelDims(options RunListOptions) []readmodel.Dim {
 	}
 	if options.StagePopulation != "" {
 		dims = append(dims, readmodel.DimPopulation)
+	}
+	if options.OrderByActivity {
+		dims = append(dims, readmodel.DimActivity)
 	}
 	if !options.Since.IsZero() {
 		dims = append(dims, readmodel.DimSince)
@@ -202,5 +215,7 @@ func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 // This is the rollback §6.6 requires, and it is deliberately a runtime switch
 // rather than a rebuild: rolling back must be a flag flip or deleting a file,
 // never a deploy. No journal is touched at any step, so the old path is always
-// exactly as correct as it was.
+// exactly as correct as it was. Reachable via `goobers up
+// --disable-read-model-reads` (cmd/goobers/up.go, #2036) — before that the
+// only caller was this file's own doc comment.
 func (s *Local) DisableReadModelReads() { s.readModelReads = false }

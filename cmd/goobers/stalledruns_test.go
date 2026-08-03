@@ -20,6 +20,56 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+// TestDaemonRunnerRegistryRunIDsReflectsTracking is issue #2014's liveness
+// signal at its source: RunIDs must list exactly the runs this process is
+// currently tracking, and drop one the moment its untrack func runs — the
+// same bracket Track/untrack already use around Start/Resume, so a run that
+// finishes or a process that dies stops appearing without renewLiveClaims
+// needing any separate notification of either.
+func TestDaemonRunnerRegistryRunIDsReflectsTracking(t *testing.T) {
+	r := newDaemonRunnerRegistry()
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() = %v, want none tracked yet", ids)
+	}
+
+	owner := &runner.Runner{}
+	untrackA := r.Track("run-a", owner)
+	untrackB := r.Track("run-b", owner)
+
+	ids := r.RunIDs()
+	if len(ids) != 2 {
+		t.Fatalf("RunIDs() = %v, want run-a and run-b", ids)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen["run-a"] || !seen["run-b"] {
+		t.Fatalf("RunIDs() = %v, want run-a and run-b", ids)
+	}
+
+	untrackA()
+	ids = r.RunIDs()
+	if len(ids) != 1 || ids[0] != "run-b" {
+		t.Fatalf("RunIDs() after untracking run-a = %v, want only run-b", ids)
+	}
+
+	untrackB()
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() after untracking both = %v, want none", ids)
+	}
+}
+
+// TestDaemonRunnerRegistryRunIDsNilSafe mirrors Resolve/Track's own nil
+// receiver tolerance (a *daemonRunnerRegistry is optional in several
+// construction paths) — RunIDs must not panic when called on one.
+func TestDaemonRunnerRegistryRunIDsNilSafe(t *testing.T) {
+	var r *daemonRunnerRegistry
+	if ids := r.RunIDs(); len(ids) != 0 {
+		t.Fatalf("RunIDs() on nil registry = %v, want none", ids)
+	}
+}
+
 type stalledRunStarter struct {
 	mu    sync.Mutex
 	count int
@@ -150,6 +200,7 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 		sched.ReleaseRun,
 		now,
 		45*time.Minute,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +318,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 		sched.ReleaseReconciled,
 		now,
 		timeout,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -328,11 +380,55 @@ func TestSweepStalledRunsUsesPinnedPerRunTimeout(t *testing.T) {
 		StalledRunTimeout: "2h",
 	})
 
-	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "short-timeout-run", journal.PhaseEscalated)
 	assertWatchdogPhase(t, layout.RunsDir(), "long-timeout-run", journal.PhaseRunning)
+}
+
+func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
+	now := time.Date(2026, 8, 2, 20, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "expired-run", "implementation", "", &started, now.Add(-time.Minute), &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "45m",
+		MaxRunDuration:    "2h",
+	})
+	started = now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "duration-disabled", "implementation", "", &started, now.Add(-time.Minute), &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "45m",
+	})
+
+	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "expired-run", journal.PhaseAborted)
+	assertWatchdogPhase(t, layout.RunsDir(), "duration-disabled", journal.PhaseRunning)
+
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "expired-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[len(events)-2].Error == nil ||
+		events[len(events)-2].Error.Code != runner.RunDurationExceededErrorCode {
+		t.Fatalf("terminal events = %+v, want duration-exceeded error", events)
+	}
 }
 
 func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
@@ -365,6 +461,7 @@ func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
 		func(string, string) { released = true },
 		now,
 		45*time.Minute,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +497,7 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	}
 
 	reporter := newSweepErrorReporter(log, "stalled_run_sweep_failed")
-	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, now, 45*time.Minute))
+	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, now, 45*time.Minute, 0))
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -420,7 +517,7 @@ func TestSweepStalledRunsSkipsSpansOnlyRunDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "legacy-run", "spans"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0); err != nil {
 		t.Fatalf("sweep spans-only run directory: %v", err)
 	}
 }
@@ -435,7 +532,7 @@ func TestSweepStalledRunsReportsRunOpenFailure(t *testing.T) {
 		t.Skipf("create run.yaml symlink loop: %v", err)
 	}
 
-	err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute)
+	err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0)
 	if err == nil || !strings.Contains(err.Error(), "inspect run directory") {
 		t.Fatalf("sweep error = %v, want run inspection failure", err)
 	}
@@ -483,7 +580,7 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 		return nil
 	}
 	runners := newDaemonRunnerRegistry()
-	if err := sweepStalledRuns(layout, runners, nil, log, prepare, notify, nil, now, 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, runners, nil, log, prepare, notify, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 

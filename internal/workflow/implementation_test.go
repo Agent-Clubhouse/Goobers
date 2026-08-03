@@ -79,6 +79,22 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if localCI.Run == nil || !localCI.Run.SyncBase {
 		t.Error("local-ci.run.syncBase = false, want true")
 	}
+	localGate, ok := m.Gate("local-gate")
+	if !ok {
+		t.Fatal("local-gate not found")
+	}
+	if localGate.Automated == nil || localGate.Automated.Check != "failure-class" {
+		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
+	}
+	for outcome, want := range map[string]string{
+		"pass":  "push-branch",
+		"fail":  "implement",
+		"infra": "park-escalated",
+	} {
+		if got := localGate.Branches[outcome]; got != want {
+			t.Errorf("local-gate %s branch = %q, want %q", outcome, got, want)
+		}
+	}
 	review, ok := m.Gate("review")
 	if !ok {
 		t.Fatal("review gate not found")
@@ -202,14 +218,23 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// was removed so local-ci runs fully parallel again.
 	// #929: ci-gate's timeout branch now routes through park-escalated rather
 	// than straight at "@escalate". The run's terminal phase is unchanged, but
-	// the issue-side bookkeeping (clear ready, release claimed, apply
-	// needs-human) only runs if that stage does — see
+	// the issue-side bookkeeping (clear ready, release claimed, apply the park
+	// label) only runs if that stage does — see
 	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
 	// #947: open-pr now emits an `opened` output and routes through the new
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
 	// opening, since the claim was only validated once at query-backlog.
-	const wantDigest = "sha256:a0df472a9988d83446665e169d398ef5a6134d11ff69c9e4ba7851605fd01010"
+	// #2174: reworded leftover Go-specific prose (`make ci`/`go test`) in the
+	// implement task's goal to describe this gaggle's actual `npm run ci`
+	// stack; no structural/behavioral change, but the goal text is hashed.
+	// #2213: ci-poll uses provider-neutral PR routing.
+	// #2028: park-escalated now declares status=needs-remediation instead of
+	// needs-human — every route into it (repass exhaustion, infra failure, an
+	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
+	// policy decision. park-needs-human (the reviewer's explicit "fail"
+	// verdict) is unchanged.
+	const wantDigest = "sha256:713386161f67ca0b833180ccb7f9079a9adcd27692a6876e30b7e17dd1593e97"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

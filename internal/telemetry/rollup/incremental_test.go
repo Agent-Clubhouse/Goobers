@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // schedulerEventTypes returns the ingested scheduler events' types in seq order,
@@ -140,6 +141,7 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
 		t.Fatal(err)
 	}
+
 	db := openTestDB(t, tmp)
 	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("first ingest: %v", err)
@@ -160,6 +162,57 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	_, lastSeq, _ := schedulerCursorRow(t, db)
 	if lastSeq != 7 {
 		t.Fatalf("lastSeq after shrink = %d, want 7", lastSeq)
+	}
+}
+
+func TestSchedulerRetentionSerializesCursorResetWithIngest(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+
+	compactEntered := make(chan struct{})
+	releaseCompact := make(chan struct{})
+	retentionDone := make(chan error, 1)
+	go func() {
+		retentionDone <- db.MaintainSchedulerRetention(
+			context.Background(),
+			schedulerDir,
+			time.Time{},
+			func() error {
+				if err := writeInstanceEvents(t, schedulerDir, nextThree()); err != nil {
+					return err
+				}
+				close(compactEntered)
+				<-releaseCompact
+				return nil
+			},
+		)
+	}()
+	<-compactEntered
+
+	ingestDone := make(chan error, 1)
+	go func() {
+		ingestDone <- db.IngestSchedulerLog(context.Background(), schedulerDir)
+	}()
+	select {
+	case err := <-ingestDone:
+		t.Fatalf("ingest completed during scheduler compaction: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseCompact)
+	if err := <-retentionDone; err != nil {
+		t.Fatalf("MaintainSchedulerRetention: %v", err)
+	}
+	if err := <-ingestDone; err != nil {
+		t.Fatalf("post-compaction ingest: %v", err)
+	}
+	_, lastSeq, _ := schedulerCursorRow(t, db)
+	if lastSeq != 8 {
+		t.Fatalf("lastSeq after serialized compaction = %d, want 8", lastSeq)
 	}
 }
 

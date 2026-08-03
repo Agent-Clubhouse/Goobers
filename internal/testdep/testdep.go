@@ -39,13 +39,29 @@ var declared = map[string]Dependency{
 		Name:        "dotnet",
 		InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)",
 	},
+	"git": {
+		Name:        "git",
+		InstallHint: "install Git (Debian/Ubuntu: apt-get install git)",
+	},
 	"head": {
 		Name:        "head",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
+	"java": {
+		Name:        "java",
+		InstallHint: "install a JDK (https://adoptium.net/)",
+	},
 	"mkdir": {
 		Name:        "mkdir",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"mvn": {
+		Name:        "mvn",
+		InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)",
+	},
+	"python3": {
+		Name:        "python3",
+		InstallHint: "install Python 3.12 (https://www.python.org/downloads/)",
 	},
 	"sh": {
 		Name:        "sh",

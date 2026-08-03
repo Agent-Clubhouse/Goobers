@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,7 +141,7 @@ func TestPriorityTriggerDispatchesExactWorkflowWithoutResponse(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for starter.count() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the test starter's synchronized call count.
 	}
 	if starter.count() != 1 {
 		t.Fatalf("start calls = %d, want 1", starter.count())
@@ -641,7 +642,7 @@ func TestPollTriggerResponseToleratesTornWrite(t *testing.T) {
 
 	// Give the poller time to observe the torn file at least once, then complete
 	// the write. A correct poller re-polls and only consumes a parseable file.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // Intentional torn-write window verifies parse errors are retried.
 	data, err := json.Marshal(triggerResponse{RunID: "run-xyz"})
 	if err != nil {
 		t.Fatal(err)
@@ -761,7 +762,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("requeued request was never dispatched after the slot freed")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for the requeued request's journal event.
 	}
 	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, testResponseWait)
 	if err != nil {
@@ -769,6 +770,79 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	}
 	if runID == "" {
 		t.Fatal("expected a non-empty run id for the requeued request")
+	}
+}
+
+// TestRequeueTriggerRequestNeverTornUnderConcurrentReads is #2022's
+// regression guard: the capacity-refusal requeue path used to rewrite the
+// live *.request.json in place with a plain os.WriteFile (O_TRUNC then
+// write), so a sweep or concurrent inspection landing in that window could
+// read empty or partial bytes and fail closed with "malformed trigger
+// request" — recreating exactly the torn-read failure the request's initial
+// atomic publish (writeTriggerRequestPayload) exists to prevent. It now goes
+// through the same journal.WriteFileAtomic (hidden temp + rename) the
+// sibling cancel protocol already used. A rename is atomic at the directory-
+// entry level, so a concurrent reader observes either the complete old
+// content or the complete new content, never a truncated mix — this drives
+// many concurrent rewrites against a spinning reader and requires every
+// single read to parse cleanly.
+func TestRequeueTriggerRequestNeverTornUnderConcurrentReads(t *testing.T) {
+	reqDir := t.TempDir()
+	reqPath := filepath.Join(reqDir, "contended"+requestSuffix)
+
+	data, err := json.Marshal(triggerRequest{Workflow: "implement", CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(reqPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	tornErr := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			raw, err := os.ReadFile(reqPath)
+			if err != nil {
+				// The path always has a file at it (rename never leaves a gap);
+				// a transient read error here is not the failure this test
+				// guards against.
+				continue
+			}
+			var got triggerRequest
+			if jerr := json.Unmarshal(raw, &got); jerr != nil {
+				select {
+				case tornErr <- fmt.Errorf("torn read: %w (bytes=%q)", jerr, raw):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	// Mirrors the exact requeue call site (sweepPendingTriggers's capacity-
+	// refusal branch): rewrite the same already-named request file in place,
+	// repeatedly, while the reader above spins concurrently.
+	for range 500 {
+		if err := journal.WriteFileAtomic(reqPath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	select {
+	case err := <-tornErr:
+		t.Fatal(err)
+	default:
 	}
 }
 

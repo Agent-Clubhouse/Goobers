@@ -24,6 +24,7 @@ func TestProjectEventClassifiesEveryKnownEventType(t *testing.T) {
 		{event: journal.Event{Type: journal.EventGateStarted}, category: RunEventBookkeeping},
 		{event: journal.Event{Type: journal.EventGatePaused}, category: RunEventTransition, chapter: true},
 		{event: journal.Event{Type: journal.EventGateEvaluated}, category: RunEventDecision, chapter: true},
+		{event: journal.Event{Type: journal.EventGateOverridden}, category: RunEventDecision, chapter: true},
 		{event: journal.Event{Type: journal.EventArtifactRecorded}, category: RunEventEvidence},
 		{event: journal.Event{Type: journal.EventSpanRecorded}, category: RunEventEvidence},
 		{event: journal.Event{Type: journal.EventInputSnapshot}, category: RunEventEvidence},
@@ -54,6 +55,10 @@ func TestProjectEventClassifiesEveryKnownEventType(t *testing.T) {
 		{event: journal.Event{Type: journal.EventDaemonStarted}, category: RunEventLiveness},
 		{event: journal.Event{Type: journal.EventDaemonCleanShutdown}, category: RunEventLiveness},
 		{event: journal.Event{Type: journal.EventDaemonDirtyRestart}, category: RunEventResult, chapter: true},
+		{event: journal.Event{Type: journal.EventParallelStarted}, category: RunEventTransition, chapter: true},
+		{event: journal.Event{Type: journal.EventBranchStarted}, category: RunEventTransition, chapter: true},
+		{event: journal.Event{Type: journal.EventBranchFinished}, category: RunEventTransition, chapter: true},
+		{event: journal.Event{Type: journal.EventParallelFinished}, category: RunEventTransition, chapter: true},
 	}
 
 	seen := make(map[journal.EventType]struct{}, len(tests))

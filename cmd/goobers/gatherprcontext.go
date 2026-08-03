@@ -106,9 +106,13 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, prToken)
+	provider, err := remediationStageProvider(root, repo, prToken, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 
 	ctx, cancel := providerCommandContext()
@@ -119,12 +123,27 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
+	handoffNumber := providerInput("selectedNumber", "")
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
 		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
 		return 1
 	}
-	if hasExistingClaim {
+	hasPinnedCandidate := hasExistingClaim
+	if handoffNumber != "" {
+		selectedNumber, parseErr := strconv.Atoi(handoffNumber)
+		if parseErr != nil || selectedNumber <= 0 {
+			pf(stderr, "error: selectedNumber input %q must be a positive integer\n", handoffNumber)
+			return 1
+		}
+		if hasExistingClaim && claimedNumber != selectedNumber {
+			pf(stderr, "error: selectedNumber input PR #%d does not match this run's claimed PR #%d\n", selectedNumber, claimedNumber)
+			return 1
+		}
+		claimedNumber = selectedNumber
+		hasPinnedCandidate = true
+	}
+	if hasPinnedCandidate {
 		var claimed []providers.PullRequestSummary
 		for _, pr := range prs {
 			if pr.Number == claimedNumber {
@@ -165,11 +184,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
 	}
 
-	// update-behind-pr already selected and claimed a full-remediation
-	// candidate. Re-running fallback eligibility here against the PR summary's
-	// pinned BaseSHA can drop a PR that was behind the live base tip.
+	// update-behind-pr already selected a full-remediation candidate and threads
+	// its number through the workflow. The claim ledger remains the durable
+	// fallback across retries and resumes.
 	candidates := nonBlocked
-	if !hasExistingClaim {
+	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
 			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)
@@ -242,7 +261,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// spending a cycle (worktree provision, checkout, potential agentic
 	// work) reproducing the exact escalation remediation-checkpoint already
 	// recorded.
-	if remState, _, ok := latestRemediationState(rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
+	if remState, _, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
 		digest, derr := diffDigest(".", selected.BaseSHA)
 		if derr != nil {
 			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)
@@ -362,7 +381,7 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 // update a branch even while another local worktree has it checked out. The
 // returned counts identify eligible crowned landers from their live parked
 // dependents without a second provider scan.
-func filterRemediationPullRequests(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+func filterRemediationPullRequests(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, heldBranches map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 	var eligible []providers.PullRequestSummary
 	blockedDependents := make(map[int]int)
 	for _, pr := range prs {
@@ -544,7 +563,7 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, min
 }
 
 func substantiveFindingAppliesToPR(finding apiv1.Finding, target string, minSeverity apiv1.Severity) bool {
-	if finding.Class != apiv1.FindingSubstantive {
+	if !finding.Class.RequiresCodeChange() {
 		return false
 	}
 	// An unset Severity (verdicts recorded before this field existed, or

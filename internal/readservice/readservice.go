@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -128,6 +128,10 @@ type Local struct {
 	// intakeDepth reports how many source watermarks are waiting. Optional; see
 	// AttachIntakeDepth.
 	intakeDepth intakeDepth
+
+	// readMode records how this service answers bounded reads (#1933). Empty
+	// means projected, which keeps every existing construction unchanged.
+	readMode ReadMode
 }
 
 type definitionSnapshot struct {
@@ -216,7 +220,16 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	if err := ctx.Err(); err != nil {
 		return Health{}, err
 	}
-	info, err := os.Stat(filepath.Join(s.sources.Layout.SchedulerDir(), "events.jsonl"))
+	// #2265: resolve through the generation pointer rather than the legacy
+	// bare "events.jsonl" name — that path goes frozen (its mtime stops
+	// advancing) the first time in-daemon compaction rotates the journal to
+	// a new generation, which would make this freshness check falsely go
+	// stale on any instance that has ever compacted.
+	eventsPath, err := journal.InstanceEventsPath(s.sources.Layout.SchedulerDir())
+	if err != nil {
+		return Health{}, fmt.Errorf("resolve instance journal path: %w", err)
+	}
+	info, err := os.Stat(eventsPath)
 	if err != nil {
 		return Health{}, fmt.Errorf("read instance journal freshness: %w", err)
 	}

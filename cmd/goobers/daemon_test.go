@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -42,7 +42,7 @@ func newDaemonFixtureRepo(t *testing.T) string {
 
 func runFixtureGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -132,6 +132,73 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 		if !found {
 			t.Errorf("missing workflow entry for %+v", identity)
 		}
+	}
+}
+
+// TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled is #2036's
+// decoupling fix: read.db answers the portal's run listing, a feature
+// independent of telemetry, so telemetry.enabled: false must not silently
+// disable it too. Before the fix, read-model construction (readmodel.Open,
+// the build-from-journals pass, and the projector) lived entirely inside the
+// `if cfg.TelemetryEnabled()` block and would never run with telemetry off.
+func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instanceYAMLPath := filepath.Join(root, "instance.yaml")
+	data, err := os.ReadFile(instanceYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// `goobers init` already writes "telemetry: {}" (enabled defaults to
+	// true) — replace the existing key rather than appending a duplicate one.
+	body := strings.Replace(string(data), "telemetry: {}\n", "telemetry:\n  enabled: false\n", 1)
+	if body == string(data) {
+		t.Fatalf("expected instance.yaml to contain \"telemetry: {}\", got %q", data)
+	}
+	if err := os.WriteFile(instanceYAMLPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	// Telemetry itself really is off — otherwise this test would not be
+	// exercising the case it claims to.
+	if setup.Telemetry != nil {
+		t.Error("Telemetry != nil with telemetry.enabled: false")
+	}
+	if setup.RollupDB != nil {
+		t.Error("RollupDB != nil with telemetry.enabled: false")
+	}
+	// The read model must still be attached, built, and projecting.
+	if setup.ReadModel == nil {
+		t.Fatal("ReadModel == nil with telemetry.enabled: false, want it decoupled from telemetry")
+	}
+	if setup.StopProjector == nil {
+		t.Error("StopProjector == nil with telemetry.enabled: false, want the projector still running")
+	}
+	if _, err := setup.ReadModel.State(context.Background()); err != nil {
+		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+// TestUpDisableReadModelReadsFlagStartsCleanly is the operator-facing half of
+// #2036's rollback fix: --disable-read-model-reads must parse and let `goobers
+// up` start normally (the mechanism itself — that it actually forces the
+// journal-derived paths — is TestDisableReadModelReadsForcesJournalPath in
+// internal/readservice, which has access to the private field this flag
+// flips).
+func TestUpDisableReadModelReadsFlagStartsCleanly(t *testing.T) {
+	root := initDeterministicDemo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	if code := runUpContext(ctx, []string{"--disable-read-model-reads", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runUpContext(--disable-read-model-reads) code = %d, stderr = %q", code, stderr.String())
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/repair"
 )
 
+var newRepairSweeper = repair.New
+
 // startProjector runs the read model's sole writer (#1923, §6.1).
 //
 // # What starting it changes
@@ -38,7 +40,7 @@ import (
 // journal-derived paths still answer every request, and the cutover flag gates
 // whether anything reads the store at all. Refusing to start the daemon over it
 // would turn a degraded optimisation into an outage.
-func startProjector(ctx context.Context, store *readmodel.Store, watermarks *intake.Store, l instance.Layout) func() {
+func startProjector(ctx context.Context, store *readmodel.Store, watermarks *intake.Store, l instance.Layout, cfg *instance.Config) func() {
 	runsDirs, err := l.RunDirs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve runs directories for projector: %v\n", err)
@@ -59,8 +61,21 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	// a journal lock. It is what makes the read model COMPLETE rather than
 	// merely current: the projector applies what writers reported, and repair
 	// finds what nobody did, in both directions.
+	// Projection retention (#1932). Unbounded by default, so this returns
+	// immediately and costs nothing on an instance that has not opted in.
+	//
+	// Read from config as a DAY COUNT, and RetentionDays is what turns 0 /
+	// negative / unset into unbounded rather than into a zero-day window that
+	// would age out every run on the first pass.
+	window := readmodel.UnboundedRetention()
+	if cfg != nil {
+		window = readmodel.RetentionDays(cfg.Retention.ProjectionFullFidelityDays)
+	}
+	retention := readmodel.NewRetentionLoop(store, p, window, readmodel.RetentionOptions{})
+
 	sweepCtx, stopSweep := context.WithCancel(ctx)
-	sweeper := repair.New(store, watermarks, repair.Options{RunsDirs: runsDirs})
+	go retention.Run(sweepCtx)
+	sweeper := newRepairSweeper(store, p, watermarks, repair.Options{RunsDirs: runsDirs})
 	go sweeper.Run(sweepCtx)
 
 	// The restart pass runs after Start, so its commits go through the same

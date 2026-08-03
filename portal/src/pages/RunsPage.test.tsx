@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
+import type { RunSummary } from "../api/types";
 import {
   emptyDaemonFixtures,
   largeJournalFixtures,
@@ -73,6 +74,49 @@ describe("runs history page", () => {
       expect.objectContaining({ phase: "running" }),
       expect.anything(),
     );
+  });
+
+  it("hides no-work runs by default and reveals them via the toggle (#2188)", async () => {
+    const noWorkRun: RunSummary = {
+      id: "01JZ000NOWORK",
+      workflow: "backlog-curation",
+      workflowVersion: 1,
+      gaggle: "core",
+      trigger: { kind: "schedule", ref: "0 * * * *" },
+      phase: "completed",
+      terminal: true,
+      startedAt: "2026-07-18T00:00:00Z",
+      finishedAt: "2026-07-18T00:00:20Z",
+      durationMillis: 20_000,
+      lastActivityAt: "2026-07-18T00:00:20Z",
+      lastSeq: 2,
+      repassCount: 0,
+      retryCount: 0,
+      policyRetryCount: 0,
+      infraRetryCount: 0,
+      noWork: true,
+    };
+    const producedRun: RunSummary = {
+      ...noWorkRun,
+      id: "01JZ000PRODUCED",
+      noWork: false,
+      startedAt: "2026-07-18T00:05:00Z",
+      finishedAt: "2026-07-18T00:06:00Z",
+      lastActivityAt: "2026-07-18T00:06:00Z",
+    };
+    const fixtures = emptyDaemonFixtures();
+    fixtures.runs = { runs: [noWorkRun, producedRun] };
+    const client = new FixtureDaemonClient(fixtures);
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Open run 01JZ000NOWORK/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Show no-work runs" }));
+
+    expect(await screen.findByRole("link", { name: /Open run 01JZ000NOWORK/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
   });
 
   it("shows an empty state without inventing runs", async () => {

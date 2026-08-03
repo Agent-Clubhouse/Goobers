@@ -108,7 +108,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 
 	var results []ReapResult
 	var warnings []ReapWarning
-	seen := map[string]bool{} // RunID (== worktree dir name) with a marker, live or reaped
+	seen := map[string]bool{} // worktree directory names with a marker, live or reaped
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
@@ -127,15 +127,25 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			// genuinely live run, and deleting a live run's worktree would
 			// be actively destructive, unlike skipping it.
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			// A corrupt marker may be either legacy (full ID directory) or
+			// current (hashed directory). Preserve both possible paths.
 			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
 			continue
 		}
-		seen[mk.RunID] = true
+		directory, err := mk.directoryName()
+		if err != nil {
+			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
+			continue
+		}
+		seen[directory] = true
 
 		var reason ReapReason
 		switch mk.Status {
 		case statusActive:
-			if processAlive(mk.PID) {
+			if processAlive(mk.PID) && !pidReused(mk) {
 				continue
 			}
 			reason = ReapReasonOrphaned
@@ -148,7 +158,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			continue
 		}
 
-		path := filepath.Join(m.runsDirForKey(key), mk.RunID)
+		path := filepath.Join(m.runsDirForKey(key), directory)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
@@ -185,15 +195,34 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			continue
 		}
 		path := filepath.Join(runsDir, e.Name())
+		worktreeID := e.Name()
+		var ownershipMarker *marker
+		ownershipPath := m.ownershipPath(key, e.Name())
+		ownership, ownershipErr := readMarker(ownershipPath)
+		if ownershipErr == nil {
+			directory, err := ownership.directoryName()
+			if err != nil || directory != e.Name() {
+				if err == nil {
+					err = fmt.Errorf("worktree: ownership directory %q does not match %q", directory, e.Name())
+				}
+				warnings = append(warnings, ReapWarning{Path: ownershipPath, Err: err})
+				continue
+			}
+			worktreeID = ownership.RunID
+			ownershipMarker = &ownership
+		} else if !os.IsNotExist(ownershipErr) {
+			warnings = append(warnings, ReapWarning{Path: ownershipPath, Err: ownershipErr})
+			continue
+		}
 		registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
 		if err != nil {
-			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", e.Name(), err)
+			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", worktreeID, err)
 		}
 		if !registered {
 			if opts.IsRunTerminal == nil {
 				continue
 			}
-			terminal, err := opts.IsRunTerminal(e.Name())
+			terminal, err := opts.IsRunTerminal(worktreeID)
 			if err != nil {
 				warnings = append(warnings, ReapWarning{Path: path, Err: err})
 				continue
@@ -202,11 +231,11 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 				continue
 			}
 		}
-		markerPath := m.markerPath(key, e.Name())
-		if err := m.reapOne(ctx, key, path, markerPath, nil); err != nil {
-			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
+		markerPath := m.markerPath(key, worktreeID)
+		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
+			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)
 		}
-		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
+		results = append(results, ReapResult{RunID: worktreeID, Path: path, Reason: ReapReasonMarkerless})
 	}
 	return results, warnings, nil
 }
@@ -265,6 +294,9 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: remove marker %s: %w", markerPath, err)
 	}
+	if err := os.Remove(m.ownershipPath(key, filepath.Base(path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: remove ownership record for %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -306,3 +338,45 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 // direction here: a false "dead" would reap a live run's worktree, while a
 // false "alive" only defers a reap.
 var processAlive = proc.Alive
+
+// processStartTime resolves a live pid's OS-reported start time. Indirected
+// through a var, like processAlive, so tests can inject a deterministic
+// answer instead of racing a real OS PID recycling.
+var processStartTime = proc.StartTime
+
+// pidReusedTolerance bounds how far a marker's recorded PIDStartedAt may
+// differ from a live re-query of the same PID before the mismatch is treated
+// as reuse rather than measurement imprecision — Linux's /proc stat encodes
+// starttime in clock ticks (10ms resolution at the universal 100Hz USER_HZ),
+// so exact equality is too strict for that platform.
+const pidReusedTolerance = 2 * time.Second
+
+// pidReused reports whether mk.PID, though currently alive, now names a
+// DIFFERENT process than the one that wrote this marker (#2052) — the OS
+// recycled the PID onto a new, unrelated long-lived process after the
+// original one exited without Reap ever getting a chance to notice, since
+// Alive alone cannot distinguish "still the same process" from "some other
+// process now has this number." A process's start time is immutable for its
+// entire lifetime, so comparing the marker's recorded value against a live
+// re-query is a reliable discriminator.
+//
+// A zero PIDStartedAt (an old marker written before #2052, or a platform/
+// kernel StartTime couldn't read) disables the check for that marker,
+// falling back to the pre-#2052 PID-only liveness answer — the same
+// fail-toward-"not reused" direction as processAlive's own fail-toward-alive,
+// since treating an indeterminate marker as reused would reap a possibly-live
+// run's worktree.
+func pidReused(mk marker) bool {
+	if mk.PIDStartedAt.IsZero() {
+		return false
+	}
+	live, ok := processStartTime(mk.PID)
+	if !ok {
+		return false
+	}
+	diff := live.Sub(mk.PIDStartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff > pidReusedTolerance
+}

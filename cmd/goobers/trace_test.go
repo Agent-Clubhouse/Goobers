@@ -167,10 +167,11 @@ func TestTraceRendersPersistedCIFailureEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifactData, err := json.Marshal(executor.CIChecksArtifact{
-		Checks: []providers.CheckDetail{
-			{Name: "unit-tests", State: providers.CheckStateFailing, URL: "https://ci.example/unit", Summary: "panic in TestWidget\nfull stack"},
-			{Name: "integration", State: providers.CheckStatePending, URL: "https://ci.example/integration", Summary: "still running"},
-			{Name: "lint\ninjected", State: providers.CheckStateFailing, URL: "https://ci.example/lint\nignored", Summary: "format mismatch\r\nsecond line"},
+		Checks: []executor.CICheck{
+			{CheckDetail: providers.CheckDetail{Name: "unit-tests", State: providers.CheckStateFailing, URL: "https://ci.example/unit", Summary: "panic in TestWidget\nfull stack"},
+				Annotations: []providers.CheckAnnotation{{Path: "widget.go", StartLine: 42, Message: "panic: nil map\nsecond line"}}},
+			{CheckDetail: providers.CheckDetail{Name: "integration", State: providers.CheckStatePending, URL: "https://ci.example/integration", Summary: "still running"}},
+			{CheckDetail: providers.CheckDetail{Name: "lint\ninjected", State: providers.CheckStateFailing, URL: "https://ci.example/lint\nignored", Summary: "format mismatch\r\nsecond line"}},
 		},
 		Metadata: executor.CIChecksArtifactMetadata{},
 	})
@@ -959,6 +960,32 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 	}
 	if got.Spans == nil {
 		t.Fatalf("spans = nil, want an empty JSON array")
+	}
+}
+
+func TestTraceEscalationShowsRemediationEvidence(t *testing.T) {
+	detail := readservice.RunDetail{Escalation: &readservice.EscalationCause{
+		Selector: readservice.EscalationSelector{Kind: "gate", Name: "checkpoint-gate"},
+		Remediation: &readservice.RemediationEscalation{
+			Outcome:         "budget-exhausted",
+			Attempted:       true,
+			AttemptedCauses: []string{"conflict"},
+		},
+	}}
+	summary := traceEscalation(detail, nil, nil)
+	if summary == nil || summary.Remediation == nil || summary.Remediation.Outcome != "budget-exhausted" {
+		t.Fatalf("trace escalation = %+v", summary)
+	}
+	var output bytes.Buffer
+	printEscalationSummary(&output, *summary)
+	for _, want := range []string{
+		"remediation outcome: budget-exhausted",
+		"repair attempted: true",
+		"attempted causes: conflict",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("escalation summary = %q, want %q", output.String(), want)
+		}
 	}
 }
 

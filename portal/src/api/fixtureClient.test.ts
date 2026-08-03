@@ -64,7 +64,9 @@ function fixtures(): DaemonFixtures {
         retryCount: 0,
         policyRetryCount: 0,
         infraRetryCount: 0,
+        noWork: false,
         graphStatus: "unavailable",
+        transitionsStatus: "unavailable",
       },
     },
     artifacts: {
@@ -83,6 +85,7 @@ function fixtures(): DaemonFixtures {
       usage: [],
       models: [],
       curation: {
+        everRecorded: false,
         runs: 0,
         reportedRuns: 0,
         ready: 0,
@@ -96,7 +99,12 @@ function fixtures(): DaemonFixtures {
         bounced: 0,
       },
       readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
         claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
         forwardCurationThroughput: 0,
         implementationDemand: 0,
       },

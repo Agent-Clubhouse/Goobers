@@ -37,6 +37,7 @@ type fakeIssue struct {
 	children       []int
 	blockers       []int
 	createdAt      time.Time
+	updatedAt      time.Time
 }
 
 type fakeIssueEvent struct {
@@ -48,20 +49,23 @@ type fakeIssueEvent struct {
 }
 
 type fakePR struct {
-	number     int
-	title      string
-	body       string
-	head       string
-	base       string
-	headSHA    string
-	baseSHA    string
-	draft      bool
-	labels     []string
-	checkState string
-	files      []fakePRFile
-	reviews    []fakeReview
-	state      string
-	merged     bool
+	number             int
+	title              string
+	body               string
+	head               string
+	base               string
+	headSHA            string
+	baseSHA            string
+	draft              bool
+	labels             []string
+	checkState         string
+	files              []fakePRFile
+	reviews            []fakeReview
+	author             string
+	assignees          []string
+	requestedReviewers []string
+	state              string
+	merged             bool
 	// selfReview, when set, makes POST /pulls/{n}/reviews return GitHub's
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
@@ -131,6 +135,27 @@ type fakeGitHubServer struct {
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
+	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
+	// specific status/body instead of listing the PR's fixture files — used to
+	// distinguish "the PR is gone" (the default 404 an unregistered number
+	// already gets) from an unrelated transient failure on a PR that IS
+	// registered, for classifier false-positive guards (#1770).
+	filesFailureStatus map[int]int
+	filesFailureBody   map[int]string
+}
+
+// setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
+// status/body instead of the PR's normal fixture file list. number must
+// already be registered via addOpenPR (an unregistered number already 404s).
+func (s *fakeGitHubServer) setPullRequestFilesFailure(number, status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.filesFailureStatus == nil {
+		s.filesFailureStatus = map[int]int{}
+		s.filesFailureBody = map[int]string{}
+	}
+	s.filesFailureStatus[number] = status
+	s.filesFailureBody[number] = body
 }
 
 // resetRequestCounts zeroes the per-endpoint counters between gather runs so
@@ -297,10 +322,20 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	createdAt := time.Now().UTC()
 	s.issues[number] = &fakeIssue{
 		number: number, title: title, labels: append([]string{}, labels...), state: "open",
-		createdAt: createdAt,
+		createdAt: createdAt, updatedAt: createdAt,
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+// setIssueUpdatedAt records an issue's live updatedAt (#2340's staleness
+// check compares this against a PR's pinned implementation-time snapshot).
+func (s *fakeGitHubServer) setIssueUpdatedAt(number int, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if issue := s.issues[number]; issue != nil {
+		issue.updatedAt = at
 	}
 }
 
@@ -546,10 +581,17 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		var body struct {
 			Labels    *[]string `json:"labels"`
 			Assignees *[]string `json:"assignees"`
+			Body      *string   `json:"body"`
 			State     string    `json:"state"`
 			Milestone *int      `json:"milestone"`
 		}
 		decodeFakeJSON(r, &body)
+		if body.Body != nil {
+			issue.body = *body.Body
+			if pr := s.prs[num]; pr != nil {
+				pr.body = *body.Body
+			}
+		}
 		if body.Labels != nil {
 			before := append([]string(nil), issue.labels...)
 			issue.labels = *body.Labels
@@ -821,6 +863,10 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
+		if status, injected := s.filesFailureStatus[num]; injected {
+			http.Error(w, s.filesFailureBody[num], status)
+			return
+		}
 		s.filesRequests++
 		out := make([]map[string]interface{}, 0, len(pr.files))
 		for _, f := range pr.files {
@@ -918,6 +964,9 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	if !issue.createdAt.IsZero() {
 		out["created_at"] = issue.createdAt
 	}
+	if !issue.updatedAt.IsZero() {
+		out["updated_at"] = issue.updatedAt
+	}
 	if issue.assignee != "" {
 		out["assignees"] = []map[string]string{{"login": issue.assignee}}
 	}
@@ -945,14 +994,34 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
 	}
+	assignees := make([]map[string]string, 0, len(pr.assignees))
+	for _, assignee := range pr.assignees {
+		assignees = append(assignees, map[string]string{"login": assignee})
+	}
+	requestedReviewers := make([]map[string]string, 0, len(pr.requestedReviewers))
+	for _, reviewer := range pr.requestedReviewers {
+		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
+	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
-		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
-		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
-		"labels": labels,
+		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
+		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
+		"user":                map[string]string{"login": pr.author},
+		"assignees":           assignees,
+		"requested_reviewers": requestedReviewers,
+		"labels":              labels,
 	}
+}
+
+func (s *fakeGitHubServer) setPRIdentities(number int, author string, assignees, requestedReviewers []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	pr.author = author
+	pr.assignees = assignees
+	pr.requestedReviewers = requestedReviewers
 }
 
 // setPRBody sets a fixture PR's body after addOpenPR — a separate setter
@@ -1147,6 +1216,25 @@ func TestProviderBranchNamespace(t *testing.T) {
 		// non-default gaggle selects goobers-analogous "acme/implementation/" PRs.
 		if got, want := providerBranchNamespace()+"implementation/", "acme/implementation/"; got != want {
 			t.Errorf("composed headPrefix = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestProviderBaseBranch covers #2087's seam: the gaggle's configured default
+// branch the runner injects (GOOBERS_BASE_BRANCH) becomes the default every
+// PR-lifecycle stage's "base" input resolves to, defaulting to "main" when
+// unset (standalone use, or a gaggle whose branch is already "main").
+func TestProviderBaseBranch(t *testing.T) {
+	t.Run("defaults to main when unset", func(t *testing.T) {
+		t.Setenv(executor.BaseBranchEnvVar, "")
+		if got := providerBaseBranch(); got != "main" {
+			t.Errorf("providerBaseBranch() = %q, want %q", got, "main")
+		}
+	})
+	t.Run("reads the injected base branch", func(t *testing.T) {
+		t.Setenv(executor.BaseBranchEnvVar, "release")
+		if got, want := providerBaseBranch(), "release"; got != want {
+			t.Errorf("providerBaseBranch() = %q, want %q", got, want)
 		}
 	})
 }

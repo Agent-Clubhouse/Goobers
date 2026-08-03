@@ -91,6 +91,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	wantWarnings := []string{
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/my-flow: workflow \"my-flow\" has no schedule trigger; it will not fire autonomously — run it with `goobers run my-flow`",
+		"WARNING SKILL002 gaggles/example/goobers/reviewer2/goober.yaml Goober/reviewer2: spec.skills declares \"reviewer2\", but no skill package directory was found at \"gaggles/example/skills/reviewer2\" or \"skills/reviewer2\"",
 	}
 	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
 	if !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
@@ -115,6 +116,7 @@ func TestScaffoldScalarNamesValidate(t *testing.T) {
 	wantWarnings := []string{
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/true: workflow \"true\" has no schedule trigger; it will not fire autonomously — run it with `goobers run true`",
+		"WARNING SKILL002 gaggles/example/goobers/123/goober.yaml Goober/123: spec.skills declares \"123\", but no skill package directory was found at \"gaggles/example/skills/123\" or \"skills/123\"",
 	}
 	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
 }

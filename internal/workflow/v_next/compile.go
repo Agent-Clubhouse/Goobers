@@ -403,8 +403,12 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				}
 			}
 		}
-		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.GitHubPRWrite)] {
-			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
+		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.ProviderPRWrite)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.ProviderPRWrite))
+		}
+		if capabilities[string(capability.ProviderPRWrite)] &&
+			(capabilities[string(capability.GitHubPRWrite)] || capabilities[string(capability.ADOPRWrite)]) {
+			problems = append(problems, fmt.Sprintf("task %q declares mutually exclusive provider-neutral and provider-specific PR write capabilities", t.Name))
 		}
 		if t.Inputs["kind"] == "external-telemetry" && !capabilities[string(capability.TelemetryRead)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))
@@ -538,14 +542,17 @@ var agenticOutcomes = []string{"pass", "fail", "needs-changes"}
 var automatedBuiltinOutcomes = []string{"pass", "fail"}
 
 // automatedCheckOutcomes overrides automatedBuiltinOutcomes for a specific
-// check name. "ci-status" is the one exception (#239): a ci-poll timeout
+// check name. "ci-status" has a third timeout outcome (#239), and
+// "failure-class" has a third retryable-infrastructure outcome (#1970).
+// A ci-poll timeout
 // surfaces as OutcomeTimeout ("timeout"), distinct from pass/fail, so a
 // workflow's ci-gate can route it to escalation instead of the "fail"
 // branch's implement repass — that third outcome must be just as
 // compile-time-checkable (a branch declared for it resolves; a missing
 // branch fails closed) as pass/fail already are.
 var automatedCheckOutcomes = map[string][]string{
-	"ci-status": {"pass", "fail", "timeout"},
+	"ci-status":     {"pass", "fail", "timeout"},
+	"failure-class": {"pass", "fail", "infra"},
 	// "land-outcome"/"queue-outcome" (issue #758): merge-policy abstraction
 	// — a merge-pr stage that actually landed a pull request reports
 	// whether it merged directly or only enqueued it, and a subsequent

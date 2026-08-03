@@ -383,6 +383,31 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              requires:
+                description: |-
+                  Requires declares this workflow's provider-capability requirements
+                  (CONF-6, #2079, docs/design/provider-contract-conformance.md §6) —
+                  distinct from Task.RequiredCapabilities (runner/toolchain capabilities,
+                  RRQ-1/#1101) and Task.Capabilities (credential grants,
+                  internal/capability). Unset derives the requirement set from the
+                  stages this workflow actually uses (e.g. a merge-pr stage implies
+                  pr.merge); an explicit value here replaces that derivation entirely,
+                  letting an author narrow or widen it. Checked at config-load against
+                  the gaggle's connected provider's declared capabilities
+                  (providers.Provider.Capabilities()) — an unmet requirement fails load
+                  with a config-time message naming the workflow, the missing
+                  capability, and the provider, never a mid-run stage error.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities is the set of provider capability keys
+                      (docs/design/provider-contract-conformance.md §3.1, e.g. "pr.merge",
+                      "pr.landing.enqueue") this workflow requires. When set, it replaces
+                      the derived-from-stages default entirely.
+                    items:
+                      type: string
+                    type: array
+                type: object
               runControls:
                 description: |-
                   RunControls overrides this workflow's gaggle and instance run-control
@@ -395,6 +420,12 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  maxRunDuration:
+                    description: |-
+                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      disables the total-duration limit. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                   stalledRunTimeout:
                     description: |-
                       StalledRunTimeout is the maximum period a running journal may remain
@@ -537,6 +568,23 @@ spec:
                       - fail
                       - salvage
                       type: string
+                    outbox:
+                      description: |-
+                        Outbox declares workspace-relative paths (files or directories) this
+                        stage durably exports into the run journal's outbox namespace
+                        (runs/<id>/artifacts/outbox/**) on top of its ordinary result, for
+                        output that isn't something that can PR against a repo — reports, wiki
+                        content, JSON payloads, debugging artifacts (#1552). Opt-in and
+                        additive: a stage that declares none is unaffected. A declared path
+                        that does not exist when the stage completes is skipped, not an error;
+                        a declared path that resolves outside the workspace (lexically or via
+                        a symlink) fails the stage closed. Every attempt's export is bounded
+                        by a fixed per-attempt file-count and aggregate byte limit enforced by
+                        the journal, independent of how many paths are declared.
+                      items:
+                        type: string
+                      maxItems: 32
+                      type: array
                     policyActions:
                       description: |-
                         PolicyActions declares the closed vocabulary of externally mutating

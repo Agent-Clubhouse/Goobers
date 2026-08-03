@@ -71,8 +71,8 @@ export function FactoryFloor({
       className="factory-floor"
       data-lens={lens}
       data-motion={reducedMotion ? "reduced" : "full"}
-      data-responsive-layout="scroll-under-1100"
       role="group"
+      style={{ height: `${model.height}px`, width: `${model.width}px` }}
     >
       <div
         className="factory-canvas"
@@ -306,14 +306,14 @@ function LaneScenery({
             data-kind={conveyor.kind}
             markerEnd={`url(#${arrowId})`}
           />
-          {conveyor.outcome && (
+          {(conveyor.branch || conveyor.outcome) && (
             <text
               className="factory-conveyor-label"
               textAnchor="middle"
               x={conveyor.labelX}
               y={conveyor.labelY}
             >
-              {conveyor.outcome}
+              {[conveyor.branch, conveyor.outcome].filter(Boolean).join(" · ")}
             </text>
           )}
         </g>

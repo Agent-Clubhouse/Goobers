@@ -65,11 +65,18 @@ type feedStream struct {
 	mu     sync.Mutex
 	closed bool
 	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	pumps  sync.WaitGroup
 }
 
 // newFeedStream constructs a change-feed-backed event source.
 func newFeedStream(store *readmodel.Store) *feedStream {
-	return &feedStream{feed: readmodel.NewFeed(store), store: store, done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &feedStream{
+		feed: readmodel.NewFeed(store), store: store, done: make(chan struct{}),
+		ctx: ctx, cancel: cancel,
+	}
 }
 
 // Done reports shutdown.
@@ -94,14 +101,25 @@ func (s *feedStream) Cursor() string {
 	return head.String()
 }
 
+// PublishDefinitionsChanged records a config reload in the feed.
+//
+// Replaces the deleted poller's out-of-band publish. Errors are returned rather
+// than swallowed: unlike a projection, this has no repair sweep behind it — a
+// lost definitions change is simply never noticed by any client.
+func (s *feedStream) PublishDefinitionsChanged() error {
+	return s.store.PublishDefinitionsChanged(context.Background())
+}
+
 // Close stops the stream.
 func (s *feedStream) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.closed {
 		s.closed = true
 		close(s.done)
+		s.cancel()
 	}
+	s.mu.Unlock()
+	s.pumps.Wait()
 }
 
 // Subscribe resumes from a cursor, or starts a fresh snapshot.
@@ -121,7 +139,7 @@ func (s *feedStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan Stream
 	}
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.ctx)
 
 	cursor, initial, err := s.start(ctx, lastEventID)
 	if err != nil {
@@ -130,8 +148,36 @@ func (s *feedStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan Stream
 	}
 
 	events := make(chan StreamEvent, subscriberBufferForFeed)
-	go s.pump(ctx, cursor, events)
-	return initial, events, cancel, nil
+	stopped := make(chan struct{})
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel()
+		return nil, nil, nil, ErrEventStreamClosed
+	}
+	s.pumps.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.pumps.Done()
+		defer close(stopped)
+		s.pump(ctx, cursor, events)
+	}()
+
+	// The returned cancel WAITS for the pump to exit.
+	//
+	// Cancelling only signalled the context and returned immediately, so the
+	// pump kept running — still holding the store — after its caller believed
+	// the subscription was over. In the daemon that means a subscription
+	// outliving shutdown; in tests it means a goroutine reading the store while
+	// cleanup closes it, which is the data race the race detector caught on
+	// main.
+	//
+	// Waiting here is cheap: the pump is blocked in Since, which returns as soon
+	// as the context is done.
+	return initial, events, func() {
+		cancel()
+		<-stopped
+	}, nil
 }
 
 // start resolves the opening position and any snapshot event.
@@ -211,12 +257,19 @@ func invalidationsFor(page readmodel.FeedPosition) []StreamEvent {
 		return nil
 	}
 	var (
-		runIDs    []string
-		workflows []apicontract.WorkflowRef
-		seenRun   = map[string]bool{}
-		seenFlow  = map[string]bool{}
+		runIDs      []string
+		workflows   []apicontract.WorkflowRef
+		seenRun     = map[string]bool{}
+		seenFlow    = map[string]bool{}
+		definitions bool
 	)
 	for _, change := range page.Changes {
+		if change.Kind == readmodel.ChangeDefinitionsChanged {
+			// A config reload can affect any workflow, so it widens the whole
+			// batch rather than naming entities. Scoping it would under-report.
+			definitions = true
+			continue
+		}
 		if change.RunID != "" && !seenRun[change.RunID] {
 			seenRun[change.RunID] = true
 			runIDs = append(runIDs, change.RunID)
@@ -231,12 +284,18 @@ func invalidationsFor(page readmodel.FeedPosition) []StreamEvent {
 		}
 	}
 	cursor := page.Cursor.String()
+	models := []string{"run", "workflow"}
+	if definitions {
+		// Instance too: a reload changes gaggle and workflow inventory, which
+		// the run and workflow models alone do not cover.
+		models = []string{"instance", "run", "workflow"}
+	}
 	return []StreamEvent{{
 		ID:   cursor,
 		Type: "update",
 		Data: apicontract.Invalidation{
 			Cursor:    cursor,
-			Models:    []string{"run", "workflow"},
+			Models:    models,
 			RunIDs:    runIDs,
 			Workflows: workflows,
 		},

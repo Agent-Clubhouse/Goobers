@@ -99,6 +99,22 @@ describe("factory floor route", () => {
     expect(within(rail).getByText("Human holds").closest("div")).toHaveTextContent("1");
   });
 
+  it("removes a closed inspector from navigation and returns focus to its toggle", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
+
+    await screen.findByRole("group", { name: "Factory floor" });
+    const toggle = screen.getByRole("button", { name: "Inspector" });
+    const rail = screen.getByRole("complementary", { name: "Factory inspector" });
+    const drawer = rail.parentElement;
+    expect(drawer).not.toHaveAttribute("aria-hidden", "true");
+
+    await user.click(screen.getByRole("button", { name: "Close factory inspector" }));
+    await waitFor(() => expect(toggle).toHaveFocus());
+    expect(drawer).toHaveAttribute("aria-hidden", "true");
+    expect(drawer).toHaveAttribute("inert");
+  });
+
   it("scopes the floor to one gaggle without inventing anything", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
@@ -606,11 +622,16 @@ describe("factory floor liveness", () => {
     ).toEqual(new Set(["01JZ500BLOCKED/implement", "01JZ700RETRY/implement"]));
   });
 
-  it("reports an idle instance honestly instead of drawing imaginary work", async () => {    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+  it("reports an idle instance honestly instead of drawing imaginary work", async () => {
+    render(<App client={new NoActiveRunsClient(populatedDaemonFixtures())} />);
 
-    // The populated fixture has exactly one running run and nothing held.
+    expect(await screen.findByText("Plant ready. No active runs are on the floor.")).toBeVisible();
+    expect(await screen.findByLabelText("Factory lines viewport")).toHaveAttribute(
+      "data-camera",
+      "fit",
+    );
     const rail = await screen.findByRole("complementary", { name: "Factory inspector" });
-    expect(within(rail).getByText("Active runs").closest("div")).toHaveTextContent("1");
+    expect(within(rail).getByText("Active runs").closest("div")).toHaveTextContent("0");
     expect(within(rail).getByText("Blocked stages").closest("div")).toHaveTextContent("0");
     // Attention lists recent terminal outcomes, and none of them pretend to be WIP.
     const attention = within(rail).getByRole("region", { name: "Attention" });
@@ -893,6 +914,18 @@ class FailingActiveRunsClient extends FixtureDaemonClient {
   }
 }
 
+class NoActiveRunsClient extends FixtureDaemonClient {
+  override listRuns(
+    request?: RunListOptions,
+    options?: RequestOptions,
+  ): Promise<RunList> {
+    if (request?.phase === "running") {
+      return Promise.resolve({ runs: [] });
+    }
+    return super.listRuns(request, options);
+  }
+}
+
 /** A fixture client whose event stream and run list the test drives. */
 class LiveFactoryClient extends FixtureDaemonClient {
   private readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
@@ -944,6 +977,7 @@ class LiveFactoryClient extends FixtureDaemonClient {
       owner: null,
       evaluator: "",
       capabilities: [],
+      rawYaml: "",
     });
     const summary = this.live.workflows![gaggle].items.find(
       (candidate) => candidate.identity.name === workflow,

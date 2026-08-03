@@ -37,6 +37,7 @@ type DB struct {
 	reader       *sql.DB
 	readerMu     sync.RWMutex
 	readerClosed bool
+	schedulerMu  sync.Mutex
 	// path is retained so the reader pool can be reopened after Compact.
 	path string
 }
@@ -378,6 +379,18 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 	version, err := schemaVersionTx(ctx, tx)
 	if err != nil {
 		return err
+	}
+	if version > len(migrations) {
+		// A store written by a newer binary — e.g. a version rollback, or the
+		// mixed-version window the self-update supervisor makes routine.
+		// Refusing is right: the loop below would simply never run (version
+		// already >= len(migrations)), so Open would otherwise succeed against
+		// a schema this build does not understand, and the next IngestRun
+		// would silently delete-then-insert into it with the stamped version
+		// left at the newer value forever. Matches internal/readmodel's
+		// existing guard (#2049).
+		return fmt.Errorf("rollup: store schema version %d is newer than this build supports (%d)",
+			version, len(migrations))
 	}
 	for i := version; i < len(migrations); i++ {
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -230,6 +231,15 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 // IS a new generation, and any client cursor against the old one must
 // resnapshot (§4.2).
 func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) error {
+	// A live daemon owns the projector and the instance lock together. Taking
+	// that same lock makes this offline whole-file replacement mutually
+	// exclusive with every commit-loop write, including repair and retention.
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return fmt.Errorf("rebuild read model while projector is active: %w", err)
+	}
+	defer release()
+
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(l.ReadDB() + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove existing read model %s%s: %w", l.ReadDB(), suffix, err)
@@ -240,6 +250,28 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 		return err
 	}
 	defer func() { _ = store.Close() }()
+
+	// A rebuild MUST carry a measurement source (#1782).
+	//
+	// The population flags come from the telemetry rollup, not from any journal
+	// event, so a rebuild without a source projects every run with all four
+	// flags at zero -- and nothing re-projects a finished run, so
+	// `population=cost-measured` would return nothing until each run happened to
+	// change again. That failure is silent: the runs still list, they just stop
+	// matching a filter they used to match.
+	//
+	// This is the one writer that does not inherit the daemon's configured
+	// store, which is exactly why it has to be attached here rather than assumed.
+	if rollupDB, rollupErr := rollup.Open(l.TelemetryDB()); rollupErr != nil {
+		// Not fatal. A rebuild that produced a complete projection without
+		// population flags beats refusing to rebuild at all -- the flags are one
+		// filter, the projection is every list.
+		fmt.Fprintf(os.Stderr, "warning: open telemetry for measurement flags: %v\n", rollupErr)
+	} else {
+		defer func() { _ = rollupDB.Close() }()
+		store.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+	}
+
 	result, err := store.BuildFromJournals(ctx, runDirs)
 	if err != nil {
 		return err
@@ -449,6 +481,12 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.ReadyPool.AverageClaimAgeSeconds != nil {
 			pf(stdout, ", claimed after %s average", formatStatsDuration(*result.ReadyPool.AverageClaimAgeSeconds*1000))
+		}
+		if result.ReadyPool.InFlightClaimSamples > 0 {
+			pf(stdout, ", %d in flight now (avg %s, oldest %s)",
+				result.ReadyPool.InFlightClaimSamples,
+				formatStatsDuration(result.ReadyPool.AverageInFlightClaimAgeSeconds*1000),
+				formatStatsDuration(result.ReadyPool.OldestInFlightClaimAgeSeconds*1000))
 		}
 		pln(stdout, "")
 	}

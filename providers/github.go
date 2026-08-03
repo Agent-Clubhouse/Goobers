@@ -149,6 +149,23 @@ func (p *GitHubProvider) Kind() ProviderKind {
 	return ProviderGitHub
 }
 
+// Capabilities declares GitHub's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2, CONF-1 #2074): GitHub
+// is the V0 workload and reaches every optional surface except
+// pr.status.publish, which is an Azure DevOps / Gitea policy-evidence
+// surface (#772) GitHub has no equivalent for.
+func (p *GitHubProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(
+		CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
+		CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
+		CapPRUpdateBranch, CapBranchDelete,
+		CapRepoPolicyRead,
+		CapBacklogBlockers,
+	)
+}
+
 // CreateRepository creates an empty GitHub repository under a user or
 // organization owner. It never initializes, commits, or pushes content.
 func (p *GitHubProvider) CreateRepository(ctx context.Context, req CreateRepositoryRequest) (CreateRepositoryResult, error) {
@@ -653,6 +670,16 @@ func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestReq
 	}
 	var out githubPullRequest
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		if IsPullRequestAlreadyExistsError(err) {
+			// #1767: lost a create race against a concurrent open-pr call for
+			// this same head/base between the check above and this POST.
+			// OpenPullRequest's own doc comment promises convergence on the
+			// PR that already exists rather than a duplicate — honor that
+			// here instead of surfacing the race as a stage failure.
+			if existing, ok, ferr := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); ferr == nil && ok {
+				return p.updatePullRequest(ctx, req, existing.Number)
+			}
+		}
 		return PullRequestResult{}, err
 	}
 	p.recordExternalRef(ctx, ExternalRef{
@@ -811,30 +838,35 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	for _, label := range pr.Labels {
 		labels = append(labels, label.Name)
 	}
+	assignees := githubUserLogins(pr.Assignees)
+	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
 
 	return PullRequestPollResult{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		State:            pr.State,
-		Merged:           pr.Merged,
-		MergedAt:         pr.MergedAt,
-		Mergeable:        pr.Mergeable,
-		MergeableState:   pr.MergeableState,
-		Draft:            pr.Draft,
-		Labels:           labels,
-		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
-		HeadSHA:          pr.Head.SHA,
-		BaseSHA:          pr.Base.SHA,
-		BaseBranch:       pr.Base.Ref,
-		Body:             pr.Body,
-		ReviewDecision:   decision,
-		RequestedChanges: requestedChanges,
-		CheckState:       checkState,
-		Checks:           checks,
-		CommentsSince:    comments,
-		URL:              pr.HTMLURL,
-		Integrity:        apiintegrity.Unapproved,
+		Number:             pr.Number,
+		Title:              pr.Title,
+		Author:             pr.User.Login,
+		Assignees:          assignees,
+		RequestedReviewers: requestedReviewers,
+		State:              pr.State,
+		Merged:             pr.Merged,
+		MergedAt:           pr.MergedAt,
+		Mergeable:          pr.Mergeable,
+		MergeableState:     pr.MergeableState,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		HeadBranch:         pr.Head.Ref,
+		HeadRepository:     githubRepositoryRef(pr.Head.Repo),
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		BaseBranch:         pr.Base.Ref,
+		Body:               pr.Body,
+		ReviewDecision:     decision,
+		RequestedChanges:   requestedChanges,
+		CheckState:         checkState,
+		Checks:             checks,
+		CommentsSince:      comments,
+		URL:                pr.HTMLURL,
+		Integrity:          apiintegrity.Unapproved,
 	}, nil
 }
 
@@ -1534,6 +1566,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
 			continue
 		}
+		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -1549,22 +1584,25 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
 	labels := githubLabelNames(pr.Labels)
 	return PullRequestSummary{
-		ID:         strconv.Itoa(pr.Number),
-		Number:     pr.Number,
-		URL:        pr.HTMLURL,
-		State:      pr.State,
-		Merged:     pr.Merged || pr.MergedAt != nil,
-		Head:       pr.Head.Ref,
-		Base:       pr.Base.Ref,
-		HeadSHA:    pr.Head.SHA,
-		BaseSHA:    pr.Base.SHA,
-		MergeSHA:   pr.MergeCommitSHA,
-		Draft:      pr.Draft,
-		Labels:     labels,
-		CheckState: checkState,
-		UpdatedAt:  pr.UpdatedAt,
-		Body:       pr.Body,
-		Integrity:  apiintegrity.Unapproved,
+		ID:                 strconv.Itoa(pr.Number),
+		Number:             pr.Number,
+		URL:                pr.HTMLURL,
+		Author:             pr.User.Login,
+		Assignees:          githubUserLogins(pr.Assignees),
+		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
+		State:              pr.State,
+		Merged:             pr.Merged || pr.MergedAt != nil,
+		Head:               pr.Head.Ref,
+		Base:               pr.Base.Ref,
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		MergeSHA:           pr.MergeCommitSHA,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		CheckState:         checkState,
+		UpdatedAt:          pr.UpdatedAt,
+		Body:               pr.Body,
+		Integrity:          apiintegrity.Unapproved,
 	}
 }
 
@@ -1574,6 +1612,14 @@ func githubLabelNames(labels []githubLabel) []string {
 		names = append(names, label.Name)
 	}
 	return names
+}
+
+func githubUserLogins(users []githubUser) []string {
+	logins := make([]string, 0, len(users))
+	for _, user := range users {
+		logins = append(logins, user.Login)
+	}
+	return logins
 }
 
 // PullRequestFiles lists the files pullID touches — merge-review's
@@ -2114,6 +2160,16 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 	pageSize := 30
 	if req.Limit > 0 {
 		pageSize = min(req.Limit, 100)
+		if req.NeedsOversizedCandidateScan() {
+			// #2067: a page capped at exactly Limit raw candidates can
+			// under-match when a post-fetch filter (FieldPredicate, label
+			// predicate) rejects the candidate at the truncation boundary
+			// — give the fetch GitHub's own per-page ceiling (100; the
+			// full candidateScanCeiling isn't reachable in one page here)
+			// instead so "Limit means matches" holds for realistic
+			// candidate distributions.
+			pageSize = 100
+		}
 		values.Set("per_page", strconv.Itoa(pageSize))
 	}
 	callerPaged := req.Page > 0 || req.Cursor != "" || req.PageInfo != nil
@@ -2147,15 +2203,29 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
 		}
+		items, scanned, err := issuesToWorkItems(issues, req)
+		if err != nil {
+			return nil, err
+		}
 		if req.PageInfo != nil {
+			// HasNext/NextCursor track the MATCH stream, not the candidate
+			// stream (#2067's third acceptance criterion): issuesToWorkItems
+			// can stop scanning before scanned reaches len(issues) once
+			// Limit real matches are in hand, leaving fetched-but-unscanned
+			// issues behind — and even scanning every fetched issue without
+			// reaching Limit matches still leaves more to look at when the
+			// fetch itself hit pageSize (GitHub may hold further candidates
+			// beyond what this round asked for).
+			scannedEverything := scanned == len(issues)
+			fetchWasCapped := len(issues) == pageSize
 			req.PageInfo.CandidateCount = len(issues)
-			req.PageInfo.HasNext = len(issues) == pageSize
+			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped
 			req.PageInfo.NextCursor = ""
 			if req.PageInfo.HasNext {
-				req.PageInfo.NextCursor = strconv.Itoa(offset + len(issues))
+				req.PageInfo.NextCursor = strconv.Itoa(offset + scanned)
 			}
 		}
-		return issuesToWorkItems(issues, req)
+		return items, nil
 	}
 
 	endpoint, err = addQuery(endpoint, values)
@@ -2204,24 +2274,30 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 }
 
 // issuesToWorkItems maps a page of GitHub issues to WorkItems, skipping pull
-// requests, and truncates to limit (0 = no cap).
-func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, error) {
+// requests, and truncates to limit (0 = no cap). scanned reports how many
+// raw issues were actually inspected before stopping — equal to len(issues)
+// unless Limit real matches were reached first (#2067), so a caller-paged
+// resume cursor can advance exactly past what was scanned rather than past
+// every raw candidate fetched.
+func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkItem, int, error) {
 	items := make([]WorkItem, 0, len(issues))
+	scanned := 0
 	for _, issue := range issues {
+		scanned++
 		if issue.PullRequest != nil {
 			continue
 		}
 		item := mapGitHubIssue(issue)
 		matched, err := req.MatchesLabelPredicate(item.Labels)
 		if err != nil {
-			return nil, err
+			return nil, scanned, err
 		}
 		if !matched {
 			continue
 		}
 		matched, err = req.MatchesFieldPredicate(item.Fields)
 		if err != nil {
-			return nil, err
+			return nil, scanned, err
 		}
 		if !matched {
 			continue
@@ -2231,7 +2307,7 @@ func issuesToWorkItems(issues []githubIssue, req ListWorkItemsRequest) ([]WorkIt
 			break
 		}
 	}
-	return items, nil
+	return items, scanned, nil
 }
 
 // GetWorkItem reads a GitHub issue as a unified work item.
@@ -2280,8 +2356,108 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 	return items, nil
 }
 
-// HasOpenWorkItemBlocker reports whether a GitHub issue has a native blocker
-// that is still open.
+// FindWorkItemsByMarker returns every issue whose body contains marker as an
+// exact line. It scans the authoritative issues listing rather than GitHub's
+// eventually-consistent search index.
+func (p *GitHubProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}})
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode issues page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
+				matches = append(matches, mapGitHubIssue(issue))
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
+// AttachWorkItemChild attaches child to parent through GitHub's native
+// sub-issues API after confirming both revisions still match the caller's
+// immediately preceding reads.
+func (p *GitHubProvider) AttachWorkItemChild(ctx context.Context, req AttachWorkItemChildRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.ParentID == "" || req.ChildID == "" {
+		return fmt.Errorf("parent and child issue ids are required")
+	}
+	parent, err := p.GetWorkItem(ctx, req.Repository, req.ParentID)
+	if err != nil {
+		return err
+	}
+	child, err := p.GetWorkItem(ctx, req.Repository, req.ChildID)
+	if err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(parent, req.ExpectedParentRevision); err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(child, req.ExpectedChildRevision); err != nil {
+		return err
+	}
+	childDatabaseID, err := strconv.ParseInt(child.ExternalID, 10, 64)
+	if err != nil || childDatabaseID <= 0 {
+		return fmt.Errorf("child issue %q has invalid provider id %q", req.ChildID, child.ExternalID)
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ParentID, "sub_issues")
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"sub_issue_id": childDatabaseID}, nil)
+}
+
+// ListWorkItemBlockers returns the GitHub issues and pull requests registered as
+// native blockers for an issue.
+func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	if err != nil {
+		return nil, err
+	}
+	var blockers []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
+		}
+		for _, issue := range issues {
+			blockers = append(blockers, mapGitHubIssue(issue))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return blockers, nil
+}
+
+// HasOpenWorkItemBlocker reports whether a GitHub issue has a native issue
+// blocker that is still open.
 func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return false, err
@@ -2630,6 +2806,16 @@ func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body i
 	return p.doStatus(ctx, method, endpoint, body, out, nil)
 }
 
+// doRetryable is do with sendWithAcceptRetryable's explicit retry-safety
+// override — see its doc for why graphql needs this instead of do.
+func (p *GitHubProvider) doRetryable(ctx context.Context, method, endpoint string, body, out interface{}, retryable bool) error {
+	resp, err := p.sendWithAcceptRetryable(ctx, method, endpoint, body, "application/vnd.github+json", retryable)
+	if err != nil {
+		return err
+	}
+	return readJSONResponse(resp, method, endpoint, out)
+}
+
 // send issues one GitHub request, retrying transient failures — rate limits,
 // 5xx server errors, and transport errors — with independent bounded retry
 // budgets. Rate-limit retries also honor maxRateLimitWait total sleep and
@@ -2645,6 +2831,15 @@ func (p *GitHubProvider) send(ctx context.Context, method, endpoint string, body
 }
 
 func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint string, body interface{}, accept string) (*http.Response, error) {
+	return p.sendWithAcceptRetryable(ctx, method, endpoint, body, accept, isIdempotentHTTPMethod(method))
+}
+
+// sendWithAcceptRetryable is sendWithAccept with an explicit retry-safety
+// override, for the one caller (graphql) whose wire method (always POST,
+// GraphQL's transport requirement) does not match its actual idempotency —
+// a GraphQL query (read) is exactly as safe to retry as a REST GET, but the
+// literal HTTP method alone can't tell the two apart (#2026).
+func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, endpoint string, body interface{}, accept string, retryable bool) (*http.Response, error) {
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
@@ -2674,8 +2869,14 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 		if err != nil {
 			// Transport error (connection reset, DNS blip, timeout): retry with
 			// backoff rather than fail the stage on a single network hiccup
-			// (#139). No response to close on this path.
-			if transientRetries < p.maxRetries {
+			// (#139) — but only for idempotent methods (#2026). A POST/PATCH
+			// whose response was lost to the transport error may have already
+			// committed server-side (issue creation, a comment post, a label
+			// mutation); GitHub has no transport-level dedup marker to make a
+			// blind retry of those safe, so a lost response on a non-idempotent
+			// method is surfaced as an error rather than silently risking a
+			// duplicate. No response to close on this path.
+			if retryable && transientRetries < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}
@@ -2711,9 +2912,12 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 			rateLimitRetries++
 			continue
 		}
-		if resp.StatusCode >= 500 && transientRetries < p.maxRetries {
+		if resp.StatusCode >= 500 && retryable && transientRetries < p.maxRetries {
 			// Server-side error: retry with backoff. GitHub 5xx is usually
 			// transient; without this a single blip fails the stage attempt.
+			// Restricted to idempotent methods (#2026) for the same reason as
+			// the transport-error retry above — a 5xx can follow a request
+			// that already committed.
 			_ = resp.Body.Close()
 			if err := p.sleep(ctx, backoffDuration(transientRetries)); err != nil {
 				return nil, err
@@ -2892,22 +3096,25 @@ type githubPullRequest struct {
 }
 
 type githubPullRequestDetail struct {
-	ID             int64         `json:"id"`
-	Number         int           `json:"number"`
-	Title          string        `json:"title"`
-	State          string        `json:"state"`
-	Merged         bool          `json:"merged"`
-	MergedAt       *time.Time    `json:"merged_at"`
-	MergeCommitSHA string        `json:"merge_commit_sha"`
-	ClosedAt       *time.Time    `json:"closed_at"`
-	Mergeable      *bool         `json:"mergeable"`
-	MergeableState string        `json:"mergeable_state"`
-	Draft          bool          `json:"draft"`
-	Body           string        `json:"body"`
-	HTMLURL        string        `json:"html_url"`
-	Labels         []githubLabel `json:"labels"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	Head           struct {
+	ID                 int64         `json:"id"`
+	Number             int           `json:"number"`
+	Title              string        `json:"title"`
+	State              string        `json:"state"`
+	Merged             bool          `json:"merged"`
+	MergedAt           *time.Time    `json:"merged_at"`
+	MergeCommitSHA     string        `json:"merge_commit_sha"`
+	ClosedAt           *time.Time    `json:"closed_at"`
+	Mergeable          *bool         `json:"mergeable"`
+	MergeableState     string        `json:"mergeable_state"`
+	Draft              bool          `json:"draft"`
+	Body               string        `json:"body"`
+	HTMLURL            string        `json:"html_url"`
+	User               githubUser    `json:"user"`
+	Assignees          []githubUser  `json:"assignees"`
+	RequestedReviewers []githubUser  `json:"requested_reviewers"`
+	Labels             []githubLabel `json:"labels"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	Head               struct {
 		Ref  string            `json:"ref"`
 		SHA  string            `json:"sha"`
 		Repo *githubRepository `json:"repo"`
@@ -3071,6 +3278,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Provider:       ProviderGitHub,
 		ID:             strconv.Itoa(issue.Number),
 		ExternalID:     strconv.FormatInt(issue.ID, 10),
+		Revision:       timeRevision(issue.UpdatedAt),
 		Type:           "issue",
 		Title:          issue.Title,
 		Body:           issue.Body,
@@ -3089,6 +3297,32 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Raw:            issue,
 		Integrity:      apiintegrity.Unapproved,
 	}
+}
+
+func containsExactLine(body, marker string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if line == marker {
+			return true
+		}
+	}
+	return false
+}
+
+func timeRevision(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func checkWorkItemRevision(item WorkItem, expected string) error {
+	if expected == "" {
+		return fmt.Errorf("expected revision is required for work item %s", item.ID)
+	}
+	if item.Revision != expected {
+		return &RevisionConflictError{ItemID: item.ID, Expected: expected, Actual: item.Revision}
+	}
+	return nil
 }
 
 func githubIssueFields(issue githubIssue) fieldpredicate.Fields {

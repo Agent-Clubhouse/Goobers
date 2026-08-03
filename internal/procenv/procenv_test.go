@@ -93,6 +93,29 @@ func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 	}
 }
 
+func TestBaseEnvPassesThroughJavaToolchainFamily(t *testing.T) {
+	vars := map[string]string{
+		"JAVA_HOME":        "/opt/jdk-21",
+		"JDK_HOME":         "/opt/jdk-21",
+		"MAVEN_OPTS":       "-Xmx1g",
+		"MAVEN_CONFIG":     "/custom/maven",
+		"M2_HOME":          "/opt/maven",
+		"GRADLE_OPTS":      "-Dorg.gradle.daemon=false",
+		"GRADLE_USER_HOME": "/custom/gradle",
+	}
+	for name, value := range vars {
+		t.Setenv(name, value)
+	}
+
+	for _, env := range [][]string{BaseEnv(), BaseEnvWith(nil)} {
+		for name, value := range vars {
+			if !contains(env, name+"="+value) {
+				t.Fatalf("Java toolchain var %s did not pass through, got %v", name, env)
+			}
+		}
+	}
+}
+
 func TestBaseEnvPassesThroughProfileLocationsWithoutAuthTokens(t *testing.T) {
 	profileVars := map[string]string{
 		"USERPROFILE":  `C:\Users\operator`,

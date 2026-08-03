@@ -122,6 +122,13 @@ func newConfig(opts ...Option) config {
 // Dir returns the run directory.
 func (r *Run) Dir() string { return r.dir }
 
+// Seq returns the highest event sequence durably appended to the run.
+func (r *Run) Seq() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seq
+}
+
 // RunCreationStagingDir returns the hidden sibling directory where Create
 // assembles unpublished runs before their atomic rename into runsDir.
 func RunCreationStagingDir(runsDir string) string {
@@ -268,11 +275,11 @@ func (r *Run) Append(ev Event) error {
 		return err
 	}
 	// Track lifecycle transitions so Close/Checkpoint reflect the last durable
-	// run.finished or run.resumed event. Reason mirrors the terminal event's own
+	// run.finished or intervention event. Reason mirrors the terminal event's own
 	// Error.Message, if any (#520) — empty for an ordinary business-outcome
 	// terminal that carries no error, and cleared when a run resumes.
 	switch ev.Type {
-	case EventRunResumed:
+	case EventRunResumed, EventGateOverridden:
 		r.phase = PhaseRunning
 		r.machineState = ev.Target
 		r.reason = ""

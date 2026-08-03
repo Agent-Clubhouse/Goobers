@@ -2,9 +2,6 @@ package providers
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,18 +9,15 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	apiintegrity "github.com/goobers/goobers/api/integrity"
-	"github.com/goobers/goobers/internal/fieldpredicate"
 )
 
 const (
 	adoPullRequestPageSize = 100
-	adoChangePageSize      = 2000
-	adoCommentPageSize     = 200
-	adoClaimRetries        = 4
-	adoMaxTagLength        = 400
-	adoClaimTagPrefix      = "goobers:claim-run:"
+
+	// adoZeroObjectID is the all-zero SHA Azure DevOps' Git Refs API
+	// recognizes as "no object": oldObjectId when creating a ref from
+	// nothing (CreateBranch) and newObjectId to delete one (DeleteBranch).
+	adoZeroObjectID = "0000000000000000000000000000000000000000"
 )
 
 // ADOProvider implements repo, backlog, and trigger operations for Azure DevOps.
@@ -39,6 +33,7 @@ type ADOProvider struct {
 	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar
 	rateObserver     RateLimitObserver
+	quotaObserver    QuotaObserver
 	maxRetries       int
 	maxRateLimitWait time.Duration
 	now              func() time.Time
@@ -109,6 +104,11 @@ func WithADORateLimitObserver(observer RateLimitObserver) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.rateObserver = observer }
 }
 
+// WithADOQuotaObserver receives quota-window observations from ADO responses.
+func WithADOQuotaObserver(observer QuotaObserver) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.quotaObserver = observer }
+}
+
 // WithADOMaxRateLimitRetries overrides the retry count for rate-limited requests.
 func WithADOMaxRateLimitRetries(n int) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.maxRetries = n }
@@ -117,6 +117,26 @@ func WithADOMaxRateLimitRetries(n int) func(*ADOProvider) {
 // Kind returns the Azure DevOps provider kind.
 func (p *ADOProvider) Kind() ProviderKind {
 	return ProviderADO
+}
+
+// Capabilities declares ADO's current truth (design doc
+// docs/design/provider-contract-conformance.md §3.2/§4, CONF-3 #2076): the
+// landing set — pr.merge, pr.landing.detect-policy, pr.landing.enqueue,
+// pr.landing.poll, pr.compare, branch.delete — is now conformant, mapped
+// onto the mergepolicy seam (#758) per §4's table. pr.review.submit/
+// threads and repo.policy.read remain excluded (no ADO implementation
+// exists). pr.status.publish is real (PublishPullRequestStatus).
+// backlog.blockers is excluded (CONF-5 #2078, closing #2059): ADO
+// dependency-link modeling reaches parity in V1, so there is no real
+// native-dependency read to declare — Dispatcher returns ErrUnsupported
+// for this capability instead of the deleted fail-open stub.
+func (p *ADOProvider) Capabilities() CapabilitySet {
+	return mandatoryCapabilities().With(
+		CapPRQueryAuthor, CapPRQueryRequestedReviewer,
+		CapPRStatusPublish,
+		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
+		CapPRCompare, CapBranchDelete,
+	)
 }
 
 // CloneRepository clones an Azure DevOps repository to a local destination.
@@ -210,7 +230,7 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	}
 	body := []map[string]string{{
 		"name":        "refs/heads/" + req.Name,
-		"oldObjectId": "0000000000000000000000000000000000000000",
+		"oldObjectId": adoZeroObjectID,
 		"newObjectId": req.BaseSHA,
 	}}
 	var out adoRefsResponse
@@ -223,9 +243,59 @@ func (p *ADOProvider) CreateBranch(ctx context.Context, req BranchRequest) (Bran
 	return BranchResult{Name: strings.TrimPrefix(out.Value[0].Name, "refs/heads/"), SHA: out.Value[0].ObjectID, URL: out.Value[0].URL}, nil
 }
 
-// DeleteBranch is part of the provider contract; ADO parity lands in V1.
-func (p *ADOProvider) DeleteBranch(context.Context, DeleteBranchRequest) (DeleteBranchResult, error) {
-	return DeleteBranchResult{}, fmt.Errorf("ado: branch deletion lands in V1 parity (BL-033)")
+// DeleteBranch removes an Azure DevOps branch ref (CONF-3 #2076, design doc
+// §4: branch.delete ≙ ref update to zeroed object id) via the same refs
+// batch-update endpoint CreateBranch uses, reversed: oldObjectId pins the
+// SHA being removed — an optimistic-concurrency guard exactly like GitHub's
+// ExpectedSHA lease — and newObjectId is adoZeroObjectID, which ADO's Git
+// Refs API treats as "delete this ref". When req.ExpectedSHA is empty, the
+// current tip is resolved first: ADO's ref-update rejects an update whose
+// oldObjectId doesn't match the ref's live value, so even an unconditional
+// delete needs a real one.
+func (p *ADOProvider) DeleteBranch(ctx context.Context, req DeleteBranchRequest) (DeleteBranchResult, error) {
+	if err := requireRepo(req.Repository); err != nil {
+		return DeleteBranchResult{}, err
+	}
+	if req.Name == "" {
+		return DeleteBranchResult{}, fmt.Errorf("branch name is required")
+	}
+	expected := req.ExpectedSHA
+	if expected == "" {
+		sha, found, err := p.lookupBranchSHA(ctx, req.Repository, req.Name)
+		if err != nil {
+			return DeleteBranchResult{}, err
+		}
+		if !found {
+			return DeleteBranchResult{Deleted: false}, nil
+		}
+		expected = sha
+	}
+	endpoint, err := p.repoURL(req.Repository, "refs")
+	if err != nil {
+		return DeleteBranchResult{}, err
+	}
+	body := []map[string]string{{
+		"name":        "refs/heads/" + req.Name,
+		"oldObjectId": expected,
+		"newObjectId": adoZeroObjectID,
+	}}
+	var out adoRefsResponse
+	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
+		return DeleteBranchResult{}, err
+	}
+	if len(out.Value) == 0 {
+		// The batch update reported no ref touched: with an explicit
+		// ExpectedSHA the caller cared about the lease, so treat an
+		// unconfirmed delete as a lost lease (BranchTipChangedError) rather
+		// than silently reporting success; without one, absence is
+		// ambiguous-but-benign (already gone), matching GitHub's 404-is-
+		// not-an-error DeleteBranch semantics.
+		if req.ExpectedSHA != "" {
+			return DeleteBranchResult{}, &BranchTipChangedError{Name: req.Name, ExpectedSHA: req.ExpectedSHA}
+		}
+		return DeleteBranchResult{Deleted: false}, nil
+	}
+	return DeleteBranchResult{Deleted: true}, nil
 }
 
 // Commit writes file changes to an Azure DevOps branch.
@@ -291,1029 +361,6 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	return CommitResult{SHA: commitID, URL: out.URL}, nil
 }
 
-// OpenPullRequest opens an Azure DevOps pull request.
-func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return PullRequestResult{}, err
-	}
-	head := strings.TrimPrefix(req.Head, "refs/heads/")
-	base := strings.TrimPrefix(req.Base, "refs/heads/")
-	// Idempotency: a resumed or repassed open-pr stage — or any second call for
-	// the same run branch — must converge on the PR it already opened rather
-	// than POSTing a duplicate. ADO rejects a second active PR for the same
-	// source→target ref anyway, so find-or-create is both correct and the shape
-	// the provider-neutral open-pr stage expects (mirroring the GitHub
-	// provider's find-or-create).
-	if existing, found, err := p.FindPullRequestByBranch(ctx, req.Repository, head, base); err != nil {
-		return PullRequestResult{}, err
-	} else if found {
-		return existing, nil
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests")
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	body := map[string]interface{}{
-		"sourceRefName": "refs/heads/" + head,
-		"targetRefName": "refs/heads/" + base,
-		"title":         req.Title,
-		"description":   withRunIDFooter(req.Body, req.RunID),
-		"isDraft":       req.Draft,
-	}
-	var out adoPullRequest
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestResult{}, err
-	}
-	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: out.URL}, nil
-}
-
-// FindPullRequestByBranch resolves the open Azure DevOps pull request whose
-// source branch is head (and, when base is set, whose target is base), so
-// issue-close-out can link the run's PR and open-pr can stay idempotent. Reports
-// found=false (not an error) when no active PR matches.
-func (p *ADOProvider) FindPullRequestByBranch(ctx context.Context, repo RepositoryRef, head, base string) (PullRequestResult, bool, error) {
-	if err := requireRepo(repo); err != nil {
-		return PullRequestResult{}, false, err
-	}
-	head = strings.TrimPrefix(head, "refs/heads/")
-	if head == "" {
-		return PullRequestResult{}, false, fmt.Errorf("head branch is required")
-	}
-	summaries, err := p.ListPullRequests(ctx, ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: head})
-	if err != nil {
-		return PullRequestResult{}, false, err
-	}
-	for _, pr := range summaries {
-		// ListPullRequests filters HeadPrefix as a prefix; require an exact
-		// source-branch match so "run-1" never resolves "run-10".
-		if pr.Head == head {
-			return PullRequestResult{ID: pr.ID, Number: pr.Number, URL: pr.URL}, true, nil
-		}
-	}
-	return PullRequestResult{}, false, nil
-}
-
-// RequestReview requests Azure DevOps reviewers for a pull request.
-func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
-	if err := requireRepo(req.Repository); err != nil {
-		return err
-	}
-	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
-	}
-	for _, reviewer := range req.Reviewers {
-		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", reviewer)
-		if err != nil {
-			return err
-		}
-		if err := p.do(ctx, http.MethodPut, endpoint, map[string]int{"vote": 0}, nil); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// PollPullRequest reports an Azure DevOps pull request's review decision and
-// combined check state. The check state is derived from the repository's
-// blocking branch-policy evaluations (build validation, status checks, required
-// reviewers) so a gate can drive the CI-poll/repass loop against ADO's own
-// policy engine — the source of truth for whether a PR is correct (#772).
-func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRequest) (PullRequestPollResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return PullRequestPollResult{}, err
-	}
-	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
-	if err != nil {
-		return PullRequestPollResult{}, err
-	}
-	var pr adoPullRequestDetail
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &pr); err != nil {
-		return PullRequestPollResult{}, err
-	}
-	prURL := pr.URL
-	if pr.Links.Web.Href != "" {
-		prURL = pr.Links.Web.Href
-	}
-	result := PullRequestPollResult{
-		Number:         pr.PullRequestID,
-		Title:          pr.Title,
-		State:          adoPullRequestState(pr.Status),
-		Merged:         strings.EqualFold(pr.Status, "completed"),
-		Draft:          pr.IsDraft,
-		HeadBranch:     strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
-		BaseBranch:     strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
-		HeadSHA:        pr.LastMergeSourceCommit.CommitID,
-		BaseSHA:        pr.LastMergeTargetCommit.CommitID,
-		Body:           pr.Description,
-		ReviewDecision: adoReviewDecision(pr.Reviewers),
-		URL:            prURL,
-		Integrity:      apiintegrity.Unapproved,
-	}
-	projectName := pr.Repository.Project.Name
-	if projectName == "" {
-		projectName = p.project(req.Repository)
-	}
-	checkState, checks, err := p.pollPullRequestPolicies(ctx, projectName, pr.Repository.Project.ID, req.PullID, stringSet(req.HumanPolicyConfigurationIDs))
-	if err != nil {
-		return PullRequestPollResult{}, err
-	}
-	result.CheckState = checkState
-	result.Checks = checks
-	return result, nil
-}
-
-// policyEvaluations fetches the branch-policy evaluations for a pull request via
-// the ADO Policy Evaluations API.
-func (p *ADOProvider) policyEvaluations(ctx context.Context, projectName, projectID, pullID string) ([]adoPolicyEvaluation, error) {
-	if projectID == "" {
-		return nil, fmt.Errorf("ado pull request %s: policy evaluation requires the project id", pullID)
-	}
-	endpoint, err := joinURL(p.BaseURL, p.Organization, projectName, "_apis", "policy", "evaluations")
-	if err != nil {
-		return nil, err
-	}
-	artifactID := fmt.Sprintf("vstfs:///CodeReview/CodeReviewId/%s/%s", projectID, pullID)
-	endpoint, err = addQuery(endpoint, url.Values{
-		"scopeId":    []string{projectID},
-		"artifactId": []string{artifactID},
-		// The Policy Evaluations API is still published under preview: ADO
-		// rejects a plain "7.1" with VssInvalidPreviewVersionException and
-		// requires the -preview suffix. (git/pullrequests and wit use "7.1".)
-		"api-version": []string{"7.1-preview.1"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	var resp adoPolicyEvaluationsResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Value, nil
-}
-
-// pollPullRequestPolicies reads the blocking branch-policy evaluations for a
-// pull request and reduces them to a single provider-neutral check state plus
-// per-policy detail.
-//
-// The returned CheckState gates on the set of policies the agent loop can act
-// on — every required blocking policy EXCEPT those whose configuration id is in
-// humanOnly. Human/merge-time policies (merge strategy, proof-of-presence,
-// required/minimum reviewers, comment resolution) can never be satisfied by
-// re-implementing; reducing on them would peg the state to failing forever and
-// starve the fix loop, so a loop declares their configuration ids as human-only
-// and they are recorded in the detail list for transparency but never drive the
-// gate. When no gating policy has concluded green yet (none applies, or one is
-// still queued/running) the state is pending — fail-closed: correctness is
-// unproven until a gating policy passes.
-func (p *ADOProvider) pollPullRequestPolicies(ctx context.Context, projectName, projectID, pullID string, humanOnly map[string]bool) (CheckState, []CheckDetail, error) {
-	evals, err := p.policyEvaluations(ctx, projectName, projectID, pullID)
-	if err != nil {
-		return "", nil, err
-	}
-	checks := make([]CheckDetail, 0, len(evals))
-	gateFailing, gatePending, gatePassing, sawGate := false, false, false, false
-	for _, ev := range evals {
-		if !ev.Configuration.IsEnabled || !ev.Configuration.IsBlocking {
-			continue
-		}
-		state := adoPolicyCheckState(ev.Status)
-		if state == "" {
-			continue
-		}
-		checks = append(checks, CheckDetail{
-			Name:       adoPolicyName(ev),
-			State:      state,
-			Conclusion: ev.Status,
-		})
-		if humanOnly[ev.Configuration.ID.String()] {
-			continue
-		}
-		sawGate = true
-		switch state {
-		case CheckStateFailing:
-			gateFailing = true
-		case CheckStatePending:
-			gatePending = true
-		case CheckStatePassing:
-			gatePassing = true
-		}
-	}
-	switch {
-	case gateFailing:
-		return CheckStateFailing, checks, nil
-	case sawGate && gatePassing && !gatePending:
-		return CheckStatePassing, checks, nil
-	default:
-		return CheckStatePending, checks, nil
-	}
-}
-
-// ClosePullRequest abandons an Azure DevOps pull request — the ADO equivalent of
-// closing a pull request unmerged. A completed pull request is reported as
-// merged (#772). Only used for terminal-failure cleanup; the happy path leaves
-// completion to a human.
-func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
-	if err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	var out adoPullRequest
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	number := out.PullRequestID
-	if number == 0 {
-		number, _ = strconv.Atoi(req.PullID)
-	}
-	return ClosePullRequestResult{
-		Number: number,
-		Merged: strings.EqualFold(out.Status, "completed"),
-		State:  adoPullRequestState(out.Status),
-	}, nil
-}
-
-// PublishPullRequestStatus posts an Azure DevOps pull-request status so a
-// status-check branch policy can gate on goobers-supplied evidence — a reviewer
-// verdict or local-CI result — making ADO's policy engine the source of truth
-// for PR correctness (#772).
-func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return PullRequestStatusResult{}, err
-	}
-	if req.PullID == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("pull id is required")
-	}
-	if req.Name == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "statuses")
-	if err != nil {
-		return PullRequestStatusResult{}, err
-	}
-	genre := req.Genre
-	if genre == "" {
-		genre = adoDefaultStatusGenre
-	}
-	body := map[string]interface{}{
-		"state":       adoStatusState(req.State),
-		"description": req.Description,
-		"context": map[string]string{
-			"genre": genre,
-			"name":  req.Name,
-		},
-	}
-	if req.TargetURL != "" {
-		body["targetUrl"] = req.TargetURL
-	}
-	var out struct {
-		ID int `json:"id"`
-	}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestStatusResult{}, err
-	}
-	return PullRequestStatusResult{ID: out.ID}, nil
-}
-
-// MergePullRequest is not yet implemented for Azure DevOps: see PollPullRequest.
-func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequestRequest) (MergePullRequestResult, error) {
-	return MergePullRequestResult{}, fmt.Errorf("ado: pull request merge lands in V1 parity (BL-033)")
-}
-
-// DetectMergePolicy is not yet implemented for Azure DevOps (issue #758):
-// merge-policy abstraction parity is scoped to V1 (BL-033) alongside the
-// rest of ADO's pull-request surface; the GitHub provider is the V0
-// workload (#13).
-func (p *ADOProvider) DetectMergePolicy(ctx context.Context, req RepoMergePolicyRequest) (RepoMergePolicyResult, error) {
-	return RepoMergePolicyResult{}, fmt.Errorf("ado: merge policy detection lands in V1 parity (BL-033)")
-}
-
-// EnqueuePullRequest is not yet implemented for Azure DevOps: see DetectMergePolicy.
-func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullRequestRequest) (EnqueuePullRequestResult, error) {
-	return EnqueuePullRequestResult{}, fmt.Errorf("ado: pull request enqueue lands in V1 parity (BL-033)")
-}
-
-// PollMergeQueueEntry is not yet implemented for Azure DevOps: see DetectMergePolicy.
-func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueueEntryRequest) (PollMergeQueueEntryResult, error) {
-	return PollMergeQueueEntryResult{}, fmt.Errorf("ado: merge queue entry polling lands in V1 parity (BL-033)")
-}
-
-// ListPullRequests lists active Azure DevOps pull requests matching the
-// provider-neutral base and head-prefix filters.
-func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequestsRequest) ([]PullRequestSummary, error) {
-	if err := requireRepo(req.Repository); err != nil {
-		return nil, err
-	}
-	endpoint, err := p.repoURL(req.Repository, "pullrequests")
-	if err != nil {
-		return nil, err
-	}
-	values := url.Values{
-		"searchCriteria.status":       []string{"active"},
-		"searchCriteria.includeLinks": []string{"true"},
-		"$top":                        []string{strconv.Itoa(adoPullRequestPageSize)},
-	}
-	if req.Base != "" {
-		values.Set("searchCriteria.targetRefName", "refs/heads/"+strings.TrimPrefix(req.Base, "refs/heads/"))
-	}
-
-	var prs []adoPullRequest
-	for skip := 0; ; skip += adoPullRequestPageSize {
-		values.Set("$skip", strconv.Itoa(skip))
-		pageEndpoint, err := addQuery(endpoint, values)
-		if err != nil {
-			return nil, err
-		}
-		var page adoPullRequestsResponse
-		if err := p.do(ctx, http.MethodGet, pageEndpoint, nil, &page); err != nil {
-			return nil, err
-		}
-		prs = append(prs, page.Value...)
-		if len(page.Value) < adoPullRequestPageSize {
-			break
-		}
-	}
-
-	headPrefix := strings.TrimPrefix(req.HeadPrefix, "refs/heads/")
-	out := make([]PullRequestSummary, 0, len(prs))
-	for _, pr := range prs {
-		head := strings.TrimPrefix(pr.SourceRefName, "refs/heads/")
-		if headPrefix != "" && !strings.HasPrefix(head, headPrefix) {
-			continue
-		}
-		labels := make([]string, 0, len(pr.Labels))
-		for _, label := range pr.Labels {
-			labels = append(labels, label.Name)
-		}
-		prURL := pr.URL
-		if pr.Links.Web.Href != "" {
-			prURL = pr.Links.Web.Href
-		}
-		out = append(out, PullRequestSummary{
-			ID:         strconv.Itoa(pr.PullRequestID),
-			Number:     pr.PullRequestID,
-			URL:        prURL,
-			Head:       head,
-			Base:       strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
-			HeadSHA:    pr.LastMergeSourceCommit.CommitID,
-			BaseSHA:    pr.LastMergeTargetCommit.CommitID,
-			Draft:      pr.IsDraft,
-			Labels:     labels,
-			CheckState: CheckStatePending,
-			UpdatedAt:  pr.CreationDate,
-			Integrity:  apiintegrity.Unapproved,
-		})
-	}
-	return out, nil
-}
-
-// PullRequestFiles lists the cumulative changes in the latest pull request
-// iteration, relative to the common source/target commit.
-func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
-	if err := requireRepo(repo); err != nil {
-		return nil, err
-	}
-	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
-	}
-	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
-	if err != nil {
-		return nil, err
-	}
-	var iterations adoPullRequestIterationsResponse
-	if err := p.do(ctx, http.MethodGet, iterationsEndpoint, nil, &iterations); err != nil {
-		return nil, err
-	}
-	latestIteration := 0
-	for _, iteration := range iterations.Value {
-		if iteration.ID > latestIteration {
-			latestIteration = iteration.ID
-		}
-	}
-	if latestIteration == 0 {
-		return nil, fmt.Errorf("ado pull request %s returned no iterations", pullID)
-	}
-
-	changesEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations", strconv.Itoa(latestIteration), "changes")
-	if err != nil {
-		return nil, err
-	}
-	files := make([]ChangedFile, 0)
-	top, skip := adoChangePageSize, 0
-	for {
-		pageEndpoint, err := addQuery(changesEndpoint, url.Values{
-			"$top":  []string{strconv.Itoa(top)},
-			"$skip": []string{strconv.Itoa(skip)},
-		})
-		if err != nil {
-			return nil, err
-		}
-		var page adoPullRequestIterationChanges
-		if err := p.do(ctx, http.MethodGet, pageEndpoint, nil, &page); err != nil {
-			return nil, err
-		}
-		for _, change := range page.ChangeEntries {
-			if change.Item.Path == "" {
-				return nil, fmt.Errorf("ado pull request %s iteration %d returned a change without a path", pullID, latestIteration)
-			}
-			files = append(files, ChangedFile{
-				Path:      strings.TrimPrefix(change.Item.Path, "/"),
-				Status:    adoChangedFileStatus(change.ChangeType),
-				Integrity: apiintegrity.Unapproved,
-			})
-		}
-		if page.NextSkip == 0 {
-			break
-		}
-		if page.NextSkip <= skip {
-			return nil, fmt.Errorf("ado pull request %s returned invalid change pagination offset %d", pullID, page.NextSkip)
-		}
-		skip = page.NextSkip
-		if page.NextTop > 0 {
-			top = page.NextTop
-		}
-	}
-	return files, nil
-}
-
-// CompareCommits is not yet implemented for Azure DevOps: see PullRequestFiles.
-func (p *ADOProvider) CompareCommits(ctx context.Context, repo RepositoryRef, base, head string) (CompareResult, error) {
-	return CompareResult{}, fmt.Errorf("ado: commit comparison lands in V1 parity (BL-033)")
-}
-
-// ListWorkItems lists Azure Boards work items as unified work items.
-func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsRequest) ([]WorkItem, error) {
-	project := p.project(req.Repository)
-	if err := p.requireWorkItemScope(project); err != nil {
-		return nil, err
-	}
-	if err := validateADOTags(req.Labels); err != nil {
-		return nil, err
-	}
-	query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
-	requestedState := strings.ToLower(strings.TrimSpace(req.State))
-	switch requestedState {
-	case "", "all":
-	case "open", "closed":
-		// Common states are filtered after reading each item's process-specific
-		// state category; custom processes may name Completed states arbitrarily.
-	default:
-		query += fmt.Sprintf(" AND [System.State] = '%s'", escapeWIQLString(req.State))
-	}
-	if req.Assignee != "" {
-		query += fmt.Sprintf(" AND [System.AssignedTo] = '%s'", escapeWIQLString(req.Assignee))
-	}
-	if req.UpdatedSince != nil {
-		query += fmt.Sprintf(
-			" AND [System.ChangedDate] >= '%s'",
-			req.UpdatedSince.UTC().Format(time.RFC3339),
-		)
-	}
-	for _, label := range uniqueStrings(req.Labels) {
-		query += fmt.Sprintf(" AND [System.Tags] CONTAINS '%s'", escapeWIQLString(label))
-	}
-	if req.Cursor != "" {
-		afterID, err := strconv.Atoi(req.Cursor)
-		if err != nil || afterID < 0 {
-			return nil, fmt.Errorf("invalid ADO work-item cursor %q", req.Cursor)
-		}
-		query += fmt.Sprintf(" AND [System.Id] > %d", afterID)
-	}
-	if req.OldestFirst || req.PageInfo != nil || req.Cursor != "" {
-		// WIQL without ORDER BY leaves result order unspecified — the same
-		// Limit-truncation starvation hazard as GitHub's newest-first default
-		// (#532). System.Id ascends with creation order, so this is FIFO.
-		query += " ORDER BY [System.Id] ASC"
-	}
-	endpoint, err := p.workURL(project, "wiql")
-	if err != nil {
-		return nil, err
-	}
-	boundedScan := req.Cursor != "" || req.PageInfo != nil
-	if boundedScan && req.Limit > 0 {
-		endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(req.Limit)}})
-		if err != nil {
-			return nil, err
-		}
-	}
-	var wiql adoWIQLResponse
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &wiql); err != nil {
-		return nil, err
-	}
-	refs := wiql.WorkItems
-	if boundedScan && req.Limit > 0 {
-		refs = refs[:min(req.Limit, len(refs))]
-	}
-	if req.PageInfo != nil {
-		req.PageInfo.CandidateCount = len(refs)
-		req.PageInfo.HasNext = req.Limit > 0 && len(refs) == req.Limit
-		req.PageInfo.NextCursor = ""
-		if req.PageInfo.HasNext && len(refs) > 0 {
-			req.PageInfo.NextCursor = strconv.Itoa(refs[len(refs)-1].ID)
-		}
-	}
-	items := make([]WorkItem, 0, len(refs))
-	for _, ref := range refs {
-		item, err := p.GetWorkItem(ctx, req.Repository, strconv.Itoa(ref.ID))
-		if err != nil {
-			return nil, err
-		}
-		if (requestedState == "open" || requestedState == "closed") && item.State != requestedState {
-			continue
-		}
-		matched, err := req.MatchesLabelPredicate(item.Labels)
-		if err != nil {
-			return nil, err
-		}
-		if !matched {
-			continue
-		}
-		matched, err = req.MatchesFieldPredicate(item.Fields)
-		if err != nil {
-			return nil, err
-		}
-		if hasAllLabels(item.Labels, req.Labels) && matched {
-			items = append(items, item)
-			if !boundedScan && req.Limit > 0 && len(items) >= req.Limit {
-				break
-			}
-		}
-	}
-	return items, nil
-}
-
-// GetWorkItem reads an Azure Boards item as a unified work item.
-func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id string) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(repo)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(id); err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err := p.workURL(p.project(repo), "workitems", id)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"$expand": []string{"Relations"}})
-	if err != nil {
-		return WorkItem{}, err
-	}
-	var out adoWorkItem
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return WorkItem{}, err
-	}
-	return p.mapADOWorkItem(ctx, repo, out)
-}
-
-// CreateWorkItem creates an Azure Boards work item.
-func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
-	project := p.project(req.Repository)
-	if err := p.requireWorkItemScope(project); err != nil {
-		return WorkItem{}, err
-	}
-	if strings.TrimSpace(req.Title) == "" {
-		return WorkItem{}, fmt.Errorf("work item title is required")
-	}
-	if err := validateADOTags(req.Labels); err != nil {
-		return WorkItem{}, err
-	}
-	itemType := req.Type
-	if itemType == "" {
-		itemType = "Issue"
-	}
-	itemBody := withRunIDFooter(req.Body, req.RunID)
-	if req.RunID != "" {
-		existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if found {
-			return existing, nil
-		}
-	}
-	endpoint, err := p.workURL(project, "workitems", "$"+itemType)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	labels := replaceStatusLabel(req.Labels, req.Status)
-	patch := []adoPatchOperation{
-		{Op: "add", Path: "/fields/System.Title", Value: req.Title},
-		{Op: "add", Path: "/fields/System.Description", Value: itemBody},
-	}
-	if len(labels) > 0 {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(labels, "; ")})
-	}
-	if req.Assignee != "" {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: req.Assignee})
-	}
-	var out adoWorkItem
-	if err := p.doPatch(ctx, http.MethodPost, endpoint, patch, &out); err != nil {
-		return WorkItem{}, err
-	}
-	return p.mapADOWorkItem(ctx, req.Repository, out)
-}
-
-func (p *ADOProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID string) (WorkItem, bool, error) {
-	endpoint, err := p.workURL(p.project(repo), "wiql")
-	if err != nil {
-		return WorkItem{}, false, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{"20"}})
-	if err != nil {
-		return WorkItem{}, false, err
-	}
-	footer := runFooter(runID)
-	query := fmt.Sprintf(
-		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
-		escapeWIQLString(footer),
-	)
-	var result adoWIQLResponse
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
-		return WorkItem{}, false, err
-	}
-	for _, ref := range result.WorkItems {
-		item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
-		if err != nil {
-			return WorkItem{}, false, err
-		}
-		if strings.Contains(item.Body, footer) {
-			return item, true, nil
-		}
-	}
-	return WorkItem{}, false, nil
-}
-
-// UpdateWorkItemStatus mirrors Goobers processing status to Azure Boards tags.
-func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkItemStatusRequest) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Status == "" {
-		return WorkItem{}, fmt.Errorf("work item status is required")
-	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	labels := replaceStatusLabel(adoRawTags(raw), req.Status)
-	patch := []adoPatchOperation{
-		{Op: "test", Path: "/rev", Value: raw.Rev},
-		adoTagPatch(labels),
-	}
-	if (req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed) && current.State != "closed" {
-		state, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, "closed")
-		if stateErr != nil {
-			return WorkItem{}, stateErr
-		}
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: state})
-	}
-	endpoint, err := p.workURL(p.project(req.Repository), "workitems", req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	var out adoWorkItem
-	if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
-		return WorkItem{}, err
-	}
-	updated, err := p.mapADOWorkItem(ctx, req.Repository, out)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.Comment != "" {
-		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return updated, fmt.Errorf("work item status update committed; post comment: %w", err)
-		}
-	}
-	return updated, nil
-}
-
-// ListComments returns Azure Boards work-item comments, oldest first.
-func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
-	project := p.project(repo)
-	if err := p.requireWorkItemScope(project); err != nil {
-		return nil, err
-	}
-	if err := validateADOWorkItemID(id); err != nil {
-		return nil, err
-	}
-	base, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
-	if err != nil {
-		return nil, err
-	}
-	var comments []Comment
-	continuation := ""
-	for {
-		values := url.Values{
-			"$top":  []string{strconv.Itoa(adoCommentPageSize)},
-			"order": []string{"asc"},
-		}
-		if continuation != "" {
-			values.Set("continuationToken", continuation)
-		}
-		endpoint, err := addQuery(base, values)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := p.send(ctx, http.MethodGet, endpoint, nil, "")
-		if err != nil {
-			return nil, err
-		}
-		var page adoCommentsResponse
-		if err := readJSONResponse(resp, http.MethodGet, endpoint, &page); err != nil {
-			return nil, err
-		}
-		next := strings.TrimSpace(page.ContinuationToken)
-		if next == "" {
-			next = strings.TrimSpace(resp.Header.Get("x-ms-continuationtoken"))
-		}
-		for _, comment := range page.Comments {
-			comments = append(comments, mapADOComment(comment))
-		}
-		if next == "" {
-			return comments, nil
-		}
-		continuation = next
-	}
-}
-
-// UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
-func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOTags(append(append([]string{}, req.AddLabels...), req.RemoveLabels...)); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Milestone != nil {
-		return WorkItem{}, fmt.Errorf("ADO work items do not support numeric milestones; use an Azure Boards iteration")
-	}
-	state := strings.ToLower(strings.TrimSpace(req.State))
-	if state != "" && state != "open" && state != "closed" {
-		return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-	}
-
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	raw, err := rawADOWorkItem(current)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	patch := []adoPatchOperation{{Op: "test", Path: "/rev", Value: raw.Rev}}
-	if req.Title != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Title", Value: *req.Title})
-	}
-	if req.Body != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.Description", Value: *req.Body})
-	}
-	if req.Assignee != nil {
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.AssignedTo", Value: *req.Assignee})
-	}
-	if labelsChanged(req) {
-		labels := applyLabelSet(adoRawTags(raw), req.AddLabels, req.RemoveLabels)
-		patch = append(patch, adoTagPatch(labels))
-	}
-	if state != "" && state != current.State {
-		nativeState, stateErr := p.resolveCommonWorkItemState(ctx, req.Repository, current.Type, state)
-		if stateErr != nil {
-			return WorkItem{}, stateErr
-		}
-		patch = append(patch, adoPatchOperation{Op: "add", Path: "/fields/System.State", Value: nativeState})
-	}
-
-	updated := current
-	mutated := false
-	if len(patch) > 1 {
-		endpoint, err := p.workURL(p.project(req.Repository), "workitems", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		var out adoWorkItem
-		if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
-			return WorkItem{}, err
-		}
-		updated, err = p.mapADOWorkItem(ctx, req.Repository, out)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		mutated = true
-	}
-	if req.Comment != "" {
-		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			if mutated {
-				return updated, fmt.Errorf("work item update committed; post comment: %w", err)
-			}
-			return updated, fmt.Errorf("post work item comment: %w", err)
-		}
-	}
-	return updated, nil
-}
-
-// ClaimWorkItem atomically adds the visible claim tag and an internal owner tag.
-// The /rev test makes concurrent read-modify-write attempts settle on one winner.
-func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return ClaimResult{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return ClaimResult{}, err
-	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-	if err := validateADOTags([]string{label}); err != nil {
-		return ClaimResult{}, err
-	}
-	ownerTag, err := adoClaimTag(req.RunID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-
-	var conflict error
-	for range adoClaimRetries {
-		current, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
-		if getErr != nil {
-			return ClaimResult{}, getErr
-		}
-		raw, rawErr := rawADOWorkItem(current)
-		if rawErr != nil {
-			return ClaimResult{}, rawErr
-		}
-		winner, claimed, ownerErr := adoClaimOwner(adoRawTags(raw))
-		if ownerErr != nil {
-			return ClaimResult{}, ownerErr
-		}
-		if claimed {
-			return ClaimResult{Claimed: winner == req.RunID, ClaimedBy: winner, Item: current}, nil
-		}
-
-		labels := applyLabelSet(adoRawTags(raw), []string{label, ownerTag}, nil)
-		patch := []adoPatchOperation{
-			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
-		}
-		endpoint, endpointErr := p.workURL(p.project(req.Repository), "workitems", req.ID)
-		if endpointErr != nil {
-			return ClaimResult{}, endpointErr
-		}
-		var out adoWorkItem
-		if patchErr := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); patchErr != nil {
-			if isADORevisionConflict(patchErr) {
-				conflict = patchErr
-				continue
-			}
-			return ClaimResult{}, patchErr
-		}
-		item, mapErr := p.mapADOWorkItem(ctx, req.Repository, out)
-		if mapErr != nil {
-			return ClaimResult{}, mapErr
-		}
-		return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
-	}
-	return ClaimResult{}, fmt.Errorf("claim work item %s after revision conflicts: %w", req.ID, conflict)
-}
-
-// ReleaseWorkItemClaim removes an ADO claim marker owned by the requesting run.
-func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
-	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := validateADOWorkItemID(req.ID); err != nil {
-		return WorkItem{}, err
-	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	var conflict error
-	for range adoClaimRetries {
-		current, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
-		if getErr != nil {
-			return WorkItem{}, getErr
-		}
-		raw, rawErr := rawADOWorkItem(current)
-		if rawErr != nil {
-			return WorkItem{}, rawErr
-		}
-		winner, claimed, ownerErr := adoClaimOwner(adoRawTags(raw))
-		if ownerErr != nil {
-			return WorkItem{}, ownerErr
-		}
-		if !claimed {
-			return current, nil
-		}
-		if winner != req.RunID && !req.LedgerAuthorized {
-			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-		}
-		ownerTag, tagErr := adoClaimTag(winner)
-		if tagErr != nil {
-			return WorkItem{}, tagErr
-		}
-		labels := applyLabelSet(adoRawTags(raw), nil, []string{label, ownerTag})
-		patch := []adoPatchOperation{
-			{Op: "test", Path: "/rev", Value: raw.Rev},
-			adoTagPatch(labels),
-		}
-		endpoint, endpointErr := p.workURL(p.project(req.Repository), "workitems", req.ID)
-		if endpointErr != nil {
-			return WorkItem{}, endpointErr
-		}
-		var out adoWorkItem
-		if patchErr := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); patchErr != nil {
-			if isADORevisionConflict(patchErr) {
-				conflict = patchErr
-				continue
-			}
-			return WorkItem{}, patchErr
-		}
-		return p.mapADOWorkItem(ctx, req.Repository, out)
-	}
-	return WorkItem{}, fmt.Errorf("release work item %s after revision conflicts: %w", req.ID, conflict)
-}
-
-// ListWorkItemLabelTransitionsForItem reaches parity in V1: ADO's work-item
-// update history maps to label-transition events differently than GitHub's
-// timeline. Only reached when a workflow gates claiming on a ready label's age
-// (requireLabels contains a ready label), which the ADO backlog workload does
-// not use.
-func (p *ADOProvider) ListWorkItemLabelTransitionsForItem(context.Context, RepositoryRef, string, string) ([]WorkItemLabelTransition, error) {
-	return nil, fmt.Errorf("ADO work-item label transitions reach parity in V1")
-}
-
-// HasOpenWorkItemBlocker reports whether an item has an unresolved native
-// dependency. ADO dependency-link modeling reaches parity in V1; until then the
-// unified WorkItem carries no native blocked-by count for ADO, so this is only
-// reached defensively and answers "no known blocker".
-func (p *ADOProvider) HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error) {
-	return false, nil
-}
-
-// Subscribe emits Azure Boards backlog item availability events.
-func (p *ADOProvider) Subscribe(ctx context.Context, sub TriggerSubscription) (<-chan WorkItemEvent, error) {
-	if sub.Kind != TriggerPolling {
-		return nil, fmt.Errorf("ado provider supports polling subscriptions in-process; service hook delivery is configured externally")
-	}
-	interval := sub.PollInterval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	events := make(chan WorkItemEvent, 1)
-	go func() {
-		defer close(events)
-		seen := map[string]time.Time{}
-		for {
-			items, err := p.ListWorkItems(ctx, ListWorkItemsRequest{Repository: sub.Repository, State: "New", Limit: 100})
-			if err == nil {
-				for _, item := range items {
-					if !shouldEmitWorkItem(seen, item) {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case events <- WorkItemEvent{Provider: ProviderADO, Kind: TriggerPolling, Item: item, Action: "available"}:
-					}
-				}
-			}
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return events, nil
-}
-
 func (p *ADOProvider) pathExists(ctx context.Context, repo RepositoryRef, branch, path string) (bool, error) {
 	endpoint, err := p.repoURL(repo, "items")
 	if err != nil {
@@ -1343,22 +390,36 @@ func (p *ADOProvider) pathExists(ctx context.Context, repo RepositoryRef, branch
 }
 
 func (p *ADOProvider) branchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, error) {
-	endpoint, err := p.repoURL(repo, "refs")
+	sha, found, err := p.lookupBranchSHA(ctx, repo, branch)
 	if err != nil {
 		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("ado branch %q not found", branch)
+	}
+	return sha, nil
+}
+
+// lookupBranchSHA is branchSHA's found-or-not-found counterpart (CONF-3
+// #2076): DeleteBranch needs to tell "ref absent" apart from "lookup
+// failed" without branchSHA's caller-facing error-on-absent behavior.
+func (p *ADOProvider) lookupBranchSHA(ctx context.Context, repo RepositoryRef, branch string) (string, bool, error) {
+	endpoint, err := p.repoURL(repo, "refs")
+	if err != nil {
+		return "", false, err
 	}
 	endpoint, err = addQuery(endpoint, url.Values{"filter": []string{"heads/" + strings.TrimPrefix(branch, "refs/heads/")}})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	var out adoRefsResponse
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(out.Value) == 0 || out.Value[0].ObjectID == "" {
-		return "", fmt.Errorf("ado branch %q not found", branch)
+		return "", false, nil
 	}
-	return out.Value[0].ObjectID, nil
+	return out.Value[0].ObjectID, true, nil
 }
 
 func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, error) {
@@ -1419,6 +480,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 	}
 	var waited time.Duration
 	rateAttempt := 0
+	transientAttempt := 0
 	authRetried := false
 	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
@@ -1437,11 +499,33 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		}
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
+			// A transport failure (connection reset, DNS blip, timeout) is only
+			// safe to retry automatically for an idempotent method (#2026): a
+			// POST/PATCH may have already committed server-side before its
+			// response was lost, and ADO has no transport-level dedup marker
+			// (unlike GitHub issue creation's footer check, #140) to make a
+			// blind retry safe for those.
+			if isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
+					return nil, serr
+				}
+				transientAttempt++
+				continue
+			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		p.observeQuota(ctx, resp)
 		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
 			_ = resp.Body.Close()
 			authRetried = true
+			continue
+		}
+		if resp.StatusCode >= 500 && isIdempotentHTTPMethod(method) && transientAttempt < p.maxRetries {
+			_ = resp.Body.Close()
+			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
+				return nil, err
+			}
+			transientAttempt++
 			continue
 		}
 		if resp.StatusCode != http.StatusTooManyRequests {
@@ -1522,38 +606,29 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 	}
 }
 
-type adoWIQLResponse struct {
-	WorkItems []struct {
-		ID int `json:"id"`
-	} `json:"workItems"`
-}
-
-type adoWorkItem struct {
-	ID        int                    `json:"id"`
-	Rev       int                    `json:"rev"`
-	URL       string                 `json:"url"`
-	Fields    map[string]interface{} `json:"fields"`
-	Relations []adoRelation          `json:"relations"`
-}
-
-type adoCommentsResponse struct {
-	Comments          []adoComment `json:"comments"`
-	ContinuationToken string       `json:"continuationToken"`
-}
-
-type adoComment struct {
-	ID          int         `json:"id"`
-	CommentID   int         `json:"commentId"`
-	Text        string      `json:"text"`
-	CreatedBy   adoIdentity `json:"createdBy"`
-	CreatedDate string      `json:"createdDate"`
-	URL         string      `json:"url"`
-}
-
-type adoRelation struct {
-	Rel        string                 `json:"rel"`
-	URL        string                 `json:"url"`
-	Attributes map[string]interface{} `json:"attributes"`
+func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
+	if p.quotaObserver == nil {
+		return
+	}
+	observation := QuotaObservation{Provider: ProviderADO}
+	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")))
+	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetSeconds > 0 {
+		observation.Remaining = remaining
+		// X-RateLimit-Reset is Unix epoch time (Microsoft's rate-limits docs:
+		// "Time when, if all resource consumption stops immediately, tracked
+		// usage returns to 0 TSTUs. Expressed in Unix epoch time."), not a
+		// duration in seconds from now — unlike Retry-After.
+		observation.Reset = time.Unix(resetSeconds, 0).UTC()
+		observation.Known = true
+	} else if resp.StatusCode == http.StatusTooManyRequests {
+		now := p.now()
+		if delay, directed := retryAfterDelay(strings.TrimSpace(resp.Header.Get("Retry-After")), now); directed && delay > 0 {
+			observation.Reset = now.Add(delay)
+			observation.Known = true
+		}
+	}
+	p.quotaObserver.ObserveQuota(ctx, observation)
 }
 
 type adoPatchOperation struct {
@@ -1603,561 +678,8 @@ type adoPushResponse struct {
 	} `json:"commits"`
 }
 
-type adoPullRequest struct {
-	PullRequestID         int          `json:"pullRequestId"`
-	URL                   string       `json:"url"`
-	Status                string       `json:"status"`
-	Title                 string       `json:"title"`
-	CreatedBy             adoIdentity  `json:"createdBy"`
-	CreationDate          time.Time    `json:"creationDate"`
-	SourceRefName         string       `json:"sourceRefName"`
-	TargetRefName         string       `json:"targetRefName"`
-	IsDraft               bool         `json:"isDraft"`
-	Labels                []adoLabel   `json:"labels"`
-	LastMergeSourceCommit adoCommitRef `json:"lastMergeSourceCommit"`
-	LastMergeTargetCommit adoCommitRef `json:"lastMergeTargetCommit"`
-	Links                 adoPRLinks   `json:"_links"`
-}
-
-type adoPullRequestsResponse struct {
-	Value []adoPullRequest `json:"value"`
-}
-
-// adoPullRequestDetail extends adoPullRequest with the fields a single-PR GET
-// returns that a list does not: description, reviewers (for review-decision
-// mapping), and the repository/project identity needed to key policy
-// evaluations.
-type adoPullRequestDetail struct {
-	adoPullRequest
-	Description string        `json:"description"`
-	Reviewers   []adoReviewer `json:"reviewers"`
-	Repository  adoRepository `json:"repository"`
-}
-
-type adoReviewer struct {
-	Vote        int    `json:"vote"`
-	UniqueName  string `json:"uniqueName"`
-	DisplayName string `json:"displayName"`
-	IsRequired  bool   `json:"isRequired"`
-}
-
-type adoRepository struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Project adoProject `json:"project"`
-}
-
-type adoProject struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-type adoPolicyEvaluationsResponse struct {
-	Value []adoPolicyEvaluation `json:"value"`
-}
-
-type adoPolicyEvaluation struct {
-	Status        string `json:"status"`
-	Configuration struct {
-		// ID is the branch-policy configuration id — the stable, generic
-		// identity a loop uses to declare a policy human-only (see
-		// PullRequestPollRequest.HumanPolicyConfigurationIDs). It is provider
-		// identity, not policy detail.
-		ID         json.Number `json:"id"`
-		IsEnabled  bool        `json:"isEnabled"`
-		IsBlocking bool        `json:"isBlocking"`
-		Type       struct {
-			DisplayName string `json:"displayName"`
-		} `json:"type"`
-	} `json:"configuration"`
-}
-
-// stringSet builds a lookup set from a slice, ignoring empty entries.
-func stringSet(values []string) map[string]bool {
-	if len(values) == 0 {
-		return nil
-	}
-	set := make(map[string]bool, len(values))
-	for _, v := range values {
-		if v = strings.TrimSpace(v); v != "" {
-			set[v] = true
-		}
-	}
-	return set
-}
-
-const adoDefaultStatusGenre = "goobers"
-
-// adoPullRequestState maps an Azure DevOps pull-request status to the
-// provider-neutral open/merged/closed vocabulary the PR-lifecycle gates read.
-func adoPullRequestState(status string) string {
-	switch strings.ToLower(status) {
-	case "completed":
-		return "merged"
-	case "abandoned":
-		return "closed"
-	default:
-		return "open"
-	}
-}
-
-// adoPolicyCheckState maps an Azure DevOps policy-evaluation status to a
-// provider-neutral check state. An empty return means the evaluation is not
-// applicable and should be ignored.
-func adoPolicyCheckState(status string) CheckState {
-	switch strings.ToLower(status) {
-	case "approved":
-		return CheckStatePassing
-	case "rejected":
-		return CheckStateFailing
-	case "queued", "running":
-		return CheckStatePending
-	default:
-		return ""
-	}
-}
-
-func adoPolicyName(ev adoPolicyEvaluation) string {
-	if ev.Configuration.Type.DisplayName != "" {
-		return ev.Configuration.Type.DisplayName
-	}
-	return "branch policy"
-}
-
-// adoReviewDecision reduces Azure DevOps reviewer votes to a provider-neutral
-// review decision. A negative vote (waiting/reject) requests changes; a vote of
-// approved-with/approved (>= 5) approves; otherwise the review is pending.
-func adoReviewDecision(reviewers []adoReviewer) ReviewDecision {
-	approved := false
-	for _, r := range reviewers {
-		switch {
-		case r.Vote < 0:
-			return ReviewDecisionChangesRequested
-		case r.Vote >= 5:
-			approved = true
-		}
-	}
-	if approved {
-		return ReviewDecisionApproved
-	}
-	return ReviewDecisionPending
-}
-
-// adoStatusState maps a provider-neutral check state to an Azure DevOps
-// pull-request status state string.
-func adoStatusState(state CheckState) string {
-	switch state {
-	case CheckStatePassing:
-		return "succeeded"
-	case CheckStateFailing:
-		return "failed"
-	default:
-		return "pending"
-	}
-}
-
 type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
-}
-
-type adoLabel struct {
-	Name string `json:"name"`
-}
-
-type adoCommitRef struct {
-	CommitID string `json:"commitId"`
-}
-
-type adoPRLinks struct {
-	Web struct {
-		Href string `json:"href"`
-	} `json:"web"`
-}
-
-type adoPullRequestIterationsResponse struct {
-	Value []struct {
-		ID int `json:"id"`
-	} `json:"value"`
-}
-
-type adoPullRequestIterationChanges struct {
-	ChangeEntries []struct {
-		ChangeType string `json:"changeType"`
-		Item       struct {
-			Path string `json:"path"`
-		} `json:"item"`
-	} `json:"changeEntries"`
-	NextSkip int `json:"nextSkip"`
-	NextTop  int `json:"nextTop"`
-}
-
-func adoChangedFileStatus(changeType string) string {
-	switch strings.ToLower(changeType) {
-	case "add":
-		return "added"
-	case "delete":
-		return "removed"
-	case "rename", "sourcerename", "targetrename":
-		return "renamed"
-	default:
-		return "modified"
-	}
-}
-
-func (p *ADOProvider) mapADOWorkItem(ctx context.Context, repo RepositoryRef, item adoWorkItem) (WorkItem, error) {
-	nativeState := stringField(item.Fields, "System.State")
-	itemType := stringField(item.Fields, "System.WorkItemType")
-	categories, err := p.adoWorkItemStateCategories(ctx, repo, itemType)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	definition, found := findADOWorkItemState(categories, nativeState)
-	if !found {
-		return WorkItem{}, fmt.Errorf("ADO work item type %q has unknown state %q", itemType, nativeState)
-	}
-	state, status, err := commonADOStateCategory(definition.Category)
-	if err != nil {
-		return WorkItem{}, fmt.Errorf("map ADO work item type %q state %q: %w", itemType, nativeState, err)
-	}
-	return mapADOWorkItemState(item, state, status), nil
-}
-
-func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) WorkItem {
-	labels := adoVisibleLabels(adoRawTags(item))
-	parent, links, hierarchy := adoHierarchy(item.Relations)
-	updated := timeField(item.Fields, "System.ChangedDate")
-	return WorkItem{
-		Provider:   ProviderADO,
-		ID:         strconv.Itoa(item.ID),
-		ExternalID: strconv.Itoa(item.Rev),
-		Type:       stringField(item.Fields, "System.WorkItemType"),
-		Title:      stringField(item.Fields, "System.Title"),
-		Body:       stringField(item.Fields, "System.Description"),
-		Labels:     labels,
-		State:      state,
-		Status:     statusFromLabels(labels, string(status)),
-		Assignee:   stringField(item.Fields, "System.AssignedTo"),
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        item.URL,
-		CreatedAt:  timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:  updated,
-		Fields:     adoWorkItemFields(item),
-		Raw:        item,
-		Integrity:  apiintegrity.Unapproved,
-	}
-}
-
-func mapADOComment(comment adoComment) Comment {
-	author := comment.CreatedBy.DisplayName
-	if author == "" {
-		author = comment.CreatedBy.UniqueName
-	}
-	id := comment.CommentID
-	if id == 0 {
-		id = comment.ID
-	}
-	var createdAt *time.Time
-	if parsed, err := time.Parse(time.RFC3339Nano, comment.CreatedDate); err == nil {
-		createdAt = &parsed
-	}
-	return Comment{
-		ID:         strconv.Itoa(id),
-		Author:     author,
-		AuthorType: "user",
-		Body:       comment.Text,
-		CreatedAt:  createdAt,
-		URL:        comment.URL,
-		Integrity:  apiintegrity.Unapproved,
-	}
-}
-
-func adoWorkItemFields(item adoWorkItem) fieldpredicate.Fields {
-	fields := fieldpredicate.Fields{
-		"System.Id":  int64(item.ID),
-		"System.Rev": int64(item.Rev),
-	}
-	for name, value := range item.Fields {
-		switch value.(type) {
-		case string, bool,
-			int, int8, int16, int32, int64,
-			uint, uint8, uint16, uint32, uint64,
-			float32, float64:
-			fields[name] = value
-		}
-	}
-	return fields
-}
-
-func adoLabels(tags string) []string {
-	if tags == "" {
-		return nil
-	}
-	return uniqueStrings(strings.Split(tags, ";"))
-}
-
-func adoVisibleLabels(labels []string) []string {
-	visible := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if !strings.HasPrefix(label, adoClaimTagPrefix) {
-			visible = append(visible, label)
-		}
-	}
-	return visible
-}
-
-func adoHierarchy(relations []adoRelation) (*WorkItemRef, []Link, map[string]interface{}) {
-	links := make([]Link, 0, len(relations))
-	hierarchy := make(map[string]interface{})
-	var parent *WorkItemRef
-	for _, relation := range relations {
-		links = append(links, Link{Rel: relation.Rel, URL: relation.URL})
-		if relation.Rel == "System.LinkTypes.Hierarchy-Reverse" {
-			parent = &WorkItemRef{Provider: ProviderADO, ID: lastPathSegment(relation.URL), URL: relation.URL, Type: "parent"}
-			hierarchy["parent"] = relation
-		}
-	}
-	return parent, links, hierarchy
-}
-
-func lastPathSegment(value string) string {
-	trimmed := strings.TrimRight(value, "/")
-	index := strings.LastIndex(trimmed, "/")
-	if index == -1 {
-		return trimmed
-	}
-	return trimmed[index+1:]
-}
-
-func stringField(fields map[string]interface{}, key string) string {
-	value, ok := fields[key]
-	if !ok || value == nil {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case map[string]interface{}:
-		if display, ok := typed["displayName"].(string); ok {
-			return display
-		}
-	}
-	return fmt.Sprint(value)
-}
-
-func timeField(fields map[string]interface{}, key string) *time.Time {
-	value := stringField(fields, key)
-	if value == "" {
-		return nil
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return nil
-	}
-	return &parsed
-}
-
-func (p *ADOProvider) requireWorkItemScope(project string) error {
-	if strings.TrimSpace(p.Organization) == "" {
-		return fmt.Errorf("ADO organization is required")
-	}
-	if strings.TrimSpace(project) == "" {
-		return fmt.Errorf("ADO project is required")
-	}
-	return nil
-}
-
-func validateADOWorkItemID(id string) error {
-	n, err := strconv.Atoi(id)
-	if err != nil || n <= 0 {
-		return fmt.Errorf("ADO work item id must be a positive integer")
-	}
-	return nil
-}
-
-func validateADOTags(tags []string) error {
-	for _, tag := range tags {
-		tag = strings.TrimSpace(tag)
-		if tag == "" {
-			return fmt.Errorf("ADO work item tag must not be empty")
-		}
-		if len(tag) > adoMaxTagLength {
-			return fmt.Errorf("ADO work item tag exceeds %d characters", adoMaxTagLength)
-		}
-		if strings.ContainsAny(tag, ",;") {
-			return fmt.Errorf("ADO work item tag %q contains a comma or semicolon", tag)
-		}
-	}
-	return nil
-}
-
-func escapeWIQLString(value string) string {
-	return strings.ReplaceAll(strings.TrimSpace(value), "'", "''")
-}
-
-type adoWorkItemStatesResponse struct {
-	Value []adoWorkItemState `json:"value"`
-}
-
-type adoWorkItemState struct {
-	Name     string `json:"name"`
-	Category string `json:"category"`
-}
-
-func (p *ADOProvider) resolveCommonWorkItemState(ctx context.Context, repo RepositoryRef, itemType, state string) (string, error) {
-	categoriesByState, err := p.adoWorkItemStateCategories(ctx, repo, itemType)
-	if err != nil {
-		return "", err
-	}
-	categories := []string{"Proposed", "InProgress", "Resolved"}
-	if state == "closed" {
-		categories = []string{"Completed"}
-	}
-	for _, category := range categories {
-		for _, candidate := range categoriesByState {
-			if strings.EqualFold(candidate.Category, category) {
-				return candidate.Name, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("ADO work item type %q has no state category for %q", itemType, state)
-}
-
-func (p *ADOProvider) adoWorkItemStateCategories(ctx context.Context, repo RepositoryRef, itemType string) ([]adoWorkItemState, error) {
-	if strings.TrimSpace(itemType) == "" {
-		return nil, fmt.Errorf("ADO work item type is required to resolve state categories")
-	}
-	key := p.project(repo) + "\x00" + strings.ToLower(itemType)
-	p.stateMu.RLock()
-	cached := p.stateCategories[key]
-	p.stateMu.RUnlock()
-	if cached != nil {
-		return cached, nil
-	}
-
-	endpoint, err := p.workURL(p.project(repo), "workitemtypes", itemType, "states")
-	if err != nil {
-		return nil, err
-	}
-	var response adoWorkItemStatesResponse
-	if err := p.do(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
-		return nil, err
-	}
-	resolved := response.Value
-	p.stateMu.Lock()
-	if p.stateCategories == nil {
-		p.stateCategories = make(map[string][]adoWorkItemState)
-	}
-	if cached = p.stateCategories[key]; cached == nil {
-		p.stateCategories[key] = resolved
-		cached = resolved
-	}
-	p.stateMu.Unlock()
-	return cached, nil
-}
-
-func findADOWorkItemState(states []adoWorkItemState, name string) (adoWorkItemState, bool) {
-	for _, state := range states {
-		if strings.EqualFold(state.Name, name) {
-			return state, true
-		}
-	}
-	return adoWorkItemState{}, false
-}
-
-func commonADOStateCategory(category string) (string, WorkItemStatus, error) {
-	switch strings.ToLower(category) {
-	case "completed", "removed":
-		return "closed", WorkItemStatusDone, nil
-	case "inprogress", "resolved":
-		return "open", WorkItemStatusInProgress, nil
-	case "proposed":
-		return "open", WorkItemStatusOpen, nil
-	default:
-		return "", "", fmt.Errorf("unsupported state category %q", category)
-	}
-}
-
-func rawADOWorkItem(item WorkItem) (adoWorkItem, error) {
-	raw, ok := item.Raw.(adoWorkItem)
-	if !ok || raw.Rev <= 0 {
-		return adoWorkItem{}, fmt.Errorf("ADO work item %s is missing revision metadata", item.ID)
-	}
-	return raw, nil
-}
-
-func adoRawTags(item adoWorkItem) []string {
-	return adoLabels(stringField(item.Fields, "System.Tags"))
-}
-
-func adoTagPatch(tags []string) adoPatchOperation {
-	return adoPatchOperation{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(uniqueStrings(tags), "; ")}
-}
-
-func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
-	endpoint, err := p.workURLVersion(p.project(repo), "7.1-preview.4", "workItems", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, nil)
-}
-
-func adoClaimTag(runID string) (string, error) {
-	tag := adoClaimTagPrefix + base64.RawURLEncoding.EncodeToString([]byte(runID))
-	if err := validateADOTags([]string{tag}); err != nil {
-		return "", fmt.Errorf("encode ADO claim owner: %w", err)
-	}
-	return tag, nil
-}
-
-func adoClaimOwner(tags []string) (string, bool, error) {
-	owner := ""
-	for _, tag := range tags {
-		if !strings.HasPrefix(tag, adoClaimTagPrefix) {
-			continue
-		}
-		encoded := strings.TrimPrefix(tag, adoClaimTagPrefix)
-		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil || len(decoded) == 0 {
-			return "", false, fmt.Errorf("invalid ADO claim owner tag")
-		}
-		if owner != "" && owner != string(decoded) {
-			return "", false, fmt.Errorf("ADO work item has multiple claim owners")
-		}
-		owner = string(decoded)
-	}
-	return owner, owner != "", nil
-}
-
-func isADORevisionConflict(err error) bool {
-	var responseErr *providerResponseError
-	if !errors.As(err, &responseErr) {
-		return false
-	}
-	if responseErr.statusCode == http.StatusConflict || responseErr.statusCode == http.StatusPreconditionFailed {
-		return true
-	}
-	body := strings.ToLower(responseErr.body)
-	return responseErr.statusCode == http.StatusBadRequest &&
-		strings.Contains(body, "/rev") &&
-		(strings.Contains(body, "vs403351") || strings.Contains(body, "test operation"))
-}
-
-func hasAllLabels(itemLabels, required []string) bool {
-	if len(required) == 0 {
-		return true
-	}
-	item := make(map[string]struct{}, len(itemLabels))
-	for _, label := range itemLabels {
-		item[label] = struct{}{}
-	}
-	for _, label := range required {
-		if _, ok := item[label]; !ok {
-			return false
-		}
-	}
-	return true
 }

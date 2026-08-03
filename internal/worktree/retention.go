@@ -21,6 +21,15 @@ const (
 	RetentionRuleWindow       RetentionRule = "retention-window"
 	RetentionRuleStorageCap   RetentionRule = "storage-cap"
 	RetentionRuleMergedBranch RetentionRule = "merged-local-branch"
+	// RetentionRuleJournalGrace prunes a retained worktree whose owning run
+	// journal no longer exists (#2052): IsTerminalFailure can never authorize
+	// it (found is always false with no journal to read), so without this
+	// rule such a worktree is permanently unprunable once its journal is
+	// gone — e.g. telemetry retention deleted it first. Independent of
+	// MaxAge/MaxRetainedBytes: it fires once a candidate has been
+	// journal-less for JournalGraceAge, regardless of whether either other
+	// limit is configured.
+	RetentionRuleJournalGrace RetentionRule = "journal-grace"
 )
 
 // RetentionKind identifies the resource considered by a retention pass.
@@ -45,6 +54,18 @@ type RetentionOptions struct {
 	// manager root selects the owning gaggle journal; ownerRunID is empty only
 	// for legacy markers.
 	IsTerminalFailure func(managerRoot, worktreeID, ownerRunID string) (bool, error)
+	// JournalMissing reports whether the retained worktree's owning run
+	// journal no longer exists at all (as opposed to existing but not yet
+	// terminal-failure). A worktree this reports true for becomes eligible
+	// for RetentionRuleJournalGrace once retained past JournalGraceAge,
+	// independent of IsTerminalFailure/MaxAge/MaxRetainedBytes. Nil (like
+	// zero JournalGraceAge) disables the grace-window rule entirely,
+	// preserving the pre-#2052 permanently-unprunable behavior.
+	JournalMissing func(managerRoot, worktreeID, ownerRunID string) (bool, error)
+	// JournalGraceAge bounds how long a journal-less retained worktree is
+	// tolerated before RetentionRuleJournalGrace prunes it. Zero disables the
+	// rule.
+	JournalGraceAge time.Duration
 	// IsRunTerminal authorizes a merged local branch for pruning.
 	IsRunTerminal func(managerRoot, runID string) (bool, error)
 	// IsBranchProtected reports whether a branch is still referenced by a
@@ -77,14 +98,15 @@ type RetentionWarning struct {
 }
 
 type retainedWorktree struct {
-	manager    *Manager
-	key        string
-	markerPath string
-	marker     marker
-	path       string
-	bytes      int64
-	retainedAt time.Time
-	eligible   bool
+	manager        *Manager
+	key            string
+	markerPath     string
+	marker         marker
+	path           string
+	bytes          int64
+	retainedAt     time.Time
+	eligible       bool
+	journalMissing bool
 }
 
 type localBranch struct {
@@ -102,6 +124,9 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 	}
 	if opts.MaxAge < 0 {
 		return nil, nil, fmt.Errorf("worktree: retention window must not be negative")
+	}
+	if opts.JournalGraceAge < 0 {
+		return nil, nil, fmt.Errorf("worktree: journal grace age must not be negative")
 	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
@@ -160,6 +185,24 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 			}
 			attempted[candidate.markerPath] = true
 			result := pruneRetainedWorktree(ctx, candidate, RetentionRuleStorageCap, opts.Delete)
+			results = append(results, result)
+			if result.Deleted || result.DryRun {
+				totalBytes -= candidate.bytes
+			}
+		}
+	}
+
+	if opts.JournalGraceAge > 0 {
+		for i := range retained {
+			candidate := &retained[i]
+			if !candidate.journalMissing || attempted[candidate.markerPath] {
+				continue
+			}
+			if opts.Now.Sub(candidate.retainedAt) < opts.JournalGraceAge {
+				continue
+			}
+			attempted[candidate.markerPath] = true
+			result := pruneRetainedWorktree(ctx, candidate, RetentionRuleJournalGrace, opts.Delete)
 			results = append(results, result)
 			if result.Deleted || result.DryRun {
 				totalBytes -= candidate.bytes
@@ -240,7 +283,12 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 					})
 					continue
 				}
-				path := filepath.Join(manager.runsDirForKey(key), worktreeID)
+				directory, err := mk.directoryName()
+				if err != nil {
+					warnings = append(warnings, RetentionWarning{Path: markerPath, Err: err})
+					continue
+				}
+				path := filepath.Join(manager.runsDirForKey(key), directory)
 				bytes, err := directorySize(path)
 				if err != nil {
 					warnings = append(warnings, RetentionWarning{Path: path, Err: err})
@@ -255,9 +303,18 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 						eligible = false
 					}
 				}
+				journalMissing := false
+				if opts.JournalMissing != nil {
+					journalMissing, err = opts.JournalMissing(manager.Root, worktreeID, mk.OwnerRunID)
+					if err != nil {
+						warnings = append(warnings, RetentionWarning{Path: path, Err: err})
+						journalMissing = false
+					}
+				}
 				retained = append(retained, retainedWorktree{
 					manager: manager, key: key, markerPath: markerPath, marker: mk,
 					path: path, bytes: bytes, retainedAt: mk.retainedAt(), eligible: eligible,
+					journalMissing: journalMissing,
 				})
 			}
 		}

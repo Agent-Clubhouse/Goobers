@@ -224,6 +224,91 @@ func TestPruneRetainedReportsBranchDeletionFailureWithoutReclamation(t *testing.
 	}
 }
 
+// TestPruneRetainedJournalGraceReclaimsOnlyPastGraceWindow is #2052's fix for
+// a retained worktree whose owning run journal has vanished entirely (e.g.
+// telemetry retention deleted it first): IsTerminalFailure can never
+// authorize it again since there is nothing left to read, so without a
+// dedicated rule it stays retained forever regardless of MaxAge or
+// MaxRetainedBytes. JournalMissing+JournalGraceAge are independent of both:
+// this proves a journal-less candidate is left alone before the grace
+// window and reclaimed once past it, while a candidate whose journal simply
+// hasn't reached terminal-failure yet (JournalMissing false) is untouched
+// even past the same window.
+func TestPruneRetainedJournalGraceReclaimsOnlyPastGraceWindow(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+
+	fresh := retainedFixture(t, manager, repo, "fresh-stage", "fresh-run", now.Add(-time.Hour))
+	stale := retainedFixture(t, manager, repo, "stale-stage", "stale-run", now.Add(-48*time.Hour))
+	nonTerminal := retainedFixture(t, manager, repo, "live-stage", "live-run", now.Add(-48*time.Hour))
+
+	journalMissing := map[string]bool{"fresh-run": true, "stale-run": true, "live-run": false}
+	results, warnings, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+		Delete: true,
+		Now:    now,
+		IsTerminalFailure: func(_, _, _ string) (bool, error) {
+			return false, nil // never eligible via the ordinary rule — only journal-grace should act
+		},
+		JournalMissing: func(_, _, ownerRunID string) (bool, error) {
+			return journalMissing[ownerRunID], nil
+		},
+		JournalGraceAge: 24 * time.Hour,
+	})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("PruneRetained = warnings %+v, err %v", warnings, err)
+	}
+	if len(results) != 1 || results[0].WorktreeID != stale.RunID || results[0].Rule != RetentionRuleJournalGrace || !results[0].Deleted {
+		t.Fatalf("results = %+v, want exactly the stale journal-less candidate deleted under journal-grace", results)
+	}
+	if _, err := os.Stat(fresh.Path); err != nil {
+		t.Fatalf("journal-grace reclaimed a candidate still inside its grace window: %v", err)
+	}
+	if _, err := os.Stat(nonTerminal.Path); err != nil {
+		t.Fatalf("journal-grace reclaimed a candidate whose journal is not missing: %v", err)
+	}
+	if _, err := os.Stat(stale.Path); !os.IsNotExist(err) {
+		t.Fatalf("journal-grace left the stale journal-less candidate in place: %v", err)
+	}
+}
+
+// TestPruneRetainedJournalGraceDisabledByDefault confirms the pre-#2052
+// behavior is preserved when JournalGraceAge is left at its zero value: a
+// journal-less retained worktree is never reclaimed just because
+// JournalMissing reports true, unless the grace window is actually enabled.
+func TestPruneRetainedJournalGraceDisabledByDefault(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	wt := retainedFixture(t, manager, repo, "orphaned-stage", "orphaned-run", now.Add(-30*24*time.Hour))
+
+	results, warnings, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+		Delete: true,
+		Now:    now,
+		IsTerminalFailure: func(_, _, _ string) (bool, error) {
+			return false, nil
+		},
+		JournalMissing: func(_, _, _ string) (bool, error) {
+			return true, nil
+		},
+	})
+	if err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("PruneRetained = results %+v, warnings %+v, err %v; want no candidates with JournalGraceAge unset", results, warnings, err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("disabled journal-grace reclaimed a worktree: %v", err)
+	}
+}
+
+func TestPruneRetainedRejectsNegativeJournalGraceAge(t *testing.T) {
+	_, _, err := PruneRetained(context.Background(), nil, RetentionOptions{JournalGraceAge: -time.Second})
+	if err == nil || !strings.Contains(err.Error(), "journal grace age") {
+		t.Fatalf("PruneRetained error = %v, want a journal grace age error", err)
+	}
+}
+
 func retainedFixture(t *testing.T, manager *Manager, repo, worktreeID, ownerRunID string, retainedAt time.Time) *Worktree {
 	t.Helper()
 	wt, err := manager.Create(context.Background(), CreateOptions{

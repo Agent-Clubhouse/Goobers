@@ -327,6 +327,79 @@ func TestInventoryRejectsCrossGaggleWorkflowOwner(t *testing.T) {
 	}
 }
 
+// TestWorkflowStagesIncludeParallels is the regression test for #2193: the
+// portal's workflow-detail page threw "inconsistent workflow stages" for any
+// workflow using the parallels DSL because workflowStages() only walked
+// Spec.Tasks/Spec.Gates while the compiled graph also has a node per
+// Spec.Parallels entry. Exercised through the real service.Workflow() path
+// (not workflowStages() in isolation) so it catches drift between the two
+// independently-updated code paths the portal's consistency check spans.
+func TestWorkflowStagesIncludeParallels(t *testing.T) {
+	definitions := inventoryDefinitions()
+	definitions.Workflows = append(definitions.Workflows, apiv1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "quality-sprint",
+			Annotations: map[string]string{"goobers.dev/purpose": "Fan out review lenses"},
+		},
+		DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:      "alpha",
+			DisplayName: "Quality Sprint",
+			Triggers:    []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Readiness:   apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+			Start:       "churn",
+			Tasks: []apiv1.Task{
+				{Name: "churn", Type: apiv1.TaskDeterministic, Goal: "churn report",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: "fan"},
+				{Name: "review-security", Type: apiv1.TaskDeterministic, Goal: "security lens",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: workflow.TargetJoin},
+				{Name: "review-perf", Type: apiv1.TaskDeterministic, Goal: "perf lens",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: workflow.TargetJoin},
+				{Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate findings",
+					Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+					Next: workflow.TerminalComplete},
+			},
+			Parallels: []apiv1.Parallel{{
+				Name:          "fan",
+				FailurePolicy: apiv1.BranchContinueOnError,
+				Join:          "collate",
+				Branches: []apiv1.Branch{
+					{Name: "security", Start: "review-security"},
+					{Name: "perf", Start: "review-perf"},
+				},
+			}},
+		},
+	})
+
+	service, _ := newInventoryService(t, definitions, nil)
+	detail, err := service.Workflow(context.Background(), "alpha", "quality-sprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(detail.Stages) != len(detail.Graph.Nodes) || detail.StageCount != len(detail.Graph.Nodes) {
+		t.Fatalf("stages/graph node count mismatch: stages=%d stageCount=%d graph.Nodes=%d",
+			len(detail.Stages), detail.StageCount, len(detail.Graph.Nodes))
+	}
+
+	byName := make(map[string]StageDefinition, len(detail.Stages))
+	for _, stage := range detail.Stages {
+		byName[stage.Name] = stage
+	}
+	for _, node := range detail.Graph.Nodes {
+		stage, ok := byName[node.ID]
+		if !ok || stage.Kind != node.Kind {
+			t.Fatalf("graph node %q kind %q has no matching stage (stage=%+v)", node.ID, node.Kind, stage)
+		}
+	}
+	if fan, ok := byName["fan"]; !ok || fan.Kind != workflow.GraphNodeParallel {
+		t.Fatalf("expected a %q stage for the parallel block, got %+v", workflow.GraphNodeParallel, byName["fan"])
+	}
+}
+
 func TestObjectWarningsRequireExactScope(t *testing.T) {
 	report := &validate.Report{Issues: []validate.Issue{
 		{

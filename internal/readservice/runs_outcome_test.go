@@ -180,3 +180,97 @@ func TestRunOutcomeUsesCurrentLifecycleSegmentAfterResume(t *testing.T) {
 		t.Fatalf("outcome after resume = %+v, want the post-resume pass/local-ci decision", detail.Outcome)
 	}
 }
+
+func TestRunOutcomeUsesGateOverrideDecision(t *testing.T) {
+	tests := []struct {
+		name            string
+		overrideVerdict string
+		overrideTarget  string
+		continueRun     bool
+		wantVerdict     string
+		wantTarget      string
+		wantEvent       journal.EventType
+	}{
+		{
+			name:            "terminal pass",
+			overrideVerdict: "pass",
+			overrideTarget:  "@complete",
+			wantVerdict:     "pass",
+			wantTarget:      "@complete",
+			wantEvent:       journal.EventGateOverridden,
+		},
+		{
+			name:            "nonterminal branch",
+			overrideVerdict: "needs-changes",
+			overrideTarget:  "implement",
+			continueRun:     true,
+			wantVerdict:     "pass",
+			wantTarget:      "@complete",
+			wantEvent:       journal.EventGateEvaluated,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, layout, machine := fixtureService(t)
+			runID := "run-outcome-override-" + test.overrideVerdict
+			run, clock := createFixtureRun(
+				t, layout, machine, runID, machine.Def.Name, "goobers",
+				time.Date(2026, 7, 25, 17, 0, 0, 0, time.UTC),
+				journal.Trigger{Kind: journal.TriggerManual}, false,
+			)
+			appendEvent := func(event journal.Event) {
+				t.Helper()
+				clock.advance(time.Second)
+				if err := run.Append(event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			appendEvent(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: "@escalate"})
+			appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+			appendEvent(journal.Event{
+				Type: journal.EventGateOverridden, Gate: "review",
+				Verdict: test.overrideVerdict, Target: test.overrideTarget,
+				Actor: "operator@example.test", Rationale: "Manually reviewed the gate.",
+				Status:          string(journal.PhaseEscalated),
+				WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+			})
+			if test.continueRun {
+				appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+				appendEvent(journal.Event{
+					Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+					Status: string(apiv1.ResultSuccess),
+				})
+				appendEvent(journal.Event{
+					Type: journal.EventGateEvaluated, Gate: "review",
+					Verdict: "pass", Target: "@complete",
+				})
+			}
+			finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+			detail, err := service.GetRun(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if detail.Outcome == nil ||
+				detail.Outcome.Gate != "review" ||
+				detail.Outcome.Verdict != test.wantVerdict ||
+				detail.Outcome.Target != test.wantTarget {
+				t.Fatalf("outcome = %+v, want review/%s/%s", detail.Outcome, test.wantVerdict, test.wantTarget)
+			}
+			events, err := service.RunEvents(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wantSeq uint64
+			for _, event := range events.Events {
+				if event.Type == test.wantEvent && event.Verdict == test.wantVerdict {
+					wantSeq = event.Seq
+				}
+			}
+			if wantSeq == 0 || detail.Outcome.CausalEventSeq != wantSeq {
+				t.Fatalf("causal event = %d, want %s seq %d", detail.Outcome.CausalEventSeq, test.wantEvent, wantSeq)
+			}
+		})
+	}
+}

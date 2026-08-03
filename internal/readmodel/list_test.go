@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,48 @@ func TestListServesEveryContractField(t *testing.T) {
 	}
 }
 
+// TestListExcludesNoWorkByDefault is the regression test for #2188: the
+// default run list must hide routine no-work schedule ticks, but only when
+// IncludeNoWork is left false — nothing here should ever be silently dropped
+// from the underlying store, only from what a plain list page returns.
+func TestListExcludesNoWorkByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	noWorkID := testIdentity()
+	noWorkID.RunID = "run-no-work"
+	if err := store.UpsertRun(ctx, ProjectRun(noWorkID, Projection{}, singleStageEvents("no-work"))); err != nil {
+		t.Fatalf("upsert no-work run: %v", err)
+	}
+	producedID := testIdentity()
+	producedID.RunID = "run-produced"
+	if err := store.UpsertRun(ctx, ProjectRun(producedID, Projection{}, completedRunEvents())); err != nil {
+		t.Fatalf("upsert produced run: %v", err)
+	}
+
+	hidden, err := store.ListRuns(ctx, ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(hidden.Runs) != 1 || hidden.Runs[0].RunID != producedID.RunID {
+		t.Fatalf("default list = %+v, want only %q", hidden.Runs, producedID.RunID)
+	}
+
+	shown, err := store.ListRuns(ctx, ListOptions{Limit: 10, IncludeNoWork: true})
+	if err != nil {
+		t.Fatalf("list with IncludeNoWork: %v", err)
+	}
+	if len(shown.Runs) != 2 {
+		t.Fatalf("IncludeNoWork list = %+v, want both runs", shown.Runs)
+	}
+
+	// GetRun (used by run detail) must still answer for the no-work run — the
+	// filter hides it from LIST pages only, never the store itself.
+	if _, ok, err := store.GetRun(ctx, noWorkID.RunID); err != nil || !ok {
+		t.Fatalf("GetRun(%q) = ok=%v err=%v, want the no-work run still readable directly", noWorkID.RunID, ok, err)
+	}
+}
+
 // TestRunningRunKeepsAgeing pins the other half of that decision.
 func TestRunningRunKeepsAgeing(t *testing.T) {
 	ctx := context.Background()
@@ -234,7 +277,7 @@ func TestListPlansUseCoveringIndexes(t *testing.T) {
 		// to match the first page's.
 		{"gaggle deep page", ListOptions{
 			Gaggle: "gaggle-000", Limit: 50,
-			Cursor: ListCursor{StartedAt: time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC), RunID: "x"},
+			Cursor: ListCursor{Key: time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC), RunID: "x"},
 		}, "idx_run_gaggle_recency"},
 	}
 
@@ -255,7 +298,7 @@ func TestListPlansUseCoveringIndexes(t *testing.T) {
 
 func explainWithArgs(t *testing.T, store *Store, query string, args []any) string {
 	t.Helper()
-	rows, err := store.readDB().Query("EXPLAIN QUERY PLAN "+query, args...)
+	rows, err := store.reader.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -322,4 +365,338 @@ func fmtHex(i int) string {
 		i >>= 4
 	}
 	return string(out)
+}
+
+// TestStageScopedPlansUseTheirIndexes is the #1782 half of the plan contract.
+//
+// §5.7's whole argument is that a plan cannot PROVE a residual predicate is
+// absent — `EXPLAIN QUERY PLAN` reports access methods, not residual terms. So
+// this test does not try to prove boundedness from the plan. It checks the two
+// things a plan CAN show and that would each silently destroy the bound:
+//
+//   - the named index is used at all, rather than a full table scan; and
+//   - no temp B-tree is materialised for the ORDER BY, which is what would
+//     happen if run_started_at were missing and the sort fell back to the joined
+//     run row.
+//
+// The boundedness argument itself rests on the closed set: every listed
+// combination has an index whose leading columns are exactly its equality
+// predicates, followed by the ordering key.
+func TestStageScopedPlansUseTheirIndexes(t *testing.T) {
+	store := openTestStore(t)
+	seedProjectedStages(t, store, 400)
+
+	cases := []struct {
+		name    string
+		options ListOptions
+		want    string
+	}{
+		{"stage", ListOptions{Stage: "build", Limit: 50}, "idx_run_stage_recency"},
+		{"gaggle+stage", ListOptions{Gaggle: "gaggle-000", Stage: "build", Limit: 50},
+			"idx_run_stage_gaggle_recency"},
+		// Each population resolves to its OWN partial index. A composite over the
+		// four booleans would have to be probed with three wildcards, which is a
+		// scan of the stage's whole range.
+		{"stage+cost", ListOptions{Stage: "build", Population: PopulationCostMeasured, Limit: 50},
+			"idx_run_stage_cost"},
+		{"stage+token", ListOptions{Stage: "build", Population: PopulationTokenMeasured, Limit: 50},
+			"idx_run_stage_token"},
+		{"stage+premium", ListOptions{Stage: "build", Population: PopulationPremiumMeasured, Limit: 50},
+			"idx_run_stage_premium"},
+		{"stage+retry-waste", ListOptions{Stage: "build", Population: PopulationRetryWaste, Limit: 50},
+			"idx_run_stage_retry_waste"},
+		{"gaggle+stage+cost", ListOptions{
+			Gaggle: "gaggle-000", Stage: "build", Population: PopulationCostMeasured, Limit: 50,
+		}, "idx_run_stage_gaggle_cost"},
+
+		// Unscoped population comes off the run-level rollup instead.
+		{"population", ListOptions{Population: PopulationCostMeasured, Limit: 50}, "idx_run_any_cost"},
+		{"gaggle+population", ListOptions{
+			Gaggle: "gaggle-000", Population: PopulationCostMeasured, Limit: 50,
+		}, "idx_run_gaggle_any_cost"},
+
+		// A deep page must seek, not scan to position.
+		{"stage deep page", ListOptions{
+			Stage: "build", Limit: 50,
+			Cursor: ListCursor{Key: time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC), RunID: "x"},
+		}, "idx_run_stage_recency"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args := listQuery(tc.options, tc.options.Limit)
+			plan := explainWithArgs(t, store, query, args)
+			t.Logf("plan: %s", plan)
+			if !strings.Contains(plan, tc.want) {
+				t.Errorf("plan does not use %s:\n%s", tc.want, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("plan materializes a sort; the page is no longer bounded by limit:\n%s", plan)
+			}
+			if strings.Contains(plan, "SCAN run_stage") {
+				t.Errorf("plan scans run_stage rather than seeking:\n%s", plan)
+			}
+		})
+	}
+}
+
+// seedProjectedStages writes runs that all carry a `build` stage, with
+// measurement spread across them so the partial indexes have both matching and
+// non-matching rows.
+func seedProjectedStages(t *testing.T, store *Store, n int) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		p := Projection{Run: RunRow{
+			RunID:        runIDFor(i),
+			Gaggle:       gaggleNameFor(i),
+			Workflow:     workflowNameFor(i),
+			Phase:        journal.PhaseCompleted,
+			Terminal:     true,
+			StartedAt:    startedAt,
+			LastActivity: startedAt,
+			LastSeq:      uint64(i + 1),
+			Stages:       []string{"build"},
+		}}
+		status := "succeeded"
+		if i%3 == 0 {
+			status = "failed"
+		}
+		p.Stages = []StageRow{{
+			RunID: p.Run.RunID, Stage: "build", Attempts: 1,
+			LastStatus: status, StartedAt: &startedAt,
+		}}
+		// A minority measured, which is what makes the partial indexes small and
+		// is the shape they are chosen for.
+		if i%5 == 0 {
+			p.ApplyMeasurement([]StageMeasurement{{
+				Stage: "build", CostMeasured: true, TokenMeasured: true,
+				PremiumMeasured: true, RetryWaste: true,
+			}})
+		}
+		if err := store.UpsertRun(ctx, p); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if _, err := store.writer.Exec("ANALYZE"); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+}
+
+// The last-activity axis (#1777).
+//
+// #1199's operator policy — "recent" means `now - lastEventAt < 24h` — could
+// not be built portal-side, and the reason is the property this test pins: a
+// run with an old start is excluded from a bounded page BEFORE the portal sees
+// it, and no client-side filter can recover a row that was never sent.
+
+// TestActivityOrderSurfacesAnOldRunThatJustMoved is the acceptance criterion.
+func TestActivityOrderSurfacesAnOldRunThatJustMoved(t *testing.T) {
+	store := openTestStore(t)
+	ctx := t.Context()
+
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+	// The run the operator needs to see: started long ago, escalated a minute
+	// ago. Most urgent thing on the instance, least recent by started_at.
+	stale := Projection{Run: RunRow{
+		RunID: "run-escalated", Gaggle: "alpha", Workflow: "wf",
+		Phase: "escalated", StartedAt: old, LastActivity: recent, LastSeq: 9,
+	}}
+	// Filler that is newer by start but quiet since, enough to push the
+	// escalated run past a bounded page on the started_at axis.
+	for i := 0; i < 60; i++ {
+		at := old.Add(time.Duration(i+1) * time.Hour)
+		if err := store.UpsertRun(ctx, Projection{Run: RunRow{
+			RunID:  fmt.Sprintf("run-quiet-%03d", i),
+			Gaggle: "alpha", Workflow: "wf", Phase: "completed", Terminal: true,
+			StartedAt: at, LastActivity: at, LastSeq: uint64(i + 1),
+		}}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if err := store.UpsertRun(ctx, stale); err != nil {
+		t.Fatalf("seed escalated: %v", err)
+	}
+
+	// On the default axis the escalated run is off the first page — which is
+	// exactly why #1199 needed a backend change.
+	byStart, err := store.ListRuns(ctx, ListOptions{Gaggle: "alpha", Limit: 50})
+	if err != nil {
+		t.Fatalf("list by start: %v", err)
+	}
+	if containsRun(byStart.Runs, "run-escalated") {
+		t.Fatal("fixture is not exercising the problem: the escalated run is already on " +
+			"the first started_at page, so the activity axis proves nothing here")
+	}
+
+	// On the activity axis it is first.
+	byActivity, err := store.ListRuns(ctx, ListOptions{
+		Gaggle: "alpha", Limit: 50, OrderBy: OrderLastActivity,
+	})
+	if err != nil {
+		t.Fatalf("list by activity: %v", err)
+	}
+	if len(byActivity.Runs) == 0 || byActivity.Runs[0].RunID != "run-escalated" {
+		t.Errorf("activity-ordered first row = %v, want run-escalated; a run that started "+
+			"outside the window but has recent activity was excluded", firstRunID(byActivity.Runs))
+	}
+}
+
+// TestActivityWindowBoundsTheActivityColumn pins that since/until follow the
+// ordering axis.
+//
+// If since bounded started_at while the sort ran on last_activity_at, the
+// predicate would exclude rows the cursor had not yet reached and admit rows it
+// had already passed — a client paging through would silently skip and repeat
+// runs. That is a correctness bug that looks like flaky data.
+func TestActivityWindowBoundsTheActivityColumn(t *testing.T) {
+	store := openTestStore(t)
+	ctx := t.Context()
+
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	if err := store.UpsertRun(ctx, Projection{Run: RunRow{
+		RunID: "run-old-start-new-activity", Gaggle: "alpha", Workflow: "wf",
+		Phase: "escalated", StartedAt: old, LastActivity: recent, LastSeq: 1,
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// A window that excludes the run by START but includes it by ACTIVITY.
+	window := ListOptions{
+		Gaggle: "alpha", Limit: 50, OrderBy: OrderLastActivity,
+		Since: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	}
+	page, err := store.ListRuns(ctx, window)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !containsRun(page.Runs, "run-old-start-new-activity") {
+		t.Error("a since-filter on the activity axis excluded a run whose ACTIVITY is inside " +
+			"the window; the filter is bounding started_at instead of the ordering column")
+	}
+
+	// The same window on the default axis must still exclude it, or the axes are
+	// not actually independent.
+	byStart, err := store.ListRuns(ctx, ListOptions{
+		Gaggle: "alpha", Limit: 50,
+		Since: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("list by start: %v", err)
+	}
+	if containsRun(byStart.Runs, "run-old-start-new-activity") {
+		t.Error("the started_at axis returned a run that started before the window; " +
+			"the axes are not independent")
+	}
+}
+
+// TestActivityCursorCarriesTheActivityKey pins that pagination on the activity
+// axis continues from the activity timestamp, not the start time.
+func TestActivityCursorCarriesTheActivityKey(t *testing.T) {
+	store := openTestStore(t)
+	ctx := t.Context()
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		// Activity order is the REVERSE of start order, so a cursor carrying the
+		// wrong key produces a visibly wrong second page.
+		if err := store.UpsertRun(ctx, Projection{Run: RunRow{
+			RunID:  fmt.Sprintf("run-%02d", i),
+			Gaggle: "alpha", Workflow: "wf", Phase: "completed", Terminal: true,
+			StartedAt:    base.Add(time.Duration(i) * time.Hour),
+			LastActivity: base.Add(time.Duration(100-i) * time.Hour),
+			LastSeq:      uint64(i + 1),
+		}}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	first, err := store.ListRuns(ctx, ListOptions{Limit: 4, OrderBy: OrderLastActivity})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.Runs) != 4 || !first.HasMore {
+		t.Fatalf("first page = %d runs, hasMore=%v", len(first.Runs), first.HasMore)
+	}
+	// run-00 has the LATEST activity, so activity order is 00,01,02,...
+	if first.Runs[0].RunID != "run-00" {
+		t.Fatalf("activity order starts at %s, want run-00", first.Runs[0].RunID)
+	}
+	if !first.Next.Key.Equal(first.Runs[3].LastActivity) {
+		t.Errorf("cursor key = %v, want the last row's LastActivity %v; a cursor carrying "+
+			"started_at would seek to the wrong position", first.Next.Key, first.Runs[3].LastActivity)
+	}
+
+	second, err := store.ListRuns(ctx, ListOptions{
+		Limit: 4, OrderBy: OrderLastActivity, Cursor: first.Next,
+	})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Runs) == 0 || second.Runs[0].RunID != "run-04" {
+		t.Errorf("second page starts at %v, want run-04; the keyset predicate and the "+
+			"ORDER BY disagree about which column they are on", firstRunID(second.Runs))
+	}
+}
+
+// TestActivityPlansUseTheActivityIndexes pins that each activity combination
+// seeks its own index instead of sorting a started_at one.
+func TestActivityPlansUseTheActivityIndexes(t *testing.T) {
+	store := openTestStore(t)
+	seedProjectedRuns(t, store, 400)
+
+	cases := []struct {
+		name    string
+		options ListOptions
+		want    string
+	}{
+		{"activity", ListOptions{Limit: 50, OrderBy: OrderLastActivity}, "idx_run_activity"},
+		{"gaggle+activity", ListOptions{
+			Gaggle: "gaggle-000", Limit: 50, OrderBy: OrderLastActivity,
+		}, "idx_run_gaggle_activity"},
+		{"gaggle+workflow+activity", ListOptions{
+			Gaggle: "gaggle-000", Workflow: workflowNameFor(0), Limit: 50, OrderBy: OrderLastActivity,
+		}, "idx_run_gaggle_workflow_activity"},
+		{"phase+activity", ListOptions{
+			Phase: journal.PhaseCompleted, Limit: 50, OrderBy: OrderLastActivity,
+		}, "idx_run_phase_activity"},
+		{"gaggle+phase+activity", ListOptions{
+			Gaggle: "gaggle-000", Phase: journal.PhaseCompleted, Limit: 50, OrderBy: OrderLastActivity,
+		}, "idx_run_gaggle_phase_activity"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args := listQuery(tc.options, tc.options.Limit)
+			plan := explainWithArgs(t, store, query, args)
+			t.Logf("plan: %s", plan)
+			if !strings.Contains(plan, tc.want) {
+				t.Errorf("plan does not use %s:\n%s", tc.want, plan)
+			}
+			if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("plan sorts rather than seeks; the activity axis is reusing a "+
+					"started_at index:\n%s", plan)
+			}
+		})
+	}
+}
+
+func containsRun(runs []RunRow, id string) bool {
+	for _, r := range runs {
+		if r.RunID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func firstRunID(runs []RunRow) string {
+	if len(runs) == 0 {
+		return "<empty>"
+	}
+	return runs[0].RunID
 }

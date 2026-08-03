@@ -47,6 +47,23 @@ func electedNewest(thisPR int, blockers []int) bool {
 	return true
 }
 
+// electedRace is the "race" election policy (#2268): thisPR is unconditionally
+// the lander of its cluster, regardless of sibling PR numbers or their own
+// state. Intended for a dedicated fast-track lane (e.g. a critical/urgent
+// workflow instance) where coupling a defect-free PR's landing speed to
+// sibling sequencing — even a "wins ties" version of that coupling — defeats
+// the lane's entire purpose. This does not weaken #1071's single-lander
+// safety invariant: electionDecision still requires electableUnderOrdering
+// (no real defect on thisPR's own review) and an undemoted PR before it ever
+// calls a policy, so "race" only ever fast-tracks a PR that is individually
+// clean — it never lands a PR carrying its own genuine defect, and it never
+// lets two overlap-cluster members land unarbitrated (thisPR alone is always
+// elected, so callers still get exactly one winner per cluster). It simply
+// declines to make that individually-clean PR wait for anyone else's turn.
+func electedRace(thisPR int, blockers []int) bool {
+	return true
+}
+
 // electionPolicyFunc decides whether thisPR is the elected lander given the PRs
 // it is blocked on. Every registered policy is a pure function of
 // {thisPR, blockers} so each cluster member computes the same winner
@@ -64,6 +81,7 @@ const defaultElectionPolicy = "fifo"
 var electionPolicies = map[string]electionPolicyFunc{
 	"fifo":   electedLander,
 	"newest": electedNewest,
+	"race":   electedRace,
 }
 
 // resolveElectionPolicy returns the named policy and the name actually used. An
@@ -279,7 +297,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -299,6 +317,16 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	policy, resolvedPolicy, perr := resolveElectionPolicyForCluster(
 		ctx, provider, repo, policyName, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
+		if providers.IsNotFoundError(perr) {
+			// A cluster-data policy (#1028/#1029) scores every member named as a
+			// blocker; one of them has closed/merged since being recorded — the
+			// same "no longer open" business outcome the selected PR itself gets
+			// below, just for a cluster member instead. Never crown against stale
+			// cluster membership: park explicitly (routing to apply-verdict with
+			// the full pass-through envelope) rather than failing the stage.
+			pf(stdout, "election policy %q could not score cluster member(s) — a named PR is no longer found (closed/merged) — election moot this cycle, routing to apply-verdict\n", policyName)
+			return writeResult(false)
+		}
 		return failProviderStage(stderr, "resolve election policy "+policyName, perr, resultFile)
 	}
 	if resolvedPolicy != policyName {

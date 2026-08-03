@@ -2,6 +2,7 @@ package instance
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 )
@@ -209,6 +213,9 @@ repos:
 	if cfg.PartialCloneEnabled() {
 		t.Fatal("workcopies.partialClone must default to false")
 	}
+	if cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache must default to false")
+	}
 
 	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
 workcopies:
@@ -219,6 +226,205 @@ workcopies:
 	}
 	if !cfg.PartialCloneEnabled() {
 		t.Fatal("workcopies.partialClone: true was not honored")
+	}
+	if cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache must stay false when only partialClone is set")
+	}
+
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
+workcopies:
+  objectCache: true
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies.objectCache: %v", err)
+	}
+	if !cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache: true was not honored")
+	}
+	if cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone must stay false when only objectCache is set")
+	}
+
+	root := filepath.Join(t.TempDir(), "short")
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+fmt.Sprintf(`
+workcopies:
+  root: %q
+`, root)))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies root: %v", err)
+	}
+	layout, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("builders"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layout.WorkcopiesDir(), filepath.Join(root, "builders"); got != want {
+		t.Fatalf("WorkcopiesDir() = %q, want %q", got, want)
+	}
+
+	cfg.Workcopies.Root = "relative"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+		t.Fatalf("Validate() error = %v, want absolute-path error", err)
+	}
+}
+
+func TestEffectiveWorkcopiesLayoutGaggleOverrideWins(t *testing.T) {
+	instanceRoot := filepath.Join(t.TempDir(), "instance-work")
+	gaggleRoot := filepath.Join(t.TempDir(), "gaggle-work")
+	cfg := &Config{Workcopies: &WorkcopiesConfig{Root: instanceRoot}}
+	gaggle := &apiv1.Gaggle{
+		ObjectMeta: metav1.ObjectMeta{Name: "builders"},
+		Spec: apiv1.GaggleSpec{
+			Workcopies: &apiv1.GaggleWorkcopies{Root: gaggleRoot},
+		},
+	}
+
+	layout, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("builders"), cfg, gaggle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layout.WorkcopiesDir(), filepath.Join(gaggleRoot, "builders"); got != want {
+		t.Fatalf("WorkcopiesDir() = %q, want %q", got, want)
+	}
+	if got, want := layout.WorkcopiesBaseDir(), filepath.Join(gaggleRoot, "builders"); got != want {
+		t.Fatalf("WorkcopiesBaseDir() = %q, want %q", got, want)
+	}
+	other, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("reviewers"), cfg, &apiv1.Gaggle{
+		ObjectMeta: metav1.ObjectMeta{Name: "reviewers"},
+		Spec: apiv1.GaggleSpec{
+			Workcopies: &apiv1.GaggleWorkcopies{Root: gaggleRoot},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.WorkcopiesDir() == other.WorkcopiesDir() {
+		t.Fatalf("gaggles share workcopies directory %q", layout.WorkcopiesDir())
+	}
+}
+
+func TestLargeRepoPresetResolvesDefaultsAndOverrides(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	repo := cfg.Repos[0]
+	if !repo.Pinned() || repo.Workspace == nil || repo.Workspace.CleanPolicy != "" {
+		t.Fatalf("workspace = %+v, want pinned with none clean-policy default", repo.Workspace)
+	}
+	if repo.PathLength == nil || repo.PathLength.Disabled {
+		t.Fatalf("pathLength = %+v, want enabled preset default", repo.PathLength)
+	}
+	if repo.DefaultStageTimeout != LargeRepoDefaultStageTimeout {
+		t.Fatalf("defaultStageTimeout = %q, want %q", repo.DefaultStageTimeout, LargeRepoDefaultStageTimeout)
+	}
+	if repo.RunControls == nil ||
+		repo.RunControls.StalledRunTimeout != LargeRepoStalledRunTimeout ||
+		repo.RunControls.MaxRunDuration != LargeRepoMaxRunDuration {
+		t.Fatalf("runControls = %+v, want large-repo defaults", repo.RunControls)
+	}
+	if got := repo.EffectiveRunControls((RunConditions{MaxRepasses: 2, StalledRunTimeout: "30m"}).RunControls()); got.MaxRepasses != 2 ||
+		got.StalledRunTimeout != LargeRepoStalledRunTimeout || got.MaxRunDuration != LargeRepoMaxRunDuration {
+		t.Fatalf("EffectiveRunControls = %+v, want preset over instance defaults", got)
+	}
+
+	path = writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+    workspace:
+      pinned: false
+    pathLength:
+      disabled: true
+    defaultStageTimeout: 45m
+    runControls:
+      stalledRunTimeout: 90m
+      maxRunDuration: 8h
+`)
+	cfg, err = LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig with overrides: %v", err)
+	}
+	repo = cfg.Repos[0]
+	if repo.Pinned() {
+		t.Fatalf("workspace = %+v, want explicit pinned:false relaxation", repo.Workspace)
+	}
+	if repo.PathLength == nil || !repo.PathLength.Disabled {
+		t.Fatalf("pathLength = %+v, want explicit disabled relaxation", repo.PathLength)
+	}
+	if repo.DefaultStageTimeout != "45m" {
+		t.Fatalf("defaultStageTimeout = %q, want tightened 45m", repo.DefaultStageTimeout)
+	}
+	if repo.RunControls.StalledRunTimeout != "90m" || repo.RunControls.MaxRunDuration != "8h" {
+		t.Fatalf("runControls = %+v, want explicit overrides", repo.RunControls)
+	}
+	if got := repo.EffectiveDefaultStageTimeout("20m"); got != "45m" {
+		t.Fatalf("EffectiveDefaultStageTimeout = %q, want explicit 45m", got)
+	}
+}
+
+func TestLoadConfigRejectsUnknownWorkspaceField(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+    workspace:
+      pinned: false
+      pinend: true
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "pinend"`) {
+		t.Fatalf("LoadConfig error = %v, want unknown workspace field rejection", err)
+	}
+}
+
+func TestLoadConfigRepoPathLength(t *testing.T) {
+	cfg, err := LoadConfig(writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+    pathLength:
+      maxPathLength: 320
+      buildOutputAllowance: 48
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	got := cfg.Repos[0].PathLength
+	if got == nil || got.MaxPathLength != 320 || got.BuildOutputAllowance != 48 || got.Disabled {
+		t.Fatalf("pathLength = %+v", got)
+	}
+
+	cfg.Repos[0].PathLength.BuildOutputAllowance = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "pathLength.buildOutputAllowance must not be negative") {
+		t.Fatalf("Validate error = %v, want negative allowance rejection", err)
 	}
 }
 
@@ -743,6 +949,31 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 	}
 }
 
+// TestRetentionConfigEnabledWithNoLimitsIsRejected covers the exact silent
+// no-op combination from #2052: enabling retention without setting either
+// limit previously pruned nothing, giving an operator false confidence that
+// disk usage was bounded.
+func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
+	if err := (&Config{Retention: RetentionConfig{Enabled: true}}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.enabled requires at least one") {
+		t.Fatalf("Validate(enabled, no limits) error = %v, want a retention.enabled-requires-a-limit error", err)
+	}
+
+	// A single configured axis remains a valid, intentional configuration —
+	// this must NOT be rejected by the new check.
+	if err := (&Config{Retention: RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, byte cap only) error = %v, want nil", err)
+	}
+	if err := (&Config{Retention: RetentionConfig{Enabled: true, RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, age limit only) error = %v, want nil", err)
+	}
+
+	// Disabled retention with no limits is unaffected — it already prunes
+	// nothing by design, so there is no silent-no-op trap to guard against.
+	if err := (&Config{Retention: RetentionConfig{}}).Validate(); err != nil {
+		t.Fatalf("Validate(disabled, no limits) error = %v, want nil", err)
+	}
+}
+
 func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
 	var zero TelemetryRetentionConfig
 	if zero.Enabled {
@@ -786,9 +1017,26 @@ func TestStalledRunTimeout(t *testing.T) {
 	}
 }
 
+func TestMaxRunDuration(t *testing.T) {
+	if got, err := (RunConditions{}).MaxRunDurationDuration(); err != nil || got != 0 {
+		t.Fatalf("default MaxRunDurationDuration = %s, %v; want disabled", got, err)
+	}
+	if got, err := (RunConditions{MaxRunDuration: "6h"}).MaxRunDurationDuration(); err != nil || got != 6*time.Hour {
+		t.Fatalf("MaxRunDurationDuration = %s, %v; want 6h", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{RunConditions: RunConditions{MaxRunDuration: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "maxRunDuration") {
+				t.Fatalf("Validate() error = %v, want maxRunDuration error", err)
+			}
+		})
+	}
+}
+
 func TestRunConditionsExposeRunControlDefaults(t *testing.T) {
-	conditions := RunConditions{MaxRepasses: 6, StalledRunTimeout: "3h"}
-	if got := conditions.RunControls(); got.MaxRepasses != 6 || got.StalledRunTimeout != "3h" {
+	conditions := RunConditions{MaxRepasses: 6, StalledRunTimeout: "3h", MaxRunDuration: "8h"}
+	if got := conditions.RunControls(); got.MaxRepasses != 6 || got.StalledRunTimeout != "3h" || got.MaxRunDuration != "8h" {
 		t.Fatalf("RunControls = %+v", got)
 	}
 	if err := (&Config{RunConditions: RunConditions{MaxRepasses: -1}}).Validate(); err == nil ||
@@ -1180,6 +1428,32 @@ credentials:
 	}
 }
 
+func TestConfigValidatePinnedWorkspace(t *testing.T) {
+	base := RepoRef{
+		Provider: "github", Owner: "acme", Name: "large",
+		Token: TokenRef{Env: "GITHUB_TOKEN"},
+	}
+	valid := base
+	valid.Workspace = &RepoWorkspaceConfig{Pinned: true}
+	if err := (&Config{Repos: []RepoRef{valid}}).Validate(); err != nil {
+		t.Fatalf("valid pinned workspace: %v", err)
+	}
+
+	contradictory := base
+	contradictory.Workspace = &RepoWorkspaceConfig{Pinned: true, Worktrees: true}
+	if err := (&Config{Repos: []RepoRef{contradictory}}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "VER:") || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("contradictory workspace error = %v", err)
+	}
+
+	badPolicy := base
+	badPolicy.Workspace = &RepoWorkspaceConfig{Pinned: true, CleanPolicy: "sometimes"}
+	if err := (&Config{Repos: []RepoRef{badPolicy}}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "cleanPolicy") {
+		t.Fatalf("invalid clean policy error = %v", err)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1218,6 +1492,40 @@ func TestConfigValidate(t *testing.T) {
 				{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthWorkloadIdentity}},
 			}},
 			wantErr: "must not configure token",
+		},
+		{
+			name: "valid gitea",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+		},
+		{
+			name: "gitea missing baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "baseUrl is required",
+		},
+		{
+			name: "gitea rejects project",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Project: "widgets", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "project is only valid for provider",
+		},
+		{
+			name: "gitea rejects auth block",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}, Auth: &RepoAuthConfig{Kind: ADOAuthAzureCLI}},
+			}},
+			wantErr: "supports only a static token",
+		},
+		{
+			name: "gitea missing token",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web"},
+			}},
+			wantErr: "gitea auth requires token",
 		},
 		{
 			name: "missing owner",
@@ -1647,6 +1955,149 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+// TestConfigValidateDaemonIdentity covers #1780's DaemonIdentityConfig: the
+// same exactly-one-kind, kind-specific-required-fields, fail-closed-inline-
+// secret discipline RepoAuthConfig already enforces for repo-level auth.
+func TestConfigValidateDaemonIdentity(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "valid pat",
+			cfg:  Config{DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}}},
+		},
+		{
+			name:    "pat missing token",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT}},
+			wantErr: "token must reference exactly one of env, file, keychain, or store",
+		},
+		{
+			name: "pat token with two sources",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT", File: "/f"},
+			}},
+			wantErr: "token must reference exactly one of env, file, keychain, or store",
+		},
+		{
+			name: "pat rejects app fields",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}, AppID: "123456",
+			}},
+			wantErr: "only valid for kind \"github-app\"",
+		},
+		{
+			name: "pat token env must not be exposed to stages",
+			cfg: Config{
+				Runner:         RunnerConfig{EnvPassthrough: []string{"DAEMON_PAT"}},
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}},
+			},
+			wantErr: "must not be exposed to stages",
+		},
+		{
+			name: "valid github-app",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+		},
+		{
+			name: "valid github-app with slug",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42", Slug: "my-daemon",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+		},
+		{
+			name: "github-app rejects token alongside minting",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, Token: &TokenRef{Env: "T"}, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "must not configure token",
+		},
+		{
+			name: "github-app missing appId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "appId is required",
+		},
+		{
+			name: "github-app missing installationId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "installationId is required",
+		},
+		{
+			name: "github-app non-numeric installationId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "acme-corp",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "must be the numeric installation ID",
+		},
+		{
+			name: "github-app missing privateKey",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			}},
+			wantErr: "privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey env must not be exposed to stages",
+			cfg: Config{
+				Runner: RunnerConfig{EnvPassthrough: []string{"DAEMON_APP_KEY"}},
+				DaemonIdentity: &DaemonIdentityConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Env: "DAEMON_APP_KEY"},
+				},
+			},
+			wantErr: "must not be exposed to stages",
+		},
+		{
+			name: "github-app privateKey undeclared store",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{Store: "missing-kv/app-key"},
+			}},
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name:    "unsupported kind",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Kind: "oidc", Token: &TokenRef{Env: "T"}}},
+			wantErr: "unsupported kind \"oidc\"",
+		},
+		{
+			name:    "empty kind",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Token: &TokenRef{Env: "T"}}},
+			wantErr: "unsupported kind \"\"",
+		},
+		{
+			name: "nil DaemonIdentity is byte-identical to before this field existed",
+			cfg:  Config{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func boolConfig(value bool) *bool {
 	return &value
 }
@@ -2026,5 +2477,55 @@ func TestTokenRefCredentialTokenRef(t *testing.T) {
 	}
 	if _, err := credentials.NewResolver([]credentials.TokenRef{got}); err == nil {
 		t.Fatal("a store-backed ref must fail closed in a resolver built without store support")
+	}
+}
+
+func TestDefaultStageTimeoutDuration(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		// Zero means "unset": the executor keeps its own built-in default
+		// rather than this package substituting one.
+		{name: "unset", value: "", want: 0},
+		{name: "duration", value: "25m", want: 25 * time.Minute},
+		{name: "seconds", value: "90s", want: 90 * time.Second},
+		{name: "malformed", value: "25 minutes", wantErr: true},
+		{name: "zero", value: "0s", wantErr: true},
+		{name: "negative", value: "-5m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := RunnerConfig{DefaultStageTimeout: tc.value}.DefaultStageTimeoutDuration()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("DefaultStageTimeoutDuration(%q) = %s, want an error", tc.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DefaultStageTimeoutDuration(%q): %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Fatalf("DefaultStageTimeoutDuration(%q) = %s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// A malformed baseline must fail `goobers validate` once, not every run at
+// dispatch — the value is consumed when the deterministic executor is built.
+func TestValidateRejectsMalformedDefaultStageTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Runner: RunnerConfig{DefaultStageTimeout: "twenty-five minutes"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a malformed runner.defaultStageTimeout")
+	}
+	if !strings.Contains(err.Error(), "runner.defaultStageTimeout") {
+		t.Fatalf("Validate() error = %q, want it to name runner.defaultStageTimeout", err)
 	}
 }

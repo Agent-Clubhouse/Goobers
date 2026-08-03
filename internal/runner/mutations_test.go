@@ -174,3 +174,55 @@ func TestDispatchTaskNoWorkWithMutationRetainsProvenance(t *testing.T) {
 		t.Fatalf("mutating no-work tick provenance: branch=%t mutation=%t events=%+v", sawBranch, sawMutation, events)
 	}
 }
+
+// TestDispatchTaskSurfacesCorruptMutationSidecar is #2029's regression: a
+// present-but-unparseable sidecar line must not be silently dropped like
+// the benign no-mutations case — it must surface as an EventError, while
+// still completing the stage normally, since the provider mutation the
+// corrupt line describes already happened for real regardless of whether
+// this sidecar can be trusted.
+func TestDispatchTaskSurfacesCorruptMutationSidecar(t *testing.T) {
+	machine := fixtureMachine(t)
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return mutationSidecarDeterministic{fact: `{"provider":"github",invalid-json`}, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-1",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed — a corrupt sidecar must not fail the stage", res.Phase)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-1"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var found *journal.Event
+	for i := range events {
+		e := &events[i]
+		if e.Type == journal.EventError && e.Error != nil && e.Error.Code == "mutation_sidecar_read_failed" {
+			found = e
+		}
+		if e.Type == journal.EventRefTouched && e.Stage == "implement" {
+			t.Fatalf("expected no fabricated ref.touched event from a corrupt sidecar line, got: %+v", e)
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected an EventError{code:mutation_sidecar_read_failed}, got: %+v", events)
+	}
+	if found.Stage != "implement" {
+		t.Fatalf("EventError Stage = %q, want implement", found.Stage)
+	}
+}

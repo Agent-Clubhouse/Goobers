@@ -75,6 +75,66 @@ type GaggleSpec struct {
 	// opt-in, so a gaggle that omits this behaves exactly as before.
 	// +optional
 	Sandbox *GaggleSandbox `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+	// Workcopies overrides the instance-level managed working-copy placement for
+	// this gaggle. Root is an absolute base path; the gaggle name is appended.
+	// +optional
+	Workcopies *GaggleWorkcopies `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
+	// RequireLabels is the default `requireLabels` value every workflow's
+	// `backlog-query` task in this gaggle inherits, mirroring
+	// BranchNamespace's gaggle-default/per-task-override shape (MIRC-2,
+	// #1901, docs/design/v1/multi-instance-repo-coordination.md). A task that
+	// declares its own `requireLabels` input fully replaces this default for
+	// that task, exactly as a task's `headPrefix` replaces the gaggle's
+	// BranchNamespace — never merged. Empty leaves every task's own
+	// `requireLabels` (or its absence) untouched, so a gaggle that omits this
+	// behaves exactly as before.
+	// +optional
+	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
+	// Siblings declares other gaggles/instances this gaggle knows are
+	// independently working the same target repo (MIRC-2, #1901). Each
+	// sibling is identified by the repo it targets — never by gaggle/instance
+	// name, which is purely local bookkeeping and carries zero cross-instance
+	// meaning (docs/design/v1/multi-instance-repo-coordination.md, amended by
+	// #1908). `goobers validate`/`goobers lint` warns (non-fatal) when a
+	// declared sibling targets the same repo as this gaggle's own Project and
+	// its declared RequireLabels are not disjoint from this gaggle's own
+	// effective requireLabels (gaggle default, or a workflow's own override)
+	// — the likely-dominant misconfiguration case for independently-
+	// configured teams sharing one repo. A sibling targeting a different repo
+	// never triggers a warning, regardless of label similarity. Declaring no
+	// siblings is a no-op — purely additive, opt-in config.
+	// +optional
+	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// GaggleWorkcopies configures managed working-copy placement for one gaggle.
+type GaggleWorkcopies struct {
+	// Root is an absolute base path for this gaggle's managed working copies.
+	// +kubebuilder:validation:MinLength=1
+	Root string `json:"root" yaml:"root"`
+}
+
+// GaggleSibling declares another gaggle/instance this gaggle knows is
+// independently working the same target repo, for MIRC-2's sibling-overlap
+// validation warning. This instance cannot read the sibling's live config, so
+// RequireLabels is this gaggle's own trusted declaration of what the sibling
+// currently uses — not something validated against the sibling itself.
+type GaggleSibling struct {
+	// Project is the repo the sibling gaggle targets — the sole match key
+	// (provider/owner/name; Project is ADO-only, same as RepoRef). Gaggle
+	// name is deliberately not part of this type: two instances naming a
+	// gaggle the same string is coincidence with zero shared meaning.
+	// +kubebuilder:validation:Required
+	Project RepoRef `json:"project" yaml:"project"`
+	// Label is a human-readable name for the sibling, used only in warning
+	// messages (e.g. "Billing team") — never a match key.
+	// +optional
+	Label string `json:"label,omitempty" yaml:"label,omitempty"`
+	// RequireLabels is this gaggle's own declaration of the sibling's
+	// effective required-label scope, compared against this gaggle's own
+	// effective requireLabels for overlap when Project matches.
+	// +optional
+	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
 }
 
 // GaggleSandbox mirrors instance.yaml's sandbox block as a per-gaggle

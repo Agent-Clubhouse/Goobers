@@ -16,6 +16,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -30,6 +32,7 @@ type gatherPRContextServer struct {
 	head, base         string
 	headSHA            string
 	baseSHA            string
+	body               string
 	checkState         string
 	labels             []string
 	comments           []map[string]interface{}
@@ -72,6 +75,7 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 			{
 				"number": s.prNumber, "draft": false,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber),
+				"body":     s.body,
 				"head":     map[string]interface{}{"ref": s.head, "sha": s.headSHA},
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 				"labels":   labelObjs,
@@ -330,6 +334,147 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	}
 }
 
+func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T) {
+	const prBranch = "goobers/impl/escalated-1974"
+	const implementationRunID = "implementation-escalated-1974"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	probe, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "digest-probe-1974", BaseRef: "main",
+		Branch: "goobers/pr-remediation/digest-probe-1974",
+	})
+	if err != nil {
+		t.Fatalf("Create digest probe: %v", err)
+	}
+	if _, err := checkoutExistingBranch(probe.Path, prBranch, ""); err != nil {
+		t.Fatalf("checkout digest probe branch: %v", err)
+	}
+	digest, err := diffDigest(probe.Path, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest: %v", err)
+	}
+	diff := runGitOutputT(t, probe.Path, "diff", baseSHA+"...HEAD")
+	if err := probe.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("remove digest probe: %v", err)
+	}
+
+	instanceRoot := initDemo(t)
+	implementationServer := newFakeGitHubServer(t, "your-org", "your-repo")
+	implementationServer.addIssue(1974, "Prevent repeated escalation", "goobers:approved", "goobers:ready", "goobers:claimed")
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instanceRoot, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("1974", implementationRunID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+	run, err := journal.Create(layoutFor(instanceRoot).RunsDir(), journal.RunIdentity{
+		RunID: implementationRunID, Workflow: "implementation",
+		WorkflowDigest: journal.Digest([]byte("workflow")), Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create implementation journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "1974", "title": "Prevent repeated escalation"},
+	}); err != nil {
+		t.Fatalf("record claimed issue: %v", err)
+	}
+	diffRef, err := run.RecordArtifact(implementationRunID+":review/reviewer-diff.patch", []byte(diff))
+	if err != nil {
+		t.Fatalf("record implementation diff: %v", err)
+	}
+	if diffRef.Digest != digest {
+		t.Fatalf("journal diff digest = %q, want %q", diffRef.Digest, digest)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated",
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": digest,
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("record duplicate-diff escalation: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close implementation journal: %v", err)
+	}
+
+	providerCmdEnv(t, implementationServer, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", implementationRunID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "issue-close-out", instanceRoot); code != 0 {
+		t.Fatalf("issue-close-out before PR publication: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	implementationServer.mu.Lock()
+	prsBeforePublication := len(implementationServer.prs)
+	implementationServer.mu.Unlock()
+	if prsBeforePublication != 0 {
+		t.Fatalf("PRs before publication = %d, want none", prsBeforePublication)
+	}
+
+	t.Setenv("GOOBERS_INPUT_HEAD", prBranch)
+	if code, stdout, stderr := runArgs(t, "open-pr", instanceRoot); code != 0 {
+		t.Fatalf("open-pr after escalation: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	implementationServer.mu.Lock()
+	publishedBody := implementationServer.prs[1].body
+	implementationServer.mu.Unlock()
+	publishedState, ok := parseRemediationStateComment(publishedBody)
+	if !ok || publishedState.LastDiffDigest != digest || !publishedState.Escalated {
+		t.Fatalf("published PR escalation state = %#v, ok=%t", publishedState, ok)
+	}
+
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 1974, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA, body: publishedBody,
+		labels: []string{needsRemediationLabel},
+	}
+	server := srv.start(t)
+
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-1974", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-1974",
+	})
+	if err != nil {
+		t.Fatalf("Create gather worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-1974")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Chdir(wt.Path)
+	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no-work before remediation for an already escalated digest", stdout)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+}
+
 func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	verdict := &apiv1.Verdict{
 		Findings: []apiv1.Finding{
@@ -357,6 +502,17 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	})
 	if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 		t.Fatal("selected PR #485's substantive finding was not counted")
+	}
+
+	for _, class := range []apiv1.FindingClass{
+		apiv1.FindingMissingTests,
+		apiv1.FindingScopeCreep,
+		apiv1.FindingContractChange,
+	} {
+		verdict.Findings = []apiv1.Finding{{Class: class, Location: "PR #485"}}
+		if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
+			t.Errorf("selected PR #485's %q finding was not routed to substantive remediation", class)
+		}
 	}
 }
 
@@ -979,16 +1135,12 @@ func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
 	}
 }
 
-// TestGatherPRContextSkipsPRHeldByInFlightWorktree is #872/#1007's regression
-// guard: when a PR's head branch is still checked out by another live worktree
-// — its originating implementation run's ci-poll stage, which holds the branch
-// while polling CI on the PR it just opened — gather-pr-context must skip that
-// PR cleanly (exit 0, no-work, no claim, no checkout) instead of claiming it
-// and colliding on the checkout every retry ("fatal: '<branch>' is already
-// used by worktree at ..."). Once that worktree is gone (the owning run
-// finished), the very next tick proceeds and remediates the PR exactly as
-// normal — proving the guard defers rather than permanently drops the PR.
-func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
+// TestGatherPRContextSkipsPinnedPRHeldByInFlightWorktree is #872/#1007's
+// regression guard: when update-behind-pr pins a PR whose head branch is still
+// checked out by its originating implementation run, gather-pr-context must
+// defer cleanly instead of colliding on checkout. Once that worktree is gone,
+// the same pinned handoff proceeds normally.
+func TestGatherPRContextSkipsPinnedPRHeldByInFlightWorktree(t *testing.T) {
 	const prBranch = "goobers/implementation/owning-run"
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
 
@@ -1037,6 +1189,10 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.InputEnvVar("selectedNumber"), "72")
 	t.Chdir(remWT.Path)
 	resultFile := filepath.Join(remWT.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)

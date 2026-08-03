@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -96,7 +98,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
-	base := providerInput("base", "main")
+	base := providerInput("base", providerBaseBranch())
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
@@ -127,6 +129,25 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 	if haveIssue && issueID != "" && !structuredBody {
 		body += "\n\nFixes #" + issueID
+	}
+	runsDir, err := runsDirForRun(layoutFor(root), runID)
+	if err != nil && !errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: locate run journal for escalation state: %v\n", err)
+		return 1
+	}
+	if err == nil {
+		escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+		if err != nil {
+			pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
+			return 1
+		}
+		if duplicate {
+			body, err = withImplementationEscalationMarker(body, escalation)
+			if err != nil {
+				pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
+				return 1
+			}
+		}
 	}
 
 	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
@@ -162,7 +183,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
 	// by default. When set, every file this run's branch changes must resolve
 	// into the SAME single declared action root (the comma/newline
-	// `actionRoots` input, e.g. "selfhost,skills") — a skill-authoring action
+	// `actionRoots` input, e.g. "reference-workflows,skills") — a skill-authoring action
 	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
 	// CLOSED before the PR opens (configboundary.ConfineExclusive).
 	if providerInput("confineToActionRoots", "") == "true" {

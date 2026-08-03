@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/durability"
 )
@@ -147,15 +148,14 @@ func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, ti
 	deadline := time.Now().Add(timeout)
 	for {
 		if data, rerr := os.ReadFile(respPath); rerr == nil {
-			// The writer (sweepPendingTriggers / a test responder) uses a plain,
-			// non-atomic os.WriteFile, so this read can land in the window between
-			// the O_TRUNC that empties the file and the content being fully
-			// written — yielding empty or partial bytes that don't parse. Treat
-			// that as "not ready yet" and re-poll rather than failing the whole
-			// delegation: a torn read is transient, and consuming (removing) the
-			// file before a clean parse would strand the real response so the next
-			// poll could never see it. Only remove once we have a complete,
-			// parseable response. The deadline still bounds a genuinely stuck writer.
+			// The writer (sweepPendingTriggers / a test responder) publishes via
+			// journal.WriteFileAtomic (hidden temp + rename), so a torn read here
+			// should not occur in practice — this stays tolerant of an unparseable
+			// read as defense in depth rather than failing the whole delegation on
+			// it: consuming (removing) the file before a clean parse would strand
+			// the real response so the next poll could never see it. Only remove
+			// once we have a complete, parseable response. The deadline still
+			// bounds a genuinely stuck writer.
 			var resp triggerResponse
 			if jerr := json.Unmarshal(data, &resp); jerr == nil {
 				_ = os.Remove(respPath)
@@ -292,7 +292,10 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 					// again: CreatedAt is preserved, so the staleness check
 					// above still bounds the wait, and the client's own
 					// pollTriggerResponse deadline bounds it independently.
-					if rerr := os.WriteFile(reqPath, data, 0o644); rerr != nil {
+					// Requeued atomically (hidden temp + rename) so a
+					// concurrent sweep/inspection can never observe a
+					// truncated live request file mid-rewrite.
+					if rerr := journal.WriteFileAtomic(reqPath, data, 0o644); rerr != nil {
 						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: requeue trigger request %s: %w", requestID, rerr))
 						resp.Error = terr.Error()
 						break
@@ -318,7 +321,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err))
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644); err != nil {
+		if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644); err != nil {
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: write trigger response %s: %w", requestID, err))
 		}
 	}

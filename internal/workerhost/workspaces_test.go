@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -170,7 +170,7 @@ func newFixtureRepo(t *testing.T) string {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -183,7 +183,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

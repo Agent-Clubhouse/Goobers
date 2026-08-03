@@ -13,12 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
@@ -112,6 +114,29 @@ type RunListOptions struct {
 	Limit             int
 	Cursor            string
 	LatestPerWorkflow bool
+
+	// ShowNoWork includes routine no-work completions (#2188) — a run that
+	// touched exactly one stage and that stage's terminal status was
+	// apiv1.ResultNoWork. False (the default) hides them, since a live instance
+	// on a ~60s schedule cadence produces far more of these than runs an
+	// operator actually cares about; explicitly setting this to true is the
+	// escape hatch, not a second filter value, so there is no way to ask for
+	// no-work runs ONLY.
+	ShowNoWork bool
+
+	// OrderByActivity sorts and filters on the run's last journal event rather
+	// than its start (#1777).
+	//
+	// Additive: false is the existing behaviour, so no current caller changes
+	// meaning by this field existing. Since/Until follow the axis — on this one
+	// they bound last activity, which is what makes "runs active in the last 24h"
+	// expressible at all.
+	//
+	// Only the read-model path serves it. The journal-derived paths order by
+	// start and would have to sort every candidate to answer it, which is the
+	// unbounded shape the read model exists to remove -- so a request carrying
+	// this without a read model is refused rather than served slowly.
+	OrderByActivity bool
 }
 
 // RunList is one deterministic page of run summaries.
@@ -150,8 +175,13 @@ type RunSummary struct {
 	RetryCount       int              `json:"retryCount"`
 	PolicyRetryCount int              `json:"policyRetryCount"`
 	InfraRetryCount  int              `json:"infraRetryCount"`
-	Stages           []string         `json:"-"`
-	stageAttempts    map[string][]StageAttempt
+	// NoWork is true for a completed run that touched exactly one stage and
+	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
+	// schedule tick that found nothing to do, as opposed to a genuine
+	// single-stage workflow that did real work.
+	NoWork        bool     `json:"noWork"`
+	Stages        []string `json:"-"`
+	stageAttempts map[string][]StageAttempt
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -164,6 +194,46 @@ type RunDetail struct {
 	GraphStatus string           `json:"graphStatus"`
 	Escalation  *EscalationCause `json:"escalation,omitempty"`
 	Outcome     *RunOutcome      `json:"outcome,omitempty"`
+	// Transitions is the run's exact executed workflow-graph transition
+	// history (#1427) — never inferred from "both endpoint nodes were
+	// visited", which is what let the portal highlight an untaken repass
+	// edge (#1430). TransitionsStatus mirrors GraphStatus's own vocabulary:
+	// "projected" when Transitions is authoritative (even if empty — a
+	// freshly-started run has none yet), "unavailable" for a run predating a
+	// pinned graph snapshot.
+	Transitions       []RunTransition `json:"transitions,omitempty"`
+	TransitionsStatus string          `json:"transitionsStatus"`
+}
+
+// RunTransition is one executed transition in a run's workflow graph, the
+// API-facing projection of readmodel.TransitionRow (kept distinct from it
+// deliberately: RunDetail's JSON contract must not change shape just because
+// the internal projection's field set does).
+type RunTransition struct {
+	Branch     int    `json:"branch"`
+	Occurrence int    `json:"occurrence"`
+	Seq        uint64 `json:"seq"`
+	Source     string `json:"source"`
+	Target     string `json:"target,omitempty"`
+	Verdict    string `json:"verdict,omitempty"`
+	Terminal   bool   `json:"terminal,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Repass     bool   `json:"repass,omitempty"`
+}
+
+func runTransitionsFrom(rows []readmodel.TransitionRow) []RunTransition {
+	if rows == nil {
+		return nil
+	}
+	out := make([]RunTransition, len(rows))
+	for i, row := range rows {
+		out[i] = RunTransition{
+			Branch: row.Branch, Occurrence: row.Occurrence, Seq: row.Seq,
+			Source: row.Source, Target: row.Target, Verdict: row.Verdict,
+			Terminal: row.Terminal, Status: row.TerminalStatus, Repass: row.Repass,
+		}
+	}
+	return out
 }
 
 // RunOutcome projects the business decision a completed run reached — the
@@ -182,25 +252,34 @@ type RunDetail struct {
 // propagation and the curated no-work-run disposition are intentionally left
 // as follow-up work — this is the read-model projection only.
 type RunOutcome struct {
-	// Gate is the last gate evaluated before completion. Empty when the run
-	// completed with no gate evaluation.
+	// Gate is the last gate decision before completion. Empty when the run
+	// completed with no gate decision.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is that gate's decision.
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state the gate selected.
 	Target string `json:"target,omitempty"`
-	// CausalEventSeq is the deciding gate.evaluated event's sequence number.
+	// CausalEventSeq is the deciding gate event's sequence number.
 	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
 }
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {
-	Selector       EscalationSelector `json:"selector"`
-	SelectedBranch string             `json:"selectedBranch,omitempty"`
-	RepassCount    int                `json:"repassCount"`
-	RetryCount     int                `json:"retryCount"`
-	TerminalReason string             `json:"terminalReason,omitempty"`
-	CausalEventSeq uint64             `json:"causalEventSeq,omitempty"`
+	Selector       EscalationSelector     `json:"selector"`
+	SelectedBranch string                 `json:"selectedBranch,omitempty"`
+	RepassCount    int                    `json:"repassCount"`
+	RetryCount     int                    `json:"retryCount"`
+	TerminalReason string                 `json:"terminalReason,omitempty"`
+	CausalEventSeq uint64                 `json:"causalEventSeq,omitempty"`
+	Remediation    *RemediationEscalation `json:"remediation,omitempty"`
+}
+
+// RemediationEscalation describes what the PR remediation workflow actually
+// attempted before selecting escalation.
+type RemediationEscalation struct {
+	Outcome         string   `json:"outcome"`
+	Attempted       bool     `json:"attempted"`
+	AttemptedCauses []string `json:"attemptedCauses,omitempty"`
 }
 
 // EscalationSelector identifies the gate or condition responsible.
@@ -220,38 +299,42 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema          string                 `json:"schema"`
-	Seq             uint64                 `json:"seq"`
-	Type            journal.EventType      `json:"type"`
-	Branch          int                    `json:"branch"`
-	Time            time.Time              `json:"time"`
-	KnownSchema     bool                   `json:"knownSchema"`
-	Category        RunEventCategory       `json:"category"`
-	ReplayChapter   bool                   `json:"replayChapter"`
-	Stage           string                 `json:"stage,omitempty"`
-	Attempt         int                    `json:"attempt,omitempty"`
-	AttemptClass    string                 `json:"attemptClass,omitempty"`
-	Gate            string                 `json:"gate,omitempty"`
-	Verdict         string                 `json:"verdict,omitempty"`
-	Target          string                 `json:"target,omitempty"`
-	Escalated       bool                   `json:"escalated,omitempty"`
-	Status          string                 `json:"status,omitempty"`
-	Actor           string                 `json:"actor,omitempty"`
-	WorkflowVersion int                    `json:"workflowVersion,omitempty"`
-	WorkflowDigest  string                 `json:"workflowDigest,omitempty"`
-	Outputs         map[string]any         `json:"outputs,omitempty"`
-	Artifacts       []ArtifactMetadata     `json:"artifacts,omitempty"`
-	Artifact        *ArtifactMetadata      `json:"artifact,omitempty"`
-	Name            string                 `json:"name,omitempty"`
-	ExternalRef     *journal.ExternalRef   `json:"externalRef,omitempty"`
-	Error           *journal.ErrorDetail   `json:"error,omitempty"`
-	Redaction       *journal.RedactionInfo `json:"redaction,omitempty"`
-	Runner          map[string]any         `json:"runner,omitempty"`
-	Workflow        string                 `json:"workflow,omitempty"`
-	RunID           string                 `json:"runId,omitempty"`
-	Reason          string                 `json:"reason,omitempty"`
-	Raw             json.RawMessage        `json:"raw,omitempty"`
-	JournalEvent    *journal.Event         `json:"-"`
+	Schema          string                  `json:"schema"`
+	Seq             uint64                  `json:"seq"`
+	Type            journal.EventType       `json:"type"`
+	Branch          int                     `json:"branch"`
+	Time            time.Time               `json:"time"`
+	KnownSchema     bool                    `json:"knownSchema"`
+	Category        RunEventCategory        `json:"category"`
+	ReplayChapter   bool                    `json:"replayChapter"`
+	Stage           string                  `json:"stage,omitempty"`
+	Attempt         int                     `json:"attempt,omitempty"`
+	AttemptClass    string                  `json:"attemptClass,omitempty"`
+	Gate            string                  `json:"gate,omitempty"`
+	Verdict         string                  `json:"verdict,omitempty"`
+	Target          string                  `json:"target,omitempty"`
+	Escalated       bool                    `json:"escalated,omitempty"`
+	Status          string                  `json:"status,omitempty"`
+	Actor           string                  `json:"actor,omitempty"`
+	WorkflowVersion int                     `json:"workflowVersion,omitempty"`
+	WorkflowDigest  string                  `json:"workflowDigest,omitempty"`
+	Outputs         map[string]any          `json:"outputs,omitempty"`
+	Artifacts       []ArtifactMetadata      `json:"artifacts,omitempty"`
+	Artifact        *ArtifactMetadata       `json:"artifact,omitempty"`
+	Name            string                  `json:"name,omitempty"`
+	ExternalRef     *journal.ExternalRef    `json:"externalRef,omitempty"`
+	Error           *journal.ErrorDetail    `json:"error,omitempty"`
+	Redaction       *journal.RedactionInfo  `json:"redaction,omitempty"`
+	Runner          map[string]any          `json:"runner,omitempty"`
+	Workflow        string                  `json:"workflow,omitempty"`
+	RunID           string                  `json:"runId,omitempty"`
+	Reason          string                  `json:"reason,omitempty"`
+	Parallel        string                  `json:"parallel,omitempty"`
+	BranchName      string                  `json:"branchName,omitempty"`
+	BranchStatus    journal.BranchStatus    `json:"branchStatus,omitempty"`
+	Completeness    []journal.BranchOutcome `json:"completeness,omitempty"`
+	Raw             json.RawMessage         `json:"raw,omitempty"`
+	JournalEvent    *journal.Event          `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -422,8 +505,39 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 	if s.readModelEligible(options) {
 		return s.listRunsFromReadModel(ctx, options, cursor, limit)
 	}
+	// The activity axis is read-model only, and unserved is a REFUSAL rather
+	// than a fallback (#1777).
+	//
+	// The journal-derived paths order by start. Handed OrderByActivity they
+	// would quietly return start-ordered rows — a page that looks correct, is
+	// sorted wrongly, and gives an operator watching an attention list exactly
+	// the answer the feature exists to fix. Sorting the candidates instead would
+	// mean sorting all of them, which is the unbounded shape the read model
+	// removes.
+	//
+	// So say so. A caller that gets this can retry without the axis, or wait for
+	// the projection; both beat being lied to about the order.
+	if options.OrderByActivity {
+		return RunList{}, fmt.Errorf(
+			"%w: ordering by last activity requires the read model (mode %s)",
+			ErrBoundedReadUnavailable, s.ReadMode())
+	}
 	if s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)
+	}
+	// The journal-scanning path is now REACHED DELIBERATELY, not fallen into
+	// (#1933, §11.2).
+	//
+	// It used to be entered silently whenever the indexed sources were absent,
+	// which made "the read path is bounded" a property of one topology rather
+	// than of the service — and gave an operator on the standalone dashboard
+	// O(total history) per request with nothing to indicate it.
+	//
+	// Building and degraded modes refuse instead. A caller that gets this error
+	// can retry, show a progress banner, or opt into the scan explicitly; all of
+	// those beat a request that appears to work and takes minutes.
+	if !s.boundedReadAvailable() {
+		return RunList{}, fmt.Errorf("%w (mode %s)", ErrBoundedReadUnavailable, s.ReadMode())
 	}
 	return s.listRunsScanning(ctx, options, cursor, limit)
 }
@@ -577,6 +691,8 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		journalPopulation = ""
 	}
 	switch {
+	case !options.ShowNoWork && summary.NoWork:
+		return false
 	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
 		return false
 	case options.Workflow != "" && summary.Workflow != options.Workflow:
@@ -746,9 +862,12 @@ func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cu
 // every run's journal (DASH-18). The index chooses WHICH runs to open — bounded
 // by page size, filters, and the keyset cursor — and each returned run's
 // summary is hydrated from its journal so displayed data is always
-// authoritative. Completeness is guaranteed by reconcileIndex, so a run present
-// on disk but absent from the index (migrated/imported/still in flight) is
-// never silently hidden.
+// authoritative. Completeness is guaranteed by the repair sweep
+// (internal/readmodel/repair), not by this function — see the deleted-
+// reconcileIndex note below for why an inline reconcile on the request path
+// was the wrong place to put that guarantee — so a run present on disk but
+// absent from the index (migrated/imported/still in flight) is never silently
+// hidden.
 func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	// No reconcile here — see listLatestWorkflowOutcomesIndexed. A read does not
 	// write.
@@ -962,13 +1081,26 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
+	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
 	return RunDetail{
-		RunSummary:  summary,
-		Graph:       graph,
-		GraphStatus: status,
-		Escalation:  escalation,
-		Outcome:     runOutcome(summary, run.records),
+		RunSummary:        summary,
+		Graph:             graph,
+		GraphStatus:       status,
+		Escalation:        escalation,
+		Outcome:           runOutcome(summary, run.records),
+		Transitions:       runTransitionsFrom(transitions),
+		TransitionsStatus: transitionsStatus,
 	}, nil
+}
+
+// recordEvents unwraps a run's raw-preserving event records into the plain
+// events readmodel.ProjectTransitions folds over.
+func recordEvents(records []journal.EventRecord) []journal.Event {
+	events := make([]journal.Event, len(records))
+	for i, record := range records {
+		events[i] = record.Event
+	}
+	return events
 }
 
 // RunMetadata returns the exact recorded identity and optional checkpoint used
@@ -1379,6 +1511,7 @@ func summarizeRunForStage(
 	var lastActivityAt time.Time
 	currentStage := ""
 	seenStages := make(map[string]struct{})
+	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
 
 	for _, record := range run.records {
@@ -1397,7 +1530,14 @@ func summarizeRunForStage(
 			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
-		case journal.EventRunResumed:
+		case journal.EventRunnerAnnotation:
+			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+				currentStage = queue
+			}
+			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+				currentStage = suggestion
+			}
+		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil
 			currentStage = event.Target
@@ -1407,6 +1547,7 @@ func summarizeRunForStage(
 			if currentStage == event.Stage {
 				currentStage = ""
 			}
+			lastStageStatus[event.Stage] = event.Status
 		case journal.EventGateStarted:
 			currentStage = event.Gate
 		case journal.EventGateEvaluated:
@@ -1424,7 +1565,9 @@ func summarizeRunForStage(
 			phase = journal.RunPhase(event.Status)
 			finished := event.Time
 			finishedAt = &finished
-			currentStage = ""
+			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+				currentStage = ""
+			}
 		}
 	}
 
@@ -1446,6 +1589,16 @@ func summarizeRunForStage(
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
+	// A routine no-work tick is a completed run that touched exactly one
+	// stage, and that stage's own terminal status was no-work — as opposed to
+	// a multi-stage run that hit no-work partway, or a genuinely single-stage
+	// workflow that succeeded.
+	noWork := phase == journal.PhaseCompleted && len(lastStageStatus) == 1
+	if noWork {
+		for _, status := range lastStageStatus {
+			noWork = status == string(apiv1.ResultNoWork)
+		}
+	}
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
@@ -1470,6 +1623,7 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		NoWork:           noWork,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
@@ -1716,6 +1870,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		RepassCount: repasses,
 		RetryCount:  retries,
 	}
+	if remediation := remediationEscalation(records); remediation != nil {
+		cause.Remediation = remediation
+	}
+	remediationReason := remediationEscalationReason(records)
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -1723,11 +1881,15 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
+			if remediationReason != "" {
+				cause.TerminalReason = remediationReason
+			}
 			cause.CausalEventSeq = event.Seq
 			repasses, err := gateRepassCount(records[:i+1], event.Gate)
 			if err != nil {
 				return nil, err
 			}
+
 			cause.RepassCount = repasses
 			return cause, nil
 		}
@@ -1762,8 +1924,56 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	return cause, nil
 }
 
+func remediationEscalation(records []journal.EventRecord) *RemediationEscalation {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		outcome, _ := event.Outputs["escalationOutcome"].(string)
+		if outcome == "" {
+			return nil
+		}
+		attempted, err := strconv.ParseBool(fmt.Sprint(event.Outputs["remediationAttempted"]))
+		if err != nil {
+			return nil
+		}
+		var causes []string
+		for _, cause := range strings.Split(fmt.Sprint(event.Outputs["attemptedCauses"]), ",") {
+			if cause = strings.TrimSpace(cause); cause != "" {
+				causes = append(causes, cause)
+			}
+		}
+		return &RemediationEscalation{Outcome: outcome, Attempted: attempted, AttemptedCauses: causes}
+	}
+	return nil
+}
+
+func remediationEscalationReason(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		reason, _ := event.Outputs["escalationReason"].(string)
+		return strings.TrimSpace(reason)
+	}
+	return ""
+}
+
+func isRemediationCheckpointStage(stage string) bool {
+	switch stage {
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses", "park-infrastructure-failure":
+		return true
+	default:
+		return false
+	}
+}
+
 // runOutcome derives the #851 business-decision axis for a completed run
-// from the last gate evaluated before completion — the same "walk backward
+// from the last gate decision before completion — the same "walk backward
 // for the decisive gate" approach escalationCause uses for the escalated
 // case. Returns nil for a non-completed run.
 func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
@@ -1773,7 +1983,8 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 	records = currentLifecycleRecords(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated {
+		if !event.KnownSchema() ||
+			(event.Type != journal.EventGateEvaluated && event.Type != journal.EventGateOverridden) {
 			continue
 		}
 		return &RunOutcome{
@@ -1789,8 +2000,14 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if event.KnownSchema() && event.Type == journal.EventRunResumed {
+		if !event.KnownSchema() {
+			continue
+		}
+		switch event.Type {
+		case journal.EventRunResumed:
 			return records[i+1:]
+		case journal.EventGateOverridden:
+			return records[i:]
 		}
 	}
 	return records
@@ -1997,6 +2214,10 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Workflow = event.Workflow
 	projected.RunID = event.RunID
 	projected.Reason = event.Reason
+	projected.Parallel = event.Parallel
+	projected.BranchName = event.BranchName
+	projected.BranchStatus = event.BranchStatus
+	projected.Completeness = event.Completeness
 	return projected
 }
 

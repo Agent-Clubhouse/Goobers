@@ -32,16 +32,32 @@ type checkedInTree struct {
 
 var checkedInTrees = []checkedInTree{
 	{
-		path:            "selfhost",
-		sourceTree:      true,
-		strict:          true,
-		allowedWarnings: []string{docsUpdaterInertWarning},
+		path:       "reference-workflows",
+		sourceTree: true,
+		strict:     true,
+		allowedWarnings: []string{
+			docsUpdaterInertWarning,
+			`WARNING SKILL002 gaggles/goobers/goobers/analyst/goober.yaml Goober/analyst: spec.skills declares "tutor-diagnosis", but no skill package directory was found at "gaggles/goobers/skills/tutor-diagnosis" or "skills/tutor-diagnosis"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/config-author/goober.yaml Goober/config-author: spec.skills declares "config-authoring", but no skill package directory was found at "gaggles/goobers/skills/config-authoring" or "skills/config-authoring"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/curator/goober.yaml Goober/curator: spec.skills declares "triage", but no skill package directory was found at "gaggles/goobers/skills/triage" or "skills/triage"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "implement", but no skill package directory was found at "gaggles/goobers/skills/implement" or "skills/implement"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "run-tests", but no skill package directory was found at "gaggles/goobers/skills/run-tests" or "skills/run-tests"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/nominator/goober.yaml Goober/nominator: spec.skills declares "nomination", but no skill package directory was found at "gaggles/goobers/skills/nomination" or "skills/nomination"`,
+			`WARNING SKILL002 gaggles/goobers/goobers/reviewer/goober.yaml Goober/reviewer: spec.skills declares "review", but no skill package directory was found at "gaggles/goobers/skills/review" or "skills/review"`,
+		},
 	},
 	{path: "config-examples"},
 	{path: "examples/ios-simulator"},
 	{path: "internal/instance/starter"},
 	{path: "internal/instance/demo"},
 	{path: "test/fixtures/e2e/walking-skeleton"},
+	// The #687 config-repo PR validation gate's passing self-test fixture
+	// (.github/actions/validate, docs/guides/config-pr-validation-gate.md):
+	// keeps it from silently rotting out of sync with the validator it
+	// exists to demonstrate. Its sibling "invalid" fixture is deliberately
+	// broken and is exercised by TestValidateGateInvalidFixtureFailsClosed
+	// instead, never here.
+	{path: "test/fixtures/validate-gate/valid", sourceTree: true},
 }
 
 type validatorCommand struct {

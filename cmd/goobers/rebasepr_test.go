@@ -19,6 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
+const portalBuildMakeEnv = "GOOBERS_TEST_PORTAL_BUILD_MAKE"
+
 // rebasePRServerState is a small stateful fake GitHub server for rebase-pr's
 // (#363) tests: one PR's label state and durable handoff comments. rebase-pr
 // never lists PRs — its core inputs arrive via InputsFrom, mirroring the real
@@ -151,6 +153,51 @@ func initNonConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 	return origin
 }
 
+func initSharedFoundationPRBranches(t *testing.T, prBranch string) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runGitT(t, work, "add", "README.md")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	const foundationBranch = "goobers/impl/foundation"
+	runGitT(t, work, "checkout", "-b", foundationBranch)
+	if err := os.WriteFile(filepath.Join(work, "foundation.txt"), []byte("shared foundation\n"), 0o644); err != nil {
+		t.Fatalf("write foundation: %v", err)
+	}
+	runGitT(t, work, "add", "foundation.txt")
+	runGitT(t, work, "commit", "-m", "shared foundation")
+	foundationSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+	runGitT(t, work, "push", "origin", foundationBranch)
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, "unique.txt"), []byte("unique PR work\n"), 0o644); err != nil {
+		t.Fatalf("write unique PR work: %v", err)
+	}
+	runGitT(t, work, "add", "unique.txt")
+	runGitT(t, work, "commit", "-m", "unique PR work")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	runGitT(t, work, "merge", "--squash", foundationBranch)
+	runGitT(t, work, "commit", "-m", "land foundation through separate PR")
+	if landedSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD")); landedSHA == foundationSHA {
+		t.Fatalf("squash merge retained foundation SHA %q, want a distinct commit identity", foundationSHA)
+	}
+	runGitT(t, work, "push", "origin", "main")
+	return origin
+}
+
 func initAdjacentAdditionPRBranch(t *testing.T, prBranch string) (origin string) {
 	t.Helper()
 	return initAttributedAdjacentAdditionPRBranch(t, prBranch, "")
@@ -208,6 +255,104 @@ func initAdjacentConflictPRBranch(t *testing.T, prBranch, name, ancestor, incomi
 	runGitT(t, work, "push", "origin", "main")
 
 	return origin
+}
+
+func initPortalDistConflictPRBranch(t *testing.T, prBranch string, sourceConflict bool) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.MkdirAll(filepath.Join(work, "portal", "src"), 0o755); err != nil {
+		t.Fatalf("create portal source directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(work, portalDistPath), 0o755); err != nil {
+		t.Fatalf("create portal bundle directory: %v", err)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("Makefile", "portal-build:\n\trm -rf cmd/goobers/portal-dist\n\tmkdir -p cmd/goobers/portal-dist\n\tprintf '%s+%s\\n' \"$$(cat portal/src/base.txt)\" \"$$(cat portal/src/app.txt)\" > cmd/goobers/portal-dist/index.html\n")
+	write("portal/src/app.txt", "ancestor\n")
+	write("portal/src/base.txt", "ancestor\n")
+	write(portalDistPath+"/index.html", "ancestor\n")
+	runGitT(t, work, "add", ".")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	write("portal/src/app.txt", "from-pr\n")
+	write(portalDistPath+"/index.html", "pr-bundle\n")
+	runGitT(t, work, "commit", "-am", "change portal in PR")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	if sourceConflict {
+		write("portal/src/app.txt", "from-base\n")
+	} else {
+		write("portal/src/base.txt", "from-base\n")
+	}
+	write(portalDistPath+"/index.html", "base-bundle\n")
+	runGitT(t, work, "commit", "-am", "change portal on base")
+	runGitT(t, work, "push", "origin", "main")
+
+	return origin
+}
+
+func installPortalBuildMake(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable for make fixture: %v", err)
+	}
+	dir := t.TempDir()
+	name := "make"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if err := os.Link(executable, filepath.Join(dir, name)); err != nil {
+		t.Fatalf("install make fixture: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(portalBuildMakeEnv, "1")
+}
+
+func runPortalBuildMake() int {
+	if len(os.Args) != 2 || os.Args[1] != "portal-build" {
+		fmt.Fprintf(os.Stderr, "make fixture: args = %q, want [portal-build]\n", os.Args[1:])
+		return 2
+	}
+	base, err := os.ReadFile(filepath.Join("portal", "src", "base.txt"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: read base source: %v\n", err)
+		return 1
+	}
+	app, err := os.ReadFile(filepath.Join("portal", "src", "app.txt"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: read app source: %v\n", err)
+		return 1
+	}
+	if err := os.RemoveAll(portalDistPath); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: remove portal bundle: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(portalDistPath, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: create portal bundle: %v\n", err)
+		return 1
+	}
+	data := fmt.Appendf(nil, "%s+%s\n", strings.TrimSpace(string(base)), strings.TrimSpace(string(app)))
+	if err := os.WriteFile(filepath.Join(portalDistPath, "index.html"), data, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "make fixture: write portal bundle: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // initConflictingPRBranch builds a bare origin where the PR branch and main
@@ -374,6 +519,75 @@ func TestRebasePRCleanNoSubstantiveForcePushesAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false", data)
+	}
+}
+
+func TestRebasePRDropsFoundationLandedThroughSeparatePR(t *testing.T) {
+	const prBranch = "goobers/impl/dependent"
+	origin := initSharedFoundationPRBranches(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	runGitT(t, wt.Path, "config", "rebase.reapplyCherryPicks", "true")
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 61)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "61",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if result["needsAgent"] != "false" || result["conflict"] != "false" {
+		t.Fatalf("rebase-result.json = %#v, want already-landed foundation handled without escalation", result)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	if got := strings.TrimSpace(runGitOutputT(t, verify, "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("unique commit count = %s, want 1 after dropping the shared foundation", got)
+	}
+	if got := strings.TrimSpace(runGitOutputT(t, verify, "log", "--format=%s", "origin/main..HEAD")); got != "unique PR work" {
+		t.Fatalf("unique commits = %q, want only the dependent PR's work", got)
+	}
+	for _, name := range []string{"foundation.txt", "unique.txt"} {
+		if _, err := os.Stat(filepath.Join(verify, name)); err != nil {
+			t.Fatalf("%s missing from rebuilt PR branch: %v", name, err)
+		}
+	}
+}
+
+func TestRebaseFetchHeadArgsFallsBackWhenOptionIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to emulate Git 2.17 help")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "rebase" ] && [ "$2" = "-h" ]; then
+	echo "usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] [<upstream> [<branch>]]"
+	exit 129
+fi
+exec "$GOOBERS_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("GOOBERS_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := rebaseFetchHeadArgs(t.TempDir())
+	want := []string{"rebase", "FETCH_HEAD"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("rebaseFetchHeadArgs() = %q, want %q", got, want)
 	}
 }
 
@@ -976,6 +1190,67 @@ func TestRebasePRResolvesDistinctAdjacentAdditions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) || !strings.Contains(string(data), `"conflict":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false conflict=false", data)
+	}
+}
+
+func TestRebasePRRegeneratesPortalDistConflict(t *testing.T) {
+	const prBranch = "goobers/impl/run-portal-dist"
+	origin := initPortalDistConflictPRBranch(t, prBranch, false)
+	wt := prWorktree(t, origin, prBranch)
+	installPortalBuildMake(t)
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 63)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "63",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "clean rebase") {
+		t.Fatalf("stdout = %q, want regenerated bundle to continue through the clean path", stdout)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	got, err := os.ReadFile(filepath.Join(verify, portalDistPath, "index.html"))
+	if err != nil {
+		t.Fatalf("read regenerated portal bundle: %v", err)
+	}
+	if want := "from-base+from-pr\n"; string(got) != want {
+		t.Fatalf("regenerated portal bundle = %q, want %q", got, want)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want remediation label cleared", labels)
+	}
+}
+
+func TestRebasePRDoesNotRegenerateMixedPortalConflict(t *testing.T) {
+	const prBranch = "goobers/impl/run-mixed-portal-conflict"
+	origin := initPortalDistConflictPRBranch(t, prBranch, true)
+	wt := prWorktree(t, origin, prBranch)
+
+	conflict, locations, _, err := attemptRebase(wt.Path, "main", "")
+	if err != nil {
+		t.Fatalf("attemptRebase() error = %v", err)
+	}
+	if !conflict {
+		t.Fatal("attemptRebase() conflict = false, want mixed source and generated conflict preserved")
+	}
+	if len(locations) != 2 {
+		t.Fatalf("attemptRebase() locations = %+v, want both mixed conflict paths", locations)
+	}
+	if unmerged := strings.TrimSpace(runGitOutputT(t, wt.Path, "diff", "--name-only", "--diff-filter=U")); unmerged != "" {
+		t.Fatalf("unmerged paths = %q, want rebase aborted cleanly", unmerged)
 	}
 }
 

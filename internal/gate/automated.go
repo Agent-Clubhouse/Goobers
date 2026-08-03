@@ -10,8 +10,9 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 )
 
-// InputKeyStatus is the env.Inputs key an automated gate reads the subject
-// stage's status from (runner contract, below).
+// InputKeyStatus and the error keys are the env.Inputs keys an automated gate
+// reads the subject stage's result classification from (runner contract,
+// below).
 //
 // Convention (runner contract): an automated gate evaluates the subject
 // stage's normalized result without ever seeing the stage's ResultEnvelope
@@ -20,6 +21,8 @@ import (
 // subject stage's small, scalar-only signal into env.Inputs:
 //
 //   - env.Inputs[InputKeyStatus] = string(subject.Status)  ("success"/"failure"/"blocked")
+//   - env.Inputs[InputKeyErrorCode] = subject.Error.Code (empty when absent)
+//   - env.Inputs[InputKeyErrorRetryable] = subject.Error.Retryable (false when absent)
 //   - every k/v in subject.Outputs copied into env.Inputs as-is (Outputs are
 //     already documented as "small, named scalar values downstream
 //     stages/gates can consume directly" — api/v1alpha1.ResultEnvelope)
@@ -27,14 +30,19 @@ import (
 // This keeps the checker registry pure (no journal/filesystem access) and
 // keeps the expression surface intentionally minimal: named checks over a flat
 // key/value map, not a general expression language.
-const InputKeyStatus = "status"
+const (
+	InputKeyStatus         = "status"
+	InputKeyErrorCode      = "errorCode"
+	InputKeyErrorRetryable = "errorRetryable"
+)
 
 // Outcome values an automated check returns. The gate's Branches map treats
 // "pass" as the success branch (api/v1alpha1.Gate.Branches doc comment); any
 // other outcome is a caller-defined branch name (conventionally "fail").
 const (
-	OutcomePass = "pass"
-	OutcomeFail = "fail"
+	OutcomePass  = "pass"
+	OutcomeFail  = "fail"
+	OutcomeInfra = "infra"
 )
 
 // OutcomeTimeout is the "ci-status" check's third outcome (#239) — distinct
@@ -48,7 +56,7 @@ const (
 // "timeout" as one of ci-status's producible outcomes, so a ci-status gate
 // missing a "timeout" branch fails Compile outright (GT-002) rather than
 // compiling clean and only failing closed the first time a real poll times
-// out. Every in-tree ci-status gate (acme-web/selfhost/testdata) declares
+// out. Every in-tree ci-status gate (acme-web/reference-workflows/testdata) declares
 // one.
 const OutcomeTimeout = "timeout"
 
@@ -81,6 +89,23 @@ const OutcomeEvicted = "evicted"
 // string the gate's Branches map declares).
 type CheckFunc func(inputs map[string]interface{}, params map[string]string) (outcome string, err error)
 
+// AutomatedInputs flattens the subject result into the scalar input contract
+// shared by every runner.
+func AutomatedInputs(subject apiv1.ResultEnvelope) map[string]interface{} {
+	inputs := make(map[string]interface{}, 3+len(subject.Outputs))
+	inputs[InputKeyStatus] = string(subject.Status)
+	for k, v := range subject.Outputs {
+		inputs[k] = v
+	}
+	inputs[InputKeyErrorCode] = ""
+	inputs[InputKeyErrorRetryable] = false
+	if subject.Error != nil {
+		inputs[InputKeyErrorCode] = subject.Error.Code
+		inputs[InputKeyErrorRetryable] = subject.Error.Retryable
+	}
+	return inputs
+}
+
 // DefaultChecks is the minimal, documented set of automated checks available
 // to a gate via AutomatedGate.Check. Each check's Params contract is
 // documented on its entry below.
@@ -94,6 +119,18 @@ func DefaultChecks() map[string]CheckFunc {
 				want = string(apiv1.ResultSuccess)
 			}
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
+		},
+		// "failure-class": pass for success, infra for a retryable failure,
+		// and fail for every other status. No params.
+		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			status := stringField(inputs, InputKeyStatus)
+			if status == string(apiv1.ResultSuccess) {
+				return OutcomePass, nil
+			}
+			if retryable, _ := inputs[InputKeyErrorRetryable].(bool); status == string(apiv1.ResultFailure) && retryable {
+				return OutcomeInfra, nil
+			}
+			return OutcomeFail, nil
 		},
 		// "output-equals": pass iff Inputs[Params["key"]] stringifies to
 		// Params["equals"]. Both params required.

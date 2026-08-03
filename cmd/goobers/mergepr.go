@@ -43,6 +43,13 @@ const mergeConflictReason = "merge-conflict"
 const (
 	mergeReviewOptOutOutcome = "skipped"
 	mergeReviewOptOutReason  = "pull request is labeled " + noMergeReviewLabel
+	// runAbortedOptOutReason is the refusal merge-pr records for a PR carrying
+	// abortedRunLabel (#2238): the originating implementation run was
+	// cancelled, so this PR must not auto-merge even if pr-select somehow
+	// still selected it (a stale selection, a targeted re-trigger bypassing
+	// pr-select) and even with a green verdict and passing CI — defense in
+	// depth alongside pr-select's own exclusion of the label.
+	runAbortedOptOutReason = "pull request is labeled " + abortedRunLabel
 )
 
 const mergePRHelp = "Usage: goobers merge-pr [path]\n\n" +
@@ -112,6 +119,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	provider := newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	// dispatcher is the capability-checked seam (CONF-1 #2074) for the
+	// landing-surface calls below (CompareCommits/DetectMergePolicy/
+	// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
+	dispatcher := providers.NewDispatcher(provider)
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -174,7 +185,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var mergeErr error
 	var commitErr error
 	var policyErr error
-	var optedOut bool
+	var optedOutReason string
 	lockErr := withFileLock(lockPath, func() error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -186,7 +197,15 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			return nil
 		}
 		if hasAnyLabel(poll.Labels, []string{noMergeReviewLabel}) {
-			optedOut = true
+			optedOutReason = mergeReviewOptOutReason
+			return nil
+		}
+		// #2238: independently refuse a PR whose originating implementation
+		// run was cancelled, even if pr-select's own exclusion of this same
+		// label was somehow bypassed — the final merge primitive must not
+		// rely solely on selection-time filtering.
+		if hasAnyLabel(poll.Labels, []string{abortedRunLabel}) {
+			optedOutReason = runAbortedOptOutReason
 			return nil
 		}
 
@@ -208,7 +227,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			// — the dominant false-invalidation case (any OTHER PR merging
 			// advances base for everyone). Only a movement that actually
 			// intersects this PR's own files still voids it.
-			intersects, cerr := baseMovementIntersectsPR(ctx, provider, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
+			intersects, cerr := baseMovementIntersectsPR(ctx, dispatcher, repo, pullNumber, expectedBaseSHA, poll.BaseSHA)
 			switch {
 			case cerr != nil:
 				// Can't determine whether the movement is disjoint — fail
@@ -278,7 +297,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// serializes on, matching #528's structuredMergeCommitMessage
 		// rationale just above.
 		var policy providers.MergePolicy
-		policy, policyErr = detectMergePolicy(ctx, provider, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
+		policy, policyErr = detectMergePolicy(ctx, dispatcher, l.SchedulerDir(), repo, poll.BaseBranch, stderr)
 		if policyErr != nil {
 			return nil
 		}
@@ -289,7 +308,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 
 		mergeAttempted = true
-		landResult, mergeErr = lander.Land(ctx, provider, mergepolicy.Request{
+		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
 		})
@@ -302,12 +321,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	if pollErr != nil {
 		return failProviderStage(stderr, "poll pull request", pollErr, "merge-result.json")
 	}
-	if optedOut {
-		if err := writeSkippedMergeResult(resultFile, pullNumber, expectedHeadSHA); err != nil {
+	if optedOutReason != "" {
+		if err := writeSkippedMergeResult(resultFile, pullNumber, expectedHeadSHA, optedOutReason); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		pf(stdout, "skipped pr #%s: %s\n", pullNumber, mergeReviewOptOutReason)
+		pf(stdout, "skipped pr #%s: %s\n", pullNumber, optedOutReason)
 		return 0
 	}
 	if len(reasons) > 0 {
@@ -485,7 +504,7 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 // everyone — must not void an otherwise-valid verdict, but a movement that
 // genuinely intersects this PR's own files still must (a valid review
 // against the old base says nothing about a file it never saw change).
-func baseMovementIntersectsPR(ctx context.Context, provider providers.RepoProvider, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
+func baseMovementIntersectsPR(ctx context.Context, provider *providers.Dispatcher, repo providers.RepositoryRef, pullNumber, oldBaseSHA, newBaseSHA string) (bool, error) {
 	prFiles, err := provider.PullRequestFiles(ctx, repo, pullNumber)
 	if err != nil {
 		return false, fmt.Errorf("list PR's own files: %w", err)
@@ -525,10 +544,10 @@ func writeMergeResult(path, selectedNumber, selectedHeadSha string, land mergepo
 	return writeMergeResultFields(path, selectedNumber, selectedHeadSha, string(land.Outcome), land.MergeSHA, reasons, cleanup)
 }
 
-func writeSkippedMergeResult(path, selectedNumber, selectedHeadSha string) error {
+func writeSkippedMergeResult(path, selectedNumber, selectedHeadSha, reason string) error {
 	return writeMergeResultFields(
 		path, selectedNumber, selectedHeadSha, mergeReviewOptOutOutcome, "",
-		[]string{mergeReviewOptOutReason}, nil,
+		[]string{reason}, nil,
 	)
 }
 

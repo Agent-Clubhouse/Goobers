@@ -458,6 +458,7 @@ const (
 	featureEvaluatorAutomatedRetryBackoff FeatureID = "gate.evaluator.automated.retry.backoff"
 	featureEvaluatorAutomatedPoll         FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
 	featureEvaluatorStatusEquals          FeatureID = "gate.evaluator.automated.check.status-equals"
+	featureEvaluatorFailureClass          FeatureID = "gate.evaluator.automated.check.failure-class"
 	featureEvaluatorOutputEquals          FeatureID = "gate.evaluator.automated.check.output-equals"
 	featureEvaluatorOutputNotEquals       FeatureID = "gate.evaluator.automated.check.output-not-equals"
 	featureEvaluatorOutputNumericGTE      FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
@@ -591,6 +592,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureEvaluatorAutomatedRetryBackoff,
 		featureEvaluatorAutomatedPoll,
 		featureEvaluatorStatusEquals,
+		featureEvaluatorFailureClass,
 		featureEvaluatorOutputEquals,
 		featureEvaluatorOutputNotEquals,
 		featureEvaluatorOutputNumericGTE,
@@ -643,13 +645,15 @@ func currentFeatures(sinceVersion string) []Feature {
 // and config-examples model, which must validate without a preview
 // acknowledgement (an earlier placeholder marked *every* field preview, so
 // guided-init tripped VER002 on every standard field, #1196). Only genuinely
-// unproven features stay preview: sparse checkout, accepted but inert on the
-// local runner (#649), and the per-gaggle sandbox posture override, whose
-// enforcement is landing behind the default-off instance opt-in (#1305).
+// unproven features stay preview: the per-gaggle sandbox posture override,
+// whose enforcement is landing behind the default-off instance opt-in
+// (#1305). Sparse checkout (featureGaggleCheckoutSparse) promoted to GA once
+// the local runner started honoring it (#649) — it was preview only because
+// it was "accepted but inert"; declaring it is now a real, opt-in behavior
+// change, exactly the case GA features already cover.
 // Promoting a feature to GA is a one-line removal from this map.
 var previewFeatures = map[FeatureID]struct{}{
-	featureGaggleSandbox:        {},
-	featureGaggleCheckoutSparse: {},
+	featureGaggleSandbox: {},
 	// Stage-qualified inputsFrom (#562) enters preview like every other new DSL
 	// surface. It is only resolvable at DSL versions that postdate it —
 	// workflow.SupportsStageQualifiedInputs gates the runner — so a 1.4
@@ -750,9 +754,7 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	return currentFeatureRegistry.resolve(used.ids())
 }
 
-// addParallelFeatures records the DSL surface a parallel state uses. Every
-// field is preview until the conformance corpus is green, so any workflow that
-// declares a parallel needs the goobers.dev/allow-preview-features opt-in.
+// addParallelFeatures records the GA DSL fields used by a parallel state.
 func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
 	if parallel.FailurePolicy != "" {
 		used.add(featureParallelFailurePolicy)
@@ -942,6 +944,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 
 var automatedCheckFeatures = map[string]FeatureID{
 	"status-equals":      featureEvaluatorStatusEquals,
+	"failure-class":      featureEvaluatorFailureClass,
 	"output-equals":      featureEvaluatorOutputEquals,
 	"output-not-equals":  featureEvaluatorOutputNotEquals,
 	"output-numeric-gte": featureEvaluatorOutputNumericGTE,

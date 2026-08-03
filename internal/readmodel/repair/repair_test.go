@@ -61,7 +61,7 @@ func TestSweepDiscoversAnUnprojectedRun(t *testing.T) {
 	root := t.TempDir()
 	writeRun(t, root, fmt.Sprintf("%032x", 1))
 
-	sweeper := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSweepNeverCreatesALockFile(t *testing.T) {
 	}
 
 	before := countLocks(t, root)
-	sweeper := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 50})
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 50})
 	for i := 0; i < 3; i++ {
 		if err := sweeper.Step(ctx); err != nil {
 			t.Fatalf("step %d: %v", i, err)
@@ -143,7 +143,7 @@ func TestSweepRemovesAProjectedRunWhoseJournalIsGone(t *testing.T) {
 	}
 
 	// Its journal never existed on disk — the operator-rm case.
-	sweeper := New(store, nil, Options{
+	sweeper := New(store, store, nil, Options{
 		RunsDirs: []string{root}, BatchSize: 10,
 		Now: func() time.Time { return startedAt.Add(time.Hour) },
 	})
@@ -191,7 +191,7 @@ func TestSweepSkipsAndTombstonesBelowTheFloor(t *testing.T) {
 		t.Fatalf("set floor: %v", err)
 	}
 
-	sweeper := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestResumeOverridesTheFloor(t *testing.T) {
 		t.Fatalf("set floor: %v", err)
 	}
 
-	sweeper := New(store, markerFor(runID), Options{RunsDirs: []string{root}, BatchSize: 10})
+	sweeper := New(store, store, markerFor(runID), Options{RunsDirs: []string{root}, BatchSize: 10})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sweeper := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion(t *testing.T) {
 			"would never be re-examined")
 	}
 
-	if err := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 10}).Step(ctx); err != nil {
+	if err := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10}).Step(ctx); err != nil {
 		t.Fatalf("step after promotion: %v", err)
 	}
 	if _, ok, _ := store.GetRun(ctx, runID); !ok {
@@ -348,7 +348,7 @@ func TestSweepCostPerStepIsBoundedByBatchSize(t *testing.T) {
 	}
 
 	store := openStore(t)
-	sweeper := New(store, nil, Options{RunsDirs: []string{root}, BatchSize: 25})
+	sweeper := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 25})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestSweepCursorResumesAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sweeper := New(first, nil, Options{RunsDirs: []string{root}, BatchSize: 20})
+	sweeper := New(first, first, nil, Options{RunsDirs: []string{root}, BatchSize: 20})
 	if err := sweeper.Step(ctx); err != nil {
 		t.Fatalf("step: %v", err)
 	}

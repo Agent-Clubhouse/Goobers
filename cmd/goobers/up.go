@@ -48,6 +48,14 @@ var claimRecoverInterval = 5 * time.Minute
 // crossed its configured journal-silence deadline.
 var stalledRunSweepInterval = time.Minute
 
+// worktreeRetentionSweepInterval bounds how often a running daemon re-sweeps
+// crash-orphaned worktrees (Manager.Reap) and configured retention
+// (pruneConfiguredRetention). Both previously ran only once at startup
+// (#2052): a daemon that stayed up for weeks accumulated kept failure
+// worktrees and never reclaimed the disk until its next restart. Var, not
+// const, so tests can shrink it rather than waiting out a real 6 hours.
+var worktreeRetentionSweepInterval = 6 * time.Hour
+
 // delegationSweepInterval bounds how often runUpContext checks for delegated
 // trigger requests (#343, rundelegate.go) from a `goobers run` invocation
 // that found this daemon already holding up.lock. Deliberately much shorter
@@ -187,7 +195,7 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
@@ -199,11 +207,22 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
 	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
+	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
+	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
+	"is always active, and authenticated GitHub push deliveries wake it when\n" +
+	"webhook.secret is configured. Invalid revisions are rejected with the\n" +
+	"last-known-good definitions left running. --watch-config separately watches\n" +
+	"direct edits to the materialized config directory.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
-	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n"
+	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
+	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
+	"forces every list request onto the journal-derived paths for this run,\n" +
+	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of\n" +
+	"serving wrong or incomplete results.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -239,11 +258,12 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
-	watchConfig := fs.Bool("watch-config", false, "experimental: hot-reload config edits without a restart (default off; superseded by the Workflow CD config source, #453)")
+	watchConfig := fs.Bool("watch-config", false, "hot-reload edits to the materialized config directory (Git workflow sources reconcile automatically)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -269,6 +289,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
 		return 1
+	}
+	if warning := windowsLargeRepoEnvironmentWarning(startupConfig, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
 	}
 	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
 	if err != nil {
@@ -364,6 +387,14 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	if *disableReadModelReads {
+		// The design §6.6 rollback, made operator-reachable (#2036):
+		// DisableReadModelReads previously had no caller anywhere, so the
+		// documented "a flag flip, never a deploy" rollback did not exist in
+		// practice. read.db itself is untouched — this only forces every list
+		// request back onto the journal-derived paths for this run.
+		reads.DisableReadModelReads()
+	}
 	// Move the active-run count off the request path (#1741). Six read routes
 	// used to walk every run directory in history and open every journal, per
 	// request — 17.2 s cold on the live instance to answer "2" (design §2.1).
@@ -372,30 +403,29 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	stopActiveSampler := reads.StartActiveRunSampler(0)
 	defer stopActiveSampler()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
-	eventStream, err := httpapi.NewEventStream(l, apiLog)
-	if err != nil {
-		pf(stderr, "error: initialize HTTP event stream: %v\n", err)
-		return 1
-	}
-	defer eventStream.Close()
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
 	// api.tls upgrades the transport (#640/#644).
 	apiAuthorizer := httpapi.AllowAll
-	// The change-feed stream when a read model exists, the filesystem poller
-	// otherwise (#1929). They are not equivalent: the feed is ordered, durable,
-	// and bounded by ACTIVE WORK, because it tails rows the projector wrote in
-	// the same transaction as the facts they describe. The poller stats every
-	// run that has ever existed and holds an in-memory ring keyed by a random
-	// per-process session id, so a client can only resume against the process
-	// that served it.
+	// Live updates come from the change feed, and ONLY from the change feed
+	// (#1929). The filesystem poller is deleted.
 	//
-	// The fallback exists for topologies with no read model; #1933 removes the
-	// divergence and with it the poller.
-	apiHandlerOpts := []httpapi.HandlerOption{httpapi.WithEventStream(eventStream)}
+	// A topology with no read model gets no SSE rather than a second detector.
+	// That is the deliberate trade: the poller discovered change independently
+	// of the projection, with different latency, completeness, and failure
+	// modes, which is why an in-flight run was visible to one and not the other.
+	// Keeping it as a fallback would preserve exactly the split section 8.1
+	// exists to remove.
+	//
+	// A degraded topology already renders as degraded (#1928/#1933), so the
+	// absence is reported rather than silent.
+	var apiHandlerOpts []httpapi.HandlerOption
 	if setup.ReadModel != nil {
-		apiHandlerOpts = []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
+	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
@@ -515,6 +545,26 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stdout, "telemetry pruned run=%q reason=%s\n", result.RunID, result.Reason)
 	}
 
+	// Prune crash-abandoned orphan runs and run-creation staging directories
+	// before anything else touches the runs tree (#2035): a mid-Create crash's
+	// os.RemoveAll cleanup is in-process only, so a `.runs.creating` residue
+	// otherwise sits until an operator happens to run `goobers telemetry
+	// prune-orphans` — the same gap worktree Reap (above) and telemetry
+	// retention (immediately above) already close for their own trees.
+	orphansPruned, err := pruneOrphansAtStartup(l, time.Now())
+	if err != nil {
+		pf(stderr, "error: prune orphan run directories: %v\n", err)
+		return 1
+	}
+	for _, result := range orphansPruned {
+		source := "run"
+		if result.CreationStage {
+			source = "creation-stage"
+		}
+		pf(stdout, "pruned orphan run directory name=%q source=%s path=%q lastModified=%s\n",
+			result.Name, source, result.RunDir, result.LastModified.UTC().Format(time.RFC3339))
+	}
+
 	// Reconcile BEFORE the resume scan (issue #135): it seeds Conditions'
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
@@ -522,8 +572,15 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
 		return daemonstate.Refresh(lockPath, tickAt)
 	}))
+	sourceReconcileWake := make(chan struct{}, 1)
+	wakeSourceReconcile := func(context.Context) {
+		select {
+		case sourceReconcileWake <- struct{}{}:
+		default:
+		}
+	}
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
-	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog)
+	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -542,6 +599,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	maxRunDuration, err := setup.RunConditions.MaxRunDurationDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
@@ -556,6 +618,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
+			maxRunDuration,
 		)
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
@@ -596,6 +659,23 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
 
+	// The reloader is always constructed (not gated behind --watch-config)
+	// because `goobers apply` (#459) needs to run exactly one reload check
+	// on demand regardless of whether continuous watching is enabled — the
+	// flag only decides whether its own ticker loop (wired further below)
+	// runs automatically.
+	reloader := &configReloader{
+		layout:         l,
+		setup:          setup,
+		scheduler:      sched,
+		openPRs:        openPRs,
+		reads:          reads,
+		readModel:      setup.ReadModel,
+		wg:             &wg,
+		appliedDigest:  setup.ConfigDigest,
+		observedDigest: setup.ConfigDigest,
+	}
+
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume). A run whose workflow no longer
@@ -610,6 +690,17 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
+	}
+	// Renew resumed runs' claims immediately rather than waiting up to
+	// claimRecoverInterval for the first periodic tick (#2014): the startup
+	// recovery sweep above already ran BEFORE resume tracked anything, on the
+	// prior process's now possibly-stale leases, so a resumed run's claim
+	// could otherwise sit unrenewed — and so reapable — for most of a sweep
+	// interval right when a restart just made that most likely. Best-effort,
+	// same as the periodic sweep: a renewal failure here does not fail daemon
+	// start, since the claim ledger's own reap is what it would fail open to.
+	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+		pf(stdout, "warning: renew resumed claims: %v\n", err)
 	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
@@ -632,6 +723,45 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	}
 	cancelSweepErrors.report(cancelSweep())
 
+	// #459's daemon-side half: on operator request (`goobers apply`), run
+	// exactly one config-reload check now instead of waiting for
+	// --watch-config's own ticker (or performing one at all if it's off). For
+	// a git-tracked workflowSource, first pull the tracked ref's latest
+	// commit into the config directory — the same validate-or-keep-LKG
+	// contract reloader.pollOnce already enforces for a hand-edited file
+	// applies unchanged to a git-sourced one.
+	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	var sourceReconcileMu sync.Mutex
+	var sourceRevision string
+	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
+		sourceReconcileMu.Lock()
+		defer sourceReconcileMu.Unlock()
+		var resp applyResponse
+		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			if syncErr != nil {
+				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
+				return resp
+			}
+			resp.Revision = revision
+		}
+		applied, oldDigest, newDigest, rejected, reloadErr := reloader.pollOnce(now)
+		resp.Applied = applied
+		resp.OldDigest = oldDigest
+		resp.NewDigest = newDigest
+		resp.Rejected = rejected
+		if reloadErr != nil {
+			resp.Error = reloadErr.Error()
+		} else if resp.Revision != "" {
+			sourceRevision = resp.Revision
+		}
+		return resp
+	}
+	applySweep := func() error {
+		return sweepPendingApplyRequests(ctx, l.SchedulerDir(), reconcileApply, time.Now)
+	}
+	applySweepErrors.report(applySweep())
+
 	// The periodic sweep runs on its own goroutine for the daemon's entire
 	// lifetime, concurrently with the main goroutine's own stdout/stderr
 	// writes (both "daemon started" above and the shutdown messages below) —
@@ -644,6 +774,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	claimTicker := time.NewTicker(claimRecoverInterval)
 	claimTickerDone := make(chan struct{})
 	claimSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_recovery_failed")
+	claimRenewErrors := newSweepErrorReporter(setup.InstanceLog, "claim_renewal_failed")
 	go func() {
 		defer close(claimTickerDone)
 		defer claimTicker.Stop()
@@ -652,6 +783,18 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
+				// Renew before reaping (#2014): both run in the same tick, and a
+				// still-tracked run's lease must be pushed back into the future
+				// before recoverExpiredClaims below checks it against now — doing
+				// it in the other order would let a run this process is still
+				// actively driving get reaped on the exact tick its lease was due
+				// to be renewed, on nothing worse than ordinary ticker jitter.
+				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				if isJournaledClaimsLockTimeout(renewErr) {
+					claimRenewErrors.report(nil)
+				} else {
+					claimRenewErrors.report(renewErr)
+				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
 					claimSweepErrors.report(nil)
@@ -696,7 +839,33 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 				return
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
+				if err == nil {
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+				}
 				telemetryRetentionErrors.report(err)
+			}
+		}
+	}()
+
+	// #2052's fix: Manager.Reap and pruneConfiguredRetention previously ran
+	// only in the synchronous startup block above, so a crash orphan or a
+	// kept failure worktree that appeared after startup sat until the next
+	// restart. This ticker re-runs both on the same never-write-to-stdout
+	// footing as the tickers above (writers are io.Discard here since a
+	// periodic sweep has no interactive caller to report progress to;
+	// failures still reach the instance journal via the error reporter).
+	worktreeRetentionTicker := time.NewTicker(worktreeRetentionSweepInterval)
+	worktreeRetentionTickerDone := make(chan struct{})
+	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
+	go func() {
+		defer close(worktreeRetentionTickerDone)
+		defer worktreeRetentionTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-worktreeRetentionTicker.C:
+				worktreeRetentionErrors.report(sweepWorktreeRetention(ctx, l, setup))
 			}
 		}
 	}()
@@ -743,6 +912,24 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
+	// #459's apply sweep runs on its own ticker for the same reason cancel's
+	// does: a slow reconcile (a remote git fetch) must never delay the
+	// trigger/claim delegation sweeps it shares no ticker with.
+	applyTicker := time.NewTicker(delegationSweepInterval)
+	applyTickerDone := make(chan struct{})
+	go func() {
+		defer close(applyTickerDone)
+		defer applyTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-applyTicker.C:
+				applySweepErrors.report(applySweep())
+			}
+		}
+	}()
+
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})
 	go func() {
@@ -763,24 +950,44 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		}
 	}()
 
-	// Config hot-reload is opt-in. Off by default, `goobers up` keeps the V0
-	// load-once-at-startup behavior; with --watch-config the daemon watches the
-	// config dir and swaps validated edits live. This gate is interim: the
-	// Workflow CD config source (#453) replaces both the flag and this poll loop
-	// with an instance-level workflowSource once that epic lands.
+	// Plain materialized-directory watching remains opt-in. A Git workflow
+	// source reconciles continuously: polling is the availability floor and a
+	// local ref watcher provides low-latency wakeups.
 	configDone := make(chan error, 1)
-	if *watchConfig {
-		reloader := &configReloader{
-			layout:         l,
-			setup:          setup,
-			scheduler:      sched,
-			openPRs:        openPRs,
-			reads:          reads,
-			events:         eventStream,
-			wg:             &wg,
-			appliedDigest:  setup.ConfigDigest,
-			observedDigest: setup.ConfigDigest,
+	configLoopEnabled := *watchConfig
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		configLoopEnabled = true
+		sourceLoop := &configSourceReconciler{
+			source: *source,
+			errors: newSweepErrorReporter(setup.InstanceLog, "config_reconcile_failed"),
+			wake:   sourceReconcileWake,
+			reconcile: func(reconcileCtx context.Context, now time.Time) error {
+				sourceReconcileMu.Lock()
+				defer sourceReconcileMu.Unlock()
+				revision, changed, _, syncErr := instance.SyncGitWorkflowSourceIfChanged(
+					reconcileCtx,
+					root,
+					*source,
+					sourceRevision,
+					setup.SharedRegistry,
+					setup.SecretStores,
+				)
+				if syncErr != nil {
+					return fmt.Errorf("sync workflow source: %w", syncErr)
+				}
+				if !changed {
+					return nil
+				}
+				_, _, _, _, reloadErr := reloader.pollOnce(now)
+				if reloadErr != nil {
+					return reloadErr
+				}
+				sourceRevision = revision
+				return nil
+			},
 		}
+		go func() { configDone <- sourceLoop.Run(ctx) }()
+	} else if *watchConfig {
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
@@ -867,7 +1074,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		runErr = <-schedulerDone
 	}
 	stopDaemon()
-	if *watchConfig && !configWatcherDone {
+	if configLoopEnabled && !configWatcherDone {
 		if reloadErr := <-configDone; reloadErr != nil {
 			configFailed = true
 			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
@@ -906,8 +1113,10 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	<-claimTickerDone
 	<-stalledTickerDone
 	<-telemetryRetentionTickerDone
+	<-worktreeRetentionTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
+	<-applyTickerDone
 	<-supervisorStopDone
 	if heartbeatDone != nil {
 		<-heartbeatDone

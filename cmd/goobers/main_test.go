@@ -320,11 +320,11 @@ spec:
 	}
 }
 
-// TestInitThenSelfhostValidates is issue #28's own acceptance criterion,
+// TestInitThenReferenceWorkflowsValidates is issue #28's own acceptance criterion,
 // literally: `goobers init` + the self-hosting dogfood config ->
 // `goobers validate` passes, with every gaggle/goober/workflow resolving.
-func TestInitThenSelfhostValidates(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "selfhost-instance")
+func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "reference-workflows-instance")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
@@ -337,7 +337,7 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.CopyFS(configDir, os.DirFS("../../selfhost")); err != nil {
+	if err := os.CopyFS(configDir, os.DirFS("../../reference-workflows")); err != nil {
 		t.Fatal(err)
 	}
 	// The blanket copy also pulls in files that aren't config-as-code
@@ -356,6 +356,8 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), instanceYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	createDeclaredSkillPackages(t, root,
+		"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {

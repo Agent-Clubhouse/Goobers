@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,31 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg.ResolveLargeRepoPresets()
+	var out strings.Builder
+	printResolvedLargeRepoPresets(&out, cfg.Repos)
+	for _, want := range []string{
+		"workspace=pinned",
+		"serial=true",
+		"defaultStageTimeout=4h",
+		"stalledRunTimeout=6h",
+		"maxRunDuration=24h",
+		"pathLength=enabled (max 260)",
+		"mirrorRefspec=heads+tags",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("resolved preset output missing %q: %s", want, out.String())
+		}
+	}
+}
 
 func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	type mutation func(t *testing.T, root string)
@@ -80,6 +106,61 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
+// becomes a GitHub Actions ::error/::warning workflow command anchored to its
+// file, written to stderr so it composes cleanly with --json (stdout stays a
+// single parseable JSON document either way).
+func TestValidateGitHubAnnotations(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "foreign")
+	if code, _, stderr := runArgs(t, "init", root); code != 0 {
+		t.Fatalf("init: code=%d stderr=%q", code, stderr)
+	}
+	path := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, path, "  gaggle: example", "  gaggle: ghost")
+
+	t.Run("plain", func(t *testing.T) {
+		code, _, stderr := runArgs(t, "validate", "--github-annotations", root)
+		if code != 1 {
+			t.Fatalf("validate --github-annotations code=%d, want 1; stderr=%q", code, stderr)
+		}
+		want := `::error file=config/gaggles/example/workflows/default-implement.yaml,title=REF007::spec.gaggle names "ghost", but no Gaggle/ghost definition was found`
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing annotation %q:\n%s", want, stderr)
+		}
+	})
+
+	t.Run("composes with --json", func(t *testing.T) {
+		code, stdout, stderr := runArgs(t, "validate", "--json", "--github-annotations", root)
+		if code != 1 {
+			t.Fatalf("code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if !strings.Contains(stderr, "::error file=") {
+			t.Fatalf("stderr missing an annotation:\n%s", stderr)
+		}
+		if strings.Contains(stdout, "::error") || strings.Contains(stdout, "::warning") {
+			t.Fatalf("--json stdout must stay pure JSON, no workflow commands: %s", stdout)
+		}
+		var envelope diagnosticsEnvelope
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("stdout is not valid JSON with annotations enabled: %v\n%s", err, stdout)
+		}
+	})
+
+	t.Run("a valid config never emits an error annotation", func(t *testing.T) {
+		cleanRoot := filepath.Join(t.TempDir(), "clean")
+		if code, _, stderr := runArgs(t, "init", cleanRoot); code != 0 {
+			t.Fatalf("init: code=%d stderr=%q", code, stderr)
+		}
+		code, _, stderr := runArgs(t, "validate", "--github-annotations", cleanRoot)
+		if code != 0 {
+			t.Fatalf("code=%d, want 0; stderr=%q", code, stderr)
+		}
+		if strings.Contains(stderr, "::error") {
+			t.Fatalf("a valid (exit 0) config must never emit an ::error annotation: %s", stderr)
+		}
+	})
 }
 
 func TestValidateCheckRepos(t *testing.T) {
@@ -171,6 +252,34 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 }
 
+func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
+	root := initDemo(t)
+	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `WARNING SKILL002 gaggles/example/goobers/coder/goober.yaml Goober/coder: spec.skills declares "implement"`) {
+		t.Fatalf("validate output omitted missing skill warning:\n%s", stdout)
+	}
+
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate with packages code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SKILL002") {
+		t.Fatalf("validate warned for present skill packages:\n%s", stdout)
+	}
+}
+
 func TestValidateModelFallbackWarnsAndUsesAdvisoryExit(t *testing.T) {
 	root := initDemo(t)
 	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
@@ -242,6 +351,151 @@ func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "provider: github\n    owner: your-org", "provider: ado\n    project: your-project\n    owner: your-org")
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "spec:\n  gaggle: example",
+		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.threads")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"requires provider capability",
+		"pr.review.threads",
+		`"ado"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// siblingSameRepoYAML declares a sibling targeting the exact repo
+// initDeterministicDemo's example gaggle uses (github/your-org/your-repo).
+const siblingSameRepoYAML = `  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:frontend
+`
+
+func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+siblingSameRepoYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		`overlaps declared sibling "Billing team"`,
+		"area:frontend",
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidateNoWarningOnDisjointSiblingLabels(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+
+			`  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned on disjoint sibling labels:\n%s", stdout)
+	}
+}
+
+func TestValidateNoWarningOnSiblingDifferentRepo(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+
+			`  requireLabels:
+    - area:frontend
+  siblings:
+    - project:
+        provider: github
+        owner: some-other-org
+        name: unrelated-repo
+      label: Unrelated team
+      requireLabels:
+        - area:frontend
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned on a sibling targeting a different repo:\n%s", stdout)
+	}
+}
+
+func TestValidateWorkflowOverrideChangesSiblingOverlapScope(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		"  isolation:\n    namespace: gaggle-example\n"+siblingSameRepoYAML)
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, "  start: local-ci\n  tasks:\n    - name: local-ci\n",
+		"  start: claim-work\n  tasks:\n"+
+			"    - name: claim-work\n"+
+			"      type: deterministic\n"+
+			"      goal: claim work\n"+
+			"      run:\n"+
+			"        command: [\"goobers\", \"backlog-query\"]\n"+
+			"      capabilities: [\"github:issues:write\"]\n"+
+			"      inputs:\n"+
+			"        requireLabels: \"goobers:ready,area:special\"\n"+
+			"      next: local-ci\n"+
+			"    - name: local-ci\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	// The task's own requireLabels ("goobers:ready,area:special") fully
+	// replaces the gaggle default ("area:frontend") for this workflow, so it
+	// no longer overlaps the sibling's declared "area:frontend" — proving
+	// the override, not the gaggle default, drove the comparison.
+	if strings.Contains(stdout, "SIB001") {
+		t.Fatalf("validate output unexpectedly warned despite the workflow's own requireLabels override:\n%s", stdout)
 	}
 }
 

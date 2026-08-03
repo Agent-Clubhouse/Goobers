@@ -63,6 +63,7 @@ const LIFT_BODY: Record<GraphNodeKind, number> = {
   deterministic: 0.5,
   agentic: 0.72,
   gate: 0.4,
+  parallel: 0.56,
 };
 const LIFT_BELT = 0.13;
 const LIFT_DOCK = 0.26;

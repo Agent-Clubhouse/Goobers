@@ -26,16 +26,41 @@ const (
 // enough state for Manager.Reap to tell a live run apart from one whose
 // owning process died mid-stage.
 type marker struct {
-	RunID          string    `json:"run_id"`
-	OwnerRunID     string    `json:"owner_run_id,omitempty"`
-	Branch         string    `json:"branch,omitempty"`
-	StartRef       string    `json:"start_ref,omitempty"`
-	AssetPathGuard bool      `json:"asset_path_guard,omitempty"`
-	PID            int       `json:"pid"`
-	CreatedAt      time.Time `json:"created_at"`
-	RetainedAt     time.Time `json:"retained_at,omitempty"`
-	Status         status    `json:"status"`
-	SizeBytes      *int64    `json:"size_bytes,omitempty"`
+	RunID          string `json:"run_id"`
+	OwnerRunID     string `json:"owner_run_id,omitempty"`
+	Directory      string `json:"directory,omitempty"`
+	Branch         string `json:"branch,omitempty"`
+	StartRef       string `json:"start_ref,omitempty"`
+	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
+	PID            int    `json:"pid"`
+	// PIDStartedAt is PID's own OS-reported start time at marker-creation
+	// time (#2052), best-effort — empty when proc.StartTime couldn't
+	// determine it (unsupported platform/kernel, or a transient read
+	// failure). Reap compares it against a live re-query of the same PID to
+	// tell an alive-but-reused PID apart from the process that actually
+	// wrote this marker: a real process's start time never changes, so a
+	// mismatch unambiguously means the PID now names someone else. Zero
+	// disables the check for that marker, falling back to the pre-#2052
+	// PID-only liveness probe.
+	PIDStartedAt time.Time `json:"pid_started_at,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	RetainedAt   time.Time `json:"retained_at,omitempty"`
+	Status       status    `json:"status"`
+	SizeBytes    *int64    `json:"size_bytes,omitempty"`
+}
+
+func (m marker) directoryName() (string, error) {
+	// Markers written before directory hashing used the full worktree ID.
+	if m.Directory == "" {
+		return m.RunID, nil
+	}
+	if !validRunID(m.Directory) {
+		return "", fmt.Errorf("worktree: marker directory %q must be a single path segment", m.Directory)
+	}
+	if expected := worktreeDirectoryName(m.RunID); m.Directory != expected {
+		return "", fmt.Errorf("worktree: marker directory %q does not match run ID hash %q", m.Directory, expected)
+	}
+	return m.Directory, nil
 }
 
 func (m marker) retainedAt() time.Time {

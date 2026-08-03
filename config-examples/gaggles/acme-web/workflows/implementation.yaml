@@ -8,7 +8,7 @@ spec:
   displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
   # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
   # goobers:ready issue, implement it in a worktree, pass it through a
-  # reviewer gate and a local `make ci`-style gate, open a PR, then poll CI
+  # reviewer gate and a local CI gate, open a PR, then poll CI
   # with a bounded repass loop back to implementation on failure. When this
   # closes, the core loop exists: feed issues in, PRs come out.
   triggers:
@@ -99,7 +99,7 @@ spec:
         acceptance criteria, plan, implement, verify with fast, targeted
         tests for what you changed, and commit to the run's branch (push is a
         separate deterministic stage — see push-branch below). Do NOT run the
-        full `make ci` / `go test -race ./...` suite in-session — the
+        full `npm run ci` suite in-session — the
         deterministic local-ci stage below owns that authoritatively; running
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
@@ -151,11 +151,12 @@ spec:
       onTimeout: salvage
       next: review
 
-    # `make ci`-equivalent, run on the implementation branch after syncing base.
-    # This gaggle declares `ciCommand: ["npm", "run", "ci"]` (gaggle.yaml), so at
-    # runtime the deterministic local-ci stage runs that suite instead of the
-    # command declared here (MGV-1/#1009) — this declaration is the fallback for
-    # a gaggle that declares no ciCommand.
+    # The local CI-equivalent gate, run on the implementation branch after
+    # syncing base. This gaggle declares `ciCommand: ["npm", "run", "ci"]`
+    # (gaggle.yaml), so at runtime the deterministic local-ci stage runs that
+    # suite instead of the Go-default command declared here (MGV-1/#1009) —
+    # this declaration is the fallback for a gaggle that declares no
+    # ciCommand.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
@@ -232,7 +233,7 @@ spec:
         # flatten every upstream Output automatically.
         prNumber: prNumber
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       expectedOutputs:
         - ciStatus
       next: ci-gate
@@ -264,7 +265,13 @@ spec:
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
-        status: "needs-human"
+        # #2028: every route into this stage (repass-budget exhaustion,
+        # identical-diff loop, an infra/executor failure, a CI-poll timeout)
+        # is a mechanical failure someone needs to act on, not a policy
+        # question — so it parks goobers:needs-remediation, not
+        # goobers:needs-human. A genuine policy decision (the reviewer's
+        # explicit "fail" verdict) parks through park-needs-human instead.
+        status: "needs-remediation"
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
@@ -315,17 +322,16 @@ spec:
         fail: park-needs-human
         escalate: park-escalated
 
-    # local-ci's ResultEnvelope.Status is flattened into this gate's
-    # Inputs[status] by the runner (internal/gate's documented
-    # runner-contract convention); "success" is status-equals' default
-    # expected value, so no params are needed.
+    # Retryable executor/infrastructure failures are not actionable by the
+    # implementer and park with a distinct gate outcome.
     - name: local-gate
       evaluator: automated
       automated:
-        check: status-equals
+        check: failure-class
       branches:
         pass: push-branch
         fail: implement
+        infra: park-escalated
         escalate: park-escalated
 
     # #947: open-pr re-checks the claimed issue's state immediately before
@@ -362,12 +368,13 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it escalates for a human decision
+        # didn't finish in time — so it parks for remediation/investigation
         # instead of spending an agentic repass re-implementing a change
         # that was never actually reviewed as failing.
         #
         # Via park-escalated, NOT straight to "@escalate" (#929): both reach
         # the same terminal phase, but routing at the terminal state directly
-        # skips the stage that releases the issue's claim and applies
-        # goobers:needs-human, orphaning it silently.
+        # skips the stage that releases the issue's claim and applies the
+        # park label (#2028: goobers:needs-remediation here), orphaning it
+        # silently.
         timeout: park-escalated

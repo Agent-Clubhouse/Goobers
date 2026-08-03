@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -177,6 +180,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
 		return nil, err
 	}
+	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
+	// capability its gaggle's connected provider does not declare — a
+	// provider's declared capabilities can't change without a code deploy, so
+	// unlike a missing runner capability this can never self-heal at runtime;
+	// catch it here rather than at the first ErrUnsupported mid-run.
+	if err := instance.CheckProviderCapabilityRequirements(set); err != nil {
+		return nil, err
+	}
 	gaggles := configuredGaggleNames(set)
 	runtimeMigration, err := l.MigrateLegacyRuntimeWithReport(gaggles)
 	if err != nil {
@@ -241,69 +252,89 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return nil, err
 		}
-		// Construct read.db alongside the existing store (design §6.6 step 1).
-		// Nothing reads it yet: the transition is deliberately additive so that
-		// rollback at this stage is deleting a file. The projector, the change
-		// feed, and the cutover flag land in later slices.
-		//
-		// A failure here does NOT fail daemon start. The read model is derived and
-		// not yet load-bearing, so refusing to start over a store nothing reads
-		// would be an outage caused by an optimization.
-		// A failure here must NOT fail daemon start. Nothing reads read.db yet
-		// (§6.6 step 1), so refusing to start over a store no request touches
-		// would be an outage caused by an optimization — and the daemon's own
-		// tests caught exactly that when an earlier version returned an error.
-		//
-		// The state read uses Background rather than the setup context for the
-		// same reason Open's migration does: it is a startup smoke check, not
-		// request-scoped work, and a caller whose context is already done must
-		// not turn "the store is fine" into "the daemon cannot start".
-		// Discard any half-built epoch left by a rebuild that was killed
-		// mid-flight (#1925, §6.5). The change-retention pin must release on
-		// EVERY terminal outcome — success, abort, discard, and an orphan found
-		// at startup. Without this last case an interrupted rebuild blocks change
-		// pruning indefinitely and the feed grows without bound for a reason
-		// nobody is looking at.
-		if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
-		} else if discarded > 0 {
-			fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
-		}
-		if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
-		} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
-			// Reading the state back turns "the file opened" into "the schema is
-			// at the version this build expects and the store has an epoch",
-			// which is the difference between finding a broken store now and
-			// finding it on the first read after the projector lands.
-			fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
-			_ = readStore.Close()
-		} else {
-			readModelEpoch = state.Epoch
-			readModel = readStore
-			// §6.6 step 2: build it by rebuild-from-journals on first start.
-			// Only when EMPTY — a populated store is kept and updated
-			// incrementally by the writer seam, because rebuilding on every start
-			// would make daemon startup pay ~51 s at 1x for data it already has.
-			if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
-			}
+	}
 
-			// The projector (#1923). Opening intake and starting the commit loop
-			// is what inverts the coupling: from here the writer records a
-			// watermark and forgets, and this owns discovery and application.
-			//
-			// Like the read model itself, a failure here must not fail daemon
-			// start. Without a projector the read model simply stops advancing,
-			// and the journal-derived paths still answer every request — a
-			// degraded read model is not an outage, but refusing to start would
-			// be.
-			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
-			} else {
-				watermarks = intakeStore
-				stopProjector = startProjector(ctx, readStore, intakeStore, l)
-			}
+	// Construct read.db alongside the existing store (design §6.6 step 1).
+	// Nothing reads it yet: the transition is deliberately additive so that
+	// rollback at this stage is deleting a file. The projector, the change
+	// feed, and the cutover flag land in later slices.
+	//
+	// A failure here does NOT fail daemon start. The read model is derived and
+	// not yet load-bearing, so refusing to start over a store nothing reads
+	// would be an outage caused by an optimization.
+	// A failure here must NOT fail daemon start. Nothing reads read.db yet
+	// (§6.6 step 1), so refusing to start over a store no request touches
+	// would be an outage caused by an optimization — and the daemon's own
+	// tests caught exactly that when an earlier version returned an error.
+	//
+	// The state read uses Background rather than the setup context for the
+	// same reason Open's migration does: it is a startup smoke check, not
+	// request-scoped work, and a caller whose context is already done must
+	// not turn "the store is fine" into "the daemon cannot start".
+	// Discard any half-built epoch left by a rebuild that was killed
+	// mid-flight (#1925, §6.5). The change-retention pin must release on
+	// EVERY terminal outcome — success, abort, discard, and an orphan found
+	// at startup. Without this last case an interrupted rebuild blocks change
+	// pruning indefinitely and the feed grows without bound for a reason
+	// nobody is looking at.
+	//
+	// Deliberately NOT gated on cfg.TelemetryEnabled() (#2036): read.db answers
+	// the portal's run listing, a core feature independent of telemetry, so
+	// telemetry.enabled: false must not silently disable it too. Only the
+	// measurement population filters below need rollupDB, and that dependency
+	// is already an explicit nil check, not this block's gate.
+	if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
+	} else if discarded > 0 {
+		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
+	}
+	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
+	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
+		// Reading the state back turns "the file opened" into "the schema is
+		// at the version this build expects and the store has an epoch",
+		// which is the difference between finding a broken store now and
+		// finding it on the first read after the projector lands.
+		fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
+		_ = readStore.Close()
+	} else {
+		readModelEpoch = state.Epoch
+		readModel = readStore
+		// Measurement flags (#1782). The four population filters are derived
+		// from the telemetry rollup, which no journal event carries, so the
+		// read model needs a source for them or `population=` can only ever
+		// match nothing.
+		//
+		// Attached before the first projection rather than after: a run
+		// projected without a source has its flags cleared, and nothing later
+		// re-projects it. A nil rollupDB detaches, which is correct for a
+		// telemetry-disabled instance -- there, the population filters have no
+		// data to be right about.
+		if rollupDB != nil {
+			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
+		}
+		// §6.6 step 2: build it by rebuild-from-journals on first start.
+		// Only when EMPTY — a populated store is kept and updated
+		// incrementally by the writer seam, because rebuilding on every start
+		// would make daemon startup pay ~51 s at 1x for data it already has.
+		if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
+		}
+
+		// The projector (#1923). Opening intake and starting the commit loop
+		// is what inverts the coupling: from here the writer records a
+		// watermark and forgets, and this owns discovery and application.
+		//
+		// Like the read model itself, a failure here must not fail daemon
+		// start. Without a projector the read model simply stops advancing,
+		// and the journal-derived paths still answer every request — a
+		// degraded read model is not an outage, but refusing to start would
+		// be.
+		if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+		} else {
+			watermarks = intakeStore
+			stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
 		}
 	}
 
@@ -472,6 +503,27 @@ func claimProvidersByGaggle(set *instance.ConfigSet) map[string]apiv1.Provider {
 	return providers
 }
 
+type workcopyRootClaim struct {
+	gaggle    string
+	alternate bool
+}
+
+func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string, alternate bool) error {
+	path, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
+	}
+	key := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	if other, exists := claims[key]; exists && other.gaggle != gaggle && (alternate || other.alternate) {
+		return fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other.gaggle, gaggle, path)
+	}
+	claims[key] = workcopyRootClaim{gaggle: gaggle, alternate: alternate}
+	return nil
+}
+
 func buildSchedulerDefinitions(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -517,24 +569,44 @@ func buildSchedulerDefinitions(
 	}
 	branchNamespaces := branchNamespacesByGaggle(set)
 	selfIdentities := selfIdentitiesByGaggle(cfg, set)
+	requireLabelsDefaults := requireLabelsByGaggle(set)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
 	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
+	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
+	workcopyRoots := make(map[string]workcopyRootClaim, len(set.Gaggles))
 	for i := range set.Gaggles {
-		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
-		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
+		gaggle := &set.Gaggles[i]
+		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
+		gaggleAdditionalRepos[gaggle.Name] = gaggle.Spec.AdditionalRepos
+		scoped, layoutErr := instance.EffectiveWorkcopiesLayout(l.ForGaggle(gaggle.Name), cfg, gaggle)
+		if layoutErr != nil {
+			return nil, fmt.Errorf("gaggle %s: %w", gaggle.Name, layoutErr)
+		}
+		managerRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			managerRoot = scoped.WorkcopiesBaseDir()
+		}
+		alternateRoot := cfg.Workcopies != nil && cfg.Workcopies.Root != ""
+		if gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+			alternateRoot = true
+		}
+		if err := claimWorkcopyRoot(workcopyRoots, gaggle.Name, managerRoot, alternateRoot); err != nil {
+			return nil, err
+		}
+		workcopyLayouts[gaggle.Name] = scoped
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
-		scoped := l.ForGaggle(gaggle)
+		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle],
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
 			return nil, err
@@ -619,8 +691,12 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		instanceControls := cfg.RunConditions.RunControls()
+		if repo, ok := configuredRepoForProject(cfg, repoRefs[identity]); ok {
+			instanceControls = repo.EffectiveRunControls(instanceControls)
+		}
 		controls, err := runcontrol.Resolve(
-			cfg.RunConditions.RunControls(),
+			instanceControls,
 			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
 			wf.Spec.RunControls,
 		)
@@ -711,6 +787,8 @@ func buildRetainedLegacyRunner(
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
 		instance.EffectiveSelfIdentity(cfg, nil),
+		// Same reasoning: no gaggle to consult for a RequireLabels default.
+		"",
 	)
 }
 
@@ -748,14 +826,16 @@ func buildRuntimeRunner(
 	stores credentials.StoreResolver,
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
+	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, error) {
 	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture,
+		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture, providerQuota,
 	)
 	if err != nil {
 		return nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
@@ -1006,6 +1086,12 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					if finalizeErr != nil {
 						return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
 					}
+					// #2190: a run that resumed here and was already terminal
+					// took a different path than a normal terminal run's
+					// ingestRunTelemetry call below (line ~1080) — it never
+					// recorded its intake watermark, so the read model never
+					// discovered it advanced.
+					recordRunIntake(watermarks, runLayout, id.RunID, log)
 					release(id.RunID, id.Workflow)
 					continue // terminal: nothing to resume
 				}

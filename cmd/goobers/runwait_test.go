@@ -122,7 +122,7 @@ func TestWaitForRunTerminalReportsTransitionsPauseAndHeartbeat(t *testing.T) {
 		t.Errorf("wall-clock heartbeat must not claim stage health:\n%s", output)
 	}
 
-	time.Sleep(3 * runWaitHeartbeatInterval)
+	time.Sleep(3 * runWaitHeartbeatInterval) // Intentional quiet period proves progress stops after terminal state.
 	if after := progress.String(); after != output {
 		t.Errorf("progress continued after terminal state:\nbefore=%q\nafter=%q", output, after)
 	}
@@ -195,7 +195,7 @@ func waitForProgress(t *testing.T, progress *synchronizedBuffer, want string) {
 		if strings.Contains(progress.String(), want) {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the synchronized progress buffer.
 	}
 	t.Fatalf("progress did not contain %q within one second: %q", want, progress.String())
 }

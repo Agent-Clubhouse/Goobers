@@ -20,7 +20,7 @@ in `internal/executor/` or `cmd/goobers/runnerwiring.go` hardcodes `make`/`go`/a
 The Go bias lives in exactly three places, none of them the executor:
 
 1. **The CI command is workflow-YAML config** — each gaggle's `implementation.yaml` literally
-   declares `command: ["make", "ci"]` (`selfhost/gaggles/goobers/workflows/implementation.yaml:130`,
+   declares `command: ["make", "ci"]` (`reference-workflows/gaggles/goobers/workflows/implementation.yaml:130`,
    `config-examples/gaggles/acme-web/workflows/implementation.yaml:98`). The real "hardcode" is a
    string in config, and `GaggleSpec` has no way to vary it (`api/v1alpha1/gaggle_types.go:9`).
 2. **The env allowlist is Go-only** — `internal/procenv/procenv.go:27-36` is default-deny and

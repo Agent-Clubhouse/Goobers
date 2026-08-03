@@ -32,6 +32,7 @@ type NormativeEvent struct {
 	AttemptClass        AttemptClass
 	Actor               string
 	InstructionAddendum string
+	Rationale           string
 	Gate                string
 	Verdict             string
 	Target              string
@@ -101,7 +102,7 @@ func projectNormative(e Event) NormativeEvent {
 	ne := NormativeEvent{
 		Schema: e.Schema, Type: e.Type, Branch: e.Branch, Stage: e.Stage,
 		Attempt: e.Attempt, AttemptClass: e.AttemptClass,
-		Actor: e.Actor, InstructionAddendum: e.InstructionAddendum,
+		Actor: e.Actor, InstructionAddendum: e.InstructionAddendum, Rationale: e.Rationale,
 		Gate: e.Gate, Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
@@ -219,9 +220,9 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|rationale=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
-		ne.Actor, ne.InstructionAddendum, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
+		ne.Actor, ne.InstructionAddendum, ne.Rationale, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
 		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs,

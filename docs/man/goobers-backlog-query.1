@@ -6,7 +6,7 @@ goobers backlog-query \- query/claim one eligible backlog item (a workflow stage
 \fBgoobers backlog-query\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -18,7 +18,9 @@ explicitly. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
-a plain list (no --claim) does not require it.
+a plain list (no --claim) does not require it. --read-only also bypasses
+claim locks, blocked-record reconciliation, scan cursors, and read caches,
+and uses only the github:issues:read capability.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A
@@ -56,6 +58,15 @@ re-sweep uses only leftover capacity, no more often than resweepInterval
 (default 24h), and rotates within selectionPriority tiers. Ready items
 already in implementation/review are emitted as read-only context and are
 never claimed.
+
+respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the
+assignee field is ignored entirely, exactly as today). Once true,
+assignedTo selects the mode: a real identity (either a literal login, or
+left undeclared so the runner's configured self identity fills it in at
+run time) makes only items assigned to that identity eligible — assigned
+to anyone else, or unassigned, is excluded. assignedTo declared with no
+value is the null/unassigned-only mode: only items with no assignee at
+all are eligible.
 
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
 (--release), 1 = business error (no eligible/claimable item, missing

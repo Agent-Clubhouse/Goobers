@@ -377,8 +377,9 @@ describe("plant layout honesty", () => {
 
   it("keeps an idle plant visible instead of blanking the hall", async () => {
     window.location.hash = "#/factory?layout=plant";
-    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    render(<App client={new IdlePlantClient(populatedDaemonFixtures())} />);
 
+    expect(await screen.findByText("Plant ready. No active runs are on the floor.")).toBeVisible();
     const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
     expect(
       within(plant).getAllByRole("button", { name: /^Stage / }).length,
@@ -546,19 +547,29 @@ describe("plant layout presentation contracts", () => {
     expect(plantSection).toContain("steps(1, end) infinite");
   });
 
-  it("declares scroll and narrow-width behaviour for the plant", () => {
-    const plantSection = portalStyles.slice(
-      portalStyles.indexOf(".factory-plant {"),
-      portalStyles.indexOf(".factory-plant-scene {"),
-    );
-    expect(plantSection).toContain("overflow: auto");
-    expect(plantSection).toContain("overscroll-behavior: contain");
+  it("fits the plant in a clipped workspace camera instead of nesting scrollbars", async () => {
+    const user = userEvent.setup();
+    window.location.hash = "#/factory?layout=plant";
+    render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
 
-    const responsive = portalStyles.slice(
-      portalStyles.indexOf("@media (max-width: 1100px)"),
-      portalStyles.indexOf("@media (max-width: 720px)"),
+    const viewport = await screen.findByLabelText("Factory plant viewport");
+    expect(viewport).toHaveAttribute("data-camera", "fit");
+    expect(within(viewport).getByRole("button", { name: "Fit all" })).toBeVisible();
+    expect(within(viewport).getByRole("button", { name: "Zoom in" })).toBeVisible();
+    expect(within(viewport).getByRole("button", { name: "Zoom out" })).toBeVisible();
+
+    await user.click(within(viewport).getByRole("button", { name: "Zoom in" }));
+    expect(viewport).toHaveAttribute("data-camera", "manual");
+    await user.click(within(viewport).getByRole("button", { name: "Fit all" }));
+    expect(viewport).toHaveAttribute("data-camera", "fit");
+
+    const viewportBlock = portalStyles.slice(
+      portalStyles.indexOf(".factory-viewport {"),
+      portalStyles.indexOf(".factory-viewport[data-dragging"),
     );
-    expect(responsive).toContain(".factory-plant {");
+    expect(viewportBlock).toContain("overflow: hidden");
+    expect(portalStyles).toContain(".page-content-workspace");
+    expect(portalStyles).toContain("max-width: none");
   });
 
   it("draws keyboard focus on the inner machine and crate silhouettes", () => {
@@ -619,6 +630,18 @@ describe("plant layout presentation contracts", () => {
     expect(plantSection).not.toMatch(/#[0-9a-fA-F]{6}\b/);
   });
 });
+
+class IdlePlantClient extends FixtureDaemonClient {
+  override listRuns(
+    request?: RunListOptions,
+    options?: RequestOptions,
+  ): Promise<RunList> {
+    if (request?.phase === "running") {
+      return Promise.resolve({ runs: [] });
+    }
+    return super.listRuns(request, options);
+  }
+}
 
 class UnreadSignalClient extends FixtureDaemonClient {
   constructor(

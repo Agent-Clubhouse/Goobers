@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -33,6 +34,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordArtifact: %v", err)
 	}
+	// A real span.recorded event with DataSchema populated (#2042): the
+	// harness executor defaults every span to telemetry.GenAIEventSchema
+	// ("goobers.dev/telemetry/genai-event/v1" — not imported here to avoid
+	// journal<->telemetry, which already imports journal) whenever the
+	// adapter leaves TranscriptSchema empty, so this is the common case,
+	// not an edge case — the schema must accept it.
+	if _, err := run.RecordSpanWithSchema("impl", "transcript", "goobers.dev/telemetry/genai-event/v1", []byte(`{"role":"assistant"}`)); err != nil {
+		t.Fatalf("RecordSpanWithSchema: %v", err)
+	}
 	// Exercise a representative spread of event shapes.
 	for _, ev := range []Event{
 		{Type: EventStageStarted, Stage: "impl", Attempt: 1},
@@ -54,6 +64,11 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventGateStarted, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
 		{Type: EventGatePaused, Gate: "approval"},
 		{Type: EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated", Escalated: true},
+		{
+			Type: EventGateOverridden, Gate: "review", Verdict: "pass",
+			Actor: "operator@example.test", Rationale: "Reviewed the nondeterministic finding.", Status: string(PhaseEscalated),
+			Target: "@complete", WorkflowVersion: testIdentity().WorkflowVersion, WorkflowDigest: testIdentity().WorkflowDigest,
+		},
 		{
 			Type: EventRunResumed, Status: string(PhaseEscalated), Target: "impl",
 			Actor: "operator@example.test", WorkflowVersion: testIdentity().WorkflowVersion,
@@ -127,11 +142,89 @@ func TestSchemaRejectsMalformedEvent(t *testing.T) {
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"not.a.real.type"}`),
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z"}`), // missing type
 		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"artifact.recorded","ref":{"path":"x","digest":"notasha","size":1}}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","target":"@complete","actor":"operator","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","actor":"operator","rationale":"manual inspection","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		[]byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"branch":0,"time":"2026-07-13T05:00:00Z","type":"gate.overridden","gate":"review","verdict":"pass","target":"","actor":"operator","rationale":"manual inspection","status":"escalated","workflowVersion":1,"workflowDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 	for i, b := range bad {
 		if err := v.ValidateJSON("journal-event.schema.json", b); err == nil {
 			t.Errorf("case %d: schema accepted malformed event: %s", i, b)
 		}
+	}
+}
+
+func TestMarshalEventRejectsGateOverrideWithoutTarget(t *testing.T) {
+	if _, err := marshalEvent(Event{Type: EventGateOverridden}); err == nil {
+		t.Fatal("marshalEvent accepted gate override without target")
+	}
+}
+
+// TestIdentityRefusesUnknownSchema pins #2054: run.yaml is written once at
+// Create and never migrated in place, so a reader has no way to safely
+// reinterpret a shape it does not own. Before this fix, Identity() bare-
+// unmarshaled any schema version — a future run/v2 reshape would silently
+// zero-value fields this build doesn't recognize rather than refusing, the
+// same class of bug the event stream and CLI envelope already guard against.
+func TestIdentityRefusesUnknownSchema(t *testing.T) {
+	run, root := newRun(t)
+	dir := filepath.Join(root, testIdentity().RunID)
+	_ = run.Close()
+
+	runYAMLPath := filepath.Join(dir, fileRunYAML)
+	b, err := os.ReadFile(runYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(b, []byte("schema: "+RunSchema), []byte("schema: goobers.dev/journal/run/v2"), 1)
+	if bytes.Equal(tampered, b) {
+		t.Fatal("test setup: schema line not found in run.yaml")
+	}
+	if err := os.WriteFile(runYAMLPath, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.Identity(); err == nil {
+		t.Fatal("Identity() accepted an unknown schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unknown schema") {
+		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	}
+}
+
+// TestStateRefusesUnknownSchema mirrors TestIdentityRefusesUnknownSchema for
+// state.json (#2054).
+func TestStateRefusesUnknownSchema(t *testing.T) {
+	run, root := newRun(t)
+	dir := filepath.Join(root, testIdentity().RunID)
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "impl", Attempt: 1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = run.Close()
+
+	statePath := filepath.Join(dir, fileState)
+	b, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(b, []byte(`"schema": "`+StateSchema+`"`), []byte(`"schema": "goobers.dev/journal/state/v2"`), 1)
+	if bytes.Equal(tampered, b) {
+		t.Fatal("test setup: schema field not found in state.json")
+	}
+	if err := os.WriteFile(statePath, tampered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.State(); err == nil {
+		t.Fatal("State() accepted an unknown schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unknown schema") {
+		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
 	}
 }
 

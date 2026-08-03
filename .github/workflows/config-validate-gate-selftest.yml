@@ -1,0 +1,91 @@
+name: Config Validate Gate Self-Test
+
+# #687's config-repo PR validation gate: proves goobers validate
+# --source-tree --github-annotations (the check .github/actions/validate
+# wraps for external config repos) actually passes a well-formed config and
+# fails closed on a broken one, using this repo's own fixtures
+# (test/fixtures/validate-gate/{valid,invalid}).
+#
+# This builds goobers from source rather than invoking
+# .github/actions/validate directly: that action installs a pinned *tagged
+# release* archive, and no Goobers release has been cut yet (see
+# docs/guides/config-pr-validation-gate.md). Once a release exists, this
+# workflow's build step can be swapped for `uses: ./.github/actions/validate`
+# pinned to it — the validate/annotation logic under test is identical either
+# way, since the action's second step runs this exact command.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/goobers/validate.go"
+      - "cmd/goobers/lint.go"
+      - "cmd/goobers/introspection.go"
+      - "api/validate/**"
+      - "test/fixtures/validate-gate/**"
+      - ".github/actions/validate/**"
+      - ".github/workflows/config-validate-gate-selftest.yml"
+  pull_request:
+    paths:
+      - "cmd/goobers/validate.go"
+      - "cmd/goobers/lint.go"
+      - "cmd/goobers/introspection.go"
+      - "api/validate/**"
+      - "test/fixtures/validate-gate/**"
+      - ".github/actions/validate/**"
+      - ".github/workflows/config-validate-gate-selftest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: config-validate-gate-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  passing-fixture:
+    name: passing fixture is green
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build goobers
+        run: go build -o /tmp/goobers ./cmd/goobers
+
+      - name: goobers validate --source-tree (expect pass)
+        run: /tmp/goobers validate --source-tree --github-annotations test/fixtures/validate-gate/valid
+
+  invalid-fixture:
+    name: deliberately-broken fixture fails closed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build goobers
+        run: go build -o /tmp/goobers ./cmd/goobers
+
+      - name: goobers validate --source-tree (expect fail)
+        id: validate
+        continue-on-error: true
+        run: /tmp/goobers validate --source-tree --github-annotations test/fixtures/validate-gate/invalid
+
+      - name: Assert the fixture actually failed
+        if: steps.validate.outcome != 'failure'
+        run: |
+          echo "::error::test/fixtures/validate-gate/invalid unexpectedly passed validation — the gate would not catch a broken config PR"
+          exit 1

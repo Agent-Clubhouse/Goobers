@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,12 +19,14 @@ import (
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
+	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
@@ -57,6 +60,9 @@ const (
 	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
 	WarningModelFallback WarningCode = "MODEL002"
+	// WarningSkillPackageCollision identifies a gaggle-scoped skill package
+	// shadowing an instance-level package with the same name.
+	WarningSkillPackageCollision WarningCode = "SKILL001"
 	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
 	// defaulted to supportmatrix.CurrentDSLVersion during the transition
 	// window (DVL-3, #863).
@@ -76,6 +82,17 @@ const (
 	// this binary either does not recognize or has marked unsupported — fails
 	// load like a schema violation.
 	ErrorUnsupportedDSLVersion WarningCode = "DVL030"
+	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
+	// (MIRC-2, #1901) targets the same repo and has an effective
+	// requireLabels scope that is not disjoint from this gaggle's own — the
+	// likely-dominant misconfiguration case for independently-configured
+	// teams sharing one repo. Non-fatal: it does not change any two
+	// instances' actual runtime behavior by itself, it only surfaces the
+	// misconfiguration risk before it produces a live claim collision.
+	WarningSiblingLabelOverlap WarningCode = "SIB001"
+	// WarningMissingSkillPackage identifies a declared goober skill whose
+	// package directory is absent.
+	WarningMissingSkillPackage WarningCode = "SKILL002"
 )
 
 const (
@@ -91,6 +108,7 @@ const (
 	errorPreviewAnnotation        WarningCode = "CFG004"
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
+	errorGaggleCheckoutSparse     WarningCode = "CFG007"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -124,6 +142,7 @@ const (
 	errorGateEvaluatorCardinality WarningCode = "WF014"
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorRunControls              WarningCode = "WF016"
+	errorPathSimulation           WarningCode = "WF017"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -135,6 +154,7 @@ const (
 	errorFieldPredicateTask       WarningCode = "FLD003"
 	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
+	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -157,7 +177,35 @@ func (i Issue) String() string {
 	if i.Code != "" {
 		code = " " + string(i.Code)
 	}
-	return fmt.Sprintf("%-7s%s %s: %s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message)
+	return fmt.Sprintf("%-7s%s %s: %s%s", strings.ToUpper(string(i.Severity)), code, i.Scope(), i.Message, i.position())
+}
+
+// invalidYAMLMessagePrefix marks a message as errorInvalidYAML's own —
+// checked by content rather than Code since cliIssue() already strips Code
+// off a plain Error by the time String() runs via CLIString().
+const invalidYAMLMessagePrefix = "invalid YAML: "
+
+// position renders a resolved source line (and column, when known) as a
+// trailing suffix, e.g. " (line 15, col 3)" — appended after the message so
+// the established "SEVERITY[ CODE] Scope: Message" prefix an existing
+// consumer may match against never changes (#2025). Empty when Line is 0
+// (unresolved — e.g. a required-but-entirely-absent property has no node to
+// point at) or for an invalid-YAML message, which already embeds its own
+// "yaml: line N: ..." position from the underlying parser — a second,
+// differently-numbered suffix there would be redundant noise, not new
+// information.
+func (i Issue) position() string {
+	if strings.HasPrefix(i.Message, invalidYAMLMessagePrefix) {
+		return ""
+	}
+	switch {
+	case i.Line > 0 && i.Col > 0:
+		return fmt.Sprintf(" (line %d, col %d)", i.Line, i.Col)
+	case i.Line > 0:
+		return fmt.Sprintf(" (line %d)", i.Line)
+	default:
+		return ""
+	}
 }
 
 // CLIString preserves the validator's established text representation while
@@ -475,6 +523,16 @@ type loadedDoc struct {
 	name       string
 	dslVersion string
 	json       []byte
+	// node is the document's own YAML source, reparsed with gopkg.in/yaml.v3
+	// (which preserves node positions, unlike the sigs.k8s.io/yaml round-trip
+	// used to build json above). It resolves a schema violation's source line
+	// and column (#2025); nil only if this content somehow parses via
+	// yaml.YAMLToJSON but not yaml.v3 (not expected in practice). node's own
+	// Line/Column are relative to this document's own content (line 1 = the
+	// document's first line) — lineOffset converts that to the file's actual
+	// line, the same convention yamlErrorLine already uses for syntax errors.
+	node       *yamlv3.Node
+	lineOffset int
 }
 
 // ValidateDir validates every YAML object under root: schema-checks each, then
@@ -482,12 +540,16 @@ type loadedDoc struct {
 func (v *Validator) ValidateDir(root string) (*Report, error) {
 	r := &Report{}
 	var docs []loadedDoc
+	parseFailureCount := 0
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
 			return filepath.SkipDir
 		}
 		if gooberassets.IsSourceDir(path) {
@@ -520,9 +582,10 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			}
 			jb, err := yaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
+				parseFailureCount++
 				r.addLocated(errorInvalidYAML, Error, rel,
 					yamlErrorLine(err.Error(), document.lineOffset), 1,
-					"", "", "invalid YAML: %s", err)
+					"", "", invalidYAMLMessagePrefix+"%s", err)
 				continue
 			}
 			var tm typeMeta
@@ -533,6 +596,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			docs = append(docs, loadedDoc{
 				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
 				dslVersion: tm.DSLVersion, json: jb,
+				node: parseYAMLNode(document.content), lineOffset: document.lineOffset,
 			})
 		}
 		return nil
@@ -542,6 +606,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	}
 
 	idx := newIndex()
+	idx.parseFailureCount = parseFailureCount
 	for _, doc := range docs {
 		r.Objects++
 		if doc.kind == "Manifest" {
@@ -553,8 +618,15 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			continue
 		}
 		if err := v.ValidateJSON(schemaFile, doc.json); err != nil {
-			for _, line := range flattenSchemaError(err) {
-				r.add(errorSchemaViolation, Error, doc.file, doc.kind, doc.name, "%s", line)
+			schema, _ := v.schema(schemaFile)
+			for _, finding := range schemaFindings(err, schema, doc.node) {
+				if finding.line > 0 {
+					r.addLocated(errorSchemaViolation, Error, doc.file,
+						finding.line+doc.lineOffset, finding.col,
+						doc.kind, doc.name, "%s", finding.message)
+					continue
+				}
+				r.add(errorSchemaViolation, Error, doc.file, doc.kind, doc.name, "%s", finding.message)
 			}
 		}
 		// Index the object even when it failed schema validation. Most schema
@@ -569,7 +641,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		idx.add(r, doc)
 	}
 
-	idx.crossCheck(r)
+	idx.crossCheck(r, root)
 	sortIssues(r)
 	return r, nil
 }
@@ -581,34 +653,6 @@ func sortIssues(r *Report) {
 		}
 		return r.Issues[a].Message < r.Issues[b].Message
 	})
-}
-
-// flattenSchemaError turns a jsonschema ValidationError tree into readable lines.
-func flattenSchemaError(err error) []string {
-	var ve *jsonschema.ValidationError
-	if !errors.As(err, &ve) {
-		return []string{err.Error()}
-	}
-	var lines []string
-	var walk func(e *jsonschema.ValidationError)
-	walk = func(e *jsonschema.ValidationError) {
-		if len(e.Causes) == 0 {
-			loc := e.InstanceLocation
-			if loc == "" {
-				loc = "(root)"
-			}
-			lines = append(lines, fmt.Sprintf("%s: %s", loc, friendlySchemaMessage(e.Message)))
-			return
-		}
-		for _, c := range e.Causes {
-			walk(c)
-		}
-	}
-	walk(ve)
-	if len(lines) == 0 {
-		lines = append(lines, ve.Message)
-	}
-	return lines
 }
 
 // friendlySchemaMessage rewrites a few terse JSON-Schema keyword messages into
@@ -653,6 +697,58 @@ type index struct {
 	// they passed schema validation, so we don't double-report "no Manifest" for
 	// a manifest that merely failed its schema.
 	manifestDocsSeen int
+
+	// parseFailureCount counts documents in this run that failed to parse as
+	// YAML at all (errorInvalidYAML). A cross-reference "no X/Y definition was
+	// found" error may just be that document's own missing definition rather
+	// than a second, independent problem — but only when there is exactly one
+	// parse failure and exactly one reference gap in the whole run: with
+	// multiple of either, correlating a specific gap to a specific failure
+	// isn't something we can actually know (we never learn the failed
+	// document's own kind/name), and guessing would mislabel a genuinely
+	// independent, unrelated bug as a probable side effect of the parse
+	// failure. referenceNotFound buffers into pendingReferenceIssues so this
+	// can be decided once, after every reference check in the run has run —
+	// not fired incrementally as each one is discovered (#2025, QA-2 finding
+	// 1).
+	parseFailureCount      int
+	pendingReferenceIssues []pendingReferenceIssue
+}
+
+// pendingReferenceIssue is a "no X/Y definition was found"-style
+// cross-reference error, held until crossCheck finishes so its subordination
+// note (see parseFailureCount) can be applied — or not — based on the full
+// run's outcome, not just what's known when the gap is first discovered.
+type pendingReferenceIssue struct {
+	code             WarningCode
+	file, kind, name string
+	message          string
+}
+
+// referenceNotFound records a cross-reference error for a name this config
+// doesn't define anywhere. See parseFailureCount and flushReferenceIssues.
+func (ix *index) referenceNotFound(r *Report, code WarningCode, file, kind, name, format string, args ...interface{}) {
+	ix.pendingReferenceIssues = append(ix.pendingReferenceIssues, pendingReferenceIssue{
+		code: code, file: file, kind: kind, name: name,
+		message: fmt.Sprintf(format, args...),
+	})
+}
+
+// flushReferenceIssues adds every buffered referenceNotFound call to r,
+// appending the parse-failure subordination note only when the run had
+// exactly one parse failure and exactly one reference gap — the one
+// situation where attributing the gap to the failure is actually
+// well-founded, not a guess (#2025, QA-2 finding 1). Must run once, after
+// every check in crossCheck that can call referenceNotFound has run.
+func (ix *index) flushReferenceIssues(r *Report) {
+	subordinate := ix.parseFailureCount == 1 && len(ix.pendingReferenceIssues) == 1
+	for _, issue := range ix.pendingReferenceIssues {
+		message := issue.message
+		if subordinate {
+			message += " (a document elsewhere failed to parse as YAML — see the invalid-YAML error above; this may be its own missing definition rather than a separate problem)"
+		}
+		r.add(issue.code, Error, issue.file, issue.kind, issue.name, "%s", message)
+	}
 }
 
 func newIndex() *index {
@@ -719,7 +815,7 @@ func (ix *index) dupCheck(r *Report, doc loadedDoc, kind, name string, exists fu
 }
 
 // crossCheck applies the spec's reference rules across all loaded objects.
-func (ix *index) crossCheck(r *Report) {
+func (ix *index) crossCheck(r *Report, configRoot string) {
 	if len(ix.manifests) == 0 && ix.manifestDocsSeen == 0 {
 		r.add(errorMissingManifest, Error, "", "Manifest", "", "no Manifest object found in config directory")
 	}
@@ -737,7 +833,7 @@ func (ix *index) crossCheck(r *Report) {
 	for _, m := range ix.manifests {
 		for _, gname := range m.Spec.Gaggles {
 			if _, ok := ix.gaggles[gname]; !ok {
-				r.add(errorManifestGaggleReference, Error, ix.manifestFile[m.Name], "Manifest", m.Name,
+				ix.referenceNotFound(r, errorManifestGaggleReference, ix.manifestFile[m.Name], "Manifest", m.Name,
 					"spec.gaggles references %q, but no Gaggle/%s definition was found", gname, gname)
 			}
 		}
@@ -758,6 +854,8 @@ func (ix *index) crossCheck(r *Report) {
 	ix.checkGaggleCICommand(r)
 	// Gaggle branch-prefix coherence (MGV-4) over #965/#1010's branchNamespace surface.
 	ix.checkGaggleBranchNamespace(r)
+	// Sibling-scope overlap warning (MIRC-2, #1901).
+	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
@@ -769,13 +867,13 @@ func (ix *index) crossCheck(r *Report) {
 		r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 			wf.CheckGooberFeatureSupport(g.Spec, allowPreview))
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
-			r.add(errorGooberGaggleReference, Error, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+			ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 				g.Spec.Gaggle, g.Spec.Gaggle)
 		}
 		for _, wf := range g.Spec.Workflows {
 			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
 			if _, ok := ix.workflows[identity]; !ok {
-				r.add(errorGooberWorkflowReference, Error, file, "Goober", g.Name,
+				ix.referenceNotFound(r, errorGooberWorkflowReference, file, "Goober", g.Name,
 					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
 					wf, wf, g.Spec.Gaggle)
 			}
@@ -826,6 +924,46 @@ func (ix *index) crossCheck(r *Report) {
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
+	}
+
+	// Every referenceNotFound call in this pass (including from checkWorkflow
+	// above) was buffered, not yet added to r — flush now that the run's full
+	// outcome (how many parse failures, how many reference gaps) is known.
+	ix.flushReferenceIssues(r)
+	ix.checkMissingSkillPackages(r, configRoot)
+}
+
+func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
+	if skill == "" || skill == "." || skill == ".." || strings.ContainsAny(skill, `/\`) || filepath.VolumeName(skill) != "" {
+		return "", "", false
+	}
+	configRoot = filepath.Clean(configRoot)
+	return filepath.Join(configRoot, "gaggles", gaggle, "skills", skill),
+		filepath.Join(filepath.Dir(configRoot), "skills", skill), true
+}
+
+func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
+	for _, g := range ix.goobers {
+		for _, skill := range g.Spec.Skills {
+			scoped, shared, ok := declaredSkillPackageDirs(configRoot, g.Spec.Gaggle, skill)
+			if !ok {
+				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
+					"spec.skills declares %q, but the skill name cannot resolve to a package directory under %q",
+					skill, "skills")
+				continue
+			}
+			scopedInfo, scopedErr := os.Stat(scoped)
+			sharedInfo, sharedErr := os.Stat(shared)
+			scopedMissing := errors.Is(scopedErr, fs.ErrNotExist) || (scopedErr == nil && !scopedInfo.IsDir())
+			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
+			if scopedMissing && sharedMissing {
+				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
+					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					skill,
+					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
+					filepath.ToSlash(filepath.Join("skills", skill)))
+			}
+		}
 	}
 }
 
@@ -1004,6 +1142,68 @@ func isBacklogQueryTask(task apiv1.Task) bool {
 		task.Run.Command[1] == "backlog-query"
 }
 
+// prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
+// resolves, at runtime, to the gaggle's own branch via providerBaseBranch()
+// (cmd/goobers/providercmd.go, #2087) rather than a hardcoded "main" — the
+// same 13 call sites providerInput("base", providerBaseBranch()) covers.
+var prLifecycleBaseCommands = map[string]bool{
+	"apply-verdict":            true,
+	"check-fail-first":         true,
+	"elect-lander":             true,
+	"gate-removal-guard":       true,
+	"gather-implement-context": true,
+	"gather-pr-context":        true,
+	"gather-sibling-context":   true,
+	"issue-close-out":          true,
+	"open-pr":                  true,
+	"pr-select":                true,
+	"rebase-pr":                true,
+	"remediation-checkpoint":   true,
+	"update-behind-pr":         true,
+}
+
+// checkPRLifecycleBaseBranch flags a PR-lifecycle task whose "base" input
+// disagrees with the gaggle's own resolved branch (GaggleSpec.Project.
+// Branch, "main" when unset, matching RepoRef's own default; #2088,
+// sequenced after #2087 so the runtime default this check compares against
+// is the derived branch, not the bare literal "main"). A dynamic base
+// (inputsFrom) is resolved at runtime from an upstream stage's output — not
+// statically checkable, so it is skipped rather than flagged. A task that
+// declares no base input at all is likewise not flagged: since #2087,
+// omitting it resolves correctly at runtime via providerBaseBranch() for any
+// gaggle branch, so silence is not a bug — only a literal value that
+// disagrees with the gaggle's real branch is.
+func (ix *index) checkPRLifecycleBaseBranch(r *Report, w apiv1.Workflow, file string) {
+	gaggle, ok := ix.gaggles[w.Spec.Gaggle]
+	if !ok {
+		return
+	}
+	resolvedBranch := gaggle.Spec.Project.Branch
+	if resolvedBranch == "" {
+		resolvedBranch = "main"
+	}
+	for _, t := range w.Spec.Tasks {
+		if t.Run == nil || len(t.Run.Command) < 2 || filepath.Base(t.Run.Command[0]) != "goobers" {
+			continue
+		}
+		if !prLifecycleBaseCommands[t.Run.Command[1]] {
+			continue
+		}
+		base, declared := t.Inputs["base"]
+		if !declared {
+			continue
+		}
+		if _, dynamic := t.InputsFrom["base"]; dynamic {
+			continue
+		}
+		if base != resolvedBranch {
+			r.add(warningPRLifecycleBaseDrift, Warning, file, "Workflow", w.Name,
+				"task %q declares base %q, but gaggle %q resolves to branch %q",
+				t.Name, base, w.Spec.Gaggle, resolvedBranch)
+		}
+	}
+}
+
 func splitLabelInput(value string) []string {
 	var labels []string
 	for _, label := range strings.Split(value, ",") {
@@ -1094,6 +1294,111 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 	}
 }
 
+// checkGaggleSiblingLabelOverlap implements MIRC-2's (#1901) sibling-overlap
+// validation warning: for each gaggle that declares Siblings, compare this
+// gaggle's own effective requireLabels (a workflow's own task-level override
+// when declared, else the gaggle's RequireLabels default — mirroring
+// defaultBacklogQueryRequireLabels's runtime resolution exactly) against
+// each declared sibling's given RequireLabels, but only when the sibling
+// targets the SAME repo as this gaggle's own Project — repo identity is the
+// sole match key (provider/baseUrl/owner/project/name), never gaggle name,
+// per the design's explicit rejection of name-based matching (amended by
+// #1908). A sibling targeting a different repo never triggers a warning,
+// regardless of label similarity. Warn-only: this never fails validation,
+// since the sibling's declared scope is this instance's own trusted
+// assertion about another instance it cannot directly observe.
+func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
+	for name, g := range ix.gaggles {
+		if len(g.Spec.Siblings) == 0 {
+			continue
+		}
+		file := ix.gaggleFile[name]
+
+		type scope struct {
+			workflow string
+			labels   []string
+		}
+		var scopes []scope
+		for identity, indexed := range ix.workflows {
+			if identity.gaggle != name {
+				continue
+			}
+			for _, task := range indexed.definition.Spec.Tasks {
+				if !isBacklogQueryTask(task) {
+					continue
+				}
+				labels := g.Spec.RequireLabels
+				if v, overridden := task.Inputs["requireLabels"]; overridden {
+					labels = splitLabelInput(v)
+				}
+				scopes = append(scopes, scope{workflow: identity.name, labels: labels})
+			}
+		}
+		if len(scopes) == 0 {
+			// No backlog-query task anywhere in this gaggle yet — still check
+			// the bare gaggle-level default so a sibling misconfiguration
+			// surfaces before any workflow adopts it.
+			scopes = append(scopes, scope{labels: g.Spec.RequireLabels})
+		}
+
+		for _, sib := range g.Spec.Siblings {
+			if !sameRepo(sib.Project, g.Spec.Project) {
+				continue
+			}
+			for _, sc := range scopes {
+				overlap := intersectLabels(sc.labels, sib.RequireLabels)
+				if len(overlap) == 0 {
+					continue
+				}
+				siblingDesc := sib.Label
+				if siblingDesc == "" {
+					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+				}
+				where := "spec.requireLabels"
+				if sc.workflow != "" {
+					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+				}
+				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
+					where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+			}
+		}
+	}
+}
+
+// sameRepo reports whether a and b identify the same target repository —
+// the sole sibling match key (MIRC-2, #1901, amended by #1908): gaggle/
+// instance name carries zero cross-instance meaning, so it is never part of
+// this comparison. BaseURL is included alongside provider/owner/project/name
+// so two distinct self-hosted Gitea instances that happen to share an
+// owner/name never collide.
+func sameRepo(a, b apiv1.RepoRef) bool {
+	return a.Provider == b.Provider &&
+		a.BaseURL == b.BaseURL &&
+		a.Owner == b.Owner &&
+		a.Project == b.Project &&
+		a.Name == b.Name
+}
+
+// intersectLabels returns the labels present in both a and b, sorted for a
+// deterministic diagnostic message.
+func intersectLabels(a, b []string) []string {
+	inA := make(map[string]bool, len(a))
+	for _, label := range a {
+		inA[label] = true
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, label := range b {
+		if inA[label] && !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (ix *index) checkGaggleRunControls(r *Report) {
 	for name, g := range ix.gaggles {
 		if g.Spec.RunControls == nil {
@@ -1105,26 +1410,73 @@ func (ix *index) checkGaggleRunControls(r *Report) {
 	}
 }
 
-// checkGaggleCheckout surfaces every declared repo checkout block as a VER003
-// compatibility notice (#649): checkout.sparse is accepted by the schema so a
-// definition can be authored ahead of the runner honoring it, but the local
-// runner still materializes full worktrees. A warning, never an error: deleting
-// the declaration would delete the very cones a sparse-capable runner needs.
+// checkGaggleCheckout validates every declared repo checkout block's sparse
+// cones (#649): the local runner now honors project.checkout.sparse by
+// materializing a cone-mode sparse checkout, so a malformed declaration is a
+// real misconfiguration caught here rather than a silently-inert notice.
 func (ix *index) checkGaggleCheckout(r *Report) {
 	for name, g := range ix.gaggles {
 		file := ix.gaggleFile[name]
-		warn := func(field string, checkout *apiv1.CheckoutSpec) {
+		check := func(field string, checkout *apiv1.CheckoutSpec) {
 			if checkout == nil {
 				return
 			}
-			r.addWarning(WarningCompatibility, file, "", "Gaggle", name,
-				"%s.sparse is not honored by the local runner", field)
+			if len(checkout.Sparse) == 0 {
+				r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+					"%s.sparse must declare at least one cone (omit checkout entirely for a full checkout)", field)
+				return
+			}
+			seen := make(map[string]bool, len(checkout.Sparse))
+			for i, cone := range checkout.Sparse {
+				if reason := invalidSparseCone(cone); reason != "" {
+					r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+						"%s[%d] %q is not a valid sparse-checkout cone: %s", field, i, cone, reason)
+					continue
+				}
+				if seen[cone] {
+					r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+						"%s[%d] duplicates cone %q", field, i, cone)
+					continue
+				}
+				seen[cone] = true
+			}
 		}
-		warn("spec.project.checkout", g.Spec.Project.Checkout)
+		check("spec.project.checkout", g.Spec.Project.Checkout)
 		for i := range g.Spec.AdditionalRepos {
-			warn(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
+			check(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
 		}
 	}
+}
+
+// invalidSparseCone reports why cone cannot be a git cone-mode sparse-checkout
+// pattern, or "" if it can. Cone mode (`git sparse-checkout set --cone`)
+// accepts only repo-relative directory prefixes — no glob patterns, no
+// absolute paths, no lexical traversal outside the repo.
+func invalidSparseCone(cone string) string {
+	if cone == "" {
+		return "must not be empty"
+	}
+	if path.IsAbs(cone) {
+		return "must be repo-relative, not absolute"
+	}
+	if strings.Contains(cone, "\\") {
+		return "must use forward slashes"
+	}
+	if cone == "." || cone == ".." {
+		return `must not be "." or ".."`
+	}
+	if strings.ContainsAny(cone, "*?[]!") {
+		return "cone mode does not support glob patterns; declare a directory prefix instead"
+	}
+	for _, segment := range strings.Split(cone, "/") {
+		switch segment {
+		case "":
+			return "must not contain empty path segments (e.g. a leading, trailing, or doubled slash)"
+		case "..":
+			return `must not contain ".." segments`
+		}
+	}
+	return ""
 }
 
 func (ix *index) checkGaggleConnections(r *Report) {
@@ -1189,7 +1541,7 @@ func repoIdentity(ref apiv1.RepoRef) string {
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
-		r.add(errorWorkflowGaggleReference, Error, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
 	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
@@ -1252,7 +1604,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 				r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name, "spec.tutorScope.target %q must not name this workflow itself", ts.Target)
 			default:
 				if _, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: ts.Target}]; !ok {
-					r.add(errorTutorScopeTarget, Error, file, "Workflow", w.Name,
+					ix.referenceNotFound(r, errorTutorScopeTarget, file, "Workflow", w.Name,
 						"spec.tutorScope.target names %q, but no Workflow/%s definition was found in gaggle %q",
 						ts.Target, ts.Target, w.Spec.Gaggle)
 				}
@@ -1266,12 +1618,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 	}
 
+	ix.checkPRLifecycleBaseBranch(r, w, file)
+
 	for _, t := range w.Spec.Tasks {
 		if t.Type == apiv1.TaskAgentic && t.Goober != "" {
 			goober, ok := ix.goobers[t.Goober]
 			switch {
 			case !ok:
-				r.add(errorTaskGooberReference, Error, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
+				ix.referenceNotFound(r, errorTaskGooberReference, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
 				r.add(errorTaskGooberGaggle, Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
@@ -1289,7 +1643,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			goober, ok := ix.goobers[g.Agentic.Goober]
 			switch {
 			case !ok:
-				r.add(errorGateGooberReference, Error, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
+				ix.referenceNotFound(r, errorGateGooberReference, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
 			case goober.Spec.Gaggle != w.Spec.Gaggle:
 				r.add(errorGateGooberGaggle, Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
@@ -1344,6 +1698,15 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// broken at runtime, on some path, every time.
 	for _, msg := range wf.CheckStageContracts(def) {
 		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Path simulation (#913, Tier 2 of the assurance ladder #903). Walks the
+	// compiled machine over every combination of gate outcomes, tracking what
+	// the immediately preceding task actually emits on each concrete path —
+	// catching an inputsFrom handoff that only breaks along one sequence of
+	// outcomes, which CheckStageContracts' per-edge union above cannot
+	// express, and reporting the exact path as evidence.
+	for _, msg := range wf.CheckPathSimulation(def) {
+		r.add(errorPathSimulation, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Required-input contracts (#1061). The input-side analog of the above:
 	// a deterministic stage that invokes a `goobers` subcommand without

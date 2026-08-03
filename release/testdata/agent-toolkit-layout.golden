@@ -12,6 +12,7 @@ payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
+payload/.goobers/agent-toolkit/api/schemas/instance-repository-execution.schema.json
 payload/.goobers/agent-toolkit/api/schemas/invocation.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-event.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-run.schema.json
@@ -38,6 +39,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/nominato
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/reviewer/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/scripts/check-todos.sh
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlog-assignment.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlog-curation.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/default-implement.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/docs-updater.yaml
@@ -52,6 +54,18 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/do
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/dotnet-reviewer/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/dotnet-reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/workflows/dotnet-implementation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/gaggle.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-implementer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-implementer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/workflows/java-implementation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/gaggle.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-implementer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-implementer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/workflows/python-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
 payload/.goobers/agent-toolkit/docs/requirements/README.md

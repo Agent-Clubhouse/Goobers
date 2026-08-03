@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -67,6 +66,25 @@ func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() 
 	}
 }
 
+// RunIDs lists every run this process is currently tracking — the in-process
+// liveness signal issue #2014's claim-lease renewal uses instead of a
+// per-stage heartbeat crossing into the claim ledger: a runID appears here
+// exactly while this process is the one actively driving it (Track/untrack
+// bracket Start/Resume), so a process that crashes or a run that finishes
+// stops appearing without anything needing to notice and say so explicitly.
+func (r *daemonRunnerRegistry) RunIDs() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.owners))
+	for runID := range r.owners {
+		ids = append(ids, runID)
+	}
+	return ids
+}
+
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
 	if r == nil {
 		return fallback, false
@@ -92,6 +110,7 @@ func sweepStalledRuns(
 	release func(runID, workflow string),
 	now time.Time,
 	timeout time.Duration,
+	maxDuration time.Duration,
 ) error {
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -129,21 +148,17 @@ func sweepStalledRuns(
 				continue
 			}
 			runTimeout := timeout
+			runMaxDuration := maxDuration
 			if identity.RunControls != nil {
 				if controlsErr := runcontrol.ValidatePinned(identity.RunControls); controlsErr != nil {
 					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
 					continue
 				}
-				controls, controlsErr := runcontrol.Resolve(
-					apiv1.RunControls{StalledRunTimeout: timeout.String()},
-					nil,
-					identity.RunControls,
-				)
-				if controlsErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
-					continue
+				runTimeout, _ = time.ParseDuration(identity.RunControls.StalledRunTimeout)
+				runMaxDuration = 0
+				if identity.RunControls.MaxRunDuration != "" {
+					runMaxDuration, _ = time.ParseDuration(identity.RunControls.MaxRunDuration)
 				}
-				runTimeout = controls.StalledRunTimeout
 			}
 			phase, err := reader.Phase()
 			if err != nil {
@@ -153,20 +168,23 @@ func sweepStalledRuns(
 			if phase != journal.PhaseRunning {
 				continue
 			}
-			events, err := reader.Events()
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, err))
-				continue
-			}
-			if len(events) == 0 {
-				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
-				continue
-			}
-			if events[len(events)-1].Type == journal.EventGatePaused {
-				continue
-			}
-			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
-				continue
+			durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+			if !durationExceeded {
+				events, eventsErr := reader.Events()
+				if eventsErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
+					continue
+				}
+				if len(events) == 0 {
+					sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
+					continue
+				}
+				if events[len(events)-1].Type == journal.EventGatePaused {
+					continue
+				}
+				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
+					continue
+				}
 			}
 
 			runLayout := l
@@ -207,28 +225,42 @@ func sweepStalledRuns(
 					terminalizers[runsDir] = runRunner
 				}
 			}
-			result, escalated, err := runRunner.EscalateStalled(identity.RunID, now, runTimeout)
-			if escalated {
+			var result runner.Result
+			var terminated bool
+			if durationExceeded {
+				result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
+			} else {
+				result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
+			}
+			if terminated {
 				if release != nil {
 					release(identity.RunID, identity.Workflow)
 				}
 				if log != nil && !liveOwner {
+					terminalPhase := journal.PhaseEscalated
+					errorCode := runner.RunStalledErrorCode
+					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+					if durationExceeded {
+						terminalPhase = journal.PhaseAborted
+						errorCode = runner.RunDurationExceededErrorCode
+						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+					}
 					appendErr := log.Append(journal.Event{
 						Type:     journal.EventRunFinished,
 						Gaggle:   identity.Gaggle,
 						Workflow: identity.Workflow,
 						RunID:    identity.RunID,
-						Status:   string(journal.PhaseEscalated),
+						Status:   string(terminalPhase),
 						Error: &journal.ErrorDetail{
-							Code:    runner.RunStalledErrorCode,
-							Message: fmt.Sprintf("run exceeded %s without journal activity", runTimeout),
+							Code:    errorCode,
+							Message: message,
 						},
 					})
 					err = errors.Join(err, appendErr)
 				}
 			}
 			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("escalate stalled run %q (%s): %w", identity.RunID, result.Phase, err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("terminate watchdog run %q (%s): %w", identity.RunID, result.Phase, err))
 			}
 		}
 	}

@@ -29,10 +29,15 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventStageFinished,
 		journal.EventStageRerunRequested,
 		journal.EventGatePaused,
-		journal.EventTriggerFired:
+		journal.EventTriggerFired,
+		journal.EventParallelStarted,
+		journal.EventParallelFinished,
+		journal.EventBranchStarted,
+		journal.EventBranchFinished:
 		return RunEventTransition, true
 
 	case journal.EventGateEvaluated,
+		journal.EventGateOverridden,
 		journal.EventTickSkipped:
 		return RunEventDecision, true
 

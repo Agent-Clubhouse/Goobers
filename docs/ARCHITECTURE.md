@@ -200,7 +200,7 @@ Contract rules:
 
 - Stages exchange **artifact pointers** (path + digest inside the journal), never
   implicit shared state.
-- Each stage runs in a **fresh, isolated, disposable workspace**. Repo-backed
+- Each stage normally runs in a **fresh, isolated, disposable workspace**. Repo-backed
   stages receive a working copy of the target repo: at tiers 1–2 that is a git
   worktree branched off the managed working copy (§6); at tier 3 it is the
   workspace of an ephemeral pod (fresh clone or sparse checkout). Deterministic
@@ -208,6 +208,17 @@ Contract rules:
   no repository resolution. The tier-neutral contract is isolation + disposal
   after the run; the worktree is the tiers-1–2 repo-backed mechanism, not the
   contract.
+- A repository may instead opt into a node-local **pinned workspace** at
+  `workcopies/<repo-key>/pin`. Pinned mode and per-stage worktrees are mutually
+  exclusive. One FIFO lease covers the entire run across all gaggles targeting
+  that repository, so their stages cannot interleave. The pinned directory is
+  outside the per-run `runs/` namespace and is structurally excluded from
+  worktree retention.
+- Pinned mode is deliberately non-hermetic. With its default `none` clean
+  policy, ignored and untracked build state persists between runs;
+  `ignored-safe` removes untracked non-ignored files and `full` also removes
+  ignored files. Operators opting in accept that the target repository's
+  `.gitignore` hygiene is load-bearing for clean run-branch diffs.
 - **Capability admission:** a stage may only touch capabilities its definition
   declares, from the canonical registry (`internal/capability`, issue #74) —
   e.g. `github:issues:write`, `repo:push`, `telemetry:read`. Undeclared use, and
@@ -246,8 +257,10 @@ Contract rules:
 - **Run-control inheritance is explicit:** `runConditions` supplies instance
   defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
   `Workflow.spec.runControls` overrides them for one definition. The resolved
-  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
-  starts, so config reloads cannot retune a run in flight. An automated or
+  `maxRepasses`, `stalledRunTimeout`, and optional `maxRunDuration` are pinned
+  in `run.yaml` when a run starts, so config reloads cannot retune a run in
+  flight. `maxRunDuration` bounds total wall-clock age independently of journal
+  activity and is disabled when omitted. An automated or
   agentic gate may override `maxRepasses` because separate review loops in one
   definition can legitimately need different budgets. Stall detection does not
   have a task-level override: task/gate `timeoutSeconds` and retry policies
@@ -412,11 +425,15 @@ Definition of done: feed issues into the backlog and watch them get curated, sco
 and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
-then closed the PR loop: the selfhost instance now runs **six** workflows (backlog
-curation, work nomination, implementation, merge-review, pr-remediation, Tutor) and
-**merges its own PRs autonomously** — a ratified product decision (G2 in
+then closed the PR loop: the `reference-workflows/` reference config now defines **six**
+workflows (backlog curation, work nomination, implementation, merge-review,
+pr-remediation, Tutor) proven to curate, implement, review, and **merge PRs
+autonomously** — a ratified product decision (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
-`docs/design/sibling-pr-sequencing.md`).
+`docs/design/sibling-pr-sequencing.md`). `reference-workflows/` is the canonical, tested
+pattern this capability is built against — not a live mirror of any specific
+deployment's actual running config, which is maintained separately and can
+drift from what's checked in here.
 
 ### V1 — Arbitrary repos, teams, hardening
 

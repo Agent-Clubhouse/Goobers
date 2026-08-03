@@ -194,9 +194,11 @@ Use only the target release's registry. The current set is:
 |---|---|
 | `repo:read` | Read-only target-repository checkout. |
 | `repo:push` | Push the run branch to the target repository. |
+| `github:issues:read` | Query GitHub issues without mutation authority. |
 | `github:issues:write` | Query, create, label, close, or comment on GitHub issues. |
 | `github:milestones:write` | Assign existing GitHub milestones to selected issues. |
 | `github:issues:approve` | Apply the trusted `goobers:approved` issue label. |
+| `provider:pr:write` | Perform pull-request operations through the configured repository provider. |
 | `github:pr:write` | Open, inspect, update, or close GitHub pull requests. |
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
