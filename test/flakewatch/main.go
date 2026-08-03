@@ -273,6 +273,9 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				continue
 			}
 			seen[key] = true
+			if failureSource.PullRequest != 0 && correlatedWithPR(failureSource.ChangedFiles, candidate) {
+				continue
+			}
 			entry, known := knownFailure(ledger, candidate)
 			if known {
 				dispatched, err := client.wasDispatched(ctx, entry, candidate)
@@ -289,9 +292,6 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 					return result, fmt.Errorf("record known flake handoff %s: %w", candidate.Fingerprint, err)
 				}
 				result.KnownDispatched++
-				continue
-			}
-			if failureSource.PullRequest != 0 && correlatedWithPR(failureSource.ChangedFiles, candidate) {
 				continue
 			}
 			if failureSource.PullRequest != 0 {

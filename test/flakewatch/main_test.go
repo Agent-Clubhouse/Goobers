@@ -36,9 +36,13 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	mux.HandleFunc("/repos/acme/app/pulls", jsonHandler([]pullRequest{
 		pullFixture(7, "known-sha", "https://github.test/acme/app/pull/7"),
 		pullFixture(8, "regression-sha", "https://github.test/acme/app/pull/8"),
+		pullFixture(9, "known-regression-sha", "https://github.test/acme/app/pull/9"),
 	}))
 	mux.HandleFunc("/repos/acme/app/pulls/7/files", jsonHandler([]map[string]string{{"filename": "README.md"}}))
 	mux.HandleFunc("/repos/acme/app/pulls/8/files", jsonHandler([]map[string]string{{"filename": "internal/cache/cache_test.go"}}))
+	mux.HandleFunc("/repos/acme/app/pulls/9/files", jsonHandler([]map[string]string{{
+		"filename": "internal/runner/run.go",
+	}}))
 	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
 		runs := []workflowRun{}
 		if r.URL.Query().Get("head_sha") == "" {
@@ -52,6 +56,7 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	mux.HandleFunc("/repos/acme/app/commits/known-sha/check-runs", jsonHandler(checksFixture(101)))
 	mux.HandleFunc("/repos/acme/app/commits/regression-sha/check-runs", jsonHandler(checksFixture(102)))
 	mux.HandleFunc("/repos/acme/app/commits/branch-sha/check-runs", jsonHandler(checksFixture(103)))
+	mux.HandleFunc("/repos/acme/app/commits/known-regression-sha/check-runs", jsonHandler(checksFixture(104)))
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
 		"jobs": []workflowJob{{ID: 103, Conclusion: "failure"}},
 	}))
@@ -68,6 +73,9 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 		{Path: "internal/queue/queue_test.go", Title: "TestQueue", Message: "deadline exceeded waiting for worker"},
 		{Path: "internal/queue/queue_test.go", Title: "TestCompile", Message: "unexpected compile output"},
 	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/104/annotations", jsonHandler([]annotation{{
+		Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE",
+	}}))
 	mux.HandleFunc("/repos/acme/app/dispatches", func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
