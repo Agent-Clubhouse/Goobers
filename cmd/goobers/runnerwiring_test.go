@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -88,6 +89,25 @@ func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data [
 
 func (r runnerWiringHarnessRecorder) Dir() string {
 	return r.dir
+}
+
+type runnerWiringArtifactRecorder map[string][]byte
+
+func (r runnerWiringArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	r[name] = append([]byte(nil), data...)
+	return journal.ArtifactRef(data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBounded(name string, data []byte, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, _ apiv1.Integrity, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 func TestResolveOTLPHeaders(t *testing.T) {
@@ -690,6 +710,62 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 	}
 	if manager.Root != wantRoot {
 		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	recorder := runnerWiringArtifactRecorder{}
+	deterministic, err := cfg.NewDeterministic(recorder, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("NewDeterministic: %v", err)
+	}
+	script := `printf '%s' "$MSBUILDDISABLENODEREUSE"`
+	if runtime.GOOS == "windows" {
+		script = `@echo off
+echo|set /p="%MSBUILDDISABLENODEREUSE%"`
+	}
+	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
+		TaskID:    "build",
+		Workspace: t.TempDir(),
+	}, apiv1.DeterministicRun{Script: script})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("result = %+v, want success", result)
+	}
+	if got := string(recorder["build/stdout.log"]); got != "1" {
+		t.Fatalf("MSBUILDDISABLENODEREUSE = %q, want preset default 1", got)
 	}
 }
 

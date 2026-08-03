@@ -178,6 +178,9 @@ type ShellExecutor struct {
 	// whose env var the built-in list does not cover. Empty by default: an
 	// unset caller gets the built-in allowlist unchanged.
 	ExtraEnvAllowlist []string
+	// DefaultEnv supplies runner-owned stage defaults. A stage's explicitly
+	// declared run.env values override matching keys.
+	DefaultEnv map[string]string
 }
 
 type builtinErrorReport struct {
@@ -297,7 +300,14 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
+	for key, value := range e.DefaultEnv {
+		declaredEnv[key] = value
+	}
+	for key, value := range run.Env {
+		declaredEnv[key] = value
+	}
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
