@@ -1831,6 +1831,24 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if pathLimitsErr != nil {
 		return runner.Config{}, nil, pathLimitsErr
 	}
+	configuredProject, projectConfigured := configuredRepoForProject(cfg, gaggleProject)
+	pinned := projectConfigured && configuredProject.Pinned()
+	if pinned && len(additionalRepos) > 0 {
+		return runner.Config{}, nil, fmt.Errorf("VER: pinned workspace for %s/%s cannot be combined with additional repository worktrees", gaggleProject.Owner, gaggleProject.Name)
+	}
+	workcopiesRoot := l.WorkcopiesDir()
+	if pinned {
+		workcopiesRoot = instance.NewLayout(l.Root).WorkcopiesDir()
+	}
+	absoluteWorkcopiesRoot, err := filepath.Abs(workcopiesRoot)
+	if err != nil {
+		return runner.Config{}, nil, fmt.Errorf("resolve workcopies root: %w", err)
+	}
+	if wtMgr != nil && wtMgr.Root != absoluteWorkcopiesRoot {
+		// A config reload may switch this repo into or out of pinned mode; do
+		// not retain a manager rooted in the opposite lifecycle namespace.
+		wtMgr = nil
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1860,7 +1878,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
 		}
-		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), managerOptions...)
+		wtMgr, err = worktree.NewManager(workcopiesRoot, managerOptions...)
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
@@ -2084,8 +2102,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				opts...,
 			)
 		},
-		Automated: gate.NewAutomatedEvaluator(),
-		Worktrees: wtMgr,
+		Automated:         gate.NewAutomatedEvaluator(),
+		Worktrees:         wtMgr,
+		PinnedWorkspace:   pinned,
+		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
 		// Resolve each run's branch namespace from its gaggle (StartInput.Gaggle),
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
@@ -2158,6 +2178,27 @@ func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) 
 		limits[url] = limit
 	}
 	return limits, nil
+}
+
+func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == apiv1.ProviderADO {
+		if repo, ok := adoRepoForGaggle(cfg, project); ok {
+			return repo, true
+		}
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == string(project.Provider) && repo.Owner == project.Owner &&
+			repo.Project == project.Project && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+		return cfg.Repos[0], true
+	}
+	return instance.RepoRef{}, false
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

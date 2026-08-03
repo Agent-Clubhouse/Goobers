@@ -294,6 +294,10 @@ func (m *Manager) runsDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "runs")
 }
 
+func (m *Manager) pinDirForKey(key string) string {
+	return filepath.Join(m.Root, key, "pin")
+}
+
 func (m *Manager) markersDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "markers")
 }
@@ -351,6 +355,10 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 // Concurrent calls for the same repo URL serialize on the clone/fetch step;
 // calls for different repos proceed independently.
 func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, error) {
+	return m.workingCopy(ctx, repoURL, false)
+}
+
+func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) (string, error) {
 	key := repoKey(repoURL)
 	lock := m.lockFor(key)
 	lock.Lock()
@@ -362,14 +370,28 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", fmt.Errorf("worktree: create workcopy parent for %s: %w", repoURL, err)
 		}
-		cloneArgs := []string{"clone", "--mirror"}
-		if m.partialClone {
-			cloneArgs = append(cloneArgs, "--filter=blob:none")
+		var provisionErr error
+		if narrow {
+			if err := runGit(ctx, "", "init", "--bare", dir); err == nil {
+				if err = runGit(ctx, dir, "remote", "add", "origin", repoURL); err == nil {
+					provisionErr = m.fetchMirror(ctx, repoURL, dir, true)
+				} else {
+					provisionErr = err
+				}
+			} else {
+				provisionErr = err
+			}
+		} else {
+			cloneArgs := []string{"clone", "--mirror"}
+			if m.partialClone {
+				cloneArgs = append(cloneArgs, "--filter=blob:none")
+			}
+			cloneArgs = append(cloneArgs, repoURL, dir)
+			provisionErr = m.runRemoteGit(ctx, repoURL, "", cloneArgs...)
 		}
-		cloneArgs = append(cloneArgs, repoURL, dir)
-		if err := m.runRemoteGit(ctx, repoURL, "", cloneArgs...); err != nil {
+		if provisionErr != nil {
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
-			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
+			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, provisionErr)
 		}
 		if err := ensureManagedGitConfig(ctx, dir); err != nil {
 			return "", err
@@ -397,15 +419,7 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	// friends) stops being re-fetched. The probe is mirror-scoped, not
 	// flag-scoped, so a full mirror that predates the option keeps its
 	// full-mirror fetch untouched.
-	refspecs := []string{"+refs/*:refs/*"}
-	if m.partialClone && mirrorIsPartial(ctx, dir) {
-		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
-	}
-	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
-	for _, ns := range m.runBranchNamespaces {
-		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
-	}
-	if err := m.runRemoteGit(ctx, repoURL, dir, fetchArgs...); err != nil {
+	if err := m.fetchMirror(ctx, repoURL, dir, narrow || m.partialClone && mirrorIsPartial(ctx, dir)); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
 	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;
@@ -417,6 +431,18 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		return "", err
 	}
 	return dir, nil
+}
+
+func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow bool) error {
+	refspecs := []string{"+refs/*:refs/*"}
+	if narrow {
+		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+	}
+	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
+	for _, ns := range m.runBranchNamespaces {
+		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
+	}
+	return m.runRemoteGit(ctx, repoURL, dir, fetchArgs...)
 }
 
 func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ...string) error {

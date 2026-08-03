@@ -644,6 +644,96 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
+	root := t.TempDir()
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned:      true,
+			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
+		},
+	}}}
+	cfg, manager, err := buildRunnerConfig(
+		instance.NewLayout(root).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
+		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
+	}
+	wantRoot, err := filepath.Abs(instance.NewLayout(root).WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Root != wantRoot {
+		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) {
+	t.Setenv("ADO_TOKEN", "test-token")
+	root := t.TempDir()
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "acme/widgets",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "ADO_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned: true,
+		},
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(root).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace {
+		t.Fatal("PinnedWorkspace = false, want true for ADO combined owner/project reference")
+	}
+}
+
 // TestBuildCredentialsDefault: with no credentials: block, the first repo's
 // token backs every credentialed capability and agent:model is absent (it must
 // be sourced explicitly, never defaulted to the repo token).

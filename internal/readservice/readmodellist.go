@@ -107,11 +107,12 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 			Kind: journal.TriggerKind(row.TriggerKind),
 			Ref:  row.TriggerRef,
 		},
-		Phase:        row.Phase,
-		Terminal:     row.Terminal,
-		CurrentStage: row.CurrentStage,
-		StartedAt:    row.StartedAt,
-		FinishedAt:   row.FinishedAt,
+		Phase:         row.Phase,
+		Terminal:      row.Terminal,
+		CurrentStage:  row.CurrentStage,
+		QueuePosition: row.QueuePosition,
+		StartedAt:     row.StartedAt,
+		FinishedAt:    row.FinishedAt,
 		// Computed at read time, not stored, so a quiet in-flight run keeps
 		// ageing rather than freezing at projection time (§5.3).
 		DurationMillis:   row.Duration(observedAt).Milliseconds(),

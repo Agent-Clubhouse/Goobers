@@ -38,6 +38,23 @@ func testIdentity() journal.RunIdentity {
 	}
 }
 
+func TestProjectionTracksPinnedWorkspaceQueuePosition(t *testing.T) {
+	queued := ev(1, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"kind": "workspace.queued", "queuePosition": float64(2)}
+	})
+	projection := ProjectRun(testIdentity(), Projection{}, []journal.Event{queued})
+	if projection.Run.QueuePosition != 2 {
+		t.Fatalf("queue position = %d, want 2", projection.Run.QueuePosition)
+	}
+	acquired := ev(2, 2*time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"kind": "workspace.acquired"}
+	})
+	projection = ProjectRun(testIdentity(), projection, []journal.Event{acquired})
+	if projection.Run.QueuePosition != 0 {
+		t.Fatalf("queue position after acquisition = %d, want 0", projection.Run.QueuePosition)
+	}
+}
+
 // completedRunEvents is a run that starts, retries once, and completes.
 func completedRunEvents() []journal.Event {
 	return []journal.Event{

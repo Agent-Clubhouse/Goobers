@@ -113,6 +113,7 @@ type Worktree struct {
 	// remote operation needing the credential environment and transient-
 	// failure classification, exactly like Create's own checkout.
 	partialMirror bool
+	pinned        bool
 }
 
 // validRunID reports whether id is safe to join onto a directory as a
@@ -405,6 +406,9 @@ func baseSyncFailure(opts CreateOptions, mergeErr error, conflictingFiles []stri
 // workspace, allowing crash recovery to distinguish it from a stage for which
 // the same path is ordinary repository content.
 func (wt *Worktree) ActivateAssetPathGuard() error {
+	if wt.pinned {
+		return nil
+	}
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
 	mk, err := readMarker(markerPath)
 	if err != nil {
@@ -462,6 +466,9 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 		return "", false, nil
 	}
 	repoDir := wt.manager.repoDirForKey(wt.key)
+	if wt.pinned {
+		repoDir = wt.Path
+	}
 	refName := "refs/heads/" + wt.Branch
 	currentRef, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", refName)
 	if err != nil {
@@ -475,9 +482,13 @@ func (wt *Worktree) inspectReservedBranch(ctx context.Context) (string, bool, er
 }
 
 func (wt *Worktree) rollbackBranch(ctx context.Context, currentRef string) error {
+	repoDir := wt.manager.repoDirForKey(wt.key)
+	if wt.pinned {
+		repoDir = wt.Path
+	}
 	return runGit(
 		ctx,
-		wt.manager.repoDirForKey(wt.key),
+		repoDir,
 		"update-ref",
 		"refs/heads/"+wt.Branch,
 		wt.startRef,
@@ -596,6 +607,9 @@ type RemoveOptions struct {
 // disk and unregisters it; with RemoveOptions.Keep it leaves the worktree in
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
+	if wt.pinned {
+		return nil
+	}
 	repoDir := wt.manager.repoDirForKey(wt.key)
 	markerPath := wt.manager.markerPath(wt.key, wt.RunID)
 

@@ -200,7 +200,7 @@ Contract rules:
 
 - Stages exchange **artifact pointers** (path + digest inside the journal), never
   implicit shared state.
-- Each stage runs in a **fresh, isolated, disposable workspace**. Repo-backed
+- Each stage normally runs in a **fresh, isolated, disposable workspace**. Repo-backed
   stages receive a working copy of the target repo: at tiers 1–2 that is a git
   worktree branched off the managed working copy (§6); at tier 3 it is the
   workspace of an ephemeral pod (fresh clone or sparse checkout). Deterministic
@@ -208,6 +208,17 @@ Contract rules:
   no repository resolution. The tier-neutral contract is isolation + disposal
   after the run; the worktree is the tiers-1–2 repo-backed mechanism, not the
   contract.
+- A repository may instead opt into a node-local **pinned workspace** at
+  `workcopies/<repo-key>/pin`. Pinned mode and per-stage worktrees are mutually
+  exclusive. One FIFO lease covers the entire run across all gaggles targeting
+  that repository, so their stages cannot interleave. The pinned directory is
+  outside the per-run `runs/` namespace and is structurally excluded from
+  worktree retention.
+- Pinned mode is deliberately non-hermetic. With its default `none` clean
+  policy, ignored and untracked build state persists between runs;
+  `ignored-safe` removes untracked non-ignored files and `full` also removes
+  ignored files. Operators opting in accept that the target repository's
+  `.gitignore` hygiene is load-bearing for clean run-branch diffs.
 - **Capability admission:** a stage may only touch capabilities its definition
   declares, from the canonical registry (`internal/capability`, issue #74) —
   e.g. `github:issues:write`, `repo:push`, `telemetry:read`. Undeclared use, and

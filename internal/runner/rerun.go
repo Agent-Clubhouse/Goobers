@@ -69,7 +69,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	}
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveWorkspaceRun(ctx, jr, in.RunID, in.RepoRef, func(ctx context.Context) (Result, error) {
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: open run %q for stage rerun: %w", in.RunID, err)
