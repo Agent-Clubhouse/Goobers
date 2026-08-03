@@ -774,10 +774,11 @@ func (r *Runner) runParallelBranch(
 				return result
 			default:
 				if gr.Escalated {
-					reason, _ := terminalGateNotificationReason(gr)
-					if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
-						result.status, result.err = journal.BranchFailed, err
-						return result
+					if reason, notify := terminalGateNotificationReason(gr); notify {
+						if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
+							result.status, result.err = journal.BranchFailed, err
+							return result
+						}
 					}
 				}
 				state = gr.Target

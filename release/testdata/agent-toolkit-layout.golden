@@ -59,6 +59,12 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java
 payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/workflows/java-implementation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/gaggle.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-implementer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-implementer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/workflows/python-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
 payload/.goobers/agent-toolkit/docs/requirements/README.md

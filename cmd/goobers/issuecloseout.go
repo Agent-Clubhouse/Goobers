@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -26,6 +28,10 @@ type issueCloseOutProvider interface {
 	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
+}
+
+type pullRequestReader interface {
+	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
 }
 
 const issueCloseOutNeedsHuman providers.WorkItemStatus = "needs-human"
@@ -107,6 +113,46 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 		return "", fmt.Errorf("no terminal gate or failed task reason found")
 	}
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
+}
+
+func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEscalationState, bool, error) {
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		return implementationEscalationState{}, false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return implementationEscalationState{}, false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated {
+			continue
+		}
+		duplicate, _ := event.Runner["duplicateDiff"].(bool)
+		digest, _ := event.Runner["diffDigest"].(string)
+		if !duplicate || digest == "" {
+			continue
+		}
+		reason, err := issueCloseOutReason(runsDir, runID, event.Gate)
+		if err != nil {
+			return implementationEscalationState{}, false, err
+		}
+		cause, _ := event.Runner["repassCause"].(map[string]any)
+		if len(cause) != 0 {
+			data, err := json.Marshal(cause)
+			if err != nil {
+				return implementationEscalationState{}, false, fmt.Errorf("marshal repass cause: %w", err)
+			}
+			var repassCause gate.RepassCause
+			if err := json.Unmarshal(data, &repassCause); err != nil {
+				return implementationEscalationState{}, false, fmt.Errorf("parse repass cause: %w", err)
+			}
+			reason = repassCause.String() + "; the implementer produced no change in response"
+		}
+		return implementationEscalationState{DiffDigest: digest, Reason: reason, Cause: cause}, true, nil
+	}
+	return implementationEscalationState{}, false, nil
 }
 
 const issueCloseOutHelp = "Usage: goobers issue-close-out [path]\n\n" +
@@ -235,19 +281,63 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	comment := providerInput("comment", "")
 	if status == issueCloseOutNeedsHuman {
+		var runsDir string
 		if comment == "" {
-			gateName := providerInput("reasonFromGate", "")
-			runsDir, err := runsDirForRun(l, runID)
+			runsDir, err = runsDirForRun(l, runID)
 			if err != nil {
 				pf(stderr, "error: locate run journal: %v\n", err)
 				return 1
 			}
+			gateName := providerInput("reasonFromGate", "")
 			reason, err := issueCloseOutReason(runsDir, runID, gateName)
 			if err != nil {
 				pf(stderr, "error: resolve parking reason: %v\n", err)
 				return 1
 			}
 			comment = "Implementation parked for human review: " + reason
+		} else {
+			runsDir, _ = runsDirForRun(l, runID)
+		}
+		if runsDir != "" {
+			escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+			if err != nil {
+				pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
+				return 1
+			}
+			if duplicate {
+				comment = "Implementation parked for human review: " + escalation.Reason
+			}
+			if duplicate && (repo.Provider == providers.ProviderGitHub || repo.Provider == providers.ProviderGitea) {
+				head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
+				base := providerInput("base", providerBaseBranch())
+				pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
+				if err != nil {
+					return failProviderStage(stderr, "find pull request for escalation digest", err, "")
+				}
+				if found {
+					reader, ok := provider.(pullRequestReader)
+					if !ok {
+						pf(stderr, "error: provider cannot read pull request for escalation digest\n")
+						return 1
+					}
+					summary, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(pr.Number))
+					if err != nil {
+						return failProviderStage(stderr, "read pull request for escalation digest", err, "")
+					}
+					body, err := withImplementationEscalationMarker(summary.Body, escalation)
+					if err != nil {
+						pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
+						return 1
+					}
+					if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+						Repository: repo,
+						ID:         strconv.Itoa(pr.Number),
+						Body:       &body,
+					}); err != nil {
+						return failProviderStage(stderr, "record escalated diff on pull request", err, "")
+					}
+				}
+			}
 		}
 		cfg, err := instance.LoadConfig(l.ConfigFile())
 		if err != nil {

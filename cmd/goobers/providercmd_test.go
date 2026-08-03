@@ -570,10 +570,17 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		var body struct {
 			Labels    *[]string `json:"labels"`
 			Assignees *[]string `json:"assignees"`
+			Body      *string   `json:"body"`
 			State     string    `json:"state"`
 			Milestone *int      `json:"milestone"`
 		}
 		decodeFakeJSON(r, &body)
+		if body.Body != nil {
+			issue.body = *body.Body
+			if pr := s.prs[num]; pr != nil {
+				pr.body = *body.Body
+			}
+		}
 		if body.Labels != nil {
 			before := append([]string(nil), issue.labels...)
 			issue.labels = *body.Labels

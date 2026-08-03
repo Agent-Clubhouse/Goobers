@@ -1683,8 +1683,16 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
+	// The shipped parking stage owns the single human-facing comment. Other
+	// named targets are not guaranteed to notify, so they retain this fallback.
+	if gr.Escalated && gr.Target == "park-escalated" {
+		return "", false
+	}
 	if gr.Escalated {
 		if gr.DuplicateDiff {
+			if gr.RepassCause != nil {
+				return gr.RepassCause.String() + "; the implementer produced no change in response", true
+			}
 			return "repass produced a diff identical to the immediately prior attempt", true
 		}
 		return "repass budget exhausted", true
@@ -3476,6 +3484,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		}
 	}
 	gateEval.CachedVerdict = cachedVerdict
+	gateEval.RepassCause, err = priorRepassCause(jr, subjectStage)
+	if err != nil {
+		err = fmt.Errorf("runner: resolve prior repass cause for gate %q: %w", g.Name, err)
+		span.Fail(err)
+		return gate.Result{}, err, nil
+	}
 	if instructionAddendum != "" {
 		// An explicit operator rerun must invoke the reviewer it targets, even
 		// when ordinary automation would reuse a cached verdict or fast-fail an
@@ -3536,6 +3550,59 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	span.SetGateResult(result.Outcome, result.Attempt)
 	span.Complete(telemetry.OutcomeSuccess, false)
 	return result, nil, nil
+}
+
+func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCause, error) {
+	if jr == nil || subjectStage == "" {
+		return nil, nil
+	}
+	reader, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated || event.Target != subjectStage {
+			continue
+		}
+		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
+		if event.Ref != nil {
+			data, err := reader.ArtifactBytes(*event.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("read prior verdict for gate %q: %w", event.Gate, err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(data, &verdict); err != nil {
+				return nil, fmt.Errorf("parse prior verdict for gate %q: %w", event.Gate, err)
+			}
+			cause.Kind = "reviewer"
+			cause.Rationale = strings.TrimSpace(verdict.Rationale)
+			if cause.Rationale == "" {
+				cause.Rationale = strings.TrimSpace(verdict.Summary)
+			}
+		}
+		for j := i - 1; j >= 0; j-- {
+			prior := events[j]
+			if prior.Type == journal.EventGateEvaluated {
+				break
+			}
+			if prior.Type == journal.EventStageFinished && prior.Status == string(apiv1.ResultFailure) {
+				cause.Kind = "stage-failure"
+				cause.Stage = prior.Stage
+				if prior.Error != nil {
+					cause.ErrorCode = prior.Error.Code
+					cause.ErrorMessage = prior.Error.Message
+				}
+				break
+			}
+		}
+		return cause, nil
+	}
+	return nil, nil
 }
 
 // recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the

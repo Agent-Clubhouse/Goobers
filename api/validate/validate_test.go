@@ -90,10 +90,10 @@ func TestExampleConfigPasses(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 4 {
-		t.Fatalf("expected four actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 5 {
+		t.Fatalf("expected five actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation bool
+	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation, sawPythonImplementation bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -110,9 +110,12 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run java-implementation") {
 			sawJavaImplementation = true
 		}
+		if strings.Contains(w.Explanation, "goobers run python-implementation") {
+			sawPythonImplementation = true
+		}
 	}
-	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation || !sawJavaImplementation {
-		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service and java-service implementations, got %+v", warnings)
+	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation || !sawJavaImplementation || !sawPythonImplementation {
+		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service, java-service, and python-service implementations, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
