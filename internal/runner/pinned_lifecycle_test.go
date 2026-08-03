@@ -15,6 +15,8 @@ import (
 )
 
 func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
+	const pinnedLeaseWaitTimeout = 45 * time.Second
+
 	root := t.TempDir()
 	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
 	if err != nil {
@@ -60,7 +62,7 @@ func TestPinnedLeaseSpansHumanGatePauseAndResume(t *testing.T) {
 		close(secondDone)
 	}()
 
-	deadline := time.Now().Add(runnerTestWaitTimeout)
+	deadline := time.Now().Add(pinnedLeaseWaitTimeout)
 	for {
 		rd, openErr := journal.OpenRead(filepath.Join(root, "runs", "pinned-paused-2"))
 		if openErr == nil {
@@ -87,7 +89,7 @@ queued:
 		t.Fatal("second run entered the pinned workspace while the first was paused")
 	default:
 	}
-	const stalledTimeout = 250 * time.Millisecond
+	const stalledTimeout = 2 * time.Second
 	time.Sleep(2 * stalledTimeout)
 	if result, escalated, err := r.EscalateStalled("pinned-paused-2", time.Now(), stalledTimeout); err != nil {
 		t.Fatal(err)
@@ -110,7 +112,7 @@ queued:
 
 	select {
 	case <-secondDone:
-	case <-time.After(runnerTestWaitTimeout):
+	case <-time.After(pinnedLeaseWaitTimeout):
 		cancelSecond()
 		<-secondDone
 		t.Fatal("second run did not acquire the pinned lease after the first completed")

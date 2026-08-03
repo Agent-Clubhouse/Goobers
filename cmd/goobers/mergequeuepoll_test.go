@@ -889,7 +889,6 @@ func TestMergeQueuePollRecordsOptOutDequeueTimeoutForReconciliation(t *testing.T
 		pendingCalls:            1_000_000,
 		terminalState:           "open",
 		labels:                  []string{noMergeReviewLabel},
-		optOutAfterGraphQLPolls: 1,
 		// Every dequeue attempt fails, so removal is never confirmed and the
 		// poll runs to its deadline still believing the entry may be queued.
 		dequeueFailures: 1_000_000,
