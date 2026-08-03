@@ -27,7 +27,18 @@ type Command struct {
 	Short    string
 	Long     string
 	Examples []string
+	Group    Group
 }
+
+// Group controls progressive disclosure in generated command indexes.
+type Group string
+
+// Command index groups, from the default operator surface to stage internals.
+const (
+	GroupCore     Group = "core"
+	GroupAdvanced Group = "advanced"
+	GroupStage    Group = "stage"
+)
 
 // Name is the space-joined invocation path below the binary ("run abort").
 func (c Command) Name() string { return strings.Join(c.Path, " ") }
@@ -116,9 +127,9 @@ func ManIndex(root Command, cmds []Command) string {
 		b.WriteString(roffPreformatted(root.Long))
 	}
 	b.WriteString(".SH COMMANDS\n")
-	for _, c := range cmds {
-		fmt.Fprintf(&b, ".TP\n\\fB%s\\fR\n%s\n", roffEscapeInline(c.FullName()), roffEscapeInline(c.Short))
-	}
+	writeManGroup(&b, "Core commands", cmds, GroupCore)
+	writeManGroup(&b, "Advanced operator commands", cmds, GroupAdvanced)
+	writeManGroup(&b, "Workflow-stage and connector commands", cmds, GroupStage)
 	b.WriteString(".SH SEE ALSO\n")
 	refs := make([]string, 0, len(cmds))
 	for _, c := range cmds {
@@ -126,6 +137,16 @@ func ManIndex(root Command, cmds []Command) string {
 	}
 	b.WriteString(strings.Join(refs, ",\n") + "\n")
 	return b.String()
+}
+
+func writeManGroup(b *strings.Builder, heading string, cmds []Command, group Group) {
+	fmt.Fprintf(b, ".SS %s\n", heading)
+	for _, c := range cmds {
+		if c.Group != group {
+			continue
+		}
+		fmt.Fprintf(b, ".TP\n\\fB%s\\fR\n%s\n", roffEscapeInline(c.FullName()), roffEscapeInline(c.Short))
+	}
 }
 
 // Reference renders the single Markdown CLI reference (docs/cli/README.md): an
@@ -141,12 +162,9 @@ func Reference(root Command, cmds []Command) string {
 	}
 	fmt.Fprintf(&b, "`goobers` is the %s. This reference is generated from the CLI command registry, so it always matches the shipped binary.\n\n", intro)
 
-	b.WriteString("## Commands\n\n")
-	b.WriteString("| Command | Description |\n| --- | --- |\n")
-	for _, c := range cmds {
-		fmt.Fprintf(&b, "| [`%s`](#%s) | %s |\n", c.FullName(), anchor(c.Slug()), mdEscapeCell(c.Short))
-	}
-	b.WriteString("\n")
+	writeReferenceGroup(&b, "Core commands", "", cmds, GroupCore)
+	writeReferenceGroup(&b, "Advanced operator commands", "Less-common commands for configuration, maintenance, and diagnostics.", cmds, GroupAdvanced)
+	writeReferenceGroup(&b, "Workflow-stage and connector commands", "Runner-invoked workflow internals; these remain directly invocable but are not typically run by hand.", cmds, GroupStage)
 
 	for _, c := range cmds {
 		fmt.Fprintf(&b, "## `%s`\n\n", c.FullName())
@@ -170,6 +188,21 @@ func Reference(root Command, cmds []Command) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func writeReferenceGroup(b *strings.Builder, heading, intro string, cmds []Command, group Group) {
+	fmt.Fprintf(b, "## %s\n\n", heading)
+	if intro != "" {
+		fmt.Fprintf(b, "%s\n\n", intro)
+	}
+	b.WriteString("| Command | Description |\n| --- | --- |\n")
+	for _, c := range cmds {
+		if c.Group != group {
+			continue
+		}
+		fmt.Fprintf(b, "| [`%s`](#%s) | %s |\n", c.FullName(), anchor(c.Slug()), mdEscapeCell(c.Short))
+	}
+	b.WriteString("\n")
 }
 
 // anchor mirrors GitHub's heading-to-anchor rule closely enough for the slugs

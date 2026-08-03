@@ -31,12 +31,14 @@ type completionModel struct {
 
 // completionCommand is one node in the completion tree.
 type completionCommand struct {
-	name    string               // canonical leaf name (registry names[0])
-	id      string               // full space-joined invocation path
-	desc    string               // registry short help (renders as the zsh description)
-	subs    []completionCommand  // nested subcommands, from the registry
-	flags   []completionFlagSpec // annotated flags (completionFlagSpecs[id])
-	argKind string               // dynamic positional arg kind (workflows|runs|escalations|examples)
+	name      string               // canonical leaf name (registry names[0])
+	id        string               // full space-joined invocation path
+	desc      string               // registry short help (renders as the zsh description)
+	tier      cliCommandTier       // controls top-level progressive disclosure
+	subs      []completionCommand  // nested subcommands, from the registry
+	flags     []completionFlagSpec // annotated flags (completionFlagSpecs[id])
+	argKind   string               // dynamic positional arg kind (workflows|runs|escalations|examples)
+	argValues []string             // static positional argument candidates
 }
 
 // completionFlagSpec annotates one flag for completion. takesArg mirrors
@@ -61,6 +63,10 @@ var completionPositionalArgKinds = map[string]string{
 	"escalations show": "escalations",
 	"examples show":    "examples",
 	"workflow show":    "workflows",
+}
+
+var completionPositionalArgValues = map[string][]string{
+	"help": {"all", "stages"},
 }
 
 // completionFlagSpecs maps a command id to its completable flags. The set and
@@ -305,11 +311,13 @@ func buildCompletionModel() completionModel {
 
 func buildCompletionCommand(c cliCommand, name, id string) completionCommand {
 	node := completionCommand{
-		name:    name,
-		id:      id,
-		desc:    c.short,
-		flags:   completionFlagSpecs[id],
-		argKind: completionPositionalArgKinds[id],
+		name:      name,
+		id:        id,
+		desc:      c.short,
+		tier:      c.tier,
+		flags:     completionFlagSpecs[id],
+		argKind:   completionPositionalArgKinds[id],
+		argValues: completionPositionalArgValues[id],
 	}
 	for _, sub := range c.subcommands {
 		if len(sub.names) == 0 || isHiddenCompletionCommand(sub.names[0]) {

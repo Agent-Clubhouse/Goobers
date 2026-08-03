@@ -50,6 +50,8 @@ func TestCLIHelpGolden(t *testing.T) {
 
 	capture("(bare)")
 	capture("help", "help")
+	capture("help all", "help", "all")
+	capture("help stages", "help", "stages")
 	// Sort by invocation path so the golden layout is stable regardless of the
 	// registry's declaration order — the file locks each command's help text,
 	// not the registry ordering.
