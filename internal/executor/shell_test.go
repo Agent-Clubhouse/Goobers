@@ -618,7 +618,7 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
-	env.Inputs = map[string]interface{}{InputTimeout: "500ms"}
+	env.Inputs = map[string]interface{}{InputTimeout: "2s"}
 
 	const marker = "__SIGQUIT_DUMP_MARKER__"
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
