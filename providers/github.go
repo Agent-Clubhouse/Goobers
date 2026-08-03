@@ -2427,8 +2427,37 @@ func (p *GitHubProvider) AttachWorkItemChild(ctx context.Context, req AttachWork
 	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"sub_issue_id": childDatabaseID}, nil)
 }
 
-// HasOpenWorkItemBlocker reports whether a GitHub issue has a native blocker
-// that is still open.
+// ListWorkItemBlockers returns the GitHub issues and pull requests registered as
+// native blockers for an issue.
+func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	if err != nil {
+		return nil, err
+	}
+	var blockers []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
+		}
+		for _, issue := range issues {
+			blockers = append(blockers, mapGitHubIssue(issue))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return blockers, nil
+}
+
+// HasOpenWorkItemBlocker reports whether a GitHub issue has a native issue
+// blocker that is still open.
 func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return false, err
