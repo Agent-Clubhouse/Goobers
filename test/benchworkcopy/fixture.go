@@ -290,9 +290,10 @@ func fixturePath(index, depth int) string {
 		parts = append(parts, fmt.Sprintf("Component%02d_%03d", level, (index/(level+1))%997))
 	}
 	ext := ".cs"
-	if index%3 == 0 {
+	switch index % 3 {
+	case 0:
 		ext = ".cpp"
-	} else if index%3 == 1 {
+	case 1:
 		ext = ".h"
 	}
 	parts = append(parts, fmt.Sprintf("GeneratedType%06d%s", index, ext))
