@@ -52,9 +52,9 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 // value) or a regression (investigate). Digests are over the definition's
 // canonical form, so YAML reformatting alone never moves them.
 var goldenDigests = map[string]string{
-	// #401: await-ci explicitly declares the github:pr:write capability used
-	// to poll the pull request's checks.
-	"implementation.yaml":   "sha256:2141539b3bc6e30032533e997afa80a17fa6cc1ec5eeac106fccc4465b41ab1c",
+	// #2213: await-ci declares the provider-neutral PR capability used to poll
+	// the pull request's checks.
+	"implementation.yaml":   "sha256:e5789cd385c1f201c1b4ca71548d52fc7a409712da1bd34d30388ea22aa31569",
 	"backlog-curation.yaml": "sha256:38a219bae84d738acba00d8bde4695a311f712fabb36c430ff6bb8143eab24c1",
 	"work-nomination.yaml":  "sha256:67eb702aba404b995e806964a9aaf52f9a176a497fc24848fc8ac3b217d65b73",
 }

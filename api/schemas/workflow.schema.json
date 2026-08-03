@@ -245,6 +245,7 @@
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",
+              "provider:pr:write",
               "github:pr:write",
               "github:pr:review",
               "github:branch:delete",

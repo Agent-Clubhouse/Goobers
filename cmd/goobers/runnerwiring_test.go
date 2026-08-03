@@ -2105,6 +2105,16 @@ func TestCIPollCredentialRequiresDeclaredCapability(t *testing.T) {
 	}
 }
 
+func TestADOCIPollRequiresProviderNeutralCapability(t *testing.T) {
+	exec := &ciPollKindExecutor{
+		adoRepo: &instance.RepoRef{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web"},
+	}
+	_, err := exec.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ADOPRWrite)}), apiv1.DeterministicRun{})
+	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
+		t.Fatalf("Run error = %v, want ErrUndeclaredCapability", err)
+	}
+}
+
 func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	reg := &escTestRegistrar{}
 	deterministic := newCIPollWiringTestExecutor(t, reg)
@@ -2117,7 +2127,7 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { newPRPoller = prev })
 
-	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)}), apiv1.DeterministicRun{})
+	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)}), apiv1.DeterministicRun{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
