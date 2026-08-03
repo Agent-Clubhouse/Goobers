@@ -675,6 +675,7 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -723,6 +724,7 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) 
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
