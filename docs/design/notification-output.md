@@ -21,6 +21,9 @@ Each attempt and each pre-delivery suppression produces a
 delivered/failed/skipped status, optional external reference, and bounded,
 redacted error detail. Requests and receipts append to the source run journal as
 `notification.requested` and `notification.delivery.receipt`; journal scrubbing
-runs before persistence. A delivered receipt keyed by `(idempotencyKey, sink
-kind)` suppresses later delivery after an in-process retry or journal recovery.
-Skipped and failed receipts are never represented as successful delivery.
+runs before persistence. The dispatcher and run journal receive the same scrubber,
+including the registry fed every resolver-issued credential, so returned errors
+and durable records apply identical exact-value and pattern redaction. A delivered
+receipt keyed by `(idempotencyKey, sink kind)` suppresses later delivery after an
+in-process retry or journal recovery. Skipped and failed receipts are never
+represented as successful delivery.

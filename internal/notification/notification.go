@@ -125,23 +125,27 @@ type Result struct {
 type Dispatcher struct {
 	registry *Registry
 	recorder Recorder
+	scrubber journal.Scrubber
 	policy   Policy
 	now      func() time.Time
 	mu       sync.Mutex
 }
 
-func NewDispatcher(registry *Registry, recorder Recorder, policy Policy) (*Dispatcher, error) {
+func NewDispatcher(registry *Registry, recorder Recorder, scrubber journal.Scrubber, policy Policy) (*Dispatcher, error) {
 	if registry == nil {
 		return nil, errors.New("notification: registry is required")
 	}
 	if recorder == nil {
 		return nil, errors.New("notification: durable recorder is required")
 	}
+	if scrubber == nil {
+		return nil, errors.New("notification: credential-aware scrubber is required")
+	}
 	normalized, err := policy.normalized()
 	if err != nil {
 		return nil, err
 	}
-	return &Dispatcher{registry: registry, recorder: recorder, policy: normalized, now: time.Now}, nil
+	return &Dispatcher{registry: registry, recorder: recorder, scrubber: scrubber, policy: normalized, now: time.Now}, nil
 }
 
 // Dispatch records the request before attempting any sink. The dispatcher
@@ -215,10 +219,7 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 			deadline = request.ExpiresAt
 		}
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
-		externalRef, deliverErr := sink.Deliver(attemptCtx, request)
-		if attemptCtx.Err() != nil {
-			deliverErr = attemptCtx.Err()
-		}
+		externalRef, deliverErr := deliver(attemptCtx, sink, request)
 		cancel()
 		status := apiv1.NotificationDelivered
 		if deliverErr != nil {
@@ -255,10 +256,33 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 func (d *Dispatcher) persist(ctx context.Context, receipt apiv1.NotificationReceipt) (apiv1.NotificationReceipt, error) {
 	if err := d.recorder.RecordReceipt(context.WithoutCancel(ctx), receipt); err != nil {
 		receipt.Status = apiv1.NotificationFailed
-		receipt.Error = sanitizeError(fmt.Errorf("record receipt: %w", err))
+		receipt.Error = d.sanitizeError(fmt.Errorf("record receipt: %w", err))
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+type deliveryResult struct {
+	externalReference string
+	err               error
+}
+
+func deliver(ctx context.Context, sink Sink, request apiv1.NotificationRequest) (string, error) {
+	result := make(chan deliveryResult, 1)
+	go func() {
+		externalReference, err := sink.Deliver(ctx, request)
+		result <- deliveryResult{externalReference: externalReference, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case delivered := <-result:
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return delivered.externalReference, delivered.err
+	}
 }
 
 func (d *Dispatcher) receipt(request apiv1.NotificationRequest, sink apiv1.NotificationSinkRef, attempt int, started, completed time.Time, status apiv1.NotificationDeliveryStatus, externalRef string, err error) apiv1.NotificationReceipt {
@@ -266,7 +290,7 @@ func (d *Dispatcher) receipt(request apiv1.NotificationRequest, sink apiv1.Notif
 		Schema: apiv1.NotificationReceiptSchema, NotificationID: request.NotificationID,
 		IdempotencyKey: request.IdempotencyKey, Source: request.Source, Evidence: request.Evidence,
 		Sink: sink, Attempt: attempt, StartedAt: started.UTC(), CompletedAt: completed.UTC(),
-		Status: status, ExternalReference: externalRef, Error: sanitizeError(err),
+		Status: status, ExternalReference: externalRef, Error: d.sanitizeError(err),
 	}
 }
 
@@ -358,7 +382,7 @@ func validSHA256Digest(value string) bool {
 	return true
 }
 
-func sanitizeError(err error) string {
+func (d *Dispatcher) sanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -369,7 +393,7 @@ func sanitizeError(err error) string {
 		return r
 	}, err.Error())
 	message = strings.Join(strings.Fields(message), " ")
-	message = string(journal.NewPatternScrubber().Scrub([]byte(message)))
+	message = string(d.scrubber.Scrub([]byte(message)))
 	if utf8.RuneCountInString(message) > maxErrorRunes {
 		runes := []rune(message)
 		message = string(runes[:maxErrorRunes]) + "..."
