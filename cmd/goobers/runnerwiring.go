@@ -1025,17 +1025,25 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 // buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
 // instance-level consequences of a stage reporting status "blocked". Returns
 // nil when no repo is configured, mirroring buildEscalationNotifier.
-// Every blocked driving issue is parked goobers:needs-human (swap off
-// goobers:ready and the provider-visible claim marker) per the #544 ruling /
-// #539 convention. This prevents the released claim from making the same item
-// immediately eligible again.
+// Every blocked driving issue is parked (swap off goobers:ready and the
+// provider-visible claim marker) per the #544 ruling / #539 convention. This
+// prevents the released claim from making the same item immediately eligible
+// again.
+//
+// The park label depends on whether the stage named a blocker (#2028): a
+// named, non-cyclic blocker is goobers:blocked-on-sibling — a self-healing
+// dependency park, not a decision only a human can make; the record below is
+// what actually self-heals it (filterBlockedEligibility, blockedrecords.go),
+// the label just needs to say so. An unattributed block (no blocker named) or
+// a detected circular dependency is goobers:needs-human — the runner can't
+// resolve either on its own, so it genuinely is a human decision.
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
 // issue if a human re-promotes it before every dependency closes. If a new
-// record closes a cycle, every issue in that cycle is parked and receives a
-// cycle-specific comment for human resolution. The runner's shared
-// EscalationNotifier owns the normal explanatory provider comment.
+// record closes a cycle, every issue in that cycle is parked goobers:needs-human
+// and receives a cycle-specific comment for human resolution. The runner's
+// shared EscalationNotifier owns the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -1089,10 +1097,18 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		// escalationCommenter before the work-item call.
 		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
+			// #2028: a named blocker is a self-healing dependency park
+			// (blocked-on-sibling), not a human decision; only an
+			// unattributed block stays needs-human. A detected cycle
+			// overrides this below with its own needs-human cycleReq.
+			label := providers.LabelNeedsHuman
+			if len(o.Blockers) > 0 {
+				label = blockedOnSiblingLabel
+			}
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,
 				ID:           itemID,
-				AddLabels:    []string{providers.LabelNeedsHuman},
+				AddLabels:    []string{label},
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {

@@ -100,10 +100,13 @@ spec:
         # this label is the provider-permission-enforced gate on that
         # untrusted input.
         trustLabel: "goobers:approved"
-        # Idempotency: items already bearing either output marker are
-        # excluded, so a re-run over an already-curated backlog claims
-        # nothing.
-        excludeLabels: "goobers:ready,goobers:needs-human"
+        # Idempotency: items already bearing an output marker are excluded, so
+        # a re-run over an already-curated backlog claims nothing. #2028:
+        # blocked-on-sibling and needs-remediation are also curator output
+        # dispositions now (applied by the implementation workflow's park
+        # paths, not the curator itself) — excluded for the same reason
+        # needs-human is, so a parked item isn't re-offered for triage.
+        excludeLabels: "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
         # Batch: claim up to 20 eligible items in one run (#236). backlog-query
         # now honors maxItems (it was a dead input) and, for a batch, writes a
         # claimed-items.json array.

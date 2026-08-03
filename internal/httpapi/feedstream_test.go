@@ -97,6 +97,7 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
+
 	defer cancel()
 
 	commitRun(t, store, 1)
@@ -113,6 +114,26 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no event delivered for a committed change")
 	}
+}
+
+func TestFeedStreamCloseJoinsSubscriptionPump(t *testing.T) {
+	store := feedTestStore(t)
+	stream := newFeedStream(store)
+	_, events, cancel, err := stream.Subscribe("")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	stream.Close()
+	select {
+	case _, ok := <-events:
+		if ok {
+			t.Fatal("subscription produced an event after stream shutdown")
+		}
+	default:
+		t.Fatal("Close returned before the subscription pump exited")
+	}
+	cancel()
 }
 
 // TestFeedStreamNamesEachRefusalCondition pins that the three conditions reach
