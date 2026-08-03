@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -131,6 +132,9 @@ type Config struct {
 
 // WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
 type WorkcopiesConfig struct {
+	// Root is an optional absolute base path for managed mirrors and worktrees.
+	// Gaggle names are appended beneath it to preserve workforce isolation.
+	Root string `json:"root,omitempty" yaml:"root,omitempty"`
 	// PartialClone opts newly created mirrors into blobless partial clones
 	// with a heads+tags-narrowed refresh refspec (#646, design §3 B1): blobs
 	// are fetched on demand when a stage worktree first materializes them,
@@ -161,6 +165,25 @@ func (c *Config) PartialCloneEnabled() bool {
 // false).
 func (c *Config) ObjectCacheEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.ObjectCache
+}
+
+// EffectiveWorkcopiesLayout applies the gaggle override, then the instance
+// override, to layout. An empty root preserves the instance-local default.
+func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (Layout, error) {
+	root := ""
+	if c != nil && c.Workcopies != nil {
+		root = c.Workcopies.Root
+	}
+	if gaggle != nil && gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+		root = gaggle.Spec.Workcopies.Root
+	}
+	if root == "" {
+		return layout, nil
+	}
+	if !filepath.IsAbs(root) {
+		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
+	}
+	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
 }
 
 // EffectiveSelfIdentity returns the provider login configured for gaggle,
@@ -1291,6 +1314,9 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
+	if c.Workcopies != nil && c.Workcopies.Root != "" && !filepath.IsAbs(c.Workcopies.Root) {
+		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Workcopies.Root)
+	}
 	if err := c.validateAPIConfig(); err != nil {
 		return err
 	}

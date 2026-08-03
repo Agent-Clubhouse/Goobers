@@ -75,6 +75,10 @@ type GaggleSpec struct {
 	// opt-in, so a gaggle that omits this behaves exactly as before.
 	// +optional
 	Sandbox *GaggleSandbox `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+	// Workcopies overrides the instance-level managed working-copy placement for
+	// this gaggle. Root is an absolute base path; the gaggle name is appended.
+	// +optional
+	Workcopies *GaggleWorkcopies `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
 	// RequireLabels is the default `requireLabels` value every workflow's
 	// `backlog-query` task in this gaggle inherits, mirroring
 	// BranchNamespace's gaggle-default/per-task-override shape (MIRC-2,
@@ -101,6 +105,13 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// GaggleWorkcopies configures managed working-copy placement for one gaggle.
+type GaggleWorkcopies struct {
+	// Root is an absolute base path for this gaggle's managed working copies.
+	// +kubebuilder:validation:MinLength=1
+	Root string `json:"root" yaml:"root"`
 }
 
 // GaggleSibling declares another gaggle/instance this gaggle knows is

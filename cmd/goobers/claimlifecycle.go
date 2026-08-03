@@ -14,20 +14,34 @@ import (
 // after an explicit workflow release already did the same work.
 func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
 	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunRelease, l.Gaggle(), runID, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(log),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
-		for _, entry := range ledger.ForRunAll(runID) {
-			if err := ledger.ReleaseEntry(entry, runID); err != nil {
-				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
-			}
-		}
-		return nil
+		return releaseClaimsForRunLocked(l, log, runID)
 	})
+}
+
+func releaseClaimsForRunWithDefaultTimeout(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	return withClaimLockBounds(lockPath, claimLockOperationRunRelease, instance.DefaultClaimsLockTimeout, claimLockSlowThreshold, claimLockEventContext{
+		Gaggle: l.Gaggle(),
+		RunID:  runID,
+	}, func() error {
+		return releaseClaimsForRunLocked(l, log, runID)
+	})
+}
+
+func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithInstanceLog(log),
+	)
+	if err != nil {
+		return fmt.Errorf("open claim ledger: %w", err)
+	}
+	for _, entry := range ledger.ForRunAll(runID) {
+		if err := ledger.ReleaseEntry(entry, runID); err != nil {
+			return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
+		}
+	}
+	return nil
 }
 
 // renewLiveClaims re-acquires every claim held by a run this process is

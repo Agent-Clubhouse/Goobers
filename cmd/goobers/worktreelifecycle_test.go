@@ -232,6 +232,33 @@ func TestRunAbortPreservesAndJournalsKeptWorktree(t *testing.T) {
 	assertRunFinishedLast(t, l.RunsDir(), runID, journal.PhaseAborted)
 }
 
+func TestRunAbortCleansConfiguredWorkcopiesRoot(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	shortRoot := filepath.Join(t.TempDir(), "short")
+	gagglePath := filepath.Join(l.ConfigDir(), "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "spec:\n", "spec:\n  workcopies:\n    root: "+shortRoot+"\n")
+
+	const runID = "abort-short-workcopies"
+	runLayout := l.ForGaggle("example")
+	newStuckRun(t, runLayout, runID, "default-implement")
+	workcopiesLayout := runLayout.WithWorkcopiesRoot(shortRoot)
+	wtMgr, repo := commandWorktreeFixture(t, workcopiesLayout)
+	wt, err := wtMgr.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: repo, RunID: runID + "-implement", OwnerRunID: runID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if code, _, stderr := runArgs(t, "run", "abort", runID, root); code != 0 {
+		t.Fatalf("run abort: code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("relocated worktree still exists: %v", err)
+	}
+}
+
 func TestUpReapsTerminalDeregisteredOrphanAndKeepsMarkedWorktree(t *testing.T) {
 	root := initDeterministicDemo(t)
 	setAPIListenAddress(t, root, freeLoopbackAddress(t))

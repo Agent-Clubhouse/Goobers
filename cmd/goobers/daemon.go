@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -501,6 +503,27 @@ func claimProvidersByGaggle(set *instance.ConfigSet) map[string]apiv1.Provider {
 	return providers
 }
 
+type workcopyRootClaim struct {
+	gaggle    string
+	alternate bool
+}
+
+func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string, alternate bool) error {
+	path, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
+	}
+	key := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	if other, exists := claims[key]; exists && other.gaggle != gaggle && (alternate || other.alternate) {
+		return fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other.gaggle, gaggle, path)
+	}
+	claims[key] = workcopyRootClaim{gaggle: gaggle, alternate: alternate}
+	return nil
+}
+
 func buildSchedulerDefinitions(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -553,14 +576,33 @@ func buildSchedulerDefinitions(
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
 	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
+	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
+	workcopyRoots := make(map[string]workcopyRootClaim, len(set.Gaggles))
 	for i := range set.Gaggles {
-		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
-		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
+		gaggle := &set.Gaggles[i]
+		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
+		gaggleAdditionalRepos[gaggle.Name] = gaggle.Spec.AdditionalRepos
+		scoped, layoutErr := instance.EffectiveWorkcopiesLayout(l.ForGaggle(gaggle.Name), cfg, gaggle)
+		if layoutErr != nil {
+			return nil, fmt.Errorf("gaggle %s: %w", gaggle.Name, layoutErr)
+		}
+		managerRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			managerRoot = scoped.WorkcopiesBaseDir()
+		}
+		alternateRoot := cfg.Workcopies != nil && cfg.Workcopies.Root != ""
+		if gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+			alternateRoot = true
+		}
+		if err := claimWorkcopyRoot(workcopyRoots, gaggle.Name, managerRoot, alternateRoot); err != nil {
+			return nil, err
+		}
+		workcopyLayouts[gaggle.Name] = scoped
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
-		scoped := l.ForGaggle(gaggle)
+		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
