@@ -2569,7 +2569,8 @@ func TestBuildBlockedHandlerNilForRepoLessInstance(t *testing.T) {
 }
 
 // TestBuildBlockedHandlerKnownBlockersRecordsAndParks retains #552's learned
-// dependency guard while applying #544's needs-human parking disposition.
+// dependency guard while applying #2028's blocked-on-sibling parking
+// disposition for a named, non-cyclic blocker.
 func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	var gotToken string
@@ -2626,11 +2627,13 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	if gotToken != "blocked-secondary-token" {
 		t.Fatalf("parking token = %q, want secondary repository token", gotToken)
 	}
-	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
-		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, blockedOnSiblingLabel)
 	}
-	if got.Assignee == nil || *got.Assignee != "mason" {
-		t.Fatalf("Assignee = %v, want mason", got.Assignee)
+	// #2028: blocked-on-sibling self-heals — no human assignee. Only a
+	// LabelNeedsHuman park gets the configured assignee (needshumanrouting.go).
+	if got.Assignee != nil {
+		t.Fatalf("Assignee = %v, want nil for a self-healing blocked-on-sibling park", *got.Assignee)
 	}
 	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
 	if !slices.Equal(got.RemoveLabels, wantRemoved) {
@@ -2681,9 +2684,9 @@ func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
 	}
 	got := fake.calls[0]
 	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
-	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman ||
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel ||
 		!slices.Equal(got.RemoveLabels, wantRemoved) {
-		t.Fatalf("parking request = %+v, want needs-human added and ready/claimed removed", got)
+		t.Fatalf("parking request = %+v, want blocked-on-sibling added and ready/claimed removed", got)
 	}
 }
 
@@ -2804,9 +2807,9 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" ||
 		fake.calls[0].Comment != "" ||
-		!slices.Equal(fake.calls[0].AddLabels, []string{providers.LabelNeedsHuman}) ||
+		!slices.Equal(fake.calls[0].AddLabels, []string{blockedOnSiblingLabel}) ||
 		!slices.Equal(fake.calls[0].RemoveLabels, []string{providers.LabelReady, providers.LabelClaimed}) {
-		t.Fatalf("web calls = %+v, want one non-cycle parking update for web#510", fake.calls)
+		t.Fatalf("web calls = %+v, want one non-cycle blocked-on-sibling update for web#510", fake.calls)
 	}
 
 	if err := handler(context.Background(), runner.BlockedOutcome{

@@ -357,6 +357,65 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	}
 }
 
+// TestIssueCloseOutNeedsRemediationParksWithoutAssignee proves #2028's
+// mechanical-failure park is distinct from needs-human: it lands
+// goobers:needs-remediation instead of goobers:needs-human, and it never
+// gets the configured human assignee even when one is configured — a
+// needs-remediation park is not a decision routed to a human, so
+// withNeedsHumanAssignee (needshumanrouting.go) must not fire for it.
+func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.NeedsHumanAssignee = "mason"
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Repass budget exhausted", "goobers:approved", "goobers:ready", "goobers:claimed")
+
+	const runID = "run-exhausted"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for remediation: repass budget exhausted.")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "parked 7 needs-remediation") {
+		t.Fatalf("stdout = %q, want parked needs-remediation message", stdout)
+	}
+
+	server.mu.Lock()
+	parked := server.issues[7]
+	server.mu.Unlock()
+	if parked.assignee != "" {
+		t.Fatalf("issue assignee = %q, want empty — needs-remediation never assigns the configured human", parked.assignee)
+	}
+	if !hasAnyLabel(parked.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("issue labels = %v, want %s", parked.labels, needsRemediationLabel)
+	}
+	if hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("issue labels = %v, did not want %s", parked.labels, providers.LabelNeedsHuman)
+	}
+	if hasAnyLabel(parked.labels, []string{providers.LabelReady}) {
+		t.Fatalf("issue labels = %v, want ready removed", parked.labels)
+	}
+}
+
 func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	runsDir := t.TempDir()
 	run, err := journal.Create(runsDir, journal.RunIdentity{

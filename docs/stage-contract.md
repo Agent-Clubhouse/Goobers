@@ -677,7 +677,7 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
 | `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
-| `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked `goobers:needs-human` with its ready/claimed markers removed (#539's convention). If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
+| `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked with its ready/claimed markers removed (#539's convention). The park label depends on whether `outputs.blockedBy` named a blocker (#2028): a named, non-cyclic blocker parks `goobers:blocked-on-sibling` (self-healing — see below); an unattributed block, or a detected circular dependency, parks `goobers:needs-human`. If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
 | `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
@@ -719,10 +719,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > (§"Where a stage writes its output" above), so do **not** attempt an array
 > or object here; a prior live occurrence tried exactly that and was
 > schema-rejected, burning a whole attempt for nothing. Omit `outputs.blockedBy`
-> when the block isn't attributable to specific open issues. Every blocked
-> result parks the driving issue `goobers:needs-human`; `blockedBy` additionally
-> prevents premature re-selection if a human re-promotes it while a named
-> dependency remains open.
+> when the block isn't attributable to specific open issues — that case parks
+> `goobers:needs-human` (nothing to reason about but a human). Naming a
+> blocker instead parks `goobers:blocked-on-sibling` (#2028: a self-healing
+> dependency wait, not a decision), and `blockedBy` additionally prevents
+> premature re-selection if the item is re-promoted while a named dependency
+> remains open. See `docs/design/needs-human-taxonomy.md` for the full model,
+> including the circular-dependency exception (still `goobers:needs-human` —
+> it can't self-heal).
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a
