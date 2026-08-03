@@ -22,6 +22,7 @@ func prDetailHandler(t *testing.T, reviewers []map[string]interface{}) http.Hand
 			"status":                "active",
 			"title":                 "Implement PBI 100",
 			"description":           "Implements PBI 100",
+			"createdBy":             map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
 			"isDraft":               false,
 			"sourceRefName":         "refs/heads/goobers/implement/run-9",
 			"targetRefName":         "refs/heads/master",
@@ -83,8 +84,11 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 		wantCheckNames []string
 	}{
 		{
-			name:      "all gating policies approved is passing",
-			reviewers: []map[string]interface{}{{"vote": 10}},
+			name: "all gating policies approved is passing",
+			reviewers: []map[string]interface{}{
+				{"vote": 10, "uniqueName": "done@example.com"},
+				{"vote": 0, "uniqueName": "pending@example.com"},
+			},
 			evaluations: []map[string]interface{}{
 				blockingPolicy("Build", "approved"),
 				blockingPolicy("Status", "approved"),
@@ -177,6 +181,13 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			}
 			if result.Number != 42 || result.State != "open" || result.Merged {
 				t.Fatalf("unexpected identity/state: %#v", result)
+			}
+			if result.Author != "mona@example.com" {
+				t.Fatalf("Author = %q, want mona@example.com", result.Author)
+			}
+			if tc.name == "all gating policies approved is passing" &&
+				(len(result.RequestedReviewers) != 1 || result.RequestedReviewers[0] != "pending@example.com") {
+				t.Fatalf("RequestedReviewers = %v, want only the unvoted reviewer", result.RequestedReviewers)
 			}
 			if result.HeadSHA != "head-sha" || result.BaseSHA != "base-sha" || result.BaseBranch != "master" {
 				t.Fatalf("unexpected refs: %#v", result)

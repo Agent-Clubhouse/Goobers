@@ -16,6 +16,9 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.close` | yes | conformant | conformant | conformant |
 | `pr.files` | yes | conformant | conformant | conformant |
 | `pr.compare` | yes | conformant | conformant | conformant |
+| `pr.query.author` | yes | conformant | conformant | not declared |
+| `pr.query.assignee` | yes | conformant | gap (#2178) | not declared |
+| `pr.query.requestedReviewer` | yes | conformant | conformant | not declared |
 | `pr.review.request` | yes | conformant | conformant | conformant |
 | `pr.review.submit` |  | conformant | not declared | conformant |
 | `pr.review.threads` |  | conformant | not declared | conformant |

@@ -157,6 +157,7 @@ func (p *GitHubProvider) Kind() ProviderKind {
 func (p *GitHubProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapPRReviewSubmit, CapPRReviewThreads,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
@@ -837,30 +838,35 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	for _, label := range pr.Labels {
 		labels = append(labels, label.Name)
 	}
+	assignees := githubUserLogins(pr.Assignees)
+	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
 
 	return PullRequestPollResult{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		State:            pr.State,
-		Merged:           pr.Merged,
-		MergedAt:         pr.MergedAt,
-		Mergeable:        pr.Mergeable,
-		MergeableState:   pr.MergeableState,
-		Draft:            pr.Draft,
-		Labels:           labels,
-		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
-		HeadSHA:          pr.Head.SHA,
-		BaseSHA:          pr.Base.SHA,
-		BaseBranch:       pr.Base.Ref,
-		Body:             pr.Body,
-		ReviewDecision:   decision,
-		RequestedChanges: requestedChanges,
-		CheckState:       checkState,
-		Checks:           checks,
-		CommentsSince:    comments,
-		URL:              pr.HTMLURL,
-		Integrity:        apiintegrity.Unapproved,
+		Number:             pr.Number,
+		Title:              pr.Title,
+		Author:             pr.User.Login,
+		Assignees:          assignees,
+		RequestedReviewers: requestedReviewers,
+		State:              pr.State,
+		Merged:             pr.Merged,
+		MergedAt:           pr.MergedAt,
+		Mergeable:          pr.Mergeable,
+		MergeableState:     pr.MergeableState,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		HeadBranch:         pr.Head.Ref,
+		HeadRepository:     githubRepositoryRef(pr.Head.Repo),
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		BaseBranch:         pr.Base.Ref,
+		Body:               pr.Body,
+		ReviewDecision:     decision,
+		RequestedChanges:   requestedChanges,
+		CheckState:         checkState,
+		Checks:             checks,
+		CommentsSince:      comments,
+		URL:                pr.HTMLURL,
+		Integrity:          apiintegrity.Unapproved,
 	}, nil
 }
 
@@ -1560,6 +1566,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
 			continue
 		}
+		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -1575,22 +1584,25 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
 	labels := githubLabelNames(pr.Labels)
 	return PullRequestSummary{
-		ID:         strconv.Itoa(pr.Number),
-		Number:     pr.Number,
-		URL:        pr.HTMLURL,
-		State:      pr.State,
-		Merged:     pr.Merged || pr.MergedAt != nil,
-		Head:       pr.Head.Ref,
-		Base:       pr.Base.Ref,
-		HeadSHA:    pr.Head.SHA,
-		BaseSHA:    pr.Base.SHA,
-		MergeSHA:   pr.MergeCommitSHA,
-		Draft:      pr.Draft,
-		Labels:     labels,
-		CheckState: checkState,
-		UpdatedAt:  pr.UpdatedAt,
-		Body:       pr.Body,
-		Integrity:  apiintegrity.Unapproved,
+		ID:                 strconv.Itoa(pr.Number),
+		Number:             pr.Number,
+		URL:                pr.HTMLURL,
+		Author:             pr.User.Login,
+		Assignees:          githubUserLogins(pr.Assignees),
+		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
+		State:              pr.State,
+		Merged:             pr.Merged || pr.MergedAt != nil,
+		Head:               pr.Head.Ref,
+		Base:               pr.Base.Ref,
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		MergeSHA:           pr.MergeCommitSHA,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		CheckState:         checkState,
+		UpdatedAt:          pr.UpdatedAt,
+		Body:               pr.Body,
+		Integrity:          apiintegrity.Unapproved,
 	}
 }
 
@@ -1600,6 +1612,14 @@ func githubLabelNames(labels []githubLabel) []string {
 		names = append(names, label.Name)
 	}
 	return names
+}
+
+func githubUserLogins(users []githubUser) []string {
+	logins := make([]string, 0, len(users))
+	for _, user := range users {
+		logins = append(logins, user.Login)
+	}
+	return logins
 }
 
 // PullRequestFiles lists the files pullID touches — merge-review's
@@ -2976,22 +2996,25 @@ type githubPullRequest struct {
 }
 
 type githubPullRequestDetail struct {
-	ID             int64         `json:"id"`
-	Number         int           `json:"number"`
-	Title          string        `json:"title"`
-	State          string        `json:"state"`
-	Merged         bool          `json:"merged"`
-	MergedAt       *time.Time    `json:"merged_at"`
-	MergeCommitSHA string        `json:"merge_commit_sha"`
-	ClosedAt       *time.Time    `json:"closed_at"`
-	Mergeable      *bool         `json:"mergeable"`
-	MergeableState string        `json:"mergeable_state"`
-	Draft          bool          `json:"draft"`
-	Body           string        `json:"body"`
-	HTMLURL        string        `json:"html_url"`
-	Labels         []githubLabel `json:"labels"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	Head           struct {
+	ID                 int64         `json:"id"`
+	Number             int           `json:"number"`
+	Title              string        `json:"title"`
+	State              string        `json:"state"`
+	Merged             bool          `json:"merged"`
+	MergedAt           *time.Time    `json:"merged_at"`
+	MergeCommitSHA     string        `json:"merge_commit_sha"`
+	ClosedAt           *time.Time    `json:"closed_at"`
+	Mergeable          *bool         `json:"mergeable"`
+	MergeableState     string        `json:"mergeable_state"`
+	Draft              bool          `json:"draft"`
+	Body               string        `json:"body"`
+	HTMLURL            string        `json:"html_url"`
+	User               githubUser    `json:"user"`
+	Assignees          []githubUser  `json:"assignees"`
+	RequestedReviewers []githubUser  `json:"requested_reviewers"`
+	Labels             []githubLabel `json:"labels"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	Head               struct {
 		Ref  string            `json:"ref"`
 		SHA  string            `json:"sha"`
 		Repo *githubRepository `json:"repo"`
