@@ -75,29 +75,36 @@ Argo CD popularized for cluster configuration, applied to an agent workforce.
 ## One real agent-to-human handoff
 
 [Issue #664](https://github.com/Agent-Clubhouse/Goobers/issues/664) requested a
-flake ledger and quarantine policy. A running Goobers instance claimed it and
-worked it on `goobers/implementation/a5236bf6de96406c933ecb1a9b9b83bc`--the
-branch name identifies the workflow and run.
+flake ledger and quarantine policy, and was explicitly filed as backlog for
+future investment, **not approved for automated implementation**. A running
+Goobers instance claimed and worked it anyway, on
+`goobers/implementation/a5236bf6de96406c933ecb1a9b9b83bc`--the branch name
+identifies the workflow and run.
 
-1. The deterministic backlog stage selected and leased the approved issue.
+1. The deterministic backlog stage selected and leased an issue it should not
+   have: #664 carried no automated-implementation authorization.
 2. The implementation agent worked in the run's isolated branch; the reviewer
    and local-CI gates controlled whether it could advance or needed a repass.
 3. Deterministic stages published the branch and opened
    [PR #1746](https://github.com/Agent-Clubhouse/Goobers/pull/1746). Review
-   escalated unresolved defects to a human, and that PR closed without merging.
-4. A maintainer repaired the defects on the same branch, manually opened
-   replacement [PR #2200](https://github.com/Agent-Clubhouse/Goobers/pull/2200),
-   and merged it on 2026-08-01 after the resulting
+   caught the authorization violation--not merely defects in the diff--and
+   escalated to a human; that PR closed without merging.
+4. A maintainer authorized the work directly, repaired the defects the review
+   had also found, manually opened replacement
+   [PR #2200](https://github.com/Agent-Clubhouse/Goobers/pull/2200), and
+   merged it on 2026-08-01 after the resulting
    [CI run passed](https://github.com/Agent-Clubhouse/Goobers/actions/runs/30722079485),
    including the shipped-workflow contract checks.
 
-This was not one fully automated issue-to-merge run: automation produced the
-initial implementation and PR, then a human completed the remediation and
-merge. It demonstrates the intended boundary in concrete terms: trusted backlog
-work enters a declared machine; agents do bounded work; deterministic stages
-and gates coordinate repository effects and expose unresolved problems; and
-humans take over with an ordinary branch, PR, and inspectable history rather
-than an opaque agent session.
+This was not one fully automated issue-to-merge run: automation claimed work
+it was not authorized to do, then a human corrected the authorization,
+completed the remediation, and merged. It demonstrates the intended boundary
+in concrete terms even when the boundary is first crossed by mistake: trusted
+backlog work enters a declared machine; agents do bounded work; deterministic
+stages and gates coordinate repository effects and expose unresolved
+problems--including authorization violations, not just defects; and humans
+take over with an ordinary branch, PR, and inspectable history rather than an
+opaque agent session.
 
 ## Try it locally
 
