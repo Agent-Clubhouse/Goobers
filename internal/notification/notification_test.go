@@ -1,0 +1,245 @@
+package notification
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
+)
+
+type memoryRecorder struct {
+	mu       sync.Mutex
+	requests []apiv1.NotificationRequest
+	receipts []apiv1.NotificationReceipt
+}
+
+func (r *memoryRecorder) RecordRequest(_ context.Context, request apiv1.NotificationRequest) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests = append(r.requests, request)
+	return nil
+}
+
+func (r *memoryRecorder) RecordReceipt(_ context.Context, receipt apiv1.NotificationReceipt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.receipts = append(r.receipts, receipt)
+	return nil
+}
+
+func (r *memoryRecorder) Delivered(_ context.Context, key, sink string) (apiv1.NotificationReceipt, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.receipts) - 1; i >= 0; i-- {
+		receipt := r.receipts[i]
+		if receipt.IdempotencyKey == key && receipt.Sink.Kind == sink && receipt.Status == apiv1.NotificationDelivered {
+			return receipt, true, nil
+		}
+	}
+	return apiv1.NotificationReceipt{}, false, nil
+}
+
+func validRequest(sinks ...string) apiv1.NotificationRequest {
+	return apiv1.NotificationRequest{
+		Schema: apiv1.NotificationRequestSchema, NotificationID: "notice-1",
+		IncidentID: "incident-1", EventID: "event-1",
+		Severity: apiv1.NotificationSeverityCritical, Transition: "opened",
+		Title: "exact title", Body: "exact body", SpeechText: "exact speech",
+		Facts:    []apiv1.NotificationFact{{Name: "host", Value: "worker-1"}},
+		Evidence: []apiv1.NotificationEvidenceRef{{Kind: "artifact", ID: "evidence-1"}},
+		Source:   apiv1.NotificationSource{RunID: "0123456789abcdef0123456789abcdef", Workflow: "mission-control", Stage: "decide"},
+		Sinks:    sinks, ExpiresAt: time.Now().Add(time.Hour), IdempotencyKey: "incident-1:opened",
+	}
+}
+
+func newTestDispatcher(t *testing.T, recorder Recorder, policy Policy, sinks ...Sink) *Dispatcher {
+	t.Helper()
+	registry := NewRegistry()
+	for _, sink := range sinks {
+		if err := registry.Register(sink); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatcher, err := NewDispatcher(registry, recorder, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dispatcher
+}
+
+func TestSinkContractPreservesExactContent(t *testing.T) {
+	tests := []struct {
+		name string
+		sink func(*bytes.Buffer) Sink
+	}{
+		{name: "recording", sink: func(*bytes.Buffer) Sink { return &RecordingSink{} }},
+		{name: "terminal", sink: func(output *bytes.Buffer) Sink {
+			sink, err := NewTerminalSink(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return sink
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			sink := tt.sink(&output)
+			request := validRequest(sink.Kind())
+			recorder := &memoryRecorder{}
+			dispatcher := newTestDispatcher(t, recorder, Policy{}, sink)
+			if _, err := dispatcher.Dispatch(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if recording, ok := sink.(*RecordingSink); ok {
+				got := recording.Requests()
+				if len(got) != 1 || got[0].Title != request.Title || got[0].Body != request.Body || got[0].SpeechText != request.SpeechText {
+					t.Fatalf("recorded request changed: %+v", got)
+				}
+			} else if got, want := output.String(), "exact title\nexact body\nexact speech\n"; got != want {
+				t.Fatalf("terminal output = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestDispatchRetriesAndDurablySuppressesDuplicate(t *testing.T) {
+	sink := &RecordingSink{Err: errors.New("temporary failure")}
+	recorder := &memoryRecorder{}
+	dispatcher := newTestDispatcher(t, recorder, Policy{MaxAttempts: 2}, sink)
+	request := validRequest("recording")
+	if result, err := dispatcher.Dispatch(context.Background(), request); err == nil || len(result.Receipts) != 2 {
+		t.Fatalf("first dispatch receipts=%d err=%v", len(result.Receipts), err)
+	}
+	sink.Err = nil
+	if _, err := dispatcher.Dispatch(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	before := len(sink.Requests())
+	result, err := dispatcher.Dispatch(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.Requests()) != before {
+		t.Fatal("idempotent retry reached sink")
+	}
+	if len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationSkipped || result.Receipts[0].Attempt != 0 {
+		t.Fatalf("duplicate receipt = %+v", result.Receipts)
+	}
+}
+
+func TestPartialDeliveryPolicies(t *testing.T) {
+	good := &RecordingSink{SinkKind: "good"}
+	bad := &RecordingSink{SinkKind: "bad", Err: errors.New("no route")}
+	request := validRequest("good", "bad")
+	if _, err := newTestDispatcher(t, &memoryRecorder{}, Policy{Partial: RequireAny}, good, bad).Dispatch(context.Background(), request); err != nil {
+		t.Fatalf("require-any returned error: %v", err)
+	}
+	if _, err := newTestDispatcher(t, &memoryRecorder{}, Policy{Partial: RequireAll}, good, bad).Dispatch(context.Background(), request); err == nil {
+		t.Fatal("require-all accepted partial delivery")
+	}
+}
+
+type blockingSink struct{}
+
+func (blockingSink) Kind() string    { return "blocking" }
+func (blockingSink) Version() string { return "v1" }
+func (blockingSink) Deliver(ctx context.Context, _ apiv1.NotificationRequest) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		dispatcher := newTestDispatcher(t, &memoryRecorder{}, Policy{Timeout: 5 * time.Millisecond}, blockingSink{})
+		result, err := dispatcher.Dispatch(context.Background(), validRequest("blocking"))
+		if err == nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationFailed ||
+			!strings.Contains(result.Receipts[0].Error, "deadline exceeded") {
+			t.Fatalf("timeout result=%+v err=%v", result, err)
+		}
+	})
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		result, err := newTestDispatcher(t, &memoryRecorder{}, Policy{}, &RecordingSink{}).Dispatch(ctx, validRequest("recording"))
+		if err == nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationSkipped {
+			t.Fatalf("cancel result=%+v err=%v", result, err)
+		}
+	})
+	t.Run("expiry", func(t *testing.T) {
+		request := validRequest("recording")
+		request.ExpiresAt = time.Now().Add(-time.Second)
+		result, err := newTestDispatcher(t, &memoryRecorder{}, Policy{}, &RecordingSink{}).Dispatch(context.Background(), request)
+		if err == nil || result.Receipts[0].Status != apiv1.NotificationSkipped {
+			t.Fatalf("expiry result=%+v err=%v", result, err)
+		}
+	})
+	t.Run("oversized", func(t *testing.T) {
+		request := validRequest("recording")
+		request.Body = strings.Repeat("x", MaxBodyBytes+1)
+		if _, err := newTestDispatcher(t, &memoryRecorder{}, Policy{}, &RecordingSink{}).Dispatch(context.Background(), request); err == nil {
+			t.Fatal("oversized request accepted")
+		}
+	})
+}
+
+func TestErrorsAreSanitized(t *testing.T) {
+	token := "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+	sink := &RecordingSink{Err: errors.New("remote\nfailed with " + token)}
+	result, err := newTestDispatcher(t, &memoryRecorder{}, Policy{}, sink).Dispatch(context.Background(), validRequest("recording"))
+	if err == nil {
+		t.Fatal("sink error reported as success")
+	}
+	got := result.Receipts[0].Error
+	if strings.Contains(got, token) || strings.Contains(got, "\n") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("unsanitized error %q", got)
+	}
+}
+
+func TestJournalRecorderPersistsRedactedRequestAndIdempotency(t *testing.T) {
+	root := t.TempDir()
+	runID := "0123456789abcdef0123456789abcdef"
+	run, err := journal.Create(root, journal.RunIdentity{
+		RunID: runID, Workflow: "mission-control", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Gaggle:         "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	recorder, err := NewJournalRecorder(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &RecordingSink{}
+	request := validRequest("recording")
+	request.Body = "token ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+	dispatcher := newTestDispatcher(t, recorder, Policy{}, sink)
+	if _, err := dispatcher.Dispatch(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.Dispatch(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.Requests()) != 1 {
+		t.Fatalf("sink deliveries = %d, want 1", len(sink.Requests()))
+	}
+	raw, err := os.ReadFile(filepath.Join(root, runID, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("ghp_abcdefghijklmnopqrstuvwxyz1234567890")) ||
+		!bytes.Contains(raw, []byte(`"type":"notification.requested"`)) ||
+		!bytes.Contains(raw, []byte(`"type":"notification.delivery.receipt"`)) {
+		t.Fatalf("journal did not redact and persist notification records:\n%s", raw)
+	}
+}

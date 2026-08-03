@@ -256,6 +256,8 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		// Isolation posture is runner-substrate bookkeeping (#1305): the same
 		// definition must produce the same conformance view sandboxed or not.
 		{Type: EventRunnerIsolationPosture, Stage: "implement", Runner: map[string]any{"posture": "enforced"}},
+		{Type: EventNotificationRequested, NotificationRequest: &apiv1.NotificationRequest{NotificationID: "notice-1"}},
+		{Type: EventNotificationReceipt, NotificationReceipt: &apiv1.NotificationReceipt{NotificationID: "notice-1"}},
 	}
 	view := ConformanceView(events)
 	if len(view) != 4 {

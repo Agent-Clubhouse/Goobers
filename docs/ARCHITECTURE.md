@@ -101,6 +101,10 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   every run that never forks); and runner-specific annotations, which MUST live under a
   namespaced `runner.*` field — that namespace is the *only* sanctioned runner-specific
   divergence.
+  Notification request and delivery-receipt events are also excluded: they are
+  deployment output side effects rather than workflow-machine transitions. Their
+  provider-neutral contract is documented in
+  [`design/notification-output.md`](design/notification-output.md).
 - **Fixed stage effects** means: deterministic stages with pinned commands over
   fixture inputs, provider reads mocked or replayed from journaled responses, and
   agentic stages driven by the fixture harness. For **live agentic runs** the

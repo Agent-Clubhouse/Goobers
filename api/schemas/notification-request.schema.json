@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/notification-request.schema.json",
+  "title": "NotificationRequest",
+  "description": "Versioned, provider-neutral, pre-rendered operational notification content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "notificationId", "incidentId", "eventId", "severity", "transition", "title", "body", "source", "sinks", "expiresAt", "idempotencyKey"],
+  "properties": {
+    "schema": {
+      "description": "Versioned request contract identifier.",
+      "const": "goobers.dev/notification/request/v1"
+    },
+    "notificationId": {
+      "description": "Stable identity of this rendered notification.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "incidentId": {
+      "description": "Stable identity of the incident being reported.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "eventId": {
+      "description": "Stable identity of the source transition event.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "severity": {
+      "description": "Operational importance assigned before dispatch.",
+      "type": "string",
+      "enum": ["info", "warning", "error", "critical"]
+    },
+    "transition": {
+      "description": "Deterministic source transition type.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "title": {
+      "description": "Exact title transported without paraphrasing.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "body": {
+      "description": "Exact body transported without paraphrasing.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "speechText": {
+      "description": "Optional exact text for speech-capable sinks.",
+      "type": "string",
+      "maxLength": 4096
+    },
+    "facts": {
+      "description": "Structured facts rendered by the producer before dispatch.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/fact" }
+    },
+    "evidence": {
+      "description": "Provider-neutral references to supporting evidence.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/evidence" }
+    },
+    "source": {
+      "description": "Run, workflow, and stage that produced the request.",
+      "$ref": "#/$defs/source"
+    },
+    "sinks": {
+      "description": "Registered sink kinds requested by the producer.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+    },
+    "expiresAt": {
+      "description": "Absolute deadline after which delivery is suppressed.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "idempotencyKey": {
+      "description": "Stable key used with sink kind to prevent duplicate delivery.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "workflow", "stage"],
+      "properties": {
+        "runId": { "description": "Source run identity.", "type": "string", "minLength": 1 },
+        "workflow": { "description": "Source workflow identity.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Source stage identity.", "type": "string", "minLength": 1 }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "description": "Stable fact name.", "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": { "description": "Exact rendered fact value.", "type": "string", "maxLength": 2048 }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "description": "Provider-neutral evidence kind.", "type": "string", "minLength": 1, "maxLength": 64 },
+        "id": { "description": "Stable evidence identity.", "type": "string", "minLength": 1, "maxLength": 512 },
+        "digest": { "description": "Optional content digest for immutable evidence.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

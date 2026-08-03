@@ -68,6 +68,11 @@ const (
 	// of the runner substrate, so the same workflow definition must produce
 	// identical conformance views sandboxed or not.
 	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
+	// EventNotificationRequested records exact pre-rendered content before any
+	// sink is attempted.
+	EventNotificationRequested EventType = "notification.requested"
+	// EventNotificationReceipt records one sink attempt or suppression result.
+	EventNotificationReceipt EventType = "notification.delivery.receipt"
 
 	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
 	// All four are conformance-normative: they and the completeness record are
@@ -287,6 +292,12 @@ type Event struct {
 	// Runner holds runner-specific annotations. The ONLY sanctioned
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
+	// NotificationRequest is the typed payload on notification.requested.
+	// Notification delivery is operational output and excluded from workflow
+	// conformance.
+	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
+	// NotificationReceipt is the typed payload on notification.delivery.receipt.
+	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
 
 	// --- parallel/branch payload (§6.2) ---
 
@@ -410,6 +421,10 @@ func (e Event) IsConformanceNormative() bool {
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only
 		// per §3.3, never content-compared across runners.
+		return false
+	case EventNotificationRequested, EventNotificationReceipt:
+		// Output transports are deployment-side effects, not deterministic
+		// workflow-machine transitions.
 		return false
 	default:
 		return true

@@ -15,6 +15,24 @@
       "then": {
         "required": ["gate", "verdict", "target", "actor", "rationale", "status", "workflowVersion", "workflowDigest"]
       }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "notification.requested" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["notificationRequest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "notification.delivery.receipt" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["notificationReceipt"]
+      }
     }
   ],
   "properties": {
@@ -53,6 +71,8 @@
         "repaired",
         "runner.annotation",
         "runner.isolation.posture",
+        "notification.requested",
+        "notification.delivery.receipt",
         "parallel.started",
         "branch.started",
         "branch.finished",
@@ -79,7 +99,7 @@
         "daemon.update.rolled_back",
         "daemon.update.escalated"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -263,6 +283,16 @@
     "runner": {
       "description": "Runner-specific annotations. The ONLY sanctioned runner-specific divergence and ALWAYS excluded from conformance.",
       "type": "object",
+      "x-conformance": "excluded"
+    },
+    "notificationRequest": {
+      "description": "Exact provider-neutral request recorded before dispatch. The event is operational output and excluded from workflow conformance.",
+      "$ref": "notification-request.schema.json",
+      "x-conformance": "excluded"
+    },
+    "notificationReceipt": {
+      "description": "Durable delivery or suppression result. The event is operational output and excluded from workflow conformance.",
+      "$ref": "notification-receipt.schema.json",
       "x-conformance": "excluded"
     },
     "workflow": {
