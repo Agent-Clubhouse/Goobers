@@ -81,7 +81,7 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the three
+	// The compatibility warnings are the manual-only advisories on the four
 	// example workflows that carry no schedule trigger. Preview warnings are
 	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
@@ -90,10 +90,10 @@ func TestExampleConfigPasses(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 3 {
-		t.Fatalf("expected three actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 4 {
+		t.Fatalf("expected four actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation bool
+	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -107,9 +107,12 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
 			sawDotnetImplementation = true
 		}
+		if strings.Contains(w.Explanation, "goobers run java-implementation") {
+			sawJavaImplementation = true
+		}
 	}
-	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation {
-		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service implementation, got %+v", warnings)
+	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation || !sawJavaImplementation {
+		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service and java-service implementations, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)

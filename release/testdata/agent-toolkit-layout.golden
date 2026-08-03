@@ -53,6 +53,12 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/do
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/dotnet-reviewer/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/goobers/dotnet-reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/dotnet-service/workflows/dotnet-implementation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/gaggle.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-implementer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-implementer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/goobers/java-reviewer/instructions.md
+payload/.goobers/agent-toolkit/config-examples/gaggles/java-service/workflows/java-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
 payload/.goobers/agent-toolkit/docs/requirements/README.md

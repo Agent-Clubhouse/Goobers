@@ -30,19 +30,19 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
 	}
-	if len(set.Gaggles) != 2 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] {
+	if len(set.Gaggles) != 3 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships eight goobers (acme-web: coder, curator, docs,
+	// config-examples ships ten goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and ten workflows (acme-web's nine + the
-	// dotnet-service reference's dotnet-implementation, #1093); check
-	// membership, not order.
+	// dotnet-reviewer; java-service: java-implementer, java-reviewer) and eleven
+	// workflows (acme-web's nine + one implementation reference per service);
+	// check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer"}
+	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer"}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -60,7 +60,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
@@ -139,7 +139,7 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 8 {
+	if len(set.Goobers) != 10 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }

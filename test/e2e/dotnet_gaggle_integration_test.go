@@ -97,11 +97,9 @@ func newDotnetFixtureRepo(t *testing.T) string {
 	return bare
 }
 
-// newDotnetGaggleRunner mirrors newContinuityRunner but scripts the
-// dotnet-service goobers: dotnet-implementer commits a small marker (so the run
-// branch has a non-empty diff for the review gate), dotnet-reviewer passes, and
-// local-ci runs the real `dotnet test`.
-func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsDir string) *runner.Runner {
+// newPolyglotGaggleRunner scripts a reference gaggle's implementer to commit a
+// marker, its reviewer to pass, and leaves local-ci to execute the real build.
+func newPolyglotGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsDir, implementerName string) *runner.Runner {
 	t.Helper()
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
@@ -123,7 +121,7 @@ func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, run
 			adapter := &harness.FakeAdapter{
 				Transcript: []byte("fake harness session for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
-					if gooberName == "dotnet-implementer" {
+					if gooberName == implementerName {
 						// A non-empty diff so the review gate doesn't empty-diff
 						// fast-fail; the buildable service already lives on main.
 						if werr := os.WriteFile(filepath.Join(req.Workspace, "CHANGELOG.md"), []byte("- reference change\n"), 0o644); werr != nil {
@@ -188,7 +186,7 @@ func TestIntegrationDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newDotnetFixtureRepo(t)
 	machine := dotnetServiceMachine(t)
-	r := newDotnetGaggleRunner(t, mgr, fixtureRepo, runsDir)
+	r := newPolyglotGaggleRunner(t, mgr, fixtureRepo, runsDir, "dotnet-implementer")
 
 	const runID = "run-dotnet-gaggle-1"
 	res, err := r.Start(context.Background(), skeletonStartInput(runID, machine))
