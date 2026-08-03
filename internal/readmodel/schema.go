@@ -489,6 +489,7 @@ ALTER TABLE run_stage ADD COLUMN had_success INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE run_stage ADD COLUMN had_failure INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE run_stage ADD COLUMN had_other INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE run_stage ADD COLUMN run_terminal INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE projection_state ADD COLUMN ready INTEGER NOT NULL DEFAULT 1;
 
 CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_success
 	ON run_stage(stage, run_started_at DESC, run_id ASC)
@@ -522,8 +523,9 @@ CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_finished
 	WHERE run_terminal = 1 AND (had_success = 1 OR had_failure = 1 OR had_other = 1);
 
 -- Existing rows cannot be backfilled from last_status without losing earlier
--- attempts. Emptying the derived run projection makes startup rebuild it from
--- the authoritative journals rather than briefly serving under-matched results.
+-- attempts. Marking the projection unready before emptying it makes startup
+-- rebuild it from the authoritative journals before projected reads are enabled.
+UPDATE projection_state SET ready = 0 WHERE id = 1;
 DELETE FROM run_stage;
 DELETE FROM run;
 `,

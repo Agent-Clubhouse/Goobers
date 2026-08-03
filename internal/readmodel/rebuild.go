@@ -382,6 +382,9 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 	if err := r.Validate(ctx); err != nil {
 		return err
 	}
+	if err := r.next.MarkReady(ctx); err != nil {
+		return err
+	}
 
 	live := r.store.path
 	previous := live + ".previous"
