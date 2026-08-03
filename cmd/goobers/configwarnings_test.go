@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -62,6 +63,59 @@ func TestAppendGooberHarnessWarningsMapsModelFallback(t *testing.T) {
 		coded[0].Code != validate.WarningModelFallback ||
 		coded[0].Scope != "Goober/coder" {
 		t.Fatalf("coded warnings = %+v", coded)
+	}
+}
+
+func TestAppendSkillPackageCollisionWarnings(t *testing.T) {
+	instanceRoot := t.TempDir()
+	configDir := filepath.Join(instanceRoot, "config")
+	for _, dir := range []string{
+		filepath.Join(instanceRoot, "skills", "testing"),
+		filepath.Join(configDir, "gaggles", "alpha", "skills", "testing"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := &validate.Report{}
+	warnings, err := appendSkillPackageCollisionWarnings(configDir, report, map[string]apiv1.GooberSpec{
+		"coder": {Gaggle: "alpha", Skills: []string{"testing", "testing"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 ||
+		warnings[0].Code != validate.WarningSkillPackageCollision ||
+		warnings[0].Scope != "Gaggle/alpha" ||
+		!strings.Contains(warnings[0].Explanation, "gaggle-level definition takes effect") {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	if len(report.Issues) != 1 || report.Issues[0].Severity != validate.Warning {
+		t.Fatalf("report issues = %+v", report.Issues)
+	}
+}
+
+func TestValidateWarnsWhenGaggleSkillShadowsSharedPackage(t *testing.T) {
+	root := initDemo(t)
+	for _, dir := range []string{
+		filepath.Join(root, "skills", "implement"),
+		filepath.Join(root, "config", "gaggles", "example", "skills", "implement"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Testing\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	want := `WARNING SKILL001 Gaggle/example: gaggle-level and instance-level packages both define skill "implement"; the gaggle-level definition takes effect`
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("validate stdout = %q, want %q", stdout, want)
 	}
 }
 

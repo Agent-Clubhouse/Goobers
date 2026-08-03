@@ -781,6 +781,7 @@ func TestConfigDirectoryDigestOnlyTracksLoadedConfigAndAssets(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(gooberDir, "goober.yaml"), []byte(`kind: Goober
 spec:
+  gaggle: example
   instructions: instructions.md
   skills:
     - implement
@@ -866,6 +867,28 @@ spec:
 	if withSkillReference == withSkill {
 		t.Fatalf("referenced skill support-file addition did not change digest: %s", withSkillReference)
 	}
+	scopedSkillPath := filepath.Join(root, "gaggles", "example", "skills", "implement", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(scopedSkillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scopedSkillPath, []byte("# Gaggle skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withScopedSkill, err := configDirectoryDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withScopedSkill == withSkillReference {
+		t.Fatalf("gaggle skill addition did not change digest: %s", withScopedSkill)
+	}
+	if err := os.WriteFile(skillPath, []byte("# Ignored shared update\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := configDirectoryDigest(root); err != nil {
+		t.Fatal(err)
+	} else if got != withScopedSkill {
+		t.Fatalf("shadowed shared skill changed digest: got %s, want %s", got, withScopedSkill)
+	}
 
 	asset := filepath.Join(root, "gaggles", "example", "goobers", "coder", "assets", ".hidden", "reference.txt")
 	if err := os.MkdirAll(filepath.Dir(asset), 0o755); err != nil {
@@ -878,7 +901,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withAsset == withSkillReference {
+	if withAsset == withScopedSkill {
 		t.Fatalf("asset addition did not change digest: %s", withAsset)
 	}
 

@@ -58,6 +58,9 @@ const (
 	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
 	WarningModelFallback WarningCode = "MODEL002"
+	// WarningSkillPackageCollision identifies a gaggle-scoped skill package
+	// shadowing an instance-level package with the same name.
+	WarningSkillPackageCollision WarningCode = "SKILL001"
 	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
 	// defaulted to supportmatrix.CurrentDSLVersion during the transition
 	// window (DVL-3, #863).

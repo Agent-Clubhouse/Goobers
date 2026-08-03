@@ -391,6 +391,7 @@ type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
 		Instructions string   `json:"instructions"`
+		Gaggle       string   `json:"gaggle"`
 		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
@@ -416,7 +417,7 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) (
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
 			if err != nil {
 				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
 			}
