@@ -238,14 +238,18 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 			)
 		}
 		if !in.Complete {
-			if _, task := in.Machine.Task(in.Target); !task {
+			if in.Target == workflow.TargetJoin {
+				if _, _, ok := interventionParallelContext(events, in.Machine, in.Gate); !ok {
+					return Result{}, fmt.Errorf("runner: terminal resume target %q has no parallel branch context", in.Target)
+				}
+			} else if _, task := in.Machine.Task(in.Target); !task {
 				if _, gate := in.Machine.Gate(in.Target); !gate {
 					return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
 				}
 			}
 		}
 
-		if err := jr.Append(journal.Event{
+		resumed := journal.Event{
 			Type:            journal.EventRunResumed,
 			Status:          string(phase),
 			Target:          in.Target,
@@ -257,7 +261,11 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 			Complete:        in.Complete,
 			WorkflowVersion: id.WorkflowVersion,
 			WorkflowDigest:  id.WorkflowDigest,
-		}); err != nil {
+		}
+		if in.Target == workflow.TargetJoin {
+			resumed.Parallel, resumed.Branch, _ = interventionParallelContext(events, in.Machine, in.Gate)
+		}
+		if err := jr.Append(resumed); err != nil {
 			return Result{}, fmt.Errorf("runner: journal terminal resume for run %q: %w", in.RunID, err)
 		}
 		if in.Complete {
@@ -1070,7 +1078,19 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 				start = -1
 			}
 		case journal.EventRunResumed:
-			start = -1
+			if event.Target == workflow.TargetJoin {
+				if parallel, _, ok := interventionParallelContext(events[:i], machine, event.Gate); ok {
+					for candidate := i - 1; candidate >= 0; candidate-- {
+						if events[candidate].Type == journal.EventParallelStarted &&
+							events[candidate].Parallel == parallel {
+							start = candidate
+							break
+						}
+					}
+				}
+			} else {
+				start = -1
+			}
 		}
 	}
 	if start < 0 {
@@ -1184,9 +1204,58 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			branch.machine = ""
 			branch.status = event.BranchStatus
 			branch.settled = true
+		case journal.EventRunResumed:
+			if event.Target != workflow.TargetJoin || branch == nil {
+				continue
+			}
+			par.active = branchIndex
+			branch.machine = workflow.TargetJoin
+			branch.status = ""
+			branch.failed = false
+			branch.noOutput = false
+			branch.settled = false
+			for i := branchIndex + 1; i < len(par.branches); i++ {
+				if par.branches[i].status != journal.BranchCancelled {
+					continue
+				}
+				par.branches[i].machine = par.branches[i].start
+				par.branches[i].status = ""
+				par.branches[i].failed = false
+				par.branches[i].noOutput = false
+				par.branches[i].started = false
+				par.branches[i].settled = false
+			}
 		}
 	}
 	return par, start
+}
+
+func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
+	gateIndex := -1
+	branch := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventGateEvaluated && events[i].Gate == gateName && events[i].Branch > 0 {
+			gateIndex = i
+			branch = events[i].Branch
+			break
+		}
+	}
+	if gateIndex < 0 {
+		return "", 0, false
+	}
+	for i := gateIndex - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelStarted {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if !ok || branch > len(spec.Branches) ||
+			!branchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			continue
+		}
+		return spec.Name, branch, true
+	}
+	return "", 0, false
 }
 
 func branchContainsState(machine *workflow.Machine, start, state string) bool {

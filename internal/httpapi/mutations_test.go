@@ -166,6 +166,7 @@ func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) 
 		started: make(chan context.Context, 1),
 		release: make(chan struct{}),
 	}
+
 	handler, err := NewHandler(
 		&fakeReader{},
 		AllowAll,
@@ -200,6 +201,28 @@ func TestMutationContinuesAfterClientDisconnectUnderDaemonContext(t *testing.T) 
 	<-done
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+}
+
+func TestMutationExecutionStopsAtRequestBudget(t *testing.T) {
+	service := &blockingInterventions{
+		started: make(chan context.Context, 1),
+		release: make(chan struct{}),
+	}
+	handler := stageMutationHandler("override", service, context.Background(), discardLogger())
+	request := newMutationRequest(http.MethodPost, "override", `{"actor":"operator","rationale":"reviewed"}`)
+	ctx, cancel := context.WithTimeout(request.Context(), 20*time.Millisecond)
+	defer cancel()
+	request = request.WithContext(ctx)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+	}
+	if code := errorCode(t, response); code != "request_budget_exceeded" {
+		t.Fatalf("code = %q, want request_budget_exceeded", code)
 	}
 }
 

@@ -100,19 +100,24 @@ func stageMutationHandler(action string, interventions InterventionService, life
 			return
 		}
 		input.IdempotencyKey = key
+		executionContext, cancel := interventionExecutionContext(lifecycle, request.Context())
+		defer cancel()
 
 		var result InterventionResult
 		switch action {
 		case "approve":
-			result, err = interventions.Approve(lifecycle, input)
+			result, err = interventions.Approve(executionContext, input)
 		case "override":
-			result, err = interventions.Override(lifecycle, input)
+			result, err = interventions.Override(executionContext, input)
 		case "rerun":
-			result, err = interventions.RerunStage(lifecycle, input)
+			result, err = interventions.RerunStage(executionContext, input)
 		default:
 			panic("unknown intervention action " + action)
 		}
 		if err != nil {
+			if budgetExceeded(w, err) {
+				return
+			}
 			var interventionErr *InterventionError
 			if errors.As(err, &interventionErr) {
 				status := interventionErr.Status
@@ -145,6 +150,13 @@ func stageMutationHandler(action string, interventions InterventionService, life
 		w.Header().Set(HeaderSourceApplied, fmt.Sprintf("%s:%d", input.RunID, result.JournalSeq))
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func interventionExecutionContext(lifecycle, request context.Context) (context.Context, context.CancelFunc) {
+	if deadline, ok := request.Deadline(); ok {
+		return context.WithDeadline(lifecycle, deadline)
+	}
+	return context.WithCancel(lifecycle)
 }
 
 func validateMutationTransport(request *http.Request) (int, string, string) {

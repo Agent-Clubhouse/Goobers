@@ -123,6 +123,52 @@ func interventionTwoGateMachine(t *testing.T) *workflow.Machine {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	return machine
+}
+
+func interventionParallelGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "parallel-intervention", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example", Start: "fan",
+			Tasks: []apiv1.Task{
+				{
+					Name: "branch-work", Type: apiv1.TaskDeterministic, Goal: "branch work",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
+				},
+				{
+					Name: "other-work", Type: apiv1.TaskDeterministic, Goal: "other work",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TargetJoin,
+				},
+				{
+					Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
+				},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic: &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceScratch},
+				Branches: map[string]string{
+					"pass":          workflow.TargetJoin,
+					"fail":          workflow.TargetEscalate,
+					"needs-changes": workflow.TargetEscalate,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", Join: "collate",
+				FailurePolicy: apiv1.BranchContinueOnError,
+				Branches: []apiv1.Branch{
+					{Name: "review", Start: "branch-work"},
+					{Name: "other", Start: "other-work"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return machine
 }
 
@@ -265,6 +311,7 @@ func TestRunInterventionTerminalBranchesComplete(t *testing.T) {
 					resumed = event
 				}
 			}
+
 			if resumed.Type != journal.EventRunResumed ||
 				resumed.Action != action ||
 				resumed.Target != "" ||
@@ -272,6 +319,58 @@ func TestRunInterventionTerminalBranchesComplete(t *testing.T) {
 				t.Fatalf("run.resumed = %+v", resumed)
 			}
 		})
+	}
+}
+
+func TestRunInterventionOverrideReopensParallelBranchAtJoin(t *testing.T) {
+	machine := interventionParallelGateMachine(t)
+	service, runDir := newInterventionServiceTestRun(t, machine, "run-parallel-override", []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1, BranchName: "review", Stage: "branch-work"},
+		{Type: journal.EventStageStarted, Branch: 1, Stage: "branch-work", Attempt: 1},
+		{Type: journal.EventStageFinished, Branch: 1, Stage: "branch-work", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Branch: 1, Gate: "review"},
+		{Type: journal.EventGateEvaluated, Branch: 1, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventBranchFinished, Parallel: "fan", Branch: 1, BranchName: "review", BranchStatus: journal.BranchFailed},
+		{Type: journal.EventBranchFinished, Parallel: "fan", Branch: 2, BranchName: "other", BranchStatus: journal.BranchCancelled},
+		{Type: journal.EventParallelFinished, Parallel: "fan", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+
+	result, err := service.Override(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-parallel-override", Stage: "review", Actor: "operator",
+		Decision: "pass", Rationale: "accepted branch result",
+	})
+	if err != nil {
+		t.Fatalf("Override: %v", err)
+	}
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed journal.Event
+	otherStarted := false
+	for _, event := range events {
+		if event.Type == journal.EventRunResumed {
+			resumed = event
+		}
+		if event.Type == journal.EventBranchStarted && event.Branch == 2 {
+			otherStarted = true
+		}
+	}
+	if resumed.Target != workflow.TargetJoin || resumed.Parallel != "fan" || resumed.Branch != 1 {
+		t.Fatalf("run.resumed = %+v", resumed)
+	}
+	if !otherStarted {
+		t.Fatal("parallel sibling was not resumed after the approved branch joined")
 	}
 }
 
@@ -885,6 +984,7 @@ func TestRunInterventionRejectsClaimOwnedByAnotherRun(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
 	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
@@ -915,10 +1015,43 @@ func TestRunInterventionRejectsClaimOwnedByAnotherRun(t *testing.T) {
 			t.Fatal("claim-conflicted run was resumed")
 		}
 	}
+
 	if release, ok, reason := service.scheduler.Load().ReserveContinuation("probe-run", "example", machine.Def.Name); !ok {
 		t.Fatalf("failed intervention leaked admission: %s", reason)
 	} else {
 		release()
+	}
+}
+
+func TestRunInterventionUsesDurableClaimHistoryWhenInstanceJournalMissesAcquisition(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, _ := newInterventionServiceTestRun(t, machine, "run-durable-history", []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "466"}
+	ledgerPath := filepath.Join(service.layout.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(key, "run-durable-history", machine.Def.Name, time.Hour); err != nil || !ok {
+		t.Fatalf("seed original claim: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(key, "run-durable-history"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(key, "other-run", machine.Def.Name, time.Hour); err != nil || !ok {
+		t.Fatalf("seed competing claim: ok=%v err=%v", ok, err)
+	}
+
+	_, err = service.Override(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-durable-history", Stage: "review", Actor: "operator",
+		Decision: "pass", Rationale: "resume safely",
+	})
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) || interventionErr.Code != "claim_unavailable" {
+		t.Fatalf("Override error = %#v, want claim_unavailable", err)
 	}
 }
 

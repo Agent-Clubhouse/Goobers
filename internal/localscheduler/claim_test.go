@@ -78,6 +78,7 @@ func TestReclaimAllPersistsCompleteSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	claims := []ClaimEntry{
 		{ItemID: "8", Gaggle: "alpha", Provider: "github", ExternalID: "8"},
 		{ItemID: "9", Gaggle: "alpha", Provider: "github", ExternalID: "9"},
@@ -92,6 +93,34 @@ func TestReclaimAllPersistsCompleteSet(t *testing.T) {
 	}
 	if got := reopened.ForRunAll("resumed-run"); len(got) != 2 {
 		t.Fatalf("reclaimed set = %+v, want two claims", got)
+	}
+}
+
+func TestClaimHistorySurvivesReleaseAndReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
+	if ok, _, err := ledger.ClaimScoped(key, "run-history", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(key, "run-history"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := reopened.HistoryForRun("run-history")
+	if len(history) != 1 || history[0].Gaggle != "alpha" ||
+		history[0].Provider != "github" || history[0].ExternalID != "466" {
+		t.Fatalf("claim history = %+v", history)
+	}
+	if _, held := reopened.LookupScoped(key); held {
+		t.Fatal("released historical claim is still active")
 	}
 }
 

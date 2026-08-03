@@ -123,7 +123,7 @@ func (s *runInterventionService) Approve(ctx context.Context, input httpapi.Inte
 	if decision == "" {
 		decision = "pass"
 	}
-	gate, target, err := interventionBranch(resolved.machine, input.Stage, decision)
+	gate, target, err := interventionBranch(resolved.machine, resolved.events, input.Stage, decision)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
@@ -212,7 +212,7 @@ func (s *runInterventionService) Override(ctx context.Context, input httpapi.Int
 			fmt.Sprintf("run %q is %s; only escalated or failed runs can be overridden", input.RunID, resolved.phase),
 		)
 	}
-	gate, target, err := interventionBranch(resolved.machine, input.Stage, decision)
+	gate, target, err := interventionBranch(resolved.machine, resolved.events, input.Stage, decision)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
@@ -609,11 +609,24 @@ func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRu
 }
 
 func (s *runInterventionService) claimHistory(resolved resolvedInterventionRun) ([]localscheduler.ClaimEntry, error) {
-	events, err := journal.ReadInstanceLog(s.layout.SchedulerDir())
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		return nil, err
 	}
-	claims := make(map[string]localscheduler.ClaimEntry)
+	durable := ledger.HistoryForRun(resolved.runID)
+	claims := make(map[string]localscheduler.ClaimEntry, len(durable))
+	for _, entry := range durable {
+		key := entry.Gaggle + "\x00" + entry.Provider + "\x00" + entry.ExternalID
+		claims[key] = entry
+	}
+
+	events, err := journal.ReadInstanceLog(s.layout.SchedulerDir())
+	if err != nil {
+		if len(durable) > 0 {
+			return durable, nil
+		}
+		return nil, err
+	}
 	for _, event := range events {
 		if event.Type != journal.EventClaimAcquired || event.RunID != resolved.runID {
 			continue
@@ -657,7 +670,7 @@ func (s *runInterventionService) claimHistory(resolved resolvedInterventionRun) 
 	return result, nil
 }
 
-func interventionBranch(machine *workflow.Machine, gateName, decision string) (apiv1.Gate, string, error) {
+func interventionBranch(machine *workflow.Machine, events []journal.Event, gateName, decision string) (apiv1.Gate, string, error) {
 	gateName = strings.TrimSpace(gateName)
 	if gateName == "" {
 		return apiv1.Gate{}, "", interventionBadRequest("stage_required", "gate name is required")
@@ -679,6 +692,15 @@ func interventionBranch(machine *workflow.Machine, gateName, decision string) (a
 	if target == workflow.TerminalComplete {
 		return gate, target, nil
 	}
+	if target == workflow.TargetJoin {
+		if _, _, ok := interventionParallelContext(events, machine, gateName); !ok {
+			return gate, "", interventionConflict(
+				"branch_not_resumable",
+				fmt.Sprintf("gate %q no longer has parallel branch context", gateName),
+			)
+		}
+		return gate, target, nil
+	}
 	if workflow.IsReservedAnyTarget(target) || !machine.Has(target) {
 		return gate, "", interventionConflict(
 			"branch_not_resumable",
@@ -686,6 +708,52 @@ func interventionBranch(machine *workflow.Machine, gateName, decision string) (a
 		)
 	}
 	return gate, target, nil
+}
+
+func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
+	gateIndex := -1
+	branch := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventGateEvaluated && events[i].Gate == gateName && events[i].Branch > 0 {
+			gateIndex = i
+			branch = events[i].Branch
+			break
+		}
+	}
+	if gateIndex < 0 {
+		return "", 0, false
+	}
+	for i := gateIndex - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelStarted {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if !ok || branch > len(spec.Branches) ||
+			!interventionBranchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			continue
+		}
+		return spec.Name, branch, true
+	}
+	return "", 0, false
+}
+
+func interventionBranchContainsState(machine *workflow.Machine, start, target string) bool {
+	seen := make(map[string]bool)
+	stack := []string{start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == target {
+			return true
+		}
+		if state == "" || workflow.IsReservedAnyTarget(state) || seen[state] || !machine.Has(state) {
+			continue
+		}
+		seen[state] = true
+		stack = append(stack, machine.Outgoing(state)...)
+	}
+	return false
 }
 
 func interventionResumeTarget(target string) (string, bool) {
