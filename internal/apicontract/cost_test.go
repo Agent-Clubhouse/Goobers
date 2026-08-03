@@ -68,11 +68,12 @@ func TestEveryRouteIsClassified(t *testing.T) {
 // shed under read load, which is the wrong policy for a user pressing Approve.
 func TestMutationsAreNotClassifiedAsReads(t *testing.T) {
 	for _, route := range V1Routes() {
+		isMutationAction := route.ActionClass == ActionRuntimeMutation || route.ActionClass == ActionMaintenance
 		switch {
-		case route.ActionClass == ActionRuntimeMutation && route.Cost != CostMutation:
-			t.Errorf("route %s is a runtime mutation but carries cost class %q; it would be "+
+		case isMutationAction && route.Cost != CostMutation:
+			t.Errorf("route %s is a mutation but carries cost class %q; it would be "+
 				"pooled and shed as though it were read traffic", route.ID, route.Cost)
-		case route.ActionClass != ActionRuntimeMutation && route.Cost == CostMutation:
+		case !isMutationAction && route.Cost == CostMutation:
 			t.Errorf("route %s is classified as a mutation but its action class is %q",
 				route.ID, route.ActionClass)
 		}

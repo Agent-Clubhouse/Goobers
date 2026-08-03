@@ -44,6 +44,45 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("reveals the run directory when the local capability is available", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const revealRun = vi.spyOn(client, "revealRun").mockResolvedValue();
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(revealRun).toHaveBeenCalledWith("01JZ441DAEMONAPI");
+  });
+
+  it("hides run reveal when the daemon is not local", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const config = await client.getPortalConfig();
+    vi.spyOn(client, "getPortalConfig").mockResolvedValue({
+      ...config,
+      capabilities: { revealRun: false },
+    });
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await screen.findByRole("heading", { name: "Run 01JZ441DAEMONAPI" });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Reveal run files" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("reports a failure to open the run directory", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "revealRun").mockRejectedValue(new Error("Unable to open run files."));
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(
+      await screen.findByText("Unable to open run files.", { selector: '[role="alert"]' }),
+    ).toBeInTheDocument();
+  });
+
   it("defaults an active run to the latest event and synchronizes click selection", async () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
