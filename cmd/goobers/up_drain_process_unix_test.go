@@ -127,9 +127,14 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 				t.Fatalf("hard-stopped run phase = %s, want running", start.Phase)
 			}
 			waitForProcessGroupGone(t, stagePID)
-			if err := syscall.Kill(childPID, 0); !errors.Is(err, syscall.ESRCH) {
-				t.Fatalf("child process %d still exists after hard shutdown: %v", childPID, err)
-			}
+			// The escaped child called Setsid (TestUpDrainEscapedSessionProcess),
+			// detaching into its own session/process group, so its exit is not
+			// synchronized with stagePID's process-group teardown above: the
+			// kernel can take a little longer to reap it, especially under the
+			// heavier scheduling contention of a loaded CI shard. Poll with the
+			// same bounded retry as waitForProcessGroupGone rather than a single
+			// snapshot check.
+			waitForProcessGone(t, childPID)
 
 			resumed, err := runRunner.Resume(context.Background(), runner.ResumeInput{
 				RunID:   runID,
@@ -201,4 +206,16 @@ func waitForProcessGroupGone(t *testing.T, processGroupID int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("process group %d still exists after hard shutdown", processGroupID)
+}
+
+func waitForProcessGone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process %d still exists after hard shutdown", pid)
 }
