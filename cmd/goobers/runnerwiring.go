@@ -1065,14 +1065,11 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 // buildFailedHandler wires runner.Config.Failed (#1054): the instance-level
 // consequence of a run reaching terminal PhaseFailed. Returns nil when no repo
 // is configured, mirroring buildBlockedHandler. Leaves a human-visible trace on
-// the driving item — a comment recording the terminal failure cause and the run
-// id — so repeated terminal failures on the same item accumulate a countable
-// signal instead of the item silently returning to goobers:ready with no
-// record. The motivating case (#1054) is a recurring copilot-cli harness
-// session timeout in the implement stage: it retries once, times out again, and
-// ends the run `failed` (not `escalated`), so today the driving issue returns to
-// ready indistinguishable from one never attempted and is re-claimed and
-// re-failed forever with nothing accumulating anywhere a human can see.
+// the driving item — a comment recording a stable failure code and the run id —
+// so repeated terminal failures on the same item accumulate a countable signal
+// instead of the item silently returning to goobers:ready with no record.
+// Detailed causes remain in the local run trace because execution errors can
+// contain harness argv, prompts, credentials, environment values, or context.
 //
 // Deliberately does NOT apply goobers:needs-human: that label is reserved for
 // the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
@@ -1109,10 +1106,6 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 			// run_failed cause and the failed phase are the whole story.
 			return nil
 		}
-		cause := strings.TrimSpace(o.Cause)
-		if cause == "" {
-			cause = "no cause recorded"
-		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
@@ -1121,8 +1114,8 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		var errs []error
 		for _, itemID := range itemIDs {
 			comment := fmt.Sprintf(
-				"Goobers run %s terminated `failed`: %s. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
-				o.RunID, cause, providers.LabelNeedsHuman,
+				"Goobers run %s terminated `failed` (`RUN_FAILED`). Failure details are available only in the local run trace. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
+				o.RunID, providers.LabelNeedsHuman,
 			)
 			if err := gate.PostRunComment(ctx, poster, repoRef, itemID, o.RunID, o.Seq, comment); err != nil {
 				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))

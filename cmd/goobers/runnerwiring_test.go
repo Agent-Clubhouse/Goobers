@@ -3062,13 +3062,11 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
-// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman is #1054's core: a
-// run that ends terminal `failed` while claiming an item leaves a human-visible
-// trace — exactly one comment on the driving item carrying the terminal cause
-// and the run id — and, crucially, applies NO labels (goobers:needs-human stays
-// reserved for the escalated/park path). The item is resolved from the claim
-// ledger by run id, the same fallback buildBlockedHandler uses, since the
-// implementation/pr-remediation runs that hit this claim their item mid-run.
+// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman proves a run that
+// ends terminal `failed` while claiming an item leaves a human-visible trace
+// with a stable public code and run id, but never the potentially sensitive
+// execution cause. It applies no labels: goobers:needs-human stays reserved for
+// the escalated/park path.
 func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
@@ -3095,12 +3093,13 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 		t.Fatal("expected a non-nil handler for a repo-backed instance")
 	}
 
+	const sensitivePrompt = "SENTINEL_PRIVATE_AGENT_PROMPT"
 	err = h(context.Background(), runner.FailedOutcome{
 		RunID:   "run-timeout",
 		Seq:     17,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:   "implement",
-		Cause:   "runner: execute stage \"implement\": harness: copilot-cli: session timed out after 30m0s (attempt 2/2)",
+		Cause:   "runner: execute stage \"implement\": harness: run [claude -p " + sensitivePrompt + "]",
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -3126,8 +3125,11 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 	if !strings.Contains(got.Comment, "run=run-timeout seq=17") {
 		t.Fatalf("comment = %q, want run+seq marker", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "session timed out after 30m0s") {
-		t.Fatalf("comment = %q, want it to carry the terminal failure cause", got.Comment)
+	if !strings.Contains(got.Comment, "RUN_FAILED") || !strings.Contains(got.Comment, "local run trace") {
+		t.Fatalf("comment = %q, want stable code and local trace guidance", got.Comment)
+	}
+	if strings.Contains(got.Comment, sensitivePrompt) || strings.Contains(got.Comment, "claude -p") {
+		t.Fatalf("comment = %q, must not expose harness argv or prompt", got.Comment)
 	}
 	if strings.Contains(got.Comment, providers.LabelNeedsHuman) && (len(got.AddLabels) > 0) {
 		t.Fatalf("comment = %q, must not apply needs-human", got.Comment)

@@ -206,8 +206,10 @@ type FailedOutcome struct {
 	// harness-timeout case (a dispatch-level runTask error) carries the stage
 	// that was executing.
 	Stage string
-	// Cause is the run's terminal error message — the same text journaled as the
-	// run_failed cause event, which the handler surfaces on the driving item.
+	// Cause is the run's terminal error message, journaled in the run_failed
+	// cause event for local diagnostics. Handlers must not publish this value to
+	// external work items because nested execution errors can contain sensitive
+	// prompts, argv, credentials, environment values, or context.
 	Cause string
 }
 
