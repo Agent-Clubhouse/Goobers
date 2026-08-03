@@ -140,12 +140,27 @@ type WorkcopiesConfig struct {
 	// byte-identical to previous releases; existing mirrors are never
 	// migrated in either direction.
 	PartialClone bool `json:"partialClone,omitempty" yaml:"partialClone,omitempty"`
+	// ObjectCache opts newly created mirrors into borrowing objects from a
+	// shared, node-level object cache via git alternates (#654, design §3
+	// B3): one bare mirror clone per repo URL, shared by every gaggle
+	// Manager on the node targeting that repo, instead of each gaggle
+	// paying for its own full clone. False — the default — keeps mirror
+	// creation byte-identical to previous releases; no `_objects` cache
+	// directory is ever created. See worktree.WithObjectCache.
+	ObjectCache bool `json:"objectCache,omitempty" yaml:"objectCache,omitempty"`
 }
 
 // PartialCloneEnabled reports whether newly created mirrors should be
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// ObjectCacheEnabled reports whether newly created mirrors should reference
+// a shared node-level object cache (workcopies.objectCache, defaults to
+// false).
+func (c *Config) ObjectCacheEnabled() bool {
+	return c.Workcopies != nil && c.Workcopies.ObjectCache
 }
 
 // EffectiveSelfIdentity returns the provider login configured for gaggle,
