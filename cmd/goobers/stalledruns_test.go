@@ -33,8 +33,8 @@ func TestDaemonRunnerRegistryRunIDsReflectsTracking(t *testing.T) {
 	}
 
 	owner := &runner.Runner{}
-	untrackA := r.Track("run-a", owner)
-	untrackB := r.Track("run-b", owner)
+	untrackA := r.Track("run-a", "workflow-a", owner)
+	untrackB := r.Track("run-b", "workflow-b", owner)
 
 	ids := r.RunIDs()
 	if len(ids) != 2 {

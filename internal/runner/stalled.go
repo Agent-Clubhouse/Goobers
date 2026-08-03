@@ -28,6 +28,7 @@ var (
 	errStalledRun          = errors.New("runner: stalled run escalation requested")
 	errCanceledRun         = errors.New("runner: run cancellation requested")
 	errRunDurationExceeded = errors.New("runner: maximum run duration exceeded")
+	errHardShutdown        = errors.New("runner: hard shutdown requested")
 )
 
 // interruptKind distinguishes why a live run's active attempt was interrupted,
@@ -40,6 +41,7 @@ const (
 	interruptStalled interruptKind = iota
 	interruptCancel
 	interruptDurationExceeded
+	interruptHardShutdown
 )
 
 // stalledRequest is a pending interrupt of a live run's active attempt. now is
@@ -234,6 +236,31 @@ func (r *activeRun) requestCancel(now time.Time) (requested bool) {
 		phase: journal.PhaseAborted,
 		cause: errCanceledRun,
 	})
+}
+
+func (r *activeRun) requestHardShutdown() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false
+	}
+	request := stalledRequest{
+		kind:  interruptHardShutdown,
+		cause: errHardShutdown,
+	}
+	r.request = &request
+	r.cancel(request.cause)
+	return true
+}
+
+// HardStopRun interrupts an owned in-flight stage without terminalizing its
+// run. The owner checkpoints the current machine state so startup can resume it.
+func (r *Runner) HardStopRun(runID string) bool {
+	active := r.activeRun(runID)
+	if active == nil {
+		return false
+	}
+	return active.requestHardShutdown()
 }
 
 func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {
@@ -693,6 +720,13 @@ func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *jou
 	request, ok := stalledRequestFromContext(ctx)
 	if !ok {
 		return Result{}, false, nil
+	}
+	if request.kind == interruptHardShutdown {
+		jr.SetMachineState(finalState)
+		if err := jr.Checkpoint(); err != nil {
+			return Result{}, true, fmt.Errorf("runner: checkpoint hard-stopped run %q at %q: %w", runID, finalState, err)
+		}
+		return Result{Phase: journal.PhaseRunning, FinalState: finalState, Steps: steps}, true, nil
 	}
 	active, activeOK := ctx.Value(activeRunContextKey{}).(*activeRun)
 	if activeOK {
