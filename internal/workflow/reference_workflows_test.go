@@ -60,6 +60,44 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 	}
 }
 
+func TestReferenceImplementationDelegatesProviderMutations(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
+
+	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	foundImplement := false
+	for _, task := range workflow.Spec.Tasks {
+		if task.Name == "implement" {
+			foundImplement = true
+			if !strings.Contains(task.Goal, "Provider-side acceptance steps") ||
+				!strings.Contains(task.Goal, "do not fail or block") {
+				t.Fatalf("implement goal does not delegate provider mutations: %q", task.Goal)
+			}
+			break
+		}
+	}
+	if !foundImplement {
+		t.Fatal("implement task not found")
+	}
+
+	raw, err = os.ReadFile(filepath.Join(root, "goobers", "implementer", "instructions.md"))
+	if err != nil {
+		t.Fatalf("read implementer instructions: %v", err)
+	}
+	instructions := string(raw)
+	if !strings.Contains(instructions, "owned by capability-scoped workflow stages") ||
+		!strings.Contains(instructions, "`MISSING_CAPABILITY` solely because") ||
+		!strings.Contains(instructions, "checking whether that mutation was already completed") {
+		t.Fatalf("implementer instructions do not delegate and deduplicate provider mutations")
+	}
+}
+
 func TestReferenceWorkflowsCuratorDeclaresRoadmapMutation(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
