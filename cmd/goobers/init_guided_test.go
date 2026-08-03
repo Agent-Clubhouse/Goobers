@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"https://github.com/acme/Widget.Service.git",
 		"",
 		"",
-		"",
+		"make ci", // #2071: no build manifest in this test's cwd, so no default is offered
 		"",
 		"",
 		"",
@@ -210,6 +211,72 @@ func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) 
 		if strings.Contains(stdout.String(), unwanted) {
 			t.Errorf("work-nomination prompt unexpectedly contains %q:\n%s", unwanted, stdout.String())
 		}
+	}
+}
+
+// TestPromptGuidedOptionsDetectsCICommandDefault is #2071: the ciCommand
+// prompt's default is seeded from the invoking directory's build manifest
+// instead of unconditionally offering the Go-specific `make ci`. Accepting
+// the detected default (empty input) must produce the stack-appropriate
+// command, and the detection message must appear before the prompt.
+func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"implementation",
+		"", // accept the detected default
+		"",
+		"",
+		"",
+		"",
+		"",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if !slices.Equal(opts.CICommand, []string{"npm", "run", "ci"}) {
+		t.Fatalf("opts.CICommand = %v, want [npm run ci]", opts.CICommand)
+	}
+	if !strings.Contains(stdout.String(), "Detected Node.js build manifest") {
+		t.Errorf("stdout lacks the detection message:\n%s", stdout.String())
+	}
+}
+
+// TestPromptGuidedOptionsForcesExplicitCICommandWhenUndetected is #2071's
+// other half: a directory with no recognized build manifest must not
+// silently fall back to `make ci` — it must force an explicit answer, and
+// exhausting the input without one (matching a fully non-interactive,
+// defaults-only driver) is a hard error rather than a silent `make ci`.
+func TestPromptGuidedOptionsForcesExplicitCICommandWhenUndetected(t *testing.T) {
+	dir := t.TempDir() // no recognized manifest
+	t.Chdir(dir)
+
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"implementation",
+		"", // no default to accept -> invalid, loop
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	_, err := promptGuidedOptions(input, &stdout)
+	if err == nil {
+		t.Fatal("promptGuidedOptions succeeded with no ciCommand answered and nothing detected to default to")
+	}
+	if !strings.Contains(stdout.String(), "No recognized build manifest") {
+		t.Errorf("stdout lacks the no-detection message:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "make ci") {
+		t.Errorf("stdout unexpectedly offered make ci with no Makefile present:\n%s", stdout.String())
 	}
 }
 
