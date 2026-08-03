@@ -6,13 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -270,9 +271,8 @@ func runFlagArgs(args []string) []string {
 // issue #135's sanctioned recovery path for a run resumeInterruptedRuns
 // can't resolve on its own (e.g. its workflow was renamed/removed from
 // config, so `goobers up` skips it with a warning forever rather than
-// erroring at startup). Works on the run's journal alone — it doesn't need
-// the run's workflow to still exist in config, unlike everything else in
-// this file.
+// erroring at startup). It doesn't need the run's workflow to still exist,
+// but reads the owning gaggle's placement config to find managed worktrees.
 
 const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
@@ -322,7 +322,44 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
-	wtMgr, err := worktree.NewManager(runLayout.WorkcopiesDir())
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		if !errors.Is(err, iofs.ErrNotExist) {
+			pf(stderr, "error: load instance config: %v\n", err)
+			return 2
+		}
+		cfg = &instance.Config{}
+	}
+	workcopiesRoot := runLayout.WorkcopiesDir()
+	if runLayout.Gaggle() == "" {
+		runLayout, err = instance.EffectiveWorkcopiesLayout(runLayout, cfg, nil)
+		if err != nil {
+			pf(stderr, "error: resolve workcopies layout: %v\n", err)
+			return 2
+		}
+		workcopiesRoot = runLayout.WorkcopiesDir()
+	} else {
+		set, _, loadErr := loadConfigDirectory(l.ConfigDir())
+		if loadErr != nil {
+			pf(stderr, "error: load config directory: %v\n", loadErr)
+			return 2
+		}
+		gaggle := configuredGaggle(set, runLayout.Gaggle())
+		if gaggle == nil {
+			pf(stderr, "error: gaggle %q is not present in active config\n", runLayout.Gaggle())
+			return 2
+		}
+		runLayout, err = instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle)
+		if err != nil {
+			pf(stderr, "error: resolve workcopies layout: %v\n", err)
+			return 2
+		}
+		workcopiesRoot = runLayout.WorkcopiesDir()
+		if configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
+			workcopiesRoot = runLayout.WorkcopiesBaseDir()
+		}
+	}
+	wtMgr, err := worktree.NewManager(workcopiesRoot)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -380,6 +417,18 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 
 	pf(stdout, "aborted run %s\n", runID)
 	return 0
+}
+
+func configuredGaggle(set *instance.ConfigSet, name string) *apiv1.Gaggle {
+	if set == nil {
+		return nil
+	}
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == name {
+			return &set.Gaggles[i]
+		}
+	}
+	return nil
 }
 
 // delegateAbortToLiveDaemon is invoked when journal.Recover fails because a
@@ -636,7 +685,7 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 		if err == nil {
 			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
 		}
-		if !errors.Is(err, fs.ErrNotExist) {
+		if !errors.Is(err, iofs.ErrNotExist) {
 			return journal.PhaseRunning, err
 		}
 		reporter.heartbeat(time.Now())

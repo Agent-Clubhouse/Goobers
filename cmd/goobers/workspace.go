@@ -67,6 +67,17 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	set, _, err := loadConfigDirectory(layout.ConfigDir())
+	if err != nil {
+		pf(stderr, "error: load config directory: %v\n", err)
+		return 1
+	}
+	layout, err = pinnedWorkspaceLayout(layout, cfg, set, project)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	workcopiesRoot := layout.WorkcopiesBaseDir()
 	cloneURL := repoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL
@@ -91,16 +102,16 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: configure repository credentials: %v\n", err)
 		return 1
 	}
-	gitEnv, err := buildWorktreeGitEnv(cfg, layout.WorkcopiesDir(), project, nil, resolver, grants, cloneURL, registry, stores)
+	gitEnv, err := buildWorktreeGitEnv(cfg, workcopiesRoot, project, nil, resolver, grants, cloneURL, registry, stores)
 	if err != nil {
 		pf(stderr, "error: configure repository checkout: %v\n", err)
 		return 1
 	}
-	options := []worktree.ManagerOption{worktree.WithPinnedRoot(layout.WorkcopiesDir())}
+	options := []worktree.ManagerOption{worktree.WithPinnedRoot(workcopiesRoot)}
 	if gitEnv != nil {
 		options = append(options, worktree.WithGitEnvironment(gitEnv))
 	}
-	manager, err := worktree.NewManager(layout.WorkcopiesDir(), options...)
+	manager, err := worktree.NewManager(workcopiesRoot, options...)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -119,6 +130,40 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "reset pinned workspace %s at %s\n", selector, resetPath)
 	return 0
+}
+
+func pinnedWorkspaceLayout(layout instance.Layout, cfg *instance.Config, set *instance.ConfigSet, project apiv1.RepoRef) (instance.Layout, error) {
+	var resolved instance.Layout
+	resolvedRoot := ""
+	for i := range set.Gaggles {
+		gaggle := &set.Gaggles[i]
+		configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project)
+		if !ok || !sameConfiguredRepo(configured, project) {
+			continue
+		}
+		candidate, err := instance.EffectiveWorkcopiesLayout(layout.ForGaggle(gaggle.Name), cfg, gaggle)
+		if err != nil {
+			return instance.Layout{}, fmt.Errorf("gaggle %s: %w", gaggle.Name, err)
+		}
+		candidateRoot := filepath.Clean(candidate.WorkcopiesBaseDir())
+		if resolvedRoot != "" && candidateRoot != resolvedRoot {
+			return instance.Layout{}, fmt.Errorf("pinned repository %s/%s belongs to gaggles with different workcopies roots and cannot be reset with a repository-only selector", project.Owner, project.Name)
+		}
+		resolved = candidate
+		resolvedRoot = candidateRoot
+	}
+	if resolvedRoot == "" {
+		return instance.Layout{}, fmt.Errorf("configured pinned repository %s/%s is not owned by an active gaggle", project.Owner, project.Name)
+	}
+	return resolved, nil
+}
+
+func sameConfiguredRepo(a instance.RepoRef, b apiv1.RepoRef) bool {
+	return a.Provider == string(b.Provider) &&
+		a.BaseURL == b.BaseURL &&
+		a.Owner == b.Owner &&
+		a.Project == b.Project &&
+		a.Name == b.Name
 }
 
 // resolvePinnedWorkspaceProject selects the configured repo to reset. Pinning

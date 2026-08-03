@@ -61,6 +61,14 @@ Goobers appends the gaggle name and repository key beneath this base. A gaggle
 may override the instance default in its own `spec.workcopies.root`; this keeps
 separate gaggles isolated even when they select the same short base path.
 
+Changing either root does not move existing mirrors or worktrees; Goobers
+clones clean copies at the new location. Stop Goobers, confirm that no run is
+active, and move the old workcopies directory aside as a temporary backup (or
+remove it immediately). After updating the configuration and restarting, verify
+the new checkouts, then remove the backup. Do not copy managed checkouts into
+the new root because Git worktree metadata may contain the old absolute path.
+Leaving the old directory in place is safe but continues to consume disk space.
+
 Before creating a checkout, Goobers measures the deepest tracked path and
 refuses it when the worktree prefix plus that path exceeds the repository's
 budget. Windows defaults to the 260-character `MAX_PATH` ceiling. Configure a
