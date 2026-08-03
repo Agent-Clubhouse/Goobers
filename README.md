@@ -1,35 +1,153 @@
 # Goobers
 
-Upstream platform monorepo for **Goobers** — an open, self-hosted agent-workforce
-platform. It starts as a single binary running a gaggle of AI agents against your
-repo and backlog on one machine, and scales — without changing a definition — to
-clustered orchestration over a large monorepo.
+**Goobers is an open, self-hosted platform for running an AI workforce against
+your repositories and backlog.** Instead of giving one agent an open-ended
+prompt, you define a team of roles (a *gaggle*) and the workflow, permissions,
+checks, retry limits, and human handoffs that govern its work.
 
-- **Architecture of record:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one
-  system across three deployment tiers; local runner first, cloud (Temporal/AKS) as
-  drop-ins behind named seams.
-- **Concepts:** [`docs/concepts/`](docs/concepts/) — desired state, the config
-  repository as source of truth, and the propose-via-PR trust model.
-- **Product vision:** [`docs/VISION.md`](docs/VISION.md)
-- **Requirements:** [`docs/requirements/`](docs/requirements/)
-- **Roadmap:** GitHub milestones — **V0** "works locally, begins to build itself",
-  **V1** arbitrary repos/teams/hardening, **V2** cloud scale.
+It is for a solo builder who wants dependable issue-to-PR automation, a small
+team that wants agents to work within its existing review and CI policy, or a
+larger organization that needs the same definitions to remain useful as its
+execution infrastructure grows. Today the shipped runner is one Go binary that
+runs on one machine. Cloud-scale orchestration is an explicit design goal, not a
+current product claim; the cluster entrypoints in this repository remain
+quarantined. What is intended to stay constant is the configuration and run
+contract, so scaling execution does not require redefining the workforce.
 
-## Repository layout
+## Predictable workflows around nondeterministic workers
+
+A Goobers workflow is YAML that declares triggers, stages, gates, transitions,
+capabilities, retries, and budgets. The loader validates that definition and
+[`internal/workflow` compiles it into a pinned state machine](internal/workflow/compile.go);
+the runner walks that machine rather than asking an agent what should happen
+next. Stages are either:
+
+- **deterministic**, such as querying a backlog, running tests, polling CI, or
+  opening a pull request; or
+- **agentic**, where a named goober receives an invocation envelope and must
+  return a result envelope under explicitly granted capabilities.
+
+Gates turn results into declared branches. They can run an automated check, ask
+an independent reviewer agent for a verdict, or pause for human approval. A
+failure can route back through a bounded repair loop, stop the run, or
+[`@escalate` for human attention](internal/workflow/machine.go). The shipped
+[`implementation` workflow](reference-workflows/gaggles/goobers/workflows/implementation.yaml)
+is a concrete definition: it claims one approved issue, gives an isolated
+worktree to an implementer, routes review findings and local-CI failures back to
+that implementer, and only then pushes a branch and opens a PR.
+
+This makes the agent useful without making it the control plane:
+
+- a lease-based [claim ledger](internal/localscheduler/claim.go) prevents two
+  runs from silently taking the same backlog item;
+- each run pins its workflow definition and records an
+  [append-only, content-digested journal](internal/journal/doc.go) of inputs,
+  stage and gate events, and artifacts; and
+- exhausted or explicitly escalated paths become visible run outcomes and can
+  [notify the driving backlog item](internal/gate/escalate.go).
+
+The result is inspectable automation: the model's answer can vary, but the
+route it is allowed to take, the effects it can request, and the evidence left
+behind are declared and reviewable.
+
+## GitOps for the workforce itself
+
+Goobers treats workforce definitions as desired state. Keep `manifest.yaml`,
+gaggles, goobers, instructions, and workflows in a configuration repository;
+protect its main branch with the same pull-request, CI, and CODEOWNERS rules you
+use for infrastructure configuration. Agents may propose a definition change
+on a branch, but repository governance decides whether it becomes active. They
+do not rewrite the running workforce in place. See
+[How Goobers works](docs/concepts/README.md) for the trust model.
+
+An instance's `workflowSource` points at a Git branch (default: `main`).
+The shipped [Git source](internal/instance/gitsource.go) fetches that branch's
+committed tree and materializes an immutable snapshot. While `goobers up` is
+running, the [reconcile loop](cmd/goobers/up.go) notices new commits by polling,
+local-ref changes, or an authenticated push webhook. It atomically installs the
+new definitions, validates them, and reloads the scheduler and runners. An
+invalid revision is rejected and the last-known-good definitions continue
+running ([reload implementation](cmd/goobers/configreload.go)). In other words:
+merge reviewed desired state to the tracked branch and Goobers converges on it,
+with an audit trail and a safe rejection path. It is the same operating model
+Argo CD popularized for cluster configuration, applied to an agent workforce.
+
+## One real agent-to-human handoff
+
+[Issue #664](https://github.com/Agent-Clubhouse/Goobers/issues/664) requested a
+flake ledger and quarantine policy, and was explicitly filed as backlog for
+future investment, **not approved for automated implementation**. A running
+Goobers instance claimed and worked it anyway, on
+`goobers/implementation/a5236bf6de96406c933ecb1a9b9b83bc`--the branch name
+identifies the workflow and run.
+
+1. The deterministic backlog stage selected and leased an issue it should not
+   have: #664 carried no automated-implementation authorization.
+2. The implementation agent worked in the run's isolated branch; the reviewer
+   and local-CI gates controlled whether it could advance or needed a repass.
+3. Deterministic stages published the branch and opened
+   [PR #1746](https://github.com/Agent-Clubhouse/Goobers/pull/1746). Review
+   caught the authorization violation--not merely defects in the diff--and
+   escalated to a human; that PR closed without merging.
+4. A maintainer authorized the work directly, repaired the defects the review
+   had also found, manually opened replacement
+   [PR #2200](https://github.com/Agent-Clubhouse/Goobers/pull/2200), and
+   merged it on 2026-08-01 after the resulting
+   [CI run passed](https://github.com/Agent-Clubhouse/Goobers/actions/runs/30722079485),
+   including the shipped-workflow contract checks.
+
+This was not one fully automated issue-to-merge run: automation claimed work
+it was not authorized to do, then a human corrected the authorization,
+completed the remediation, and merged. It demonstrates the intended boundary
+in concrete terms even when the boundary is first crossed by mistake: trusted
+backlog work enters a declared machine; agents do bounded work; deterministic
+stages and gates coordinate repository effects and expose unresolved
+problems--including authorization violations, not just defects; and humans
+take over with an ordinary branch, PR, and inspectable history rather than an
+opaque agent session.
+
+## Try it locally
+
+There is no tagged release yet, so build with the Go toolchain declared in
+[`go.mod`](go.mod). The fastest path is a credential-free demo on Linux or
+macOS:
+
+```sh
+make build
+bin/goobers init --demo ./demo-instance
+bin/goobers run demo ./demo-instance
+bin/goobers trace <run-id> ./demo-instance
+```
+
+The demo uses mock providers and performs no network writes. It exercises
+curation, implementation, a review gate, and a merge preview, then leaves the
+run journal for `trace` to inspect. The [full quickstart](docs/guides/quickstart.md)
+then walks through a disposable GitHub-backed issue-to-PR run and a regular
+instance. Production-oriented definitions live in
+[`config-examples/`](config-examples/).
+
+For deeper context, read the [product vision](docs/VISION.md),
+[architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/), and
+[requirements](docs/requirements/). Those documents include future design;
+this overview deliberately describes the behavior shipped in this tree.
+
+## Engineering reference
+
+### Repository layout
 
 | Path | Contents | Status |
 |---|---|---|
-| `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active — extended by DSL v0 |
-| `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active — V0 workload |
-| `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active — being built under V0 |
-| `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — tier-3, revived in V2 |
-| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — tier-3, revived in V2 |
+| `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active |
+| `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
+| `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
+| `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
+| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — reserved for cloud-scale execution |
 | `cmd/goober-runtime` | Per-run agent pod runtime | **Superseded** — folds into `goobers`' local stage execution |
-| `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — tier-3, revived in V2 |
-| `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — tier-3 (CRD-apply path), revived in V2 |
+| `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — reserved for cloud-scale execution |
+| `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — CRD-apply path is not part of the shipped local runner |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
-| `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — tier-3 drop-ins, revived in V2 |
-| `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active — retargets to run journals in V1 |
+| `infra/` | Bicep, ArgoCD, Temporal, ADX | **Quarantined** — cloud infrastructure is not a shipped deployment path |
+| `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active |
 | `reference-workflows/` | Canonical, proven workflow configs used to operate Goobers against this repository | Active — tested dogfood reference |
 | `config-examples/` | Reference config layout + starter definitions | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
@@ -38,28 +156,29 @@ clustered orchestration over a large monorepo.
 | `test/` | CI + e2e harness | Active |
 
 Quarantined paths stay in-tree, compiling, and status-bannered — they are the
-documented tier-3 drop-in points (`docs/ARCHITECTURE.md §10`), not dead code.
+documented cloud-scale drop-in points (`docs/ARCHITECTURE.md §10`), not current
+product surfaces or dead code.
 See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
-## Go module
+### Go module
 
 - Module path: `github.com/goobers/goobers`
 - Minimum Go version: the toolchain declared in [`go.mod`](go.mod)
 
 Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 
-## Binaries (`cmd/`)
+### Binaries (`cmd/`)
 
 The product binary is **`goobers`** — the local runner: `init`, `validate`, `up`
-(daemon: scheduler + runner), `run`, `status`, `trace`. It is being built under the
-V0 milestone; see the V0 epic issue for the work breakdown.
+(daemon: scheduler + runner), `run`, `status`, `trace`.
 
-Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are tier-3 /
-superseded skeletons kept per the quarantine plan (`docs/ARCHITECTURE.md §11`).
+Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are
+cloud-scale or superseded skeletons kept per the quarantine plan
+(`docs/ARCHITECTURE.md §11`).
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
-## Quickstart (tier 1, local)
+## Detailed local quickstart
 
 New to declarative control systems? Read
 [How Goobers works](docs/concepts/README.md) first; it explains why `config/`
@@ -143,7 +262,7 @@ the daemon as a supervised service via
 (systemd · launchd · Windows Service). How binaries are built, packaged, and
 verified for distribution: [Releases & packaging](docs/guides/releases.md).
 Before making the daemon API reachable beyond loopback, follow the
-[tier-2 OIDC authentication guide](docs/guides/oidc-authentication.md).
+[OIDC authentication guide](docs/guides/oidc-authentication.md).
 Azure DevOps instances can use
 [Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
 Operational workflows can query ADX or compiled organization adapters through
