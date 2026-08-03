@@ -577,12 +577,10 @@ through the existing "not supported by this build" path
 (`internal/workflow/compile.go:184-208`) — no silent degradation.
 
 **Axis 2 — per-feature lifecycle.** Every DSL surface element carries a `FeatureID`
-with a `preview → ga → deprecated → removed` lifecycle. The parallel DSL fields
-entered the registry as preview during incremental delivery, then static
-fan-out/fan-in graduated to **GA in #1939** after the conformance corpus (§9) shipped.
-Using a parallel no longer requires the `goobers.dev/allow-preview-features`
-annotation. Released features' history is immutable
-(`v_current/features.go:148-173`), so the transition remains recorded.
+with a `preview → ga → deprecated → removed` lifecycle. Static fan-out/fan-in
+graduated to **GA in #1939** after the conformance corpus (§9) shipped, and the
+registry now declares its DSL fields GA. Using a parallel no longer requires the
+`goobers.dev/allow-preview-features` annotation.
 
 Mechanical consequences for every slice that touches the schema: a new field must be
 added in **four** hand-maintained places — the Go type with kubebuilder markers,
