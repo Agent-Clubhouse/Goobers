@@ -146,7 +146,21 @@ Checks `instance.yaml` and every document under `config/` against the
 canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
 error (e.g. not an instance root yet).
 
-## 6. `up` — run the daemon
+## 6. `run` — trigger one manually
+
+```sh
+bin/goobers run default-implement ./my-instance
+```
+
+Triggers a run of the named `config/` workflow manually, still honoring run
+conditions (max-parallel, budgets). Pins the workflow's compiled digest,
+creates its run journal (ARCHITECTURE.md §4), and advances it through the
+real local runner — deterministic tasks execute in a fresh worktree, agentic
+tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
+until the run reaches a terminal state or pauses (e.g. a human gate). Prints
+the run id up front and the final phase/state once it returns.
+
+## 7. `up` — run the daemon
 
 ```sh
 bin/goobers up ./my-instance
@@ -170,20 +184,6 @@ the new definitions swap in atomically, and an invalid edit leaves the
 last-known-good definitions active. Without the flag, `config/` is also read once
 at startup. (Live watch is experimental and will be superseded by the Workflow CD
 config source, #453.)
-
-## 7. `run` — trigger one manually
-
-```sh
-bin/goobers run default-implement ./my-instance
-```
-
-Triggers a run of the named `config/` workflow manually, still honoring run
-conditions (max-parallel, budgets). Pins the workflow's compiled digest,
-creates its run journal (ARCHITECTURE.md §4), and advances it through the
-real local runner — deterministic tasks execute in a fresh worktree, agentic
-tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
-until the run reaches a terminal state or pauses (e.g. a human gate). Prints
-the run id up front and the final phase/state once it returns.
 
 ## 8. `status` — list runs
 

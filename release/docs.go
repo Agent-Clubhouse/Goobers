@@ -227,7 +227,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"the token-bearing `quickstart@v1` template with\n"+
 							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
 							"instance and the\n"+
-							"production-oriented definitions under [`config-examples/`](config-examples/).\n\n"+
+							"production-oriented definitions under\n"+
+							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
 							"The release installer already ran guided setup at the requested instance path\n"+
 							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
@@ -280,6 +281,14 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				{
 					source:    quickstartSourceGraduationWorkflow,
 					installed: quickstartInstalledGraduationWorkflow,
+				},
+				{
+					source:    "../../config-examples/README.md",
+					installed: "../../onboarding/templates/canonical/README.md",
+				},
+				{
+					source:    "../../config-examples/gaggles/acme-web/workflows/implementation.yaml",
+					installed: "../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml",
 				},
 				{
 					source: quickstartSourceInit,
