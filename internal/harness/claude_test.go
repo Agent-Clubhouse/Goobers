@@ -463,6 +463,17 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 			t.Fatalf("environment missing sandbox override %s: %v", name, runner.lastReq.Env)
 		}
 	}
+	profileDir := filepath.Join(workspace, ".goobers", "sandbox", "profile")
+	if !slices.Contains(runner.lastReq.Env, "HOME="+profileDir) {
+		t.Fatalf("sandboxed HOME was not isolated to %s: %v", profileDir, runner.lastReq.Env)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sandbox.policies[0].PrivateRoots, []string{resolvedHome}) {
+		t.Fatalf("policy private roots = %v, want host HOME %q", sandbox.policies[0].PrivateRoots, resolvedHome)
+	}
 	copied, err := os.ReadFile(filepath.Join(workspace, ".goobers", "sandbox", "claude-config", ".credentials.json"))
 	if err != nil {
 		t.Fatalf("read sandbox credential copy: %v", err)

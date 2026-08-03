@@ -29,6 +29,7 @@ func (s *stubSandbox) Wrap(command *exec.Cmd, policy sandbox.Policy) error {
 	s.policies = append(s.policies, sandbox.Policy{
 		Workspace:     policy.Workspace,
 		WritableRoots: append([]string(nil), policy.WritableRoots...),
+		PrivateRoots:  append([]string(nil), policy.PrivateRoots...),
 	})
 	command.Path = "sandbox-stub"
 	command.Args = append([]string{"sandbox-stub", "--confine"}, command.Args...)
@@ -57,6 +58,8 @@ func (c *capturingProcessRunner) Run(ctx context.Context, req ProcessRequest) (P
 
 func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	sb := &stubSandbox{}
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0},
@@ -97,10 +100,18 @@ func TestCopilotAdapterConfinesSubprocessUnderEnforcedSandbox(t *testing.T) {
 	if len(sb.policies[0].WritableRoots) != 0 {
 		t.Fatalf("policy writable roots = %v, want none for a git-less workspace", sb.policies[0].WritableRoots)
 	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sb.policies[0].PrivateRoots, []string{resolvedHome}) {
+		t.Fatalf("policy private roots = %v, want host HOME %q", sb.policies[0].PrivateRoots, resolvedHome)
+	}
 
 	copilotHome := filepath.Join(workspace, ".goobers", "sandbox", "copilot-home")
 	tempDir := filepath.Join(workspace, ".goobers", "sandbox", "tmp")
-	wantEnv := map[string]string{"COPILOT_HOME": copilotHome, "TMPDIR": tempDir}
+	profileDir := filepath.Join(workspace, ".goobers", "sandbox", "profile")
+	wantEnv := map[string]string{"COPILOT_HOME": copilotHome, "TMPDIR": tempDir, "HOME": profileDir}
 	for name, want := range wantEnv {
 		got, found := "", false
 		for _, entry := range runner.lastReq.Env {
