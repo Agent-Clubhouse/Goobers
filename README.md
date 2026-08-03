@@ -150,7 +150,12 @@ this overview deliberately describes the behavior shipped in this tree.
 | `portal/` | TypeScript + React observability portal; operator co-brandable via `instance.yaml` | Active |
 | `reference-workflows/` | Canonical, proven workflow configs used to operate Goobers against this repository | Active — tested dogfood reference |
 | `config-examples/` | Reference config layout + starter definitions | Active |
+| `examples/` | Specialized end-to-end examples, including iOS simulator workflows | Active |
 | `samples/` | Versioned, disposable onboarding targets | Active |
+| `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
+| `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
+| `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
+| `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
 | `skills/` | Canonical portable skills used by the agent toolkit | Active |
 | `test/` | CI + e2e harness | Active |
