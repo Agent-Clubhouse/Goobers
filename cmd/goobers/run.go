@@ -271,8 +271,8 @@ func runFlagArgs(args []string) []string {
 // issue #135's sanctioned recovery path for a run resumeInterruptedRuns
 // can't resolve on its own (e.g. its workflow was renamed/removed from
 // config, so `goobers up` skips it with a warning forever rather than
-// erroring at startup). It doesn't need the run's workflow to still exist,
-// but reads the owning gaggle's placement config to find managed worktrees.
+// erroring at startup). It doesn't need the run's workflow or gaggle to still
+// exist, but uses the owning gaggle's placement config when available.
 
 const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
@@ -346,18 +346,16 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		gaggle := configuredGaggle(set, runLayout.Gaggle())
-		if gaggle == nil {
-			pf(stderr, "error: gaggle %q is not present in active config\n", runLayout.Gaggle())
-			return 2
-		}
 		runLayout, err = instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle)
 		if err != nil {
 			pf(stderr, "error: resolve workcopies layout: %v\n", err)
 			return 2
 		}
 		workcopiesRoot = runLayout.WorkcopiesDir()
-		if configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
-			workcopiesRoot = runLayout.WorkcopiesBaseDir()
+		if gaggle != nil {
+			if configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
+				workcopiesRoot = runLayout.WorkcopiesBaseDir()
+			}
 		}
 	}
 	wtMgr, err := worktree.NewManager(workcopiesRoot)

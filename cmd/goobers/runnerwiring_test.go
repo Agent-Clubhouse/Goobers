@@ -1665,6 +1665,29 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 }
 
+func TestWorkcopyRootClaimsAllowSharedDefaultPinnedRoot(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimWorkcopyRoot(claims, "beta", root, false); err != nil {
+		t.Fatalf("shared default pinned root: %v", err)
+	}
+}
+
+func TestWorkcopyRootClaimsRejectAlternateRootCollision(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	err := claimWorkcopyRoot(claims, "beta", root, true)
+	if err == nil || !strings.Contains(err.Error(), "workcopies path collision") {
+		t.Fatalf("error = %v, want alternate-root collision", err)
+	}
+}
+
 func TestLegacyClaimNamespaceUsesOwningRunIdentity(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	providers := map[string]apiv1.Provider{

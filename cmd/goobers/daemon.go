@@ -503,6 +503,27 @@ func claimProvidersByGaggle(set *instance.ConfigSet) map[string]apiv1.Provider {
 	return providers
 }
 
+type workcopyRootClaim struct {
+	gaggle    string
+	alternate bool
+}
+
+func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string, alternate bool) error {
+	path, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
+	}
+	key := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	if other, exists := claims[key]; exists && other.gaggle != gaggle && (alternate || other.alternate) {
+		return fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other.gaggle, gaggle, path)
+	}
+	claims[key] = workcopyRootClaim{gaggle: gaggle, alternate: alternate}
+	return nil
+}
+
 func buildSchedulerDefinitions(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -556,7 +577,7 @@ func buildSchedulerDefinitions(
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
 	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
 	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
-	workcopyRoots := make(map[string]string, len(set.Gaggles))
+	workcopyRoots := make(map[string]workcopyRootClaim, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggle := &set.Gaggles[i]
 		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
@@ -569,18 +590,13 @@ func buildSchedulerDefinitions(
 		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
 			managerRoot = scoped.WorkcopiesBaseDir()
 		}
-		path, pathErr := filepath.Abs(managerRoot)
-		if pathErr != nil {
-			return nil, fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle.Name, pathErr)
+		alternateRoot := cfg.Workcopies != nil && cfg.Workcopies.Root != ""
+		if gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+			alternateRoot = true
 		}
-		key := filepath.Clean(path)
-		if runtime.GOOS == "windows" {
-			key = strings.ToLower(key)
+		if err := claimWorkcopyRoot(workcopyRoots, gaggle.Name, managerRoot, alternateRoot); err != nil {
+			return nil, err
 		}
-		if other, exists := workcopyRoots[key]; exists && other != gaggle.Name {
-			return nil, fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other, gaggle.Name, path)
-		}
-		workcopyRoots[key] = gaggle.Name
 		workcopyLayouts[gaggle.Name] = scoped
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
