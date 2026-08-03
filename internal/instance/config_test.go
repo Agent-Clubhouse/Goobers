@@ -1875,6 +1875,149 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+// TestConfigValidateDaemonIdentity covers #1780's DaemonIdentityConfig: the
+// same exactly-one-kind, kind-specific-required-fields, fail-closed-inline-
+// secret discipline RepoAuthConfig already enforces for repo-level auth.
+func TestConfigValidateDaemonIdentity(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "valid pat",
+			cfg:  Config{DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}}},
+		},
+		{
+			name:    "pat missing token",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT}},
+			wantErr: "token must reference exactly one of env, file, keychain, or store",
+		},
+		{
+			name: "pat token with two sources",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT", File: "/f"},
+			}},
+			wantErr: "token must reference exactly one of env, file, keychain, or store",
+		},
+		{
+			name: "pat rejects app fields",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}, AppID: "123456",
+			}},
+			wantErr: "only valid for kind \"github-app\"",
+		},
+		{
+			name: "pat token env must not be exposed to stages",
+			cfg: Config{
+				Runner:         RunnerConfig{EnvPassthrough: []string{"DAEMON_PAT"}},
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}},
+			},
+			wantErr: "must not be exposed to stages",
+		},
+		{
+			name: "valid github-app",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+		},
+		{
+			name: "valid github-app with slug",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42", Slug: "my-daemon",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+		},
+		{
+			name: "github-app rejects token alongside minting",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, Token: &TokenRef{Env: "T"}, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "must not configure token",
+		},
+		{
+			name: "github-app missing appId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, InstallationID: "42",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "appId is required",
+		},
+		{
+			name: "github-app missing installationId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "installationId is required",
+		},
+		{
+			name: "github-app non-numeric installationId",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "acme-corp",
+				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
+			}},
+			wantErr: "must be the numeric installation ID",
+		},
+		{
+			name: "github-app missing privateKey",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			}},
+			wantErr: "privateKey must reference exactly one",
+		},
+		{
+			name: "github-app privateKey env must not be exposed to stages",
+			cfg: Config{
+				Runner: RunnerConfig{EnvPassthrough: []string{"DAEMON_APP_KEY"}},
+				DaemonIdentity: &DaemonIdentityConfig{
+					Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+					PrivateKey: &TokenRef{Env: "DAEMON_APP_KEY"},
+				},
+			},
+			wantErr: "must not be exposed to stages",
+		},
+		{
+			name: "github-app privateKey undeclared store",
+			cfg: Config{DaemonIdentity: &DaemonIdentityConfig{
+				Kind: GitHubAuthApp, AppID: "123456", InstallationID: "42",
+				PrivateKey: &TokenRef{Store: "missing-kv/app-key"},
+			}},
+			wantErr: "not declared under secretStores",
+		},
+		{
+			name:    "unsupported kind",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Kind: "oidc", Token: &TokenRef{Env: "T"}}},
+			wantErr: "unsupported kind \"oidc\"",
+		},
+		{
+			name:    "empty kind",
+			cfg:     Config{DaemonIdentity: &DaemonIdentityConfig{Token: &TokenRef{Env: "T"}}},
+			wantErr: "unsupported kind \"\"",
+		},
+		{
+			name: "nil DaemonIdentity is byte-identical to before this field existed",
+			cfg:  Config{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func boolConfig(value bool) *bool {
 	return &value
 }

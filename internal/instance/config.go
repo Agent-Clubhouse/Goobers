@@ -93,6 +93,12 @@ type Config struct {
 	// repo-token default; an MCP entry is reachable only through an explicit
 	// goober server reference.
 	Credentials []CredentialGrant `json:"credentials,omitempty" yaml:"credentials,omitempty"`
+	// DaemonIdentity declares a distinct bot identity for the daemon's own
+	// authored PRs/reviews/merges/comments (UNOP-7/#1295, #1780), backing the
+	// standard daemon-mutation capability set unless a capability has its own
+	// Credentials override. Nil (the default) is byte-identical to every
+	// instance today.
+	DaemonIdentity *DaemonIdentityConfig `json:"daemonIdentity,omitempty" yaml:"daemonIdentity,omitempty"`
 	// Timezone is an IANA location name (e.g. "America/New_York") every
 	// workflow's cron schedule evaluates in. Empty defaults to UTC — a fixed,
 	// reproducible default independent of the host process's own local zone,
@@ -648,6 +654,118 @@ func (id *GitHubID) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("must be a string or a number, got %s", data)
 	}
 	*id = GitHubID(n.String())
+	return nil
+}
+
+// DaemonIdentityConfig declares a distinct bot identity for the daemon's own
+// authored mutations (UNOP-7/#1295), on equal footing whichever Kind is
+// chosen — a machine-account PAT (#1780) or GitHub App installation minting
+// (#1779), reusing the same Kind vocabulary as RepoAuthConfig (GitHubAuthPAT/
+// GitHubAuthApp) since the underlying mechanisms are identical. Kind is a
+// deliberately open string, not a closed enum (no kubebuilder Enum marker):
+// a future third method (e.g. OIDC federation) is an additive Kind value and
+// new kind-specific fields on this same struct, never a schema break for the
+// first two.
+//
+// Nil (the default) is byte-identical to every instance today: capabilities
+// resolve exactly as they do without this field, and PR/attribution checks
+// that consult it fall back unchanged to their pre-#1780 behavior (see
+// cmd/goobers/prselect.go's isOwnPullRequest). Configuring it is what makes a
+// distinct identity's credential back the standard daemon-mutation
+// capability set (repo:push, github:issues:write, github:pr:write,
+// github:pr:review, github:branch:delete, github:pr:merge) without having to
+// declare each one individually via credentials: — an explicit
+// CredentialGrant for one of those capabilities still overrides this.
+type DaemonIdentityConfig struct {
+	Kind string `json:"kind" yaml:"kind"`
+	// Token references the machine account's PAT for kind "pat" — exactly
+	// one of env/file/keychain/store, never an inline value (CFG-009).
+	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// AppID identifies the GitHub App for kind "github-app" (see
+	// RepoAuthConfig.AppID).
+	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
+	// InstallationID is the App's installation ID for kind "github-app".
+	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// PrivateKey references the App's PEM-encoded private key for kind
+	// "github-app" (see RepoAuthConfig.PrivateKey).
+	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+	// Slug is the App's URL-safe handle (the part before "[bot]" in its
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind "github-app".
+	// Installation tokens cannot self-report a login via the REST API the
+	// way a PAT can (there is no equivalent of GET /user), so attribution
+	// checks need it declared explicitly. Optional and currently
+	// forward-compatible only: #1779 (the App path itself) is not yet
+	// implemented, so a kind "github-app" daemon identity without Slug set
+	// still mints and authenticates correctly, it just cannot yet be
+	// distinguished from the branch-prefix heuristic in PR attribution.
+	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
+}
+
+// hasGitHubAppFields reports whether any github-app-only field is set, for
+// fail-closed rejection on kinds that must not carry them.
+func (d *DaemonIdentityConfig) hasGitHubAppFields() bool {
+	return d.AppID != "" || d.InstallationID != "" || d.PrivateKey != nil || d.Slug != ""
+}
+
+// GitHubApp reports whether this identity authenticates through GitHub App
+// installation-token minting rather than a static token ref.
+func (d *DaemonIdentityConfig) GitHubApp() bool {
+	return d != nil && d.Kind == GitHubAuthApp
+}
+
+// validate enforces exactly-one-kind and kind-specific required fields,
+// mirroring RepoAuthConfig's per-repo validation switch (same fail-closed
+// discipline, same CFG-009/SEC-010 inline-secret rejection).
+func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[string]bool) error {
+	switch d.Kind {
+	case GitHubAuthPAT:
+		if d.hasGitHubAppFields() {
+			return fmt.Errorf("appId, installationId, privateKey, and slug are only valid for kind %q", GitHubAuthApp)
+		}
+		if d.Token == nil || d.Token.sourceCount() != 1 {
+			return fmt.Errorf("token must reference exactly one of env, file, keychain, or store — " +
+				"inline secret values are never permitted (CFG-009, SEC-010)")
+		}
+		if err := validateStoreRef("token", *d.Token, stores); err != nil {
+			return err
+		}
+		if d.Token.Env != "" && stageEnvironmentAllows(d.Token.Env, envPassthrough) {
+			return fmt.Errorf(
+				"token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				d.Token.Env,
+			)
+		}
+	case GitHubAuthApp:
+		if d.Token != nil {
+			return fmt.Errorf("kind %q must not configure token — the installation token is minted", GitHubAuthApp)
+		}
+		if d.AppID == "" {
+			return fmt.Errorf("appId is required for kind %q", GitHubAuthApp)
+		}
+		if d.InstallationID == "" {
+			return fmt.Errorf("installationId is required for kind %q", GitHubAuthApp)
+		}
+		if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
+			return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+		}
+		if d.PrivateKey == nil || d.PrivateKey.sourceCount() != 1 {
+			return fmt.Errorf("privateKey must reference exactly one of env, file, keychain, or store — " +
+				"inline secret values are never permitted (CFG-009, SEC-010)")
+		}
+		if err := validateStoreRef("privateKey", *d.PrivateKey, stores); err != nil {
+			return err
+		}
+		// The App key can mint tokens broadly — never allow the stage
+		// environment to carry it, mirroring RepoAuthConfig's own guard.
+		if d.PrivateKey.Env != "" && stageEnvironmentAllows(d.PrivateKey.Env, envPassthrough) {
+			return fmt.Errorf(
+				"privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				d.PrivateKey.Env,
+			)
+		}
+	default:
+		return fmt.Errorf("unsupported kind %q (supported: %q, %q)", d.Kind, GitHubAuthPAT, GitHubAuthApp)
+	}
 	return nil
 }
 
@@ -1416,6 +1534,11 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("repos[%d] (%s/%s): policy.requiredStatusChecks entries must not be empty", i, r.Owner, r.Name)
 				}
 			}
+		}
+	}
+	if c.DaemonIdentity != nil {
+		if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
+			return fmt.Errorf("daemonIdentity: %w", err)
 		}
 	}
 	seen := make(map[string]bool, len(c.Credentials))
