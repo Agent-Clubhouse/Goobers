@@ -2598,6 +2598,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 	var lastErr error
 	cumulativeUsage := newStageUsageTotals()
 	nextRetryClass := journal.AttemptPolicy
+	var infraFailedAttemptCommittedWork bool
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
 		if _, ok := stalledRequestFromContext(ctx); ok {
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
@@ -2636,7 +2637,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2943,7 +2944,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -3101,6 +3102,27 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = outboxErr
 			}
 		}
+		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
+			*infraFailedAttemptCommittedWork && workspace.worktree != nil {
+			baseRef := in.RepoRef.Branch
+			if baseRef == "" {
+				baseRef = "main"
+			}
+			committedWork, inspectErr := workspace.worktree.HasCommitsAheadOf(ctx, baseRef)
+			if inspectErr != nil {
+				err = fmt.Errorf("inspect committed work before accepting infrastructure retry no-work: %w", inspectErr)
+			} else if committedWork {
+				result = preserveCommittedWorkOnInfraRetry(result)
+			}
+		}
+		if err != nil && invoke.IsInfrastructureFailure(err) && workspace.worktree != nil {
+			committedWork, inspectErr := workspace.worktree.HasNewCommits(ctx)
+			if inspectErr != nil {
+				err = errors.Join(err, fmt.Errorf("inspect commits created by infrastructure-failed attempt: %w", inspectErr))
+			} else {
+				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
+			}
+		}
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -3119,6 +3141,18 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+func preserveCommittedWorkOnInfraRetry(result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	outputs := make(map[string]interface{}, len(result.Outputs)+1)
+	for key, value := range result.Outputs {
+		outputs[key] = value
+	}
+	outputs["preservedCommittedWork"] = true
+	result.Status = apiv1.ResultSuccess
+	result.Summary = "preserved committed work from an infrastructure-failed attempt"
+	result.Outputs = outputs
+	return result
 }
 
 func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.ResultEnvelope {

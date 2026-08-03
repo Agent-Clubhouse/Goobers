@@ -570,6 +570,28 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	return out, nil
 }
 
+// HasCommitsAheadOf reports whether HEAD contains commits not reachable from
+// baseRef.
+func (wt *Worktree) HasCommitsAheadOf(ctx context.Context, baseRef string) (bool, error) {
+	if baseRef == "" {
+		return false, fmt.Errorf("worktree: HasCommitsAheadOf requires a baseRef")
+	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
+	commit, err := gitOutput(ctx, wt.Path, "rev-list", "--max-count=1", baseRef+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect commits ahead of %s for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return commit != "", nil
+}
+
+// HasNewCommits reports whether this stage attempt committed work after the
+// HEAD at which its worktree was created.
+func (wt *Worktree) HasNewCommits(ctx context.Context) (bool, error) {
+	return wt.HasCommitsAheadOf(ctx, wt.startRef)
+}
+
 // forceClear tears down whatever is left at path from a previous, never-torn-
 // down attempt at this same worktree key (issue #136's adopt-and-reset),
 // so Create can proceed as if the key were fresh. Tries git's own worktree
