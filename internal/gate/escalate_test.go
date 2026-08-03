@@ -124,3 +124,19 @@ func TestPostRunCommentReconcilesCommittedLostResponse(t *testing.T) {
 		t.Fatalf("POST calls = %d, want 1 after reconciliation and replay", poster.calls)
 	}
 }
+
+func TestPostRunCommentReconcilesMarkerWithDifferentVisibleText(t *testing.T) {
+	poster := &fakeCommenter{
+		comments: []providers.Comment{{
+			Body: "original failure text\n\n" + runCommentMarker("run-revised", 12),
+		}},
+	}
+	repository := providers.RepositoryRef{Name: "widgets"}
+
+	if err := PostRunComment(context.Background(), poster, repository, "42", "run-revised", 12, "revised failure text"); err != nil {
+		t.Fatalf("PostRunComment: %v", err)
+	}
+	if poster.calls != 0 {
+		t.Fatalf("POST calls = %d, want 0 when the run+seq marker already exists", poster.calls)
+	}
+}

@@ -65,7 +65,7 @@ func (n *EscalationNotifier) post(ctx context.Context, repository providers.Repo
 func PostRunComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, runID string, seq uint64, comment string) error {
 	marker := runCommentMarker(runID, seq)
 	body := strings.TrimSpace(comment) + "\n\n" + marker
-	exists, err := markedCommentExists(ctx, poster, repository, itemID, body)
+	exists, err := markedCommentExists(ctx, poster, repository, itemID, marker)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func PostRunComment(ctx context.Context, poster Commenter, repository providers.
 		ID:         itemID,
 		Comment:    body,
 	}); err != nil {
-		exists, reconcileErr := markedCommentExists(ctx, poster, repository, itemID, body)
+		exists, reconcileErr := markedCommentExists(ctx, poster, repository, itemID, marker)
 		if reconcileErr != nil {
 			return errors.Join(err, fmt.Errorf("reconcile run comment after failed post: %w", reconcileErr))
 		}
@@ -88,13 +88,13 @@ func PostRunComment(ctx context.Context, poster Commenter, repository providers.
 	return nil
 }
 
-func markedCommentExists(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, body string) (bool, error) {
+func markedCommentExists(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, marker string) (bool, error) {
 	comments, err := poster.ListComments(ctx, repository, itemID)
 	if err != nil {
 		return false, fmt.Errorf("list comments for run notification: %w", err)
 	}
 	for _, comment := range comments {
-		if comment.Body == body {
+		if strings.Contains(comment.Body, marker) {
 			return true, nil
 		}
 	}
