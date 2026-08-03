@@ -30,6 +30,7 @@ type gatherPRContextServer struct {
 	head, base         string
 	headSHA            string
 	baseSHA            string
+	body               string
 	checkState         string
 	labels             []string
 	comments           []map[string]interface{}
@@ -72,6 +73,7 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 			{
 				"number": s.prNumber, "draft": false,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber),
+				"body":     s.body,
 				"head":     map[string]interface{}{"ref": s.head, "sha": s.headSHA},
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 				"labels":   labelObjs,
@@ -328,6 +330,84 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		t.Fatalf("optional gatherer sections = %+v/%+v/%+v/%+v, want omitted when those stages are absent",
 			got.GatherCIFailures, got.GatherReviewThreads, got.GatherSiblingContext, got.GatherIssueContext)
 	}
+}
+
+func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T) {
+	const prBranch = "goobers/impl/escalated-1974"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	probe, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "digest-probe-1974", BaseRef: "main",
+		Branch: "goobers/pr-remediation/digest-probe-1974",
+	})
+	if err != nil {
+		t.Fatalf("Create digest probe: %v", err)
+	}
+	if _, err := checkoutExistingBranch(probe.Path, prBranch, ""); err != nil {
+		t.Fatalf("checkout digest probe branch: %v", err)
+	}
+	digest, err := diffDigest(probe.Path, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest: %v", err)
+	}
+	if err := probe.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("remove digest probe: %v", err)
+	}
+
+	marker, err := implementationEscalationMarker(implementationEscalationState{
+		DiffDigest: digest,
+		Reason:     "local-ci exceeded its timeout and the implementer produced no change",
+		Cause:      map[string]any{"kind": "stage-failure", "stage": "local-ci"},
+	})
+	if err != nil {
+		t.Fatalf("implementationEscalationMarker: %v", err)
+	}
+	srv := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 1974, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA, body: marker,
+		labels: []string{needsRemediationLabel},
+	}
+	server := srv.start(t)
+
+	prev := newGitHubProvider
+	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-1974", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-1974",
+	})
+	if err != nil {
+		t.Fatalf("Create gather worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	instanceRoot := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", "run-1974")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Chdir(wt.Path)
+	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work") {
+		t.Fatalf("stdout = %q, want no-work before remediation for an already escalated digest", stdout)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
 }
 
 func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {

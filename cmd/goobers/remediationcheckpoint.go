@@ -243,6 +243,7 @@ func parseRemediationStateComment(body string) (remediationState, bool) {
 	// remediationStalled's compatibility path compares the exact digest alone.
 	return remediationState{
 		LastDiffDigest:  state.DiffDigest,
+		Escalated:       true,
 		EscalatedReason: state.Reason,
 	}, true
 }
