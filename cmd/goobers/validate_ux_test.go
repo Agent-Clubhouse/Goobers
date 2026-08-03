@@ -254,6 +254,9 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
+	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
