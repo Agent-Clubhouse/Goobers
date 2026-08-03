@@ -1,0 +1,20 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: java-reviewer
+spec:
+  gaggle: java-service
+  role: reviewer
+  displayName: Reviewer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities: []
+  skills:
+    - review
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - java-implementation

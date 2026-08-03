@@ -61,3 +61,6 @@ spec:
     # connections + workflow machinery, differing only in its declared .NET CI
     # command and `dotnet@9` runtime requirement.
     - dotnet-service
+    # Java/Maven reference (TSN-2 / #2169), using the same polyglot seams with
+    # its declared Maven CI command and `java@21` runtime requirement.
+    - java-service
