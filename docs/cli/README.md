@@ -353,7 +353,7 @@ $ goobers backlog-health
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -365,7 +365,9 @@ explicitly. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
-a plain list (no --claim) does not require it.
+a plain list (no --claim) does not require it. --read-only also bypasses
+claim locks, blocked-record reconciliation, scan cursors, and read caches,
+and uses only the github:issues:read capability.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A

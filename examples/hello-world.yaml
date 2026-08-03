@@ -16,7 +16,7 @@ spec:
       type: deterministic
       goal: Confirm read-only access to the configured backlog.
       run:
-        command: ["goobers", "backlog-query"]
+        command: ["goobers", "backlog-query", "--read-only"]
       capabilities:
         - github:issues:read
       next: build

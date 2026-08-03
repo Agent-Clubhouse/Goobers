@@ -134,7 +134,7 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 		"reconcile backlog metadata":           2,
 		"list open pull requests":              1,
 		"reconcile closed pull requests":       1,
-		"list work items":                      1,
+		"list work items":                      2,
 		"list ready items for re-sweep":        1,
 		"read ready-label transitions":         1,
 		"compute claimed-item staleness":       1,

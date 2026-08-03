@@ -3,6 +3,7 @@
 package providerstage
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -80,8 +81,8 @@ var commands = map[string]Command{
 	"backlog-query": {
 		ResultFile: "claimed-item.json",
 		Capabilities: []CapabilityUse{
-			requiredUnlessAnyFlag(capability.GitHubIssuesRead, []string{"claim", "reconcile", "release"}, "the read-only capability-scoped credential is not injected, so backlog queries fail at runtime"),
-			requiredWhenAnyFlag(capability.GitHubIssuesWrite, []string{"claim", "reconcile", "release"}, "the write capability-scoped credential is not injected, so backlog mutation fails at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesRead, []string{"read-only"}, "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"read-only"}, "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime"),
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
 		},
 	},
@@ -341,13 +342,32 @@ func (u CapabilityUse) required(args []string) bool {
 }
 
 func anyFlagEnabled(args, flags []string) bool {
+	enabled := make(map[string]bool, len(flags))
 	for _, arg := range args {
-		name, value, hasValue := strings.Cut(arg, "=")
-		name = strings.TrimLeft(name, "-")
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		name := strings.TrimPrefix(arg, "-")
+		name = strings.TrimPrefix(name, "-")
+		name, value, hasValue := strings.Cut(name, "=")
 		for _, flag := range flags {
-			if name == flag && (!hasValue || value != "false") {
-				return true
+			if name != flag {
+				continue
 			}
+			parsed := true
+			if hasValue {
+				var err error
+				parsed, err = strconv.ParseBool(value)
+				if err != nil {
+					continue
+				}
+			}
+			enabled[flag] = parsed
+		}
+	}
+	for _, value := range enabled {
+		if value {
+			return true
 		}
 	}
 	return false

@@ -89,12 +89,9 @@ var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOpti
 	return localscheduler.OpenClaimLedger(path, opts...)
 }
 
-func backlogQueryToken(mutating bool) (string, error) {
-	if mutating {
-		return providerToken(capability.GitHubIssuesWrite)
-	}
-	if token, err := providerToken(capability.GitHubIssuesRead); err == nil {
-		return token, nil
+func backlogQueryToken(readOnly bool) (string, error) {
+	if readOnly {
+		return providerToken(capability.GitHubIssuesRead)
 	}
 	return providerToken(capability.GitHubIssuesWrite)
 }
@@ -103,7 +100,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -114,8 +111,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
-	"a plain list (no --claim) does not require it and uses the read-only\n" +
-	"github:issues:read capability.\n\n" +
+	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
+	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
+	"and uses only the github:issues:read capability.\n\n" +
 	"With --release, removes the provider-visible claim marker and then releases\n" +
 	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
 	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
@@ -167,6 +165,7 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
@@ -178,7 +177,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		fs.Usage()
 		return 2
 	}
-	if boolCount(*claim, *reconcile, *release) > 1 {
+	if boolCount(*readOnly, *claim, *reconcile, *release) > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -222,24 +221,32 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		issueProvider = adoProvider
 	case providers.ProviderGitea:
-		token, terr := backlogQueryToken(*claim || *reconcile)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		var opts []func(*providers.GiteaProvider)
+		if !*readOnly {
+			opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, opts...)
 		if gerr != nil {
 			pf(stderr, "error: %v\n", gerr)
 			return 1
 		}
 		issueProvider = giteaProvider
 	case providers.ProviderGitHub:
-		token, terr := backlogQueryToken(*claim || *reconcile)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if *readOnly {
+			ghIssueProvider = newGitHubProvider(token)
+		} else {
+			ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
 		issueProvider = ghIssueProvider
 	default:
 		pf(stderr, "error: backlog-query does not support repository provider %q\n", repo.Provider)
@@ -365,6 +372,22 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	if *readOnly {
+		return runReadOnlyBacklogQuery(
+			ctx,
+			issueProvider,
+			backlogRepo,
+			trustLabel,
+			labelFilter,
+			fieldFilter,
+			fieldOrder,
+			selectionPriority,
+			respectAssignee,
+			assignedTo,
+			stdout,
+			stderr,
+		)
+	}
 	observedAt := time.Now().UTC()
 
 	if curationRun || *reconcile {
@@ -377,6 +400,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			if *reconcile {
 				resultFile = "backlog-reconciliation.json"
 			}
+
 			return failProviderStage(stderr, "reconcile backlog metadata", fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog"), resultFile)
 		}
 		reconciled, reconcileErr := reconcileBacklogMetadata(
@@ -1138,6 +1162,80 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 		return 1
 	}
 	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
+	return 0
+}
+
+func runReadOnlyBacklogQuery(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	trustLabel string,
+	labelFilter *labelpredicate.Predicate,
+	fieldFilter *fieldpredicate.Predicate,
+	fieldOrder fieldpredicate.Order,
+	selectionPriority []string,
+	respectAssignee bool,
+	assignedTo string,
+	stdout, stderr io.Writer,
+) int {
+	labels := compactLabels(trustLabel)
+	labels = append(labels, labelFilter.RequiredLabels()...)
+	queryAssignee := ""
+	if respectAssignee && assignedTo != "" {
+		queryAssignee = assignedTo
+	}
+	items, _, err := listBacklogScanWindow(
+		ctx,
+		provider,
+		repo,
+		labels,
+		queryAssignee,
+		fieldFilter,
+		backlogScanCeiling,
+		backlogScanCursor{},
+		false,
+	)
+	if err != nil {
+		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
+	}
+
+	eligible := items[:0]
+	for _, item := range items {
+		if trustLabel != "" && !item.HasLabel(trustLabel) {
+			continue
+		}
+		if respectAssignee && item.Assignee != assignedTo {
+			continue
+		}
+		matched, matchErr := labelFilter.Matches(item.Labels)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched {
+			continue
+		}
+		matched, matchErr = fieldFilter.Matches(item.Fields)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		eligible = append(eligible, item)
+	}
+	if err := sortEligibleByFields(eligible, selectionPriority, fieldOrder); err != nil {
+		pf(stderr, "error: apply fieldOrder: %v\n", err)
+		return 1
+	}
+	if len(eligible) == 0 {
+		pln(stdout, "no eligible items")
+		return 0
+	}
+	for _, item := range eligible {
+		pf(stdout, "%s\t%s\n", item.ID, item.Title)
+	}
 	return 0
 }
 
