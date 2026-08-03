@@ -31,10 +31,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	return runWithRefreshers(args, getenv, stdout, stderr, providerfixture.Refresh, providerfixture.RefreshADO)
 }
 
-func runWithRefresh(args []string, getenv func(string) string, stdout, stderr io.Writer, refresh refreshFunc) int {
-	return runWithRefreshers(args, getenv, stdout, stderr, refresh, providerfixture.RefreshADO)
-}
-
 func runWithRefreshers(
 	args []string,
 	getenv func(string) string,

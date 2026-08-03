@@ -36,7 +36,7 @@ func TestRefreshWritesNormalizedCandidate(t *testing.T) {
 	}
 	output := filepath.Join(t.TempDir(), "candidate.json")
 	var stdout, stderr bytes.Buffer
-	exitCode := runWithRefresh(
+	exitCode := runWithRefreshers(
 		[]string{"refresh", "-repository", "acme/fixtures", "-issue", "7", "-output", output},
 		func(name string) string {
 			if name == tokenEnvironment {
@@ -53,6 +53,7 @@ func TestRefreshWritesNormalizedCandidate(t *testing.T) {
 			}
 			return fixture, nil
 		},
+		providerfixture.RefreshADO,
 	)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
