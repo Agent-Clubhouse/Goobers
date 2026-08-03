@@ -561,6 +561,36 @@ func TestRebasePRDropsFoundationLandedThroughSeparatePR(t *testing.T) {
 	}
 }
 
+func TestRebaseFetchHeadArgsFallsBackWhenOptionIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to emulate Git 2.17 help")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "rebase" ] && [ "$2" = "-h" ]; then
+	echo "usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] [<upstream> [<branch>]]"
+	exit 129
+fi
+exec "$GOOBERS_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("GOOBERS_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := rebaseFetchHeadArgs(t.TempDir())
+	want := []string{"rebase", "FETCH_HEAD"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("rebaseFetchHeadArgs() = %q, want %q", got, want)
+	}
+}
+
 func TestRebasePRProviderDeadlineIncludesGitWork(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX pre-receive hook to delay git")
