@@ -243,6 +243,33 @@ FAIL	github.com/goobers/goobers/internal/runner	0.03s
 	}
 }
 
+func TestParseGoTestFailuresWithoutVerboseMarkers(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	log := `--- FAIL: TestFirst (0.01s)
+    first_test.go:12: first assertion failed
+--- FAIL: TestSecond (0.02s)
+    second_test.go:34: second assertion failed
+FAIL	github.com/goobers/goobers/internal/runner	0.03s
+`
+
+	got := parseGoTestFailures(log, "run-99", now)
+	if len(got) != 2 {
+		t.Fatalf("failures = %+v, want two", got)
+	}
+	for index, want := range []struct {
+		test string
+		text string
+	}{
+		{test: "TestFirst", text: "first_test.go:12: first assertion failed"},
+		{test: "TestSecond", text: "second_test.go:34: second assertion failed"},
+	} {
+		if got[index].Test != want.test || got[index].FailureText != want.text {
+			t.Fatalf("failure %d = %+v, want %s with output %q", index, got[index], want.test, want.text)
+		}
+	}
+}
+
 func TestParseGoTestFailuresExtractsPackageTimeout(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
@@ -280,6 +307,31 @@ FAIL	github.com/goobers/goobers/internal/runner	600.005s
 	wantFingerprint := flake.Fingerprint("./internal/runner", "(package)", wantSignature)
 	if got[0].Fingerprint != wantFingerprint {
 		t.Fatalf("fingerprint = %q, want ledger fingerprint %q", got[0].Fingerprint, wantFingerprint)
+	}
+}
+
+func TestParseGoTestFailuresPreservesTimeoutAlongsideTestFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	log := `=== RUN   TestAssertion
+assertion failed
+--- FAIL: TestAssertion (0.01s)
+=== RUN   TestBlocked
+panic: test timed out after 10m0s
+	running tests:
+		TestBlocked (10m0s)
+FAIL	github.com/goobers/goobers/internal/runner	600.005s
+`
+
+	got := parseGoTestFailures(log, "run-99", now)
+	if len(got) != 2 {
+		t.Fatalf("failures = %+v, want test failure and package timeout", got)
+	}
+	if got[0].Test != "TestAssertion" || got[1].Test != "(package)" {
+		t.Fatalf("failure identities = %q, %q", got[0].Test, got[1].Test)
+	}
+	if !strings.Contains(got[1].FailureText, "test timed out") {
+		t.Fatalf("timeout text = %q", got[1].FailureText)
 	}
 }
 
@@ -401,7 +453,11 @@ func TestLedgerPaginatesIssues(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/issues", paginatedHandler(
 		[]ledgerIssue{{Number: 1, Body: "<!-- goobers-flake-fingerprint:" + strings.Repeat("a", 64) + " -->"}},
-		[]ledgerIssue{{Number: 2, Body: "<!-- goobers-flake-fingerprint:" + strings.Repeat("b", 64) + " -->"}},
+		[]ledgerIssue{{
+			Number: 2,
+			Body: "<!-- goobers-flake-fingerprint:" + strings.Repeat("b", 64) +
+				" -->\n- **Package:** `./internal/runner`",
+		}},
 	))
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -412,8 +468,26 @@ func TestLedgerPaginatesIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
-	if len(entries) != 2 || entries[1].Issue != 2 {
+	if len(entries) != 2 || entries[1].Issue != 2 || entries[1].Package != "./internal/runner" {
 		t.Fatalf("entries = %+v, want both pages", entries)
+	}
+}
+
+func TestLedgerSimilarityMatchIncludesPackage(t *testing.T) {
+	t.Parallel()
+	signature := "deadline exceeded waiting for worker"
+	entry := ledgerEntry{
+		Issue: 42, Package: "./internal/runner", Test: "TestResume", Signature: signature,
+	}
+	if _, ok := knownFailure([]ledgerEntry{entry}, failure{
+		Package: "./internal/queue", Test: "TestResume", FailureSignature: signature,
+	}); ok {
+		t.Fatal("matched a similar failure from a different package")
+	}
+	if _, ok := knownFailure([]ledgerEntry{entry}, failure{
+		Package: "./internal/runner", Test: "TestResume", FailureSignature: signature,
+	}); !ok {
+		t.Fatal("did not match a similar failure from the ledger package")
 	}
 }
 

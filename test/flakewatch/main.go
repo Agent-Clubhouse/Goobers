@@ -32,6 +32,7 @@ var (
 	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
 	flakeShape      = regexp.MustCompile(`(?i)(WARNING: DATA RACE|test timed out|timed out waiting|deadline exceeded|lock contention|deadlock|concurrent map|order[- ]dependent|eventually condition)`)
 	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
+	ledgerPackage   = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
 	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
 	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
 	goTestRun       = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
@@ -112,6 +113,7 @@ type issueComment struct {
 type ledgerEntry struct {
 	Issue       int
 	Fingerprint string
+	Package     string
 	Test        string
 	Signature   string
 }
@@ -314,6 +316,9 @@ func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
 			continue
 		}
 		entry := ledgerEntry{Issue: issue.Number, Fingerprint: fingerprint[1]}
+		if match := ledgerPackage.FindStringSubmatch(issue.Body); len(match) == 2 {
+			entry.Package = match[1]
+		}
 		if match := ledgerTest.FindStringSubmatch(issue.Body); len(match) == 2 {
 			entry.Test = match[1]
 		}
@@ -476,6 +481,8 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 	var failedTests []string
 	var timeoutLines []string
 	testOutput := make(map[string][]string)
+	verboseTests := make(map[string]bool)
+	failed := make(map[string]bool)
 	activeTest := ""
 	flush := func(pkg string) {
 		for _, test := range failedTests {
@@ -493,7 +500,7 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 				Occurrences:      1,
 			})
 		}
-		if len(failedTests) == 0 && len(timeoutLines) > 0 {
+		if len(timeoutLines) > 0 {
 			text := strings.TrimSpace(strings.Join(timeoutLines, "\n"))
 			signature := flake.NormalizeSignature(text)
 			result = append(result, failure{
@@ -510,6 +517,8 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 		failedTests = nil
 		timeoutLines = nil
 		clear(testOutput)
+		clear(verboseTests)
+		clear(failed)
 		activeTest = ""
 	}
 	for _, rawLine := range strings.Split(log, "\n") {
@@ -526,11 +535,14 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 			failedTests = nil
 			timeoutLines = nil
 			clear(testOutput)
+			clear(verboseTests)
+			clear(failed)
 			activeTest = ""
 			continue
 		}
 		if match := goTestRun.FindStringSubmatch(trimmed); len(match) == 2 {
 			activeTest = match[1]
+			verboseTests[activeTest] = true
 			if _, exists := testOutput[activeTest]; !exists {
 				testOutput[activeTest] = nil
 			}
@@ -546,9 +558,16 @@ func parseGoTestFailures(log, sourceURL string, observed time.Time) []failure {
 			if _, exists := testOutput[match[1]]; !exists {
 				testOutput[match[1]] = nil
 			}
-			failedTests = append(failedTests, match[1])
-			if activeTest == match[1] {
+			if !failed[match[1]] {
+				failedTests = append(failedTests, match[1])
+				failed[match[1]] = true
+			}
+			if verboseTests[match[1]] {
 				activeTest = ""
+			} else {
+				// Non-verbose `go test` prints the failure marker before its
+				// diagnostic output.
+				activeTest = match[1]
 			}
 			continue
 		}
@@ -622,8 +641,10 @@ func annotationPackage(annotationPath, text string) string {
 
 func knownFailure(entries []ledgerEntry, failure failure) (ledgerEntry, bool) {
 	for _, entry := range entries {
-		if entry.Fingerprint == failure.Fingerprint ||
-			(entry.Test == failure.Test && entry.Signature == failure.FailureSignature) {
+		if (entry.Fingerprint != "" && entry.Fingerprint == failure.Fingerprint) ||
+			(entry.Package == failure.Package &&
+				entry.Test == failure.Test &&
+				entry.Signature == failure.FailureSignature) {
 			return entry, true
 		}
 	}
