@@ -322,39 +322,34 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		if !errors.Is(err, iofs.ErrNotExist) {
-			pf(stderr, "error: load instance config: %v\n", err)
-			return 2
-		}
-		cfg = &instance.Config{}
+	cfg := &instance.Config{}
+	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
+		cfg = loaded
+	} else if !errors.Is(loadErr, iofs.ErrNotExist) {
+		pf(stderr, "warning: load instance config for workcopies placement: %v; continuing with default workcopies layout\n", loadErr)
+	}
+	if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, nil); resolveErr == nil {
+		runLayout = configured
+	} else {
+		pf(stderr, "warning: resolve instance workcopies placement: %v; continuing with default workcopies layout\n", resolveErr)
 	}
 	workcopiesRoot := runLayout.WorkcopiesDir()
-	if runLayout.Gaggle() == "" {
-		runLayout, err = instance.EffectiveWorkcopiesLayout(runLayout, cfg, nil)
-		if err != nil {
-			pf(stderr, "error: resolve workcopies layout: %v\n", err)
-			return 2
-		}
-		workcopiesRoot = runLayout.WorkcopiesDir()
-	} else {
-		set, report, loadErr := loadConfigDirectory(l.ConfigDir())
+	if runLayout.Gaggle() != "" {
+		set, _, loadErr := loadConfigDirectory(l.ConfigDir())
 		if loadErr != nil {
-			printValidationIssues(stderr, report)
-			pf(stderr, "error: load config directory: %v\n", loadErr)
-			return 2
-		}
-		gaggle := configuredGaggle(set, runLayout.Gaggle())
-		runLayout, err = instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle)
-		if err != nil {
-			pf(stderr, "error: resolve workcopies layout: %v\n", err)
-			return 2
-		}
-		workcopiesRoot = runLayout.WorkcopiesDir()
-		if gaggle != nil {
-			if configured, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configured.Pinned() {
-				workcopiesRoot = runLayout.WorkcopiesBaseDir()
+			pf(stderr, "warning: load config directory for workcopies placement: %v; continuing without gaggle placement\n", loadErr)
+		} else {
+			gaggle := configuredGaggle(set, runLayout.Gaggle())
+			if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle); resolveErr == nil {
+				runLayout = configured
+				workcopiesRoot = runLayout.WorkcopiesDir()
+				if gaggle != nil {
+					if repo, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
+						workcopiesRoot = runLayout.WorkcopiesBaseDir()
+					}
+				}
+			} else {
+				pf(stderr, "warning: resolve gaggle workcopies placement: %v; continuing without gaggle placement\n", resolveErr)
 			}
 		}
 	}
@@ -371,7 +366,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+			if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
@@ -409,7 +404,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		recordRunIntake(watermarks, runLayout, runID, nil)
 		_ = watermarks.Close()
 	}
-	if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+	if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}
