@@ -16,6 +16,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -334,6 +336,7 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 
 func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T) {
 	const prBranch = "goobers/impl/escalated-1974"
+	const implementationRunID = "implementation-escalated-1974"
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
 
 	mgr, err := worktree.NewManager(t.TempDir())
@@ -354,29 +357,92 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	if err != nil {
 		t.Fatalf("diffDigest: %v", err)
 	}
+	diff := runGitOutputT(t, probe.Path, "diff", baseSHA+"...HEAD")
 	if err := probe.Remove(t.Context(), worktree.RemoveOptions{}); err != nil {
 		t.Fatalf("remove digest probe: %v", err)
 	}
 
-	marker, err := implementationEscalationMarker(implementationEscalationState{
-		DiffDigest: digest,
-		Reason:     "local-ci exceeded its timeout and the implementer produced no change",
-		Cause:      map[string]any{"kind": "stage-failure", "stage": "local-ci"},
-	})
+	instanceRoot := initDemo(t)
+	implementationServer := newFakeGitHubServer(t, "your-org", "your-repo")
+	implementationServer.addIssue(1974, "Prevent repeated escalation", "goobers:approved", "goobers:ready", "goobers:claimed")
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(instanceRoot, "scheduler", claimLedgerFileName))
 	if err != nil {
-		t.Fatalf("implementationEscalationMarker: %v", err)
+		t.Fatalf("open claim ledger: %v", err)
 	}
+	if _, _, err := ledger.Claim("1974", implementationRunID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+	run, err := journal.Create(layoutFor(instanceRoot).RunsDir(), journal.RunIdentity{
+		RunID: implementationRunID, Workflow: "implementation",
+		WorkflowDigest: journal.Digest([]byte("workflow")), Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create implementation journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "1974", "title": "Prevent repeated escalation"},
+	}); err != nil {
+		t.Fatalf("record claimed issue: %v", err)
+	}
+	diffRef, err := run.RecordArtifact(implementationRunID+":review/reviewer-diff.patch", []byte(diff))
+	if err != nil {
+		t.Fatalf("record implementation diff: %v", err)
+	}
+	if diffRef.Digest != digest {
+		t.Fatalf("journal diff digest = %q, want %q", diffRef.Digest, digest)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated",
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": digest,
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("record duplicate-diff escalation: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close implementation journal: %v", err)
+	}
+
+	providerCmdEnv(t, implementationServer, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", implementationRunID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "issue-close-out", instanceRoot); code != 0 {
+		t.Fatalf("issue-close-out before PR publication: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	implementationServer.mu.Lock()
+	prsBeforePublication := len(implementationServer.prs)
+	implementationServer.mu.Unlock()
+	if prsBeforePublication != 0 {
+		t.Fatalf("PRs before publication = %d, want none", prsBeforePublication)
+	}
+
+	t.Setenv("GOOBERS_INPUT_HEAD", prBranch)
+	if code, stdout, stderr := runArgs(t, "open-pr", instanceRoot); code != 0 {
+		t.Fatalf("open-pr after escalation: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	implementationServer.mu.Lock()
+	publishedBody := implementationServer.prs[1].body
+	implementationServer.mu.Unlock()
+	publishedState, ok := parseRemediationStateComment(publishedBody)
+	if !ok || publishedState.LastDiffDigest != digest || !publishedState.Escalated {
+		t.Fatalf("published PR escalation state = %#v, ok=%t", publishedState, ok)
+	}
+
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
 		prNumber: 1974, head: prBranch, base: "main",
-		headSHA: headSHA, baseSHA: baseSHA, body: marker,
+		headSHA: headSHA, baseSHA: baseSHA, body: publishedBody,
 		labels: []string{needsRemediationLabel},
 	}
 	server := srv.start(t)
 
-	prev := newGitHubProvider
 	newGitHubProvider = mergePRTestServer{url: server.URL}.newGitHubProvider
-	t.Cleanup(func() { newGitHubProvider = prev })
 
 	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
 		RepoURL: origin, RunID: "run-1974", BaseRef: "main",
@@ -387,7 +453,6 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	}
 	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
 
-	instanceRoot := initDemo(t)
 	t.Setenv("GOOBERS_RUN_ID", "run-1974")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
