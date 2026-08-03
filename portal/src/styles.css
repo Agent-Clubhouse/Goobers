@@ -5325,7 +5325,7 @@ a.telemetry-error-row:hover {
 
 .factory-notices:empty,
 .factory-stage-notices:empty {
-  display: none;
+  min-height: 0;
 }
 
 .page-content-workspace .factory-stage-area {
