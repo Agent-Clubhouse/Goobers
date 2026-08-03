@@ -672,6 +672,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				blockedCandidates = blockedCandidates[:resweepPolicy.maxItems]
 			}
 			selectedResweepItems = append(selectedResweepItems, blockedCandidates...)
+			dependencyRecheckBudget := maxItems - len(eligible)
 			for _, item := range blockedCandidates {
 				blockers, blockerErr := ghIssueProvider.ListWorkItemBlockers(ctx, repo, item.ID)
 				if blockerErr != nil {
@@ -692,9 +693,10 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 						break
 					}
 				}
-				if actionable {
+				if actionable && dependencyRecheckBudget > 0 {
 					eligible = append(eligible, item)
 					curationModeByID[item.ID] = "dependency-recheck"
+					dependencyRecheckBudget--
 				}
 			}
 			resweepState.BlockedCursor = nextBlockedCursor.Cursor

@@ -249,6 +249,45 @@ func TestBacklogQueryUnchangedDependencyDoesNotChurnOrStarve(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryDependencyRechecksRespectRemainingBatchCapacity(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for number := 1; number <= 19; number++ {
+		server.addIssue(number, "Forward item", "goobers:approved")
+	}
+	for number := 20; number <= 24; number++ {
+		blocker := number + 100
+		server.addIssue(number, "Blocked item", "goobers:approved", blockedOnSiblingLabel)
+		server.addIssue(blocker, "Closed blocker")
+		server.setIssueState(blocker, "closed")
+		server.setIssueBlockers(number, blocker)
+	}
+	server.addIssue(30, "Ready re-sweep item", "goobers:approved", providers.LabelReady)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "capacity-run")
+	configureCurationResweep(t, "20", "20", "24h")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 20 {
+		t.Fatalf("curation items = %d, want batch capped at 20", len(items))
+	}
+	dependencyRechecks := 0
+	for _, item := range items {
+		if item.CurationMode == "dependency-recheck" {
+			dependencyRechecks++
+		}
+	}
+	if dependencyRechecks != 1 {
+		t.Fatalf("dependency rechecks = %d, want remaining batch capacity of 1", dependencyRechecks)
+	}
+}
+
 func TestReadBacklogResweepPolicyRejectsUnboundedInputs(t *testing.T) {
 	tests := []struct {
 		name     string
