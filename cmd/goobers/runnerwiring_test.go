@@ -665,8 +665,9 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	}
 }
 
-func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 	root := t.TempDir()
+	shortRoot := filepath.Join(t.TempDir(), "w")
 	project := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
@@ -683,7 +684,7 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 		},
 	}}}
 	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
+		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
 		instanceConfig,
 		nil,
 		nil,
@@ -704,12 +705,12 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
 		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
 	}
-	wantRoot, err := filepath.Abs(instance.NewLayout(root).WorkcopiesDir())
+	wantRoot, err := filepath.Abs(filepath.Join(shortRoot, "builders"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manager.Root != wantRoot {
-		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+		t.Fatalf("manager root = %q, want alternate gaggle root %q", manager.Root, wantRoot)
 	}
 }
 
@@ -1661,6 +1662,29 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
 			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
 		}
+	}
+}
+
+func TestWorkcopyRootClaimsAllowSharedDefaultPinnedRoot(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimWorkcopyRoot(claims, "beta", root, false); err != nil {
+		t.Fatalf("shared default pinned root: %v", err)
+	}
+}
+
+func TestWorkcopyRootClaimsRejectAlternateRootCollision(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	err := claimWorkcopyRoot(claims, "beta", root, true)
+	if err == nil || !strings.Contains(err.Error(), "workcopies path collision") {
+		t.Fatalf("error = %v, want alternate-root collision", err)
 	}
 }
 

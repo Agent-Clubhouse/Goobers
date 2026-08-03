@@ -1948,7 +1948,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 	workcopiesRoot := l.WorkcopiesDir()
 	if pinned {
-		workcopiesRoot = instance.NewLayout(l.Root).WorkcopiesDir()
+		workcopiesRoot = l.WorkcopiesBaseDir()
 	}
 	absoluteWorkcopiesRoot, err := filepath.Abs(workcopiesRoot)
 	if err != nil {
@@ -1968,7 +1968,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
-			worktree.WithPinnedRoot(instance.NewLayout(l.Root).WorkcopiesDir()),
+			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
@@ -1982,7 +1982,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if cfg.ObjectCacheEnabled() {
 			managerOptions = append(managerOptions, worktree.WithObjectCache())
 		}
-		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, workcopiesRoot, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr
 		}

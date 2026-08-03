@@ -1685,6 +1685,24 @@ func TestGaggleSchemaAcceptsSelfIdentity(t *testing.T) {
 	}
 }
 
+func TestGaggleSchemaAcceptsWorkcopiesRoot(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"},
+			"workcopies": {"root": "/g"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle workcopies root rejected: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 	v := newV(t)
 	workflow := `{

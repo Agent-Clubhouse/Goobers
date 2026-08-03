@@ -2,6 +2,7 @@ package instance
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 )
@@ -239,6 +243,62 @@ workcopies:
 	}
 	if cfg.PartialCloneEnabled() {
 		t.Fatal("workcopies.partialClone must stay false when only objectCache is set")
+	}
+
+	root := filepath.Join(t.TempDir(), "short")
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+fmt.Sprintf(`
+workcopies:
+  root: %q
+`, root)))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies root: %v", err)
+	}
+	layout, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("builders"), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layout.WorkcopiesDir(), filepath.Join(root, "builders"); got != want {
+		t.Fatalf("WorkcopiesDir() = %q, want %q", got, want)
+	}
+
+	cfg.Workcopies.Root = "relative"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+		t.Fatalf("Validate() error = %v, want absolute-path error", err)
+	}
+}
+
+func TestEffectiveWorkcopiesLayoutGaggleOverrideWins(t *testing.T) {
+	instanceRoot := filepath.Join(t.TempDir(), "instance-work")
+	gaggleRoot := filepath.Join(t.TempDir(), "gaggle-work")
+	cfg := &Config{Workcopies: &WorkcopiesConfig{Root: instanceRoot}}
+	gaggle := &apiv1.Gaggle{
+		ObjectMeta: metav1.ObjectMeta{Name: "builders"},
+		Spec: apiv1.GaggleSpec{
+			Workcopies: &apiv1.GaggleWorkcopies{Root: gaggleRoot},
+		},
+	}
+
+	layout, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("builders"), cfg, gaggle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layout.WorkcopiesDir(), filepath.Join(gaggleRoot, "builders"); got != want {
+		t.Fatalf("WorkcopiesDir() = %q, want %q", got, want)
+	}
+	if got, want := layout.WorkcopiesBaseDir(), filepath.Join(gaggleRoot, "builders"); got != want {
+		t.Fatalf("WorkcopiesBaseDir() = %q, want %q", got, want)
+	}
+	other, err := EffectiveWorkcopiesLayout(NewLayout("/instance").ForGaggle("reviewers"), cfg, &apiv1.Gaggle{
+		ObjectMeta: metav1.ObjectMeta{Name: "reviewers"},
+		Spec: apiv1.GaggleSpec{
+			Workcopies: &apiv1.GaggleWorkcopies{Root: gaggleRoot},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.WorkcopiesDir() == other.WorkcopiesDir() {
+		t.Fatalf("gaggles share workcopies directory %q", layout.WorkcopiesDir())
 	}
 }
 
