@@ -316,17 +316,16 @@ spec:
         fail: park-needs-human
         escalate: park-escalated
 
-    # local-ci's ResultEnvelope.Status is flattened into this gate's
-    # Inputs[status] by the runner (internal/gate's documented
-    # runner-contract convention); "success" is status-equals' default
-    # expected value, so no params are needed.
+    # Retryable executor/infrastructure failures are not actionable by the
+    # implementer and park with a distinct gate outcome.
     - name: local-gate
       evaluator: automated
       automated:
-        check: status-equals
+        check: failure-class
       branches:
         pass: push-branch
         fail: implement
+        infra: park-escalated
         escalate: park-escalated
 
     # #947: open-pr re-checks the claimed issue's state immediately before

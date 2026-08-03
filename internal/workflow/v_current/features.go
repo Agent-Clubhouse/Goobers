@@ -446,6 +446,7 @@ const (
 	featureEvaluatorAutomatedRetryBackoff FeatureID = "gate.evaluator.automated.retry.backoff"
 	featureEvaluatorAutomatedPoll         FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
 	featureEvaluatorStatusEquals          FeatureID = "gate.evaluator.automated.check.status-equals"
+	featureEvaluatorFailureClass          FeatureID = "gate.evaluator.automated.check.failure-class"
 	featureEvaluatorOutputEquals          FeatureID = "gate.evaluator.automated.check.output-equals"
 	featureEvaluatorOutputNotEquals       FeatureID = "gate.evaluator.automated.check.output-not-equals"
 	featureEvaluatorOutputNumericGTE      FeatureID = "gate.evaluator.automated.check.output-numeric-gte"
@@ -567,6 +568,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureEvaluatorAutomatedRetryBackoff,
 		featureEvaluatorAutomatedPoll,
 		featureEvaluatorStatusEquals,
+		featureEvaluatorFailureClass,
 		featureEvaluatorOutputEquals,
 		featureEvaluatorOutputNotEquals,
 		featureEvaluatorOutputNumericGTE,
@@ -861,6 +863,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 
 var automatedCheckFeatures = map[string]FeatureID{
 	"status-equals":      featureEvaluatorStatusEquals,
+	"failure-class":      featureEvaluatorFailureClass,
 	"output-equals":      featureEvaluatorOutputEquals,
 	"output-not-equals":  featureEvaluatorOutputNotEquals,
 	"output-numeric-gte": featureEvaluatorOutputNumericGTE,

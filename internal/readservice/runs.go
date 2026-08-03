@@ -1965,7 +1965,7 @@ func remediationEscalationReason(records []journal.EventRecord) string {
 
 func isRemediationCheckpointStage(stage string) bool {
 	switch stage {
-	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses":
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses", "park-infrastructure-failure":
 		return true
 	default:
 		return false
