@@ -122,6 +122,13 @@ func newConfig(opts ...Option) config {
 // Dir returns the run directory.
 func (r *Run) Dir() string { return r.dir }
 
+// Seq returns the highest event sequence durably appended to the run.
+func (r *Run) Seq() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seq
+}
+
 // RunCreationStagingDir returns the hidden sibling directory where Create
 // assembles unpublished runs before their atomic rename into runsDir.
 func RunCreationStagingDir(runsDir string) string {
