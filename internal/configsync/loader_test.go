@@ -43,12 +43,14 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
-	// config-examples ships three Gaggles (acme-web + the .NET and Java polyglot
-	// references), ten Goobers (acme-web: coder, curator, docs,
-	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer; java-service: java-implementer, java-reviewer), and eleven
-	// Workflows (acme-web's nine plus both implementation references).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 3, "Goober": 10, "Workflow": 11}
+	// config-examples ships four Gaggles (acme-web plus the .NET, Java, and
+	// Python polyglot references), twelve Goobers (acme-web: coder, curator,
+	// docs, implementer, nominator, reviewer; dotnet-service:
+	// dotnet-implementer, dotnet-reviewer; java-service: java-implementer,
+	// java-reviewer; python-service: python-implementer, python-reviewer),
+	// and twelve Workflows (acme-web's nine plus all three polyglot
+	// implementations).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 4, "Goober": 12, "Workflow": 12}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {

@@ -30,19 +30,20 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
 	}
-	if len(set.Gaggles) != 3 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] {
+	if len(set.Gaggles) != 4 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] || !gotGaggles["python-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships ten goobers (acme-web: coder, curator, docs,
+	// config-examples ships twelve goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer; java-service: java-implementer, java-reviewer) and eleven
+	// dotnet-reviewer; java-service: java-implementer, java-reviewer;
+	// python-service: python-implementer, python-reviewer) and twelve
 	// workflows (acme-web's nine + one implementation reference per service);
 	// check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer"}
+	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer", "python-implementer", "python-reviewer"}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -60,7 +61,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
