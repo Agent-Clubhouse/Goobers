@@ -11,10 +11,30 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogQueryTokenUsesLeastPrivilegeCredential(t *testing.T) {
+	readEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesRead))
+	writeEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesWrite))
+	t.Setenv(readEnv, "read-token")
+	t.Setenv(writeEnv, "write-token")
+
+	if token, err := backlogQueryToken(false); err != nil || token != "read-token" {
+		t.Fatalf("read-only token = %q, %v; want read-token", token, err)
+	}
+	if token, err := backlogQueryToken(true); err != nil || token != "write-token" {
+		t.Fatalf("mutating token = %q, %v; want write-token", token, err)
+	}
+
+	t.Setenv(readEnv, "")
+	if token, err := backlogQueryToken(false); err != nil || token != "write-token" {
+		t.Fatalf("legacy read-only token = %q, %v; want write-token", token, err)
+	}
+}
 
 type failNthBacklogClaimLedger struct {
 	backlogClaimLedger

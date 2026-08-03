@@ -383,7 +383,11 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {
 			subcommand := t.Run.Command[1]
 			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				if !capabilities[string(use.Capability)] {
+				satisfied := capabilities[string(use.Capability)]
+				if use.Capability == capability.GitHubIssuesRead {
+					satisfied = satisfied || capabilities[string(capability.GitHubIssuesWrite)]
+				}
+				if !satisfied {
 					problems = append(problems, fmt.Sprintf(
 						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
 						t.Name, subcommand, use.Capability, use.Consequence,

@@ -89,6 +89,16 @@ var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOpti
 	return localscheduler.OpenClaimLedger(path, opts...)
 }
 
+func backlogQueryToken(mutating bool) (string, error) {
+	if mutating {
+		return providerToken(capability.GitHubIssuesWrite)
+	}
+	if token, err := providerToken(capability.GitHubIssuesRead); err == nil {
+		return token, nil
+	}
+	return providerToken(capability.GitHubIssuesWrite)
+}
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
@@ -104,7 +114,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
-	"a plain list (no --claim) does not require it.\n\n" +
+	"a plain list (no --claim) does not require it and uses the read-only\n" +
+	"github:issues:read capability.\n\n" +
 	"With --release, removes the provider-visible claim marker and then releases\n" +
 	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
 	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
@@ -211,7 +222,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		issueProvider = adoProvider
 	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*claim || *reconcile)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
@@ -223,7 +234,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		issueProvider = giteaProvider
 	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*claim || *reconcile)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1

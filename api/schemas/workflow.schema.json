@@ -242,6 +242,7 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",

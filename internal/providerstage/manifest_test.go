@@ -16,10 +16,21 @@ func TestRequiredCapabilities(t *testing.T) {
 		want    []capability.Capability
 	}{
 		{
-			name:    "always required and optional use",
+			name:    "mutating backlog query",
 			command: "backlog-query",
 			args:    []string{"--claim"},
 			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
+		{
+			name:    "read-only backlog query",
+			command: "backlog-query",
+			want:    []capability.Capability{capability.GitHubIssuesRead},
+		},
+		{
+			name:    "explicitly non-mutating backlog query",
+			command: "backlog-query",
+			args:    []string{"--claim=false"},
+			want:    []capability.Capability{capability.GitHubIssuesRead},
 		},
 		{
 			name:    "conditional capability absent",

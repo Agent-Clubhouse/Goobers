@@ -321,7 +321,7 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
