@@ -787,6 +787,7 @@ export const goWireFixtures = {
       }
     ],
     "curation": {
+      "everRecorded": false,
       "runs": 0,
       "reportedRuns": 0,
       "ready": 0,
@@ -800,9 +801,14 @@ export const goWireFixtures = {
       "bounced": 0
     },
     "readyPool": {
+      "sampleEverRecorded": false,
       "claimAgeSamples": 0,
+      "bounceEverRecorded": false,
       "forwardCurationThroughput": 0,
-      "implementationDemand": 0
+      "implementationDemand": 0,
+      "inFlightClaimSamples": 0,
+      "averageInFlightClaimAgeSeconds": 0,
+      "oldestInFlightClaimAgeSeconds": 0
     }
   },
   "telemetryErrorSignatures": {
