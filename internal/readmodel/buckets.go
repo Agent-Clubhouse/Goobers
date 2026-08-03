@@ -73,7 +73,12 @@ func (s *Store) DirtyDays(ctx context.Context, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = defaultDirtyDayBatch
 	}
-	rows, err := s.readDB().QueryContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT day FROM dirty_day ORDER BY day ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read dirty days: %w", err)
@@ -101,7 +106,12 @@ const defaultDirtyDayBatch = 64
 // separate transaction would let a crash between the two leave a day recomputed
 // but still queued — harmless, but it would recompute forever on a wedged day.
 func (s *Store) RecomputeDay(ctx context.Context, day string) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin bucket recompute: %w", err)
 	}
@@ -157,7 +167,12 @@ func dayUpperBound(day string) string {
 // From the dailies rather than from run rows, so the two tiers cannot disagree:
 // a month is by construction the sum of its days.
 func (s *Store) RecomputeMonth(ctx context.Context, month string) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin month recompute: %w", err)
 	}
@@ -201,7 +216,12 @@ func (s *Store) DayBuckets(ctx context.Context, gaggle string, from, to time.Tim
 	}
 	query += ` ORDER BY day DESC, gaggle ASC, workflow ASC`
 
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read day buckets: %w", err)
 	}

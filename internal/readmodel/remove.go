@@ -22,7 +22,12 @@ import (
 // the alternative is that a client which missed the first removal never learns
 // of it, and silence is indistinguishable from "still there".
 func (s *Store) RemoveRun(ctx context.Context, runID string) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin remove: %w", err)
 	}
@@ -80,7 +85,12 @@ func (s *Store) NonTerminalRuns(ctx context.Context, limit int) ([]RunRow, error
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	rows, err := s.readDB().QueryContext(ctx, `
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
 		SELECT `+runColumns+`
 		FROM run r
 		WHERE r.terminal = 0
@@ -108,7 +118,12 @@ func (s *Store) NonTerminalRuns(ctx context.Context, limit int) ([]RunRow, error
 // PhaseOf reports a projected run's phase, for callers that need only that.
 func (s *Store) PhaseOf(ctx context.Context, runID string) (journal.RunPhase, bool, error) {
 	var phase string
-	err := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx,
 		`SELECT phase FROM run WHERE run_id = ?`, runID).Scan(&phase)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

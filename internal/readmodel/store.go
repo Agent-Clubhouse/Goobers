@@ -86,12 +86,16 @@ type Store struct {
 	// reads. A read lock on the query path is uncontended in the common case and
 	// is the difference between a clean shutdown and a data race.
 	handles sync.RWMutex
+	closed  bool
 
 	// clock stamps the one change row that cannot be derived from a journal:
 	// run.removed, whose whole point is that the journal is gone. Injectable so
 	// a test can assert removal ordering without sleeping.
 	clock func() time.Time
 }
+
+// ErrClosed is returned when an operation starts after the store is closed.
+var ErrClosed = errors.New("readmodel: store is closed")
 
 // now returns the store's clock, defaulting to the wall clock.
 func (s *Store) now() time.Time {
@@ -177,30 +181,39 @@ func isSQLiteBusy(err error) bool {
 	return code == 5 || code == 6 // SQLITE_BUSY, SQLITE_LOCKED
 }
 
-// Close releases both handles, reader first so no query is in flight against a
-// database whose writer is going away.
-//
-// Guarded because Close races reads. The handle fields are read by every query
-// through readDB/writeDB, and reassigned by reopen after an epoch swap; until
-// this lock existed that was an unsynchronised data race — caught by the race
-// detector on main, but reachable in production any time a read overlaps daemon
-// shutdown, which is exactly when a long-lived SSE subscription is still
-// draining.
-//
-// # The handles are closed but NOT nilled
-//
-// An earlier version of this fix set them to nil so a post-Close query would
-// "fail cleanly". It does not: QueryContext on a nil *sql.DB dereferences it and
-// SEGFAULTS (database/sql.(*DB).conn, sql.go:1317). That turned a data race into
-// a panic, which the race shard duly caught.
-//
-// A CLOSED *sql.DB is the correct thing to keep: it is safe to call, returns
-// "sql: database is closed", and Close itself is idempotent. So a read that
-// overlaps shutdown gets an error it can report rather than taking the process
-// down with it.
+// Close waits for leased operations, then releases both handles.
 func (s *Store) Close() error {
 	s.handles.Lock()
 	defer s.handles.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.closeHandles()
+}
+
+// readHandle leases the resolved read handle for the full SQL operation.
+func (s *Store) readHandle() (*sql.DB, func(), error) {
+	s.handles.RLock()
+	if s.closed {
+		s.handles.RUnlock()
+		return nil, nil, ErrClosed
+	}
+	return s.reader, s.handles.RUnlock, nil
+}
+
+// writeHandle leases the writer for the full SQL operation.
+func (s *Store) writeHandle() (*sql.DB, func(), error) {
+	s.handles.RLock()
+	if s.closed {
+		s.handles.RUnlock()
+		return nil, nil, ErrClosed
+	}
+	return s.writer, s.handles.RUnlock, nil
+}
+
+// closeHandles closes both handles while the caller holds handles exclusively.
+func (s *Store) closeHandles() error {
 	var readerErr error
 	if s.reader != nil {
 		readerErr = s.reader.Close()
@@ -211,30 +224,24 @@ func (s *Store) Close() error {
 	return errors.Join(readerErr, s.writer.Close())
 }
 
-// writeDB returns the writable handle, under the same guard as readDB.
-//
-// Every write goes through here rather than touching s.writer, so Close cannot
-// race a commit in flight. After Close this is a closed handle, not nil — see
-// Close for why that distinction is load-bearing.
+// writeDB exposes the resolved writer to package tests.
 func (s *Store) writeDB() *sql.DB {
-	s.handles.RLock()
-	defer s.handles.RUnlock()
 	return s.writer
 }
 
-// readDB returns the handle queries should use.
+// readDB exposes the resolved reader to package tests.
 func (s *Store) readDB() *sql.DB {
-	s.handles.RLock()
-	defer s.handles.RUnlock()
-	if s.reader != nil {
-		return s.reader
-	}
-	return s.writer
+	return s.reader
 }
 
 // State returns the store's projection state.
 func (s *Store) State(ctx context.Context) (State, error) {
-	row := s.readDB().QueryRowContext(ctx, `
+	db, release, err := s.readHandle()
+	if err != nil {
+		return State{}, err
+	}
+	defer release()
+	row := db.QueryRowContext(ctx, `
 		SELECT schema_version, epoch, min_change_seq, projection_floor, last_sweep_at, built_at
 		FROM projection_state WHERE id = 1`)
 	var (
@@ -244,7 +251,7 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	if err := row.Scan(&st.SchemaVersion, &st.Epoch, &st.MinChangeSeq, &floor, &sweep, &built); err != nil {
 		return State{}, fmt.Errorf("readmodel: read projection state: %w", err)
 	}
-	var err error
+	err = nil
 	if st.ProjectionFloor, err = optionalTime(floor); err != nil {
 		return State{}, err
 	}
