@@ -1,18 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -82,7 +86,10 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	}
 }
 
-func TestOpenPRRoutesADOThroughConfiguredAuthentication(t *testing.T) {
+func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("helper process wrapper uses a POSIX shell")
+	}
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil {
@@ -133,30 +140,64 @@ func TestOpenPRRoutesADOThroughConfiguredAuthentication(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	oldADOProvider := newADOProviderForStage
-	newADOProviderForStage = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-		provider, err := oldADOProvider(root, routed)
-		if err != nil {
-			return nil, err
-		}
-		provider.BaseURL = server.URL
-		return provider, nil
-	}
-	t.Cleanup(func() { newADOProviderForStage = oldADOProvider })
-
 	t.Setenv("ADO_OPEN_PR_PAT", "test-pat")
-	t.Setenv("GOOBERS_RUN_ID", "run-ado")
-	t.Setenv("GOOBERS_WORKFLOW", "implementation")
-	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
-	t.Setenv(executor.RepoOwnerEnvVar, "org")
-	t.Setenv(executor.RepoProjectEnvVar, "project")
-	t.Setenv(executor.RepoNameEnvVar, "repo")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: "ado-open-pr",
+		Env:  "ADO_OPEN_PR_PAT",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, _ := journal.DefaultScrubber()
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.ProviderPRWrite),
+		Ref:        "ado-open-pr",
+	}}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := executor.NewShellExecutor(injector, respondToFindingsTestRecorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testBinary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nexec \"$GOOBERS_TEST_BINARY\" -test.run=^TestOpenPRADOStageHelperProcess$ -- \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shell.InstanceRoot = root
+	shell.SelfBin = wrapper
 	workDir := t.TempDir()
-	t.Chdir(workDir)
-
-	code, stdout, stderr := runArgs(t, "open-pr", root)
-	if code != 0 {
-		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	result, err := shell.Run(context.Background(), apiv1.InvocationEnvelope{
+		TaskID:       "open-pr",
+		WorkflowID:   "implementation",
+		RunID:        "run-ado",
+		Gaggle:       "goobers",
+		Workspace:    workDir,
+		Capabilities: []string{string(capability.ProviderPRWrite)},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderADO,
+			Owner:    "org",
+			Project:  "project",
+			Name:     "repo",
+		},
+	}, apiv1.DeterministicRun{
+		Command: []string{"goobers", "open-pr", root},
+		Env: map[string]string{
+			"GOOBERS_TEST_ADO_OPEN_PR_HELPER": "1",
+			"GOOBERS_TEST_ADO_API_URL":        server.URL,
+			"GOOBERS_TEST_BINARY":             testBinary,
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute open-pr stage: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("open-pr stage status = %q, want success: %+v", result.Status, result)
 	}
 	if posted.Title != "Automated implementation" ||
 		posted.SourceRefName != "refs/heads/goobers/implementation/run-ado" ||
@@ -167,13 +208,38 @@ func TestOpenPRRoutesADOThroughConfiguredAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pr-result.json: %v", err)
 	}
-	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	var outputs map[string]string
+	if err := json.Unmarshal(data, &outputs); err != nil {
 		t.Fatalf("unmarshal pr-result.json: %v", err)
 	}
-	if result["prNumber"] != "7" || result["pull-request-url"] != "https://ado.example/pr/7" {
-		t.Fatalf("pr-result.json = %#v", result)
+	if outputs["prNumber"] != "7" || outputs["pull-request-url"] != "https://ado.example/pr/7" {
+		t.Fatalf("pr-result.json = %#v", outputs)
 	}
+}
+
+func TestOpenPRADOStageHelperProcess(t *testing.T) {
+	if os.Getenv("GOOBERS_TEST_ADO_OPEN_PR_HELPER") != "1" {
+		return
+	}
+	if _, ok := os.LookupEnv("ADO_OPEN_PR_PAT"); ok {
+		fmt.Fprintln(os.Stderr, "raw configured PAT variable crossed the executor boundary")
+		os.Exit(2)
+	}
+	baseURL := os.Getenv("GOOBERS_TEST_ADO_API_URL")
+	newADOProviderForStage = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		provider, err := buildADOProviderForStage(root, routed)
+		if err != nil {
+			return nil, err
+		}
+		provider.BaseURL = baseURL
+		return provider, nil
+	}
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) {
+			os.Exit(run(os.Args[i+1:], os.Stdout, os.Stderr))
+		}
+	}
+	os.Exit(2)
 }
 
 func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
