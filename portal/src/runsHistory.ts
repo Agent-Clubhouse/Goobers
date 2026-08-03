@@ -206,8 +206,8 @@ export function useRunsHistory(
     const affectedRunIds = [...invalidatedRunIds.current];
     invalidatedRunIds.current.clear();
 
-    return advanceStreams(client, head, scope, controller.signal).then(
-      async (fetched) => {
+    return advanceStreams(client, head, scope, controller.signal)
+      .then(async (fetched) => {
         if (controller.signal.aborted) {
           return true;
         }
@@ -224,14 +224,16 @@ export function useRunsHistory(
         runs.current = mergeRuns(runs.current, [...fetched, ...targeted]);
         publish(isFresh(), cacheRevision);
         return true;
-      },
-      (error: unknown) => {
+      })
+      .catch((error: unknown) => {
         if (!controller.signal.aborted) {
+          for (const runId of affectedRunIds) {
+            invalidatedRunIds.current.add(runId);
+          }
           setState((current) => runsError(current, error));
         }
         return false;
-      },
-    );
+      });
   }, [cache, cacheKey, client, filter, isFresh, publish, reload, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
   const loadMore = useCallback(() => {
@@ -253,11 +255,17 @@ export function useRunsHistory(
         loadingMore.current = false;
         runs.current = mergeRuns(runs.current, fetched);
         publish(isFresh(), cacheRevision);
+        if (invalidatedRunIds.current.size > 0) {
+          family.current?.request("event");
+        }
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
           loadingMore.current = false;
           setState((current) => runsError(current, error));
+          if (invalidatedRunIds.current.size > 0) {
+            family.current?.request("event");
+          }
         }
       },
     );
@@ -322,6 +330,10 @@ export function useRunsHistory(
 
   const retry = useCallback(() => {
     cache.remove(cacheKey);
+    if (invalidatedRunIds.current.size > 0) {
+      family.current?.request("retry");
+      return;
+    }
     void reload();
   }, [cache, cacheKey, reload]);
   return { loadMore, retry, state };

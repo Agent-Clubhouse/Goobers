@@ -149,6 +149,104 @@ describe("runs history pagination under live events", () => {
     expect(getRun).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes an invalidated paged-in row after an overlapping load-more", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 0,
+      running: 120,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const affected = fixtures.runs.runs[50];
+    affected.currentStage = "query-backlog";
+    fixtures.runDetails = {
+      [affected.id]: {
+        ...affected,
+        currentStage: "implement",
+        lastSeq: affected.lastSeq + 1,
+        graphStatus: "unavailable",
+        transitionsStatus: "unavailable",
+      },
+    };
+    const client = new PushableClient(fixtures);
+    const originalListRuns = client.listRuns.bind(client);
+    let paginationCalls = 0;
+    let finishLoadMore: (() => void) | undefined;
+    vi.spyOn(client, "listRuns").mockImplementation((request, options) => {
+      if (request?.cursor && ++paginationCalls === 2) {
+        return new Promise((resolve, reject) => {
+          finishLoadMore = () => {
+            void originalListRuns(request, options).then(resolve, reject);
+          };
+        });
+      }
+      return originalListRuns(request, options);
+    });
+    const getRun = vi.spyOn(client, "getRun");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    const row = await screen.findByRole("link", { name: `Open run ${affected.id}` });
+    expect(within(row).getByText("query-backlog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    await screen.findByRole("button", { name: "Loading…" });
+    act(() => {
+      client.push(runEvent("session:during-pagination", [affected.id]));
+    });
+    await waitFor(() => expect(finishLoadMore).toBeDefined());
+    act(() => finishLoadMore?.());
+
+    await waitFor(() => expect(within(row).getByText("implement")).toBeInTheDocument());
+    expect(getRun).toHaveBeenCalledWith(affected.id, expect.anything());
+  });
+
+  it("surfaces a targeted refresh failure and retries the retained run id", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 0,
+      running: 68,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const affected = fixtures.runs.runs[0];
+    affected.currentStage = "query-backlog";
+    fixtures.runDetails = {
+      [affected.id]: {
+        ...affected,
+        currentStage: "review",
+        lastSeq: affected.lastSeq + 1,
+        graphStatus: "unavailable",
+        transitionsStatus: "unavailable",
+      },
+    };
+    const client = new PushableClient(fixtures);
+    const originalGetRun = client.getRun.bind(client);
+    const getRun = vi
+      .spyOn(client, "getRun")
+      .mockRejectedValueOnce(new Error("detail refresh failed"))
+      .mockImplementation(originalGetRun);
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    const row = await screen.findByRole("link", { name: `Open run ${affected.id}` });
+
+    act(() => {
+      client.push(runEvent("session:failed-target", [affected.id]));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("detail refresh failed");
+    expect(within(row).getByText("query-backlog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(within(row).getByText("review")).toBeInTheDocument());
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   // The counterpart: a real filter change MUST still reset pagination, or the
   // fix above would trade one bug for another — showing rows that do not match
   // the selected filter.
