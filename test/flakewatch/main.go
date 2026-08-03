@@ -66,6 +66,9 @@ type pullRequest struct {
 	Head    struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		SHA string `json:"sha"`
+	} `json:"base"`
 }
 
 type workflowRun struct {
@@ -77,11 +80,12 @@ type workflowRun struct {
 }
 
 type checkRun struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
-	HTMLURL    string `json:"html_url"`
-	Output     struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Conclusion  string    `json:"conclusion"`
+	HTMLURL     string    `json:"html_url"`
+	CompletedAt time.Time `json:"completed_at"`
+	Output      struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	} `json:"output"`
@@ -120,10 +124,12 @@ type ledgerEntry struct {
 
 type source struct {
 	SHA          string
+	BaseSHA      string
 	URL          string
 	RunID        int64
 	PullRequest  int
 	ChangedFiles map[string]bool
+	Since        time.Time
 }
 
 type failure struct {
@@ -252,15 +258,16 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 	result := scanResult{Novel: []failure{}}
 	seen := make(map[string]bool)
 	novelIndex := make(map[string]int)
-	for _, source := range sources {
-		candidates, err := client.failures(ctx, source, observed)
+	baseFailures := make(map[string]map[string]bool)
+	for _, failureSource := range sources {
+		candidates, err := client.failures(ctx, failureSource, observed)
 		if err != nil {
-			return result, fmt.Errorf("scan %s: %w", source.SHA, err)
+			return result, fmt.Errorf("scan %s: %w", failureSource.SHA, err)
 		}
 		for _, candidate := range candidates {
 			key := candidate.Occurrence
 			if key == "" {
-				key = candidate.Fingerprint + "\x00" + source.URL
+				key = candidate.Fingerprint + "\x00" + failureSource.URL
 			}
 			if seen[key] {
 				continue
@@ -275,7 +282,7 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				if dispatched {
 					continue
 				}
-				if err := client.dispatch(ctx, entry, candidate, source); err != nil {
+				if err := client.dispatch(ctx, entry, candidate, failureSource); err != nil {
 					return result, fmt.Errorf("dispatch known flake %s: %w", candidate.Fingerprint, err)
 				}
 				if err := client.recordDispatch(ctx, entry, candidate); err != nil {
@@ -284,8 +291,34 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				result.KnownDispatched++
 				continue
 			}
-			if source.PullRequest != 0 && correlatedWithPR(source.ChangedFiles, candidate) {
+			if failureSource.PullRequest != 0 && correlatedWithPR(failureSource.ChangedFiles, candidate) {
 				continue
+			}
+			if failureSource.PullRequest != 0 {
+				reproductions, found := baseFailures[failureSource.BaseSHA]
+				if !found {
+					reproductions = make(map[string]bool)
+					if failureSource.BaseSHA != "" {
+						baseCandidates, err := client.failures(ctx, source{
+							SHA: failureSource.BaseSHA, Since: failureSource.Since,
+						}, observed)
+						if err != nil {
+							return result, fmt.Errorf(
+								"scan PR #%d base %s: %w",
+								failureSource.PullRequest,
+								failureSource.BaseSHA,
+								err,
+							)
+						}
+						for _, baseCandidate := range baseCandidates {
+							reproductions[baseCandidate.Fingerprint] = true
+						}
+					}
+					baseFailures[failureSource.BaseSHA] = reproductions
+				}
+				if !reproductions[candidate.Fingerprint] {
+					continue
+				}
 			}
 			if flakeShape.MatchString(candidate.FailureText) {
 				if index, found := novelIndex[candidate.Fingerprint]; found {
@@ -346,7 +379,8 @@ func (c *githubClient) sources(ctx context.Context, since time.Time) ([]source, 
 			return nil, fmt.Errorf("list PR #%d files: %w", pull.Number, err)
 		}
 		sources = append(sources, source{
-			SHA: pull.Head.SHA, URL: pull.HTMLURL, PullRequest: pull.Number, ChangedFiles: files,
+			SHA: pull.Head.SHA, BaseSHA: pull.Base.SHA, URL: pull.HTMLURL,
+			PullRequest: pull.Number, ChangedFiles: files, Since: since,
 		})
 		runs, err := c.workflowRuns(ctx, url.Values{
 			"status": {"completed"}, "head_sha": {pull.Head.SHA}, "created": {created}, "per_page": {"100"},
@@ -359,8 +393,8 @@ func (c *githubClient) sources(ctx context.Context, since time.Time) ([]source, 
 				continue
 			}
 			sources = append(sources, source{
-				SHA: pull.Head.SHA, URL: run.HTMLURL, RunID: run.ID,
-				PullRequest: pull.Number, ChangedFiles: files,
+				SHA: pull.Head.SHA, BaseSHA: pull.Base.SHA, URL: run.HTMLURL, RunID: run.ID,
+				PullRequest: pull.Number, ChangedFiles: files, Since: since,
 			})
 			seenRun[run.ID] = true
 		}
@@ -594,13 +628,26 @@ func (c *githubClient) sourceChecks(ctx context.Context, source source) ([]check
 		type page struct {
 			CheckRuns []checkRun `json:"check_runs"`
 		}
-		return getAllWrapped(
+		checks, err := getAllWrapped(
 			ctx,
 			c,
 			"/repos/"+c.repository+"/commits/"+source.SHA+"/check-runs",
 			url.Values{"filter": {"latest"}, "per_page": {"100"}},
 			func(value page) []checkRun { return value.CheckRuns },
 		)
+		if err != nil {
+			return nil, err
+		}
+		if source.Since.IsZero() {
+			return checks, nil
+		}
+		recent := checks[:0]
+		for _, check := range checks {
+			if !check.CompletedAt.Before(source.Since) {
+				recent = append(recent, check)
+			}
+		}
+		return recent, nil
 	}
 	type page struct {
 		Jobs []workflowJob `json:"jobs"`

@@ -39,11 +39,16 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	}))
 	mux.HandleFunc("/repos/acme/app/pulls/7/files", jsonHandler([]map[string]string{{"filename": "README.md"}}))
 	mux.HandleFunc("/repos/acme/app/pulls/8/files", jsonHandler([]map[string]string{{"filename": "internal/cache/cache_test.go"}}))
-	mux.HandleFunc("/repos/acme/app/actions/runs", jsonHandler(map[string]any{
-		"workflow_runs": []workflowRun{{
-			ID: 99, HeadSHA: "branch-sha", HTMLURL: "https://github.test/acme/app/actions/runs/99", CreatedAt: now,
-		}},
-	}))
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		runs := []workflowRun{}
+		if r.URL.Query().Get("head_sha") == "" {
+			runs = append(runs, workflowRun{
+				ID: 99, HeadSHA: "branch-sha",
+				HTMLURL: "https://github.test/acme/app/actions/runs/99", CreatedAt: now,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+	})
 	mux.HandleFunc("/repos/acme/app/commits/known-sha/check-runs", jsonHandler(checksFixture(101)))
 	mux.HandleFunc("/repos/acme/app/commits/regression-sha/check-runs", jsonHandler(checksFixture(102)))
 	mux.HandleFunc("/repos/acme/app/commits/branch-sha/check-runs", jsonHandler(checksFixture(103)))
@@ -106,6 +111,42 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	defer mu.Unlock()
 	if len(dispatches) != 1 || dispatches[0]["event_type"] != "flake-fixer" {
 		t.Fatalf("dispatches = %#v", dispatches)
+	}
+}
+
+func TestScanExcludesCrossPackagePRRegressionAbsentFromBase(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{}))
+	pull := pullFixture(7, "pr-sha", "pull-7")
+	pull.Base.SHA = "base-sha"
+	mux.HandleFunc("/repos/acme/app/pulls", jsonHandler([]pullRequest{pull}))
+	mux.HandleFunc("/repos/acme/app/pulls/7/files", jsonHandler([]map[string]string{{
+		"filename": "internal/storage/storage.go",
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/runs", jsonHandler(map[string]any{
+		"workflow_runs": []workflowRun{},
+	}))
+	mux.HandleFunc("/repos/acme/app/commits/pr-sha/check-runs", jsonHandler(checksFixture(101)))
+	mux.HandleFunc("/repos/acme/app/check-runs/101/annotations", jsonHandler([]annotation{{
+		Path: "internal/cache/cache_test.go", Title: "TestCache",
+		Message: "deadline exceeded waiting for storage",
+	}}))
+	mux.HandleFunc("/repos/acme/app/commits/base-sha/check-runs", jsonHandler(map[string]any{
+		"check_runs": []checkRun{},
+	}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	result, err := scan(context.Background(), &githubClient{
+		base: server.URL, repository: "acme/app", branch: "main", token: "test", http: server.Client(),
+	}, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Novel) != 0 {
+		t.Fatalf("novel = %+v, want cross-package PR regression excluded", result.Novel)
 	}
 }
 
@@ -545,6 +586,30 @@ func TestSourcesPaginatesRunsAndPreservesHistoricalRunIDs(t *testing.T) {
 	}
 }
 
+func TestSourceChecksExcludesChecksOutsideLookback(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 8, 1, 11, 0, 0, 0, time.UTC)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/pr-sha/check-runs", jsonHandler(map[string]any{
+		"check_runs": []checkRun{
+			{ID: 1, Conclusion: "failure", CompletedAt: since.Add(-time.Minute)},
+			{ID: 2, Conclusion: "failure", CompletedAt: since},
+		},
+	}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	checks, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).sourceChecks(context.Background(), source{SHA: "pr-sha", Since: since})
+	if err != nil {
+		t.Fatalf("sourceChecks: %v", err)
+	}
+	if len(checks) != 1 || checks[0].ID != 2 {
+		t.Fatalf("checks = %+v, want only check completed within lookback", checks)
+	}
+}
+
 func TestCorrelatedWithPRIncludesChangedPackage(t *testing.T) {
 	t.Parallel()
 	failure := failure{Package: "./internal/cache", SourcePath: ""}
@@ -563,7 +628,10 @@ func pullFixture(number int, sha, htmlURL string) pullRequest {
 }
 
 func checksFixture(id int64) map[string]any {
-	return map[string]any{"check_runs": []checkRun{{ID: id, Name: "unit", Conclusion: "failure"}}}
+	return map[string]any{"check_runs": []checkRun{{
+		ID: id, Name: "unit", Conclusion: "failure",
+		CompletedAt: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC),
+	}}}
 }
 
 func checkFixtureWithSummary(id int64, summary string) checkRun {
