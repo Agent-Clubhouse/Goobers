@@ -81,6 +81,7 @@ type workflowRun struct {
 
 type checkRun struct {
 	ID          int64     `json:"id"`
+	JobID       int64     `json:"-"`
 	Name        string    `json:"name"`
 	Conclusion  string    `json:"conclusion"`
 	HTMLURL     string    `json:"html_url"`
@@ -92,10 +93,11 @@ type checkRun struct {
 }
 
 type workflowJob struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
-	HTMLURL    string `json:"html_url"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Conclusion  string `json:"conclusion"`
+	HTMLURL     string `json:"html_url"`
+	CheckRunURL string `json:"check_run_url"`
 }
 
 type annotation struct {
@@ -490,9 +492,9 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		if source.RunID == 0 {
 			continue
 		}
-		log, err := c.jobLog(ctx, check.ID)
+		log, err := c.jobLog(ctx, check.JobID)
 		if err != nil {
-			return nil, fmt.Errorf("read job %d log: %w", check.ID, err)
+			return nil, fmt.Errorf("read job %d log: %w", check.JobID, err)
 		}
 		for _, candidate := range parseGoTestFailures(log, source.URL, observed) {
 			candidate.Occurrence = occurrenceID(check.ID, candidate.Package, candidate.Test)
@@ -664,8 +666,16 @@ func (c *githubClient) sourceChecks(ctx context.Context, source source) ([]check
 	}
 	checks := make([]checkRun, 0, len(jobs))
 	for _, job := range jobs {
+		checkRunURL, err := url.Parse(job.CheckRunURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse job %d check_run_url: %w", job.ID, err)
+		}
+		checkRunID, err := strconv.ParseInt(path.Base(checkRunURL.Path), 10, 64)
+		if err != nil || checkRunID <= 0 {
+			return nil, fmt.Errorf("parse job %d check_run_url %q: invalid check-run ID", job.ID, job.CheckRunURL)
+		}
 		checks = append(checks, checkRun{
-			ID: job.ID, Name: job.Name, Conclusion: job.Conclusion, HTMLURL: job.HTMLURL,
+			ID: checkRunID, JobID: job.ID, Name: job.Name, Conclusion: job.Conclusion, HTMLURL: job.HTMLURL,
 		})
 	}
 	return checks, nil

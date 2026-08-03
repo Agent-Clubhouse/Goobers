@@ -58,7 +58,9 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	mux.HandleFunc("/repos/acme/app/commits/branch-sha/check-runs", jsonHandler(checksFixture(103)))
 	mux.HandleFunc("/repos/acme/app/commits/known-regression-sha/check-runs", jsonHandler(checksFixture(104)))
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
-		"jobs": []workflowJob{{ID: 103, Conclusion: "failure"}},
+		"jobs": []workflowJob{{
+			ID: 103, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/103", Conclusion: "failure",
+		}},
 	}))
 	mux.HandleFunc("/repos/acme/app/actions/jobs/103/logs", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintln(w, "ordinary non-test job output")
@@ -170,10 +172,14 @@ func TestFailuresUsesRunJobsAndIgnoresCheckSummaryForFingerprint(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", paginatedHandler(
-		map[string]any{"jobs": []workflowJob{{ID: 200, Conclusion: "success"}}},
-		map[string]any{"jobs": []workflowJob{{ID: 201, Conclusion: "failure"}}},
+		map[string]any{"jobs": []workflowJob{{
+			ID: 200, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/300", Conclusion: "success",
+		}}},
+		map[string]any{"jobs": []workflowJob{{
+			ID: 201, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/301", Conclusion: "failure",
+		}}},
 	))
-	mux.HandleFunc("/repos/acme/app/check-runs/201/annotations", paginatedHandler(
+	mux.HandleFunc("/repos/acme/app/check-runs/301/annotations", paginatedHandler(
 		[]annotation{{Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE"}},
 		[]annotation{{Path: "internal/runner/run_test.go", Message: "diagnostic without a test name"}},
 	))
@@ -214,9 +220,11 @@ func TestFailuresParsesGoTestJobLogWithoutAnnotations(t *testing.T) {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
-		"jobs": []workflowJob{{ID: 201, Conclusion: "failure"}},
+		"jobs": []workflowJob{{
+			ID: 201, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/301", Conclusion: "failure",
+		}},
 	}))
-	mux.HandleFunc("/repos/acme/app/check-runs/201/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/check-runs/301/annotations", jsonHandler([]annotation{}))
 	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `2026-08-01T12:00:00.0000000Z === RUN   TestResume
 	2026-08-01T12:00:00.0000000Z WARNING: DATA RACE
@@ -429,7 +437,9 @@ func TestScanDeduplicatesOverlappingSourcesAndPriorPolls(t *testing.T) {
 	})
 	mux.HandleFunc("/repos/acme/app/commits/shared-sha/check-runs", jsonHandler(checksFixture(201)))
 	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
-		"jobs": []workflowJob{{ID: 201, Conclusion: "failure"}},
+		"jobs": []workflowJob{{
+			ID: 201, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/201", Conclusion: "failure",
+		}},
 	}))
 	mux.HandleFunc("/repos/acme/app/check-runs/201/annotations", jsonHandler([]annotation{{
 		Path: "internal/runner/run_test.go", Title: "TestResume", Message: text,
