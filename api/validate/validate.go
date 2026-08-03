@@ -928,9 +928,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// above) was buffered, not yet added to r — flush now that the run's full
 	// outcome (how many parse failures, how many reference gaps) is known.
 	ix.flushReferenceIssues(r)
-	if !r.HasErrors() {
-		ix.checkMissingSkillPackages(r, configRoot)
-	}
+	ix.checkMissingSkillPackages(r, configRoot)
 }
 
 func declaredSkillPackageDir(configRoot, skill string) (string, bool) {
@@ -945,6 +943,9 @@ func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 		for _, skill := range g.Spec.Skills {
 			packageDir, ok := declaredSkillPackageDir(configRoot, skill)
 			if !ok {
+				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
+					"spec.skills declares %q, but the skill name cannot resolve to a package directory under %q",
+					skill, "skills")
 				continue
 			}
 			info, err := os.Stat(packageDir)

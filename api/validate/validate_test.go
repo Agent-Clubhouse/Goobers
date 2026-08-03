@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -971,6 +972,82 @@ spec:
 	}
 	if report.HasErrors() {
 		t.Fatalf("missing skill package must remain non-fatal: %+v", report.Issues)
+	}
+}
+
+func TestGooberSkillPackageWarningsIncludeInvalidConfigsAndNames(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: missing.md
+  skills:
+    - missing
+    - nested/name
+    - ..
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected unrelated missing-instructions error")
+	}
+	var explanations []string
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			explanations = append(explanations, warning.Explanation)
+		}
+	}
+	for _, want := range []string{
+		`spec.skills declares "missing", but no skill package directory was found at "skills/missing"`,
+		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
+		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
+	} {
+		if !slices.Contains(explanations, want) {
+			t.Errorf("missing skill warnings = %q, want explanation %q", explanations, want)
+		}
+	}
+	if len(explanations) != 3 {
+		t.Errorf("missing skill warning count = %d, want 3: %q", len(explanations), explanations)
 	}
 }
 
