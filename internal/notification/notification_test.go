@@ -173,13 +173,14 @@ func (s uncooperativeSink) Deliver(context.Context, apiv1.NotificationRequest) (
 func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		release := make(chan struct{})
-		t.Cleanup(func() { close(release) })
 		var calls atomic.Int32
-		dispatcher := newTestDispatcher(t, &memoryRecorder{}, Policy{
+		recorder := &memoryRecorder{}
+		dispatcher := newTestDispatcher(t, recorder, Policy{
 			Timeout: 10 * time.Millisecond, MaxAttempts: 3,
 		}, uncooperativeSink{release: release, calls: &calls})
+		request := validRequest("uncooperative")
 		started := time.Now()
-		result, err := dispatcher.Dispatch(context.Background(), validRequest("uncooperative"))
+		result, err := dispatcher.Dispatch(context.Background(), request)
 		if err == nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationFailed ||
 			!strings.Contains(result.Receipts[0].Error, "deadline exceeded") {
 			t.Fatalf("timeout result=%+v err=%v", result, err)
@@ -189,6 +190,39 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 		}
 		if got := calls.Load(); got != 1 {
 			t.Fatalf("timed-out sink attempts = %d, want 1", got)
+		}
+
+		result, err = dispatcher.Dispatch(context.Background(), request)
+		if err == nil || len(result.Receipts) != 1 ||
+			result.Receipts[0].Status != apiv1.NotificationSkipped ||
+			!strings.Contains(result.Receipts[0].Error, "remains unresolved") {
+			t.Fatalf("pending retry result=%+v err=%v", result, err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("pending retry reached sink: calls = %d, want 1", got)
+		}
+
+		close(release)
+		deadline := time.Now().Add(time.Second)
+		for {
+			recorder.mu.Lock()
+			receipts := append([]apiv1.NotificationReceipt(nil), recorder.receipts...)
+			recorder.mu.Unlock()
+			if len(receipts) == 3 && receipts[2].Status == apiv1.NotificationDelivered {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("late delivery receipt not recorded: %+v", receipts)
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		result, err = dispatcher.Dispatch(context.Background(), request)
+		if err != nil || len(result.Receipts) != 1 || result.Receipts[0].Status != apiv1.NotificationSkipped {
+			t.Fatalf("late delivery retry result=%+v err=%v", result, err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("late delivery retry reached sink: calls = %d, want 1", got)
 		}
 	})
 	t.Run("cancellation", func(t *testing.T) {

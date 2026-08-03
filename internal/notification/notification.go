@@ -134,6 +134,7 @@ type Dispatcher struct {
 	policy   Policy
 	now      func() time.Time
 	mu       sync.Mutex
+	pending  map[deliveryKey]*deliveryAttempt
 }
 
 func NewDispatcher(registry *Registry, recorder Recorder, scrubber journal.Scrubber, policy Policy) (*Dispatcher, error) {
@@ -150,7 +151,10 @@ func NewDispatcher(registry *Registry, recorder Recorder, scrubber journal.Scrub
 	if err != nil {
 		return nil, err
 	}
-	return &Dispatcher{registry: registry, recorder: recorder, scrubber: scrubber, policy: normalized, now: time.Now}, nil
+	return &Dispatcher{
+		registry: registry, recorder: recorder, scrubber: scrubber, policy: normalized,
+		now: time.Now, pending: make(map[deliveryKey]*deliveryAttempt),
+	}, nil
 }
 
 // Dispatch records the request before attempting any sink. The dispatcher
@@ -205,6 +209,12 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		receipt, recordErr := d.persist(ctx, receipt)
 		return []apiv1.NotificationReceipt{receipt}, recordErr == nil
 	}
+	key := deliveryKey{idempotencyKey: request.IdempotencyKey, sinkKind: kind}
+	if _, pending := d.pending[key]; pending {
+		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
+		receipt, _ = d.persist(ctx, receipt)
+		return []apiv1.NotificationReceipt{receipt}, false
+	}
 	if err := ctx.Err(); err != nil {
 		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", err)
 		receipt, _ = d.persist(ctx, receipt)
@@ -224,8 +234,13 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 			deadline = request.ExpiresAt
 		}
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
-		externalRef, deliverErr := deliver(attemptCtx, sink, request)
+		delivery := startDelivery(attemptCtx, sink, request)
+		d.pending[key] = delivery
+		externalRef, deliverErr, resolved := delivery.wait(attemptCtx)
 		cancel()
+		if resolved {
+			delete(d.pending, key)
+		}
 		status := apiv1.NotificationDelivered
 		if deliverErr != nil {
 			status = apiv1.NotificationFailed
@@ -248,8 +263,10 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		}
 		// A timed-out call may still complete an external side effect. Starting
 		// another attempt before its outcome is known could duplicate delivery.
-		if errors.Is(deliverErr, context.DeadlineExceeded) ||
-			errors.Is(deliverErr, context.Canceled) ||
+		if !resolved {
+			go d.resolvePending(key, delivery, request, sinkRef(sink), attempt, started)
+		}
+		if !resolved ||
 			ctx.Err() != nil ||
 			attempt == d.policy.MaxAttempts {
 			break
@@ -281,21 +298,59 @@ type deliveryResult struct {
 	err               error
 }
 
-func deliver(ctx context.Context, sink Sink, request apiv1.NotificationRequest) (string, error) {
-	result := make(chan deliveryResult, 1)
-	go func() {
-		externalReference, err := sink.Deliver(ctx, request)
-		result <- deliveryResult{externalReference: externalReference, err: err}
-	}()
+type deliveryKey struct {
+	idempotencyKey string
+	sinkKind       string
+}
 
+type deliveryAttempt struct {
+	done   chan struct{}
+	result deliveryResult
+}
+
+func startDelivery(ctx context.Context, sink Sink, request apiv1.NotificationRequest) *deliveryAttempt {
+	attempt := &deliveryAttempt{done: make(chan struct{})}
+	go func() {
+		attempt.result.externalReference, attempt.result.err = sink.Deliver(ctx, request)
+		close(attempt.done)
+	}()
+	return attempt
+}
+
+func (a *deliveryAttempt) wait(ctx context.Context) (string, error, bool) {
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
-	case delivered := <-result:
+		return "", ctx.Err(), false
+	case <-a.done:
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return "", err, false
 		}
-		return delivered.externalReference, delivered.err
+		return a.result.externalReference, a.result.err, true
+	}
+}
+
+func (d *Dispatcher) resolvePending(key deliveryKey, delivery *deliveryAttempt, request apiv1.NotificationRequest, sink apiv1.NotificationSinkRef, attempt int, started time.Time) {
+	<-delivery.done
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pending[key] != delivery {
+		return
+	}
+
+	status := apiv1.NotificationDelivered
+	externalRef := delivery.result.externalReference
+	deliverErr := delivery.result.err
+	if deliverErr != nil {
+		status = apiv1.NotificationFailed
+	}
+	if deliverErr == nil && utf8.RuneCountInString(externalRef) > MaxExternalRefRunes {
+		externalRef = ""
+		deliverErr = fmt.Errorf("external reference exceeds %d characters and was omitted", MaxExternalRefRunes)
+	}
+	receipt := d.receipt(request, sink, attempt, started, d.now().UTC(), status, externalRef, deliverErr)
+	if _, err := d.persist(context.Background(), receipt); err == nil {
+		delete(d.pending, key)
 	}
 }
 
