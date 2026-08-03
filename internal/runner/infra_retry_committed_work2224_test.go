@@ -128,6 +128,54 @@ func infraRetryWorkflow(t *testing.T, prepare bool) *workflow.Machine {
 	return machine
 }
 
+func parallelInfraRetryWorkflow(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start: "fan",
+		Tasks: []apiv1.Task{
+			{
+				Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement",
+				Workspace: apiv1.WorkspaceScratch, Retry: &apiv1.RetryPolicy{MaxAttempts: 2}, Next: "review",
+			},
+			{
+				Name: "inspect", Type: apiv1.TaskDeterministic, Goal: "inspect",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TargetJoin,
+			},
+			{
+				Name: "collate", Type: apiv1.TaskDeterministic, Goal: "collate",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TerminalComplete,
+			},
+		},
+		Gates: []apiv1.Gate{{
+			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+			Agentic: &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceScratch},
+			Branches: map[string]string{
+				string(apiv1.VerdictPass):         workflow.TargetJoin,
+				string(apiv1.VerdictNeedsChanges): "implement",
+				string(apiv1.VerdictFail):         workflow.TargetAbort,
+			},
+		}},
+		Parallels: []apiv1.Parallel{{
+			Name: "fan", FailurePolicy: apiv1.BranchContinueOnError, MaxConcurrentBranches: 2, Join: "collate",
+			Branches: []apiv1.Branch{
+				{Name: "implementation", Start: "implement"},
+				{Name: "inspection", Start: "inspect"},
+			},
+		}},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "parallel-infra-retry-work", Version: 1, DSLVersion: "2.0", Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatalf("compile parallel workflow: %v", err)
+	}
+	return machine
+}
+
 func newInfraRetryRunner(t *testing.T, goober invoke.Goober, deterministic invoke.Deterministic) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
@@ -294,5 +342,102 @@ func TestRunnerPreservesCommittedWorkAfterRestartBeforeInfrastructureRetry(t *te
 	wantStages := []string{"local-ci", "push-branch", "open-pr"}
 	if !reflect.DeepEqual(deterministic.stageCalls, wantStages) {
 		t.Fatalf("downstream stages = %v, want %v", deterministic.stageCalls, wantStages)
+	}
+}
+
+func TestRunnerPreservesParallelBranchCommittedWorkAfterRestartBeforeInfrastructureRetry(t *testing.T) {
+	const runID = "run-preserve-parallel-infra-work-after-restart"
+	machine := parallelInfraRetryWorkflow(t)
+	instanceRoot := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: fixtureRepo,
+		RunID:   runID + "-failed-attempt",
+		BaseRef: "main",
+		Branch:  providers.BranchName(machine.Def.Name, runID),
+	})
+	if err != nil {
+		t.Fatalf("create failed-attempt worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "impl.txt"), []byte("committed implementation\n"), 0o644); err != nil {
+		t.Fatalf("write implementation: %v", err)
+	}
+	runGit(t, wt.Path, "add", "-A")
+	runGit(t, wt.Path, "commit", "-m", "implement parallel feature")
+	runGit(t, wt.Path, "push", fixtureRepo, providers.BranchName(machine.Def.Name, runID))
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("remove failed-attempt worktree: %v", err)
+	}
+
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create interrupted run journal: %v", err)
+	}
+	jr.SetMachineState("fan")
+	for _, event := range []journal.Event{
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{
+			Type: journal.EventBranchStarted, Parallel: "fan", Branch: 1,
+			BranchName: "implementation", Stage: "implement",
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Branch: 1, Attempt: 1},
+		{
+			Type: journal.EventError, Stage: "implement", Branch: 1, Attempt: 1,
+			Error: &journal.ErrorDetail{Code: "executor_error", Message: "harness: no completion file written"},
+			Runner: map[string]any{
+				retryFailureClassKey:  string(journal.AttemptInfra),
+				infraCommittedWorkKey: true,
+			},
+		},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatalf("append interrupted parallel event: %v", err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close interrupted run journal: %v", err)
+	}
+
+	goober := &infraRetryNoWorkGoober{t: t, calls: 1}
+	deterministic := &infraRetryPathDeterministic{t: t}
+	r, err := New(Config{
+		PinnedWorkspace: true,
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    manager,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("new restarted runner: %v", err)
+	}
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if goober.calls != 2 || goober.reviews != 1 {
+		t.Fatalf("post-restart implement calls = %d, reviews = %d; want 1 and 1", goober.calls-1, goober.reviews)
+	}
+	if want := []string{"inspect", "collate"}; !reflect.DeepEqual(deterministic.stageCalls, want) {
+		t.Fatalf("deterministic stages = %v, want %v", deterministic.stageCalls, want)
 	}
 }
