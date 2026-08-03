@@ -148,7 +148,12 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "poll merge queue entry", pollErr, resultFile)
 		}
 		if pollErr == nil {
-			if hasAnyLabel(result.Labels, []string{noMergeReviewLabel}) {
+			// #2238: a PR already sitting in the native merge queue must be
+			// dequeued the instant its originating run is cancelled mid-flight,
+			// same as an operator applying goobers:no-merge-review — the queue
+			// is a second merge authority and must not land a PR merge-pr would
+			// now refuse.
+			if hasAnyLabel(result.Labels, []string{noMergeReviewLabel, abortedRunLabel}) {
 				optedOut = true
 			}
 			if optedOut {

@@ -49,8 +49,14 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, regist
 	if err != nil {
 		return nil, err
 	}
-	return func(runID string, _ journal.RunPhase, jr *journal.Run) error {
-		return finalizeTerminalBranch(l.RunsDir(), runID, jr, repo, deleteBranch)
+	labelAbortedPR, err := buildTerminalRunAbortLabeler(cfg, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return func(runID string, phase journal.RunPhase, jr *journal.Run) error {
+		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, jr, repo, deleteBranch)
+		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, jr, repo, labelAbortedPR)
+		return errors.Join(branchErr, labelErr)
 	}, nil
 }
 

@@ -1110,7 +1110,8 @@ Select at most one open, non-draft, green-CI PR for merge-review to
 evaluate this cycle (a workflow stage). authorScope defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
-labeled goobers:no-merge-review are always excluded. Before selection,
+PRs labeled goobers:no-merge-review or goobers:run-aborted are always
+excluded. Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
 selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared
