@@ -6,7 +6,7 @@
   "features": [
     {
       "name": "gaggle.spec.project.checkout.sparse",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {

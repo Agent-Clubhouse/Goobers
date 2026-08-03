@@ -524,7 +524,7 @@ const (
 // field, in KB) above which `--check-repos` warns at validate time (#1547).
 // 1 GiB is large enough that a full clone/checkout of the repo measurably
 // slows down provisioning; sparse/partial checkout (AdditionalRepos, or
-// project.checkout.sparse once #649 ships) is the recommended remediation.
+// project.checkout.sparse, #649) is the recommended remediation.
 const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
