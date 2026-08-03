@@ -219,6 +219,41 @@ func TestTerminalRunClosesOpenAttemptAsFailure(t *testing.T) {
 	}
 }
 
+func TestExecutorErrorSynthesizesFailedStageAttempt(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Attempt = 1
+			e.Error = &journal.ErrorDetail{Code: "executor_error", Message: "worker disappeared"}
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if len(projection.Stages) != 1 {
+		t.Fatalf("stage rows = %+v, want synthesized executor-error attempt", projection.Stages)
+	}
+	stage := projection.Stages[0]
+	if stage.Stage != "implement" || stage.Attempts != 1 || stage.LastStatus != "failure" || !stage.HadFailure {
+		t.Fatalf("stage row = %+v, want one failed implement attempt", stage)
+	}
+
+	store := openTestStore(t)
+	if err := store.UpsertRun(t.Context(), projection); err != nil {
+		t.Fatalf("upsert projection: %v", err)
+	}
+	for _, outcome := range []Outcome{OutcomeFailure, OutcomeTerminal, OutcomeFinished} {
+		page, err := store.ListRuns(t.Context(), ListOptions{Stage: "implement", Outcome: outcome})
+		if err != nil {
+			t.Fatalf("list outcome %q: %v", outcome, err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != testIdentity().RunID {
+			t.Errorf("outcome %q returned runs %+v, want executor-error run", outcome, page.Runs)
+		}
+	}
+}
+
 // singleStageEvents builds a completed run touching exactly one stage, whose
 // terminal status is the given one — the shape a routine backlog-query no-work
 // tick and a genuine single-task success both produce, distinguished only by

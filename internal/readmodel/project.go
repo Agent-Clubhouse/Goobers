@@ -297,6 +297,26 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				s.StartedAt = &at
 			}
 
+		case journal.EventError:
+			if event.Stage == "" || event.Error == nil || event.Error.Code != "executor_error" {
+				continue
+			}
+			if row.CurrentStage == event.Stage {
+				row.CurrentStage = ""
+			}
+			s := stageRow(stages, row.RunID, event.Stage)
+			if s.openAttempts > 0 {
+				s.openAttempts--
+			} else {
+				// The journal reference synthesizes an attempt when dispatch
+				// fails before stage.started can be recorded.
+				s.Attempts++
+			}
+			s.LastStatus = "failure"
+			s.LastAttemptClass = string(event.AttemptClass)
+			s.HadFailure = true
+			at := event.Time
+			s.FinishedAt = &at
 		case journal.EventStageFinished:
 			if row.CurrentStage == event.Stage {
 				row.CurrentStage = ""
