@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -107,6 +108,7 @@ const (
 	errorPreviewAnnotation        WarningCode = "CFG004"
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
+	errorGaggleCheckoutSparse     WarningCode = "CFG007"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1408,26 +1410,73 @@ func (ix *index) checkGaggleRunControls(r *Report) {
 	}
 }
 
-// checkGaggleCheckout surfaces every declared repo checkout block as a VER003
-// compatibility notice (#649): checkout.sparse is accepted by the schema so a
-// definition can be authored ahead of the runner honoring it, but the local
-// runner still materializes full worktrees. A warning, never an error: deleting
-// the declaration would delete the very cones a sparse-capable runner needs.
+// checkGaggleCheckout validates every declared repo checkout block's sparse
+// cones (#649): the local runner now honors project.checkout.sparse by
+// materializing a cone-mode sparse checkout, so a malformed declaration is a
+// real misconfiguration caught here rather than a silently-inert notice.
 func (ix *index) checkGaggleCheckout(r *Report) {
 	for name, g := range ix.gaggles {
 		file := ix.gaggleFile[name]
-		warn := func(field string, checkout *apiv1.CheckoutSpec) {
+		check := func(field string, checkout *apiv1.CheckoutSpec) {
 			if checkout == nil {
 				return
 			}
-			r.addWarning(WarningCompatibility, file, "", "Gaggle", name,
-				"%s.sparse is not honored by the local runner", field)
+			if len(checkout.Sparse) == 0 {
+				r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+					"%s.sparse must declare at least one cone (omit checkout entirely for a full checkout)", field)
+				return
+			}
+			seen := make(map[string]bool, len(checkout.Sparse))
+			for i, cone := range checkout.Sparse {
+				if reason := invalidSparseCone(cone); reason != "" {
+					r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+						"%s[%d] %q is not a valid sparse-checkout cone: %s", field, i, cone, reason)
+					continue
+				}
+				if seen[cone] {
+					r.add(errorGaggleCheckoutSparse, Error, file, "Gaggle", name,
+						"%s[%d] duplicates cone %q", field, i, cone)
+					continue
+				}
+				seen[cone] = true
+			}
 		}
-		warn("spec.project.checkout", g.Spec.Project.Checkout)
+		check("spec.project.checkout", g.Spec.Project.Checkout)
 		for i := range g.Spec.AdditionalRepos {
-			warn(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
+			check(fmt.Sprintf("spec.additionalRepos[%d].checkout", i), g.Spec.AdditionalRepos[i].Checkout)
 		}
 	}
+}
+
+// invalidSparseCone reports why cone cannot be a git cone-mode sparse-checkout
+// pattern, or "" if it can. Cone mode (`git sparse-checkout set --cone`)
+// accepts only repo-relative directory prefixes — no glob patterns, no
+// absolute paths, no lexical traversal outside the repo.
+func invalidSparseCone(cone string) string {
+	if cone == "" {
+		return "must not be empty"
+	}
+	if path.IsAbs(cone) {
+		return "must be repo-relative, not absolute"
+	}
+	if strings.Contains(cone, "\\") {
+		return "must use forward slashes"
+	}
+	if cone == "." || cone == ".." {
+		return `must not be "." or ".."`
+	}
+	if strings.ContainsAny(cone, "*?[]!") {
+		return "cone mode does not support glob patterns; declare a directory prefix instead"
+	}
+	for _, segment := range strings.Split(cone, "/") {
+		switch segment {
+		case "":
+			return "must not contain empty path segments (e.g. a leading, trailing, or doubled slash)"
+		case "..":
+			return `must not contain ".." segments`
+		}
+	}
+	return ""
 }
 
 func (ix *index) checkGaggleConnections(r *Report) {

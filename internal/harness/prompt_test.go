@@ -56,6 +56,40 @@ func TestRenderPromptFallsBackToBareNameWithoutResolvedPath(t *testing.T) {
 	}
 }
 
+// TestRenderPromptDeclaresPartialCheckout is #649's invocation-context
+// acceptance criterion: a sparse-checkout workspace's prompt names its cones
+// so an agentic stage does not treat a pruned path as unexpectedly deleted.
+func TestRenderPromptDeclaresPartialCheckout(t *testing.T) {
+	req := RunRequest{
+		Envelope: apiv1.InvocationEnvelope{
+			Goal:          "implement the fix",
+			CheckoutCones: map[string][]string{"": {"services/web", "docs"}},
+		},
+		CompletionPath: DefaultResultPath,
+	}
+	prompt := renderPrompt(req)
+	if !strings.Contains(prompt, "PARTIAL checkout") {
+		t.Fatalf("prompt missing partial-checkout declaration: %q", prompt)
+	}
+	if !strings.Contains(prompt, "services/web") || !strings.Contains(prompt, "docs") {
+		t.Fatalf("prompt missing declared cones: %q", prompt)
+	}
+}
+
+// TestRenderPromptOmitsCheckoutSectionForFullCheckout is the counterpart: the
+// common case (no sparse checkout) must not gain a spurious workspace
+// section — CheckoutCones absent means every existing prompt is unchanged.
+func TestRenderPromptOmitsCheckoutSectionForFullCheckout(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "implement the fix"},
+		CompletionPath: DefaultResultPath,
+	}
+	prompt := renderPrompt(req)
+	if strings.Contains(prompt, "## Workspace") || strings.Contains(prompt, "PARTIAL checkout") {
+		t.Fatalf("prompt gained a checkout declaration with no sparse cones: %q", prompt)
+	}
+}
+
 func TestRenderPromptAppendsOneOffInstructionAddendum(t *testing.T) {
 	req := RunRequest{
 		Envelope: apiv1.InvocationEnvelope{
