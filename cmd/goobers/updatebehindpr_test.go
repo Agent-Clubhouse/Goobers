@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -249,6 +250,75 @@ func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testi
 	}
 	if !strings.Contains(stdout, "requires full remediation") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestUpdateBehindPRFailingCurrentUnlabeledHandoffReachesGatherPRContext(t *testing.T) {
+	state := &updateBehindServer{
+		checkState: "failure",
+		current:    true,
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	code, stdout, stderr, updateResult := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 0 {
+		t.Fatalf("update-behind-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if updateResult["needsFullRemediation"] != "true" {
+		t.Fatalf("update result = %v, want full remediation", updateResult)
+	}
+	if state.updateCalls != 0 || len(state.labels) != 0 {
+		t.Fatalf("update calls = %d, labels = %v, want current unlabeled candidate unchanged", state.updateCalls, state.labels)
+	}
+
+	const prBranch = "goobers/implementation/run-55"
+	origin, _, baseSHA := initPRBranchOrigin(t, prBranch)
+	work := filepath.Join(filepath.Dir(origin), "work")
+	runGitT(t, work, "checkout", prBranch)
+	runGitT(t, work, "merge", "--no-edit", "origin/main")
+	runGitT(t, work, "push", "origin", prBranch)
+	headSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+
+	gatherServer := gatherPRContextServer{
+		owner: "your-org", repo: "your-repo",
+		prNumber: 55, head: prBranch, base: "main",
+		headSHA: headSHA, baseSHA: baseSHA,
+		checkState: "failure",
+	}.start(t)
+	newGitHubProvider = mergePRTestServer{url: gatherServer.URL}.newGitHubProvider
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-720", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-720",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	t.Setenv(executor.InputEnvVar("selectedNumber"), updateResult["selectedNumber"])
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "repo-push-token")
+	t.Chdir(wt.Path)
+	code, stdout, stderr = runArgs(t, "gather-pr-context", root)
+	if code != 0 {
+		t.Fatalf("gather-pr-context: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, remediationBriefResultFile))
+	if err != nil {
+		t.Fatalf("read remediation brief: %v", err)
+	}
+	var brief apiv1.RemediationBrief
+	if err := json.Unmarshal(data, &brief); err != nil {
+		t.Fatalf("decode remediation brief: %v", err)
+	}
+	if brief.SelectedNumber != updateResult["selectedNumber"] ||
+		brief.HasFailingCI != "true" ||
+		brief.IsBehindBase {
+		t.Fatalf("remediation brief = %+v, want selected failing current PR", brief)
 	}
 }
 
