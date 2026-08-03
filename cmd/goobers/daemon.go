@@ -1161,38 +1161,6 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 	return resumed, warned, nil
 }
 
-// waitDrained waits for wg to finish, returning false if timeout elapses
-// first. The background goroutine it starts is not leaked: wg.Wait()
-// returning always lets it close done and exit, whether or not the select
-// below already gave up waiting.
-func waitDrained(wg *sync.WaitGroup, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
-func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		scheduler.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
 // buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).
 //
 // Emptiness is the trigger rather than a marker file: the store either has run
