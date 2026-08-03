@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -632,10 +633,46 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 	if err != nil {
 		return configSeedFile{}, fmt.Errorf("encode guided workflow %s: %w", name, err)
 	}
+	data = withLocalCICommandComment(data, workflow.Spec.Tasks)
 	return configSeedFile{
 		path: filepath.ToSlash(filepath.Join("gaggles", opts.GaggleName, "workflows", name+".yaml")),
 		data: data,
 	}, nil
+}
+
+// withLocalCICommandComment inserts an explanatory comment directly above the
+// marshaled workflow's `tasks:` list when it contains a `local-ci` stage
+// (#2071): the ciCommand<->local-ci relationship (MGV-1/#1009) was previously
+// documented only in the CRD schema, CONTRIBUTING.md, and hand-written
+// config-examples — none of which a user looking at a generated
+// implementation.yaml is looking at. yaml.Marshal (sigs.k8s.io/yaml, which
+// round-trips through encoding/json) never emits comments and always
+// alphabetizes struct fields, so per-task comment placement is not reliably
+// locatable; anchoring on the top-level `tasks:` key is exact regardless of
+// field order because that key name is fixed and appears exactly once.
+func withLocalCICommandComment(data []byte, tasks []apiv1.Task) []byte {
+	hasLocalCI := false
+	for _, task := range tasks {
+		if task.Name == LocalCIStageName {
+			hasLocalCI = true
+			break
+		}
+	}
+	if !hasLocalCI {
+		return data
+	}
+	marker := []byte("\n  tasks:\n")
+	idx := bytes.Index(data, marker)
+	if idx < 0 {
+		return data
+	}
+	comment := []byte("  # The \"local-ci\" stage below runs this gaggle's ciCommand (gaggle.yaml)\n" +
+		"  # in place of the command it declares here — see MGV-1/#1009.\n")
+	out := make([]byte, 0, len(data)+len(comment))
+	out = append(out, data[:idx+1]...)
+	out = append(out, comment...)
+	out = append(out, data[idx+1:]...)
+	return out
 }
 
 func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions) ([]configSeedFile, error) {
@@ -720,7 +757,13 @@ spec:
 func guidedGaggle(opts GuidedOptions) []byte {
 	ciCommand := ""
 	if len(opts.CICommand) > 0 {
-		ciCommand = "  ciCommand: " + yamlStringList(opts.CICommand) + "\n"
+		// #2071: this line and the `local-ci` stage in this gaggle's
+		// implementation.yaml (MGV-1/#1009) must be edited together — the
+		// stage's declared command is only what runs when this override is
+		// unset; the comment there points back here.
+		ciCommand = "  # Overrides the `local-ci` stage's declared command in this gaggle's\n" +
+			"  # implementation.yaml (MGV-1/#1009); edit both together.\n" +
+			"  ciCommand: " + yamlStringList(opts.CICommand) + "\n"
 	}
 	return []byte(fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Gaggle

@@ -129,13 +129,13 @@ function RunDetailWorkspace({
 }) {
   const latestEvent = events.at(-1);
   const initialSeq = latestEvent?.seq ?? 0;
-  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
+  const latestNodeId =
     eventNodeAtSequence(events, initialSeq, {
       branch: latestEvent?.branch,
       runId,
-    }) ?? run.currentStage,
-  );
+    }) ?? run.currentStage;
+  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(latestNodeId);
   const [followingLatest, setFollowingLatest] = useState(true);
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
   const inspectorRef = useRef<HTMLElement>(null);
@@ -167,20 +167,16 @@ function RunDetailWorkspace({
       return;
     }
     setSelectedSeq(initialSeq);
-    setSelectedNodeId(
-      eventNodeAtSequence(events, initialSeq, {
-        branch: latestEvent?.branch,
-        runId,
-      }) ?? run.currentStage,
-    );
+    setSelectedNodeId(latestNodeId);
     setSelectedEvidenceSeq(
       latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
     );
-  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage, runId]);
+  }, [events, followingLatest, initialSeq, latestEvent, latestNodeId, runId]);
 
   const selectNode = (nodeId: string, shouldRevealInspector = false) => {
     setSelectedNodeId(nodeId);
     setSelectedEvidenceSeq(undefined);
+    setFollowingLatest(nodeId === latestNodeId);
     if (shouldRevealInspector) {
       revealInspector();
     }

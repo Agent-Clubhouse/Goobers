@@ -742,7 +742,7 @@ func TestCompileRejectsConfigRepoReadForStagesAndGoobers(t *testing.T) {
 	}
 }
 
-func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
+func TestCompileCIPollRequiresProviderPRWrite(t *testing.T) {
 	cases := []struct {
 		name    string
 		caps    []string
@@ -750,11 +750,21 @@ func TestCompileCIPollRequiresGitHubPRWrite(t *testing.T) {
 	}{
 		{
 			name:    "missing required capability",
-			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "github:pr:write"`,
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
 		},
 		{
 			name: "required capability declared",
-			caps: []string{string(capability.GitHubPRWrite)},
+			caps: []string{string(capability.ProviderPRWrite)},
+		},
+		{
+			name:    "provider-specific capability does not satisfy provider-neutral routing",
+			caps:    []string{string(capability.GitHubPRWrite)},
+			wantErr: `task "poll" with inputs.kind="ci-poll" must declare capability "provider:pr:write"`,
+		},
+		{
+			name:    "provider-neutral and provider-specific capabilities conflict",
+			caps:    []string{string(capability.ProviderPRWrite), string(capability.ADOPRWrite)},
+			wantErr: `task "poll" declares mutually exclusive provider-neutral and provider-specific PR write capabilities`,
 		},
 	}
 

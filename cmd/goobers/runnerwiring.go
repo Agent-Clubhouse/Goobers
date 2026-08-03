@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -320,7 +321,7 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
@@ -769,6 +770,10 @@ type ciPollKindExecutor struct {
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	required := string(capability.ProviderPRWrite)
+	if !slices.Contains(env.Capabilities, required) {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q: %w", executor.KindCIPoll, required, credentials.ErrUndeclaredCapability)
+	}
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
@@ -782,7 +787,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}
@@ -792,7 +797,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}

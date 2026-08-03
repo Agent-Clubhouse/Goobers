@@ -18,7 +18,7 @@ spec:
         kind: "ci-poll"
         prNumber: "42"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       timeoutSeconds: 120
       limits:
         maxDurationSeconds: 90

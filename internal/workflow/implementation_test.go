@@ -228,7 +228,8 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #2174: reworded leftover Go-specific prose (`make ci`/`go test`) in the
 	// implement task's goal to describe this gaggle's actual `npm run ci`
 	// stack; no structural/behavioral change, but the goal text is hashed.
-	const wantDigest = "sha256:271455be9a36a4ba4f38e2de33bc5f95b8c87326ca4a04aa450e408ea213f517"
+	// #2213: ci-poll uses provider-neutral PR routing.
+	const wantDigest = "sha256:513b932d3106bb25a291cebec02dc8ea612c7b5c4009de61ceaaaab514f4e89c"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

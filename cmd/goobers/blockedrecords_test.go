@@ -950,6 +950,165 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	}
 }
 
+// TestBacklogQuerySkipsBlockedThenClaimsNextEligible is #1907's repro: a
+// blocked candidate sorts first in FIFO order (it is the older issue), and a
+// separate, wholly unrelated candidate carries no block at all. The run must
+// try the second candidate after skipping the first, not stop there and
+// report a false-positive "completed, nothing claimed" the way a single
+// blocked candidate legitimately would.
+func TestBacklogQuerySkipsBlockedThenClaimsNextEligible(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+	server.addIssue(511, "unrelated unblocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var claimed map[string]interface{}
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if claimed["id"] != "511" {
+		t.Fatalf("claimed = %v (stdout=%q stderr=%q), want item 511 claimed after 510 was skipped as blocked", claimed, stdout, stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("511"); !held || entry.RunID != "run-1" {
+		t.Fatalf("ledger entry for 511 = %+v, held=%v, want held by run-1", entry, held)
+	}
+	if _, held := ledger.Lookup("510"); held {
+		t.Fatal("blocked item 510 must not be claimed")
+	}
+}
+
+// TestBacklogQueryAllCandidatesBlockedIsDistinguishableFromEmptyBacklog is
+// #1907's other explicit scenario: every candidate this cycle is blocked, so
+// zero claims is the CORRECT outcome — but that must be distinguishable from
+// a genuinely empty backlog, not just a byte-identical "completed" run. The
+// distinguishing signal is the blockedOnlyCompletionAnnotation runner
+// annotation plus the enriched no-work reason text.
+func TestBacklogQueryAllCandidatesBlockedIsDistinguishableFromEmptyBacklog(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1 blocked candidate(s) skipped this cycle") {
+		t.Fatalf("stdout = %q, want the blocked-skip count called out in the no-work reason", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var noWork map[string]interface{}
+	if err := json.Unmarshal(data, &noWork); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if noWork["claimed"] != false {
+		t.Fatalf("claimed = %v, want false — every candidate this cycle is blocked, so zero claims is correct", noWork["claimed"])
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	var summary int
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == blockedOnlyCompletionAnnotation {
+			summary++
+			if n, ok := event.Runner["skippedBlocked"].(float64); !ok || n != 1 {
+				t.Fatalf("skippedBlocked = %v, want 1", event.Runner["skippedBlocked"])
+			}
+		}
+	}
+	if summary != 1 {
+		t.Fatalf("blockedOnlyCompletionAnnotation count = %d, want exactly 1 — this run's only outcome was skipping blocked work", summary)
+	}
+}
+
+// TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation is #1907's trivial
+// no-candidates scenario: with nothing in goobers:ready at all, the run must
+// still report a clean no-work completion, but WITHOUT the
+// blockedOnlyCompletionAnnotation — there was nothing to skip, so nothing to
+// distinguish from a real empty backlog.
+func TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "blocked candidate(s) skipped") {
+		t.Fatalf("stdout = %q, want no blocked-skip mention — the backlog was genuinely empty", stdout)
+	}
+
+	l := layoutFor(root)
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == blockedOnlyCompletionAnnotation {
+			t.Fatalf("unexpected blockedOnlyCompletionAnnotation on a genuinely empty backlog: %+v", event)
+		}
+	}
+}
+
 // TestFilterBlockedEligibilityResolvesPRPrefixedKey is #971's regression test.
 // pr-remediation records its driving item under the claim ledger's name, so
 // blocked.json grows "pr/955"-shaped keys alongside issue-driven bare numbers.

@@ -75,7 +75,7 @@ spec:
       type: deterministic
       goal: Poll the PR's CI checks until they conclude.
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       run:
         command: ["goobers", "ci-poll", "--wait"]
       next: ci-gate
