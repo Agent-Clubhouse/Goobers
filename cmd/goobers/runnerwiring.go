@@ -2057,6 +2057,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// allowlist (#736) — the executor twin of the harness adapter's
 			// ExtraEnvAllowlist, from the same cfg value so the two never drift.
 			shell.ExtraEnvAllowlist = cfg.Runner.EnvPassthrough
+			if projectConfigured && configuredProject.LargeRepo {
+				shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
+			}
 			// Baseline deadline for a stage that declares no timeoutSeconds
 			// (#1969). Zero leaves executor.DefaultTimeout in force, so an
 			// instance that configures nothing is unchanged.

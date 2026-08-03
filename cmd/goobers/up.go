@@ -290,6 +290,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
 		return 1
 	}
+	if warning := windowsLargeRepoEnvironmentWarning(startupConfig, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
+	}
 	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

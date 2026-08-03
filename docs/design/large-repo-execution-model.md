@@ -523,7 +523,9 @@ What this design does is keep that path cheap:
 
 Any execution model for this repo class lives or dies on three Windows facts that no git
 strategy fixes. Large-repo mode reduces exposure to all three (fewer materializations, fewer
-deletions, serial execution) but each needs explicit handling or documentation.
+deletions, serial execution) but each needs explicit handling or documentation. Operational
+setup and recovery steps are in the
+[Windows large-repo runbook](../guides/windows-large-repo-runbook.md).
 
 ### 9.1 Antivirus dominates small-file I/O
 

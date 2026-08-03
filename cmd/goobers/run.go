@@ -129,6 +129,9 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	if warning := windowsLargeRepoEnvironmentWarning(setup.Config, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
+	}
 	shutdownOnReturn := true
 	defer func() {
 		if shutdownOnReturn {
