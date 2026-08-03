@@ -18,6 +18,12 @@ instead of weakening `network: none` or agentic-stage confinement. Goobers
 provides an explicit readiness check and handoff for that route; see
 [Full isolation through WSL 2](#full-isolation-through-wsl-2).
 
+Agentic sandboxing is enforced by default. Native Windows currently has no
+agentic sandbox backend, so an agentic stage fails closed there. Use the WSL 2
+route for confinement, or set `sandbox.agentic: disabled` in operator-owned
+`instance.yaml` only for trusted-local use. Every such opt-out is recorded in
+the run journal before the harness starts.
+
 ## Validated environment and evidence
 
 The `windows gate (build · vet · runtime smoke)` job in
@@ -288,7 +294,7 @@ Service installation is a separate deployment concern.
 | Token files | Owner-only NTFS DACL checked with Windows APIs; do not use `chmod` |
 | Foreground shutdown | Ctrl+C/Ctrl+Break; Windows has no SIGTERM |
 | `network: none` | Fails closed because Windows has no native isolation backend; trusted-local operators may explicitly set `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1` |
-| Agentic stages | Live Copilot CLI support remains #647 Tier 2; deterministic-only support does not depend on it |
+| Agentic stages | Sandboxing defaults to enforced; native Windows fails closed without a backend. Use WSL 2, or the journaled `sandbox.agentic: disabled` trusted-local opt-out. Live Copilot CLI support remains #647 Tier 2 |
 | Service supervision | SCM setup is documented separately and is not part of the foreground validation |
 
 All other CLI and journal semantics are shared across platforms.
