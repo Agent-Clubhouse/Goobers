@@ -171,6 +171,15 @@ func (p Primitives) AttachChild(ctx context.Context, repo providers.RepositoryRe
 	}
 	defer func() { _ = release() }()
 
+	children, err := hierarchy.ListWorkItemChildren(ctx, repo, req.ParentID)
+	if err != nil {
+		return err
+	}
+	for _, existing := range children {
+		if existing.ID == req.ChildID {
+			return nil
+		}
+	}
 	parent, err := p.guardedItem(ctx, repo, req.ParentID, req.ExpectedParentRevision)
 	if err != nil {
 		return err
@@ -178,15 +187,6 @@ func (p Primitives) AttachChild(ctx context.Context, repo providers.RepositoryRe
 	child, err := p.guardedItem(ctx, repo, req.ChildID, req.ExpectedChildRevision)
 	if err != nil {
 		return err
-	}
-	children, err := hierarchy.ListWorkItemChildren(ctx, repo, req.ParentID)
-	if err != nil {
-		return err
-	}
-	for _, existing := range children {
-		if existing.ID == child.ID {
-			return nil
-		}
 	}
 	req.Repository = repo
 	req.ExpectedParentRevision = parent.Revision

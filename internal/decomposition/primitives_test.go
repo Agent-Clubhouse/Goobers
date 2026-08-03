@@ -18,8 +18,10 @@ type primitiveFake struct {
 	children     []providers.WorkItem
 	createCount  int
 	commentCount int
+	attachCount  int
 	loseCreate   bool
 	loseComment  bool
+	loseAttach   bool
 }
 
 var (
@@ -96,9 +98,16 @@ func (f *primitiveFake) ListWorkItemChildren(context.Context, providers.Reposito
 func (f *primitiveFake) AttachWorkItemChild(_ context.Context, req providers.AttachWorkItemChildRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, item := range f.items {
+	f.attachCount++
+	for i, item := range f.items {
 		if item.ID == req.ChildID {
 			f.children = append(f.children, item)
+			f.parent.Revision = "parent-r2"
+			f.items[i].Revision = "child-r2"
+			if f.loseAttach {
+				f.loseAttach = false
+				return errors.New("response lost")
+			}
 			return nil
 		}
 	}
@@ -229,6 +238,32 @@ func TestCreateChildRejectsStaleParentRevisionBeforeWrite(t *testing.T) {
 	}
 	if fake.createCount != 0 {
 		t.Fatalf("create count = %d, want 0", fake.createCount)
+	}
+}
+
+func TestAttachChildLostResponseRetryAdoptsExistingRelationship(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	fake := &primitiveFake{
+		parent:     providers.WorkItem{ID: "7", Revision: "parent-r1"},
+		items:      []providers.WorkItem{{ID: "8", Revision: "child-r1"}},
+		loseAttach: true,
+	}
+	primitives := Primitives{Provider: fake, Leaser: FileTargetLeaser{Directory: t.TempDir()}}
+	req := providers.AttachWorkItemChildRequest{
+		ParentID:               "7",
+		ChildID:                "8",
+		ExpectedParentRevision: "parent-r1",
+		ExpectedChildRevision:  "child-r1",
+	}
+
+	if err := primitives.AttachChild(context.Background(), repo, req); err == nil {
+		t.Fatal("first AttachChild error = nil, want lost response")
+	}
+	if err := primitives.AttachChild(context.Background(), repo, req); err != nil {
+		t.Fatalf("retry AttachChild: %v", err)
+	}
+	if fake.attachCount != 1 || len(fake.children) != 1 {
+		t.Fatalf("attachments = %d, children = %d; want exactly one", fake.attachCount, len(fake.children))
 	}
 }
 
