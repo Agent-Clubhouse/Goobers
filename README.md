@@ -195,7 +195,7 @@ also shows how a run pauses at a gate before completing.
 
 From there, graduate in this order:
 
-1. Seed the disposable, token-bearing quickstart template with
+1. Seed the disposable, token-bearing `quickstart@v1` path with
    `bin/goobers init --template=quickstart ./tutorial-instance`.
 2. Scaffold a regular instance with `bin/goobers init ./my-instance` and run
    its starter workflow with
@@ -240,7 +240,7 @@ records that source in `workflowSource` while runtime state remains outside it.
 After later source edits, stop the daemon and run
 `goobers config materialize ./my-instance` before restarting; this validates
 and reapplies the recorded desired state without touching runtime state. The
-quickstart template is intentionally limited to a
+`quickstart@v1` template is intentionally limited to a
 disposable first success and omits production remediation, escalation, CI, and
 merge policy.
 `goobers up` runs the daemon (embedded scheduler + local runner): it restarts
