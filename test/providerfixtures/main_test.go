@@ -99,6 +99,72 @@ func TestRefreshAcceptsPullRequestTarget(t *testing.T) {
 	}
 }
 
+func TestADORefreshUsesProvisionedPATAndWritesCandidate(t *testing.T) {
+	baselinePath := filepath.Join("..", "providers", "testdata", "ado_contract.json")
+	fixture, err := providerfixture.Read(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "candidate.json")
+	var stdout, stderr bytes.Buffer
+	exitCode := runWithRefreshers(
+		[]string{
+			"refresh", "-provider", "ado",
+			"-organization-url", "https://dev.azure.com/acme",
+			"-project", "widgets",
+			"-work-item", "7",
+			"-output", output,
+		},
+		func(name string) string {
+			if name == adoTokenEnvironment {
+				return "ado-pat"
+			}
+			return ""
+		},
+		&stdout,
+		&stderr,
+		providerfixture.Refresh,
+		func(_ context.Context, cfg providerfixture.ADORefreshConfig) (providerfixture.Fixture, error) {
+			if cfg.OrganizationURL != "https://dev.azure.com/acme" ||
+				cfg.Project != "widgets" || cfg.WorkItem != "7" || cfg.Token != "ado-pat" {
+				t.Fatalf("ADO refresh config = %+v", cfg)
+			}
+			return fixture, nil
+		},
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if _, err := providerfixture.Read(output); err != nil {
+		t.Fatalf("read written ADO candidate: %v", err)
+	}
+}
+
+func TestADORefreshRequiresPAT(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	exitCode := run(
+		[]string{
+			"refresh", "-provider", "ado",
+			"-organization-url", "https://dev.azure.com/acme",
+			"-project", "widgets",
+			"-work-item", "7",
+			"-output", "candidate.json",
+		},
+		func(string) string { return "" },
+		&stdout,
+		&stderr,
+	)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), adoTokenEnvironment+" is required") {
+		t.Fatalf("missing ADO PAT was not reported clearly: %s", stderr.String())
+	}
+}
+	}
+}
+
 func TestContractAndDriftCommands(t *testing.T) {
 	t.Parallel()
 	baseline := filepath.Join("..", "providers", "testdata", "github_contract.json")
