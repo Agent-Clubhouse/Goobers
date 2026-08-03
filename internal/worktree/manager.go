@@ -66,6 +66,12 @@ type Manager struct {
 	// unconfigured Manager, so the default path issues byte-identical git
 	// invocations to previous releases.
 	partialClone bool
+	// objectCache opts newly created mirrors into referencing a shared,
+	// node-level object cache — see WithObjectCache. Never set for an
+	// unconfigured Manager, so the default path creates no `_objects`
+	// directory and issues byte-identical git invocations to previous
+	// releases.
+	objectCache bool
 	// pinnedRoot is the node-wide root for persistent pinned workspaces. It may
 	// differ from Root, which remains gaggle-scoped for disposable worktrees.
 	pinnedRoot          string
@@ -173,6 +179,31 @@ func WithRemoteGitGate(acquire func(context.Context, string) error) ManagerOptio
 func WithPartialClone() ManagerOption {
 	return func(m *Manager) {
 		m.partialClone = true
+	}
+}
+
+// WithObjectCache opts newly created mirrors into borrowing objects from a
+// shared, node-level object cache (design §3 B3, issue #654):
+// `workcopies/_objects/<repo-key>` under PinnedRoot (already the node-wide
+// root shared across every gaggle's Manager targeting the same repository —
+// see WithPinnedRoot) holds one bare mirror clone per repository URL. A new
+// mirror is created with `git clone --mirror --reference <cache>`, so its
+// `objects/info/alternates` borrows the cache's objects instead of each
+// gaggle paying for a full clone of its own.
+//
+// Consequences callers own:
+//   - Only NEW mirrors are affected; an existing mirror predating the option
+//     keeps its own full object store and is never migrated onto the cache.
+//   - A dependent mirror's alternates reference must never outlive the cache
+//     it points at — see GCObjectCache's fail-closed dependents check. There
+//     is no automatic/background GC; a cache entry accumulates until an
+//     operator runs it explicitly.
+//   - The cache itself is always a full mirror clone regardless of
+//     WithPartialClone: a blobless cache could not satisfy an alternates
+//     lookup for a blob it never fetched.
+func WithObjectCache() ManagerOption {
+	return func(m *Manager) {
+		m.objectCache = true
 	}
 }
 
@@ -403,6 +434,21 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 	lock.Lock()
 	defer lock.Unlock()
 
+	// Ensure/refresh the node-level object cache on the same cadence as the
+	// mirror itself, before touching the mirror either way: a brand-new
+	// mirror needs the cache directory to exist before it can reference it,
+	// and an existing mirror's cache should stay fresh too (design §3 B3).
+	// The narrow/legacy provisioning path (init --bare + remote add) is left
+	// untouched, matching WithPartialClone's own scope.
+	var objectCacheDir string
+	if m.objectCache && !narrow {
+		cacheDir, err := m.ensureObjectCache(ctx, repoURL, key)
+		if err != nil {
+			return "", fmt.Errorf("worktree: object cache for %s: %w", repoURL, err)
+		}
+		objectCacheDir = cacheDir
+	}
+
 	dir := m.repoDirForKey(key)
 	switch _, err := os.Stat(dir); {
 	case os.IsNotExist(err):
@@ -424,6 +470,9 @@ func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) 
 			cloneArgs := []string{"clone", "--mirror"}
 			if m.partialClone {
 				cloneArgs = append(cloneArgs, "--filter=blob:none")
+			}
+			if objectCacheDir != "" {
+				cloneArgs = append(cloneArgs, "--reference", objectCacheDir)
 			}
 			cloneArgs = append(cloneArgs, repoURL, dir)
 			provisionErr = m.runRemoteGit(ctx, repoURL, "", cloneArgs...)

@@ -1963,6 +1963,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
+		if cfg.ObjectCacheEnabled() {
+			managerOptions = append(managerOptions, worktree.WithObjectCache())
+		}
 		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr

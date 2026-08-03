@@ -209,6 +209,9 @@ repos:
 	if cfg.PartialCloneEnabled() {
 		t.Fatal("workcopies.partialClone must default to false")
 	}
+	if cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache must default to false")
+	}
 
 	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
 workcopies:
@@ -219,6 +222,23 @@ workcopies:
 	}
 	if !cfg.PartialCloneEnabled() {
 		t.Fatal("workcopies.partialClone: true was not honored")
+	}
+	if cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache must stay false when only partialClone is set")
+	}
+
+	cfg, err = LoadConfig(writeInstanceYAML(t, base+`
+workcopies:
+  objectCache: true
+`))
+	if err != nil {
+		t.Fatalf("LoadConfig with workcopies.objectCache: %v", err)
+	}
+	if !cfg.ObjectCacheEnabled() {
+		t.Fatal("workcopies.objectCache: true was not honored")
+	}
+	if cfg.PartialCloneEnabled() {
+		t.Fatal("workcopies.partialClone must stay false when only objectCache is set")
 	}
 }
 
