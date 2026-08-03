@@ -614,7 +614,11 @@ func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
 	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
 	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetSeconds > 0 {
 		observation.Remaining = remaining
-		observation.Reset = p.now().Add(time.Duration(resetSeconds) * time.Second)
+		// X-RateLimit-Reset is Unix epoch time (Microsoft's rate-limits docs:
+		// "Time when, if all resource consumption stops immediately, tracked
+		// usage returns to 0 TSTUs. Expressed in Unix epoch time."), not a
+		// duration in seconds from now — unlike Retry-After.
+		observation.Reset = time.Unix(resetSeconds, 0).UTC()
 		observation.Known = true
 	} else if resp.StatusCode == http.StatusTooManyRequests {
 		now := p.now()

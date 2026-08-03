@@ -80,11 +80,12 @@ func TestADORateLimitHonorsRetryAfter(t *testing.T) {
 
 func TestADOProviderObservesQuotaHeaders(t *testing.T) {
 	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
-	const resetSeconds = 300
-	resetAt := now.Add(resetSeconds * time.Second)
+	// X-RateLimit-Reset is Unix epoch time per Azure DevOps's rate-limits
+	// docs, not a duration in seconds from now.
+	resetAt := now.Add(300 * time.Second)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "17")
-		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetSeconds))
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
