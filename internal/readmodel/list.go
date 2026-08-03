@@ -97,6 +97,8 @@ type Population string
 // Outcome is a stage-attempt outcome population.
 type Outcome string
 
+// OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, and
+// OutcomeOther are the supported stage-attempt outcome populations.
 const (
 	OutcomeFinished Outcome = "finished"
 	OutcomeTerminal Outcome = "terminal"
