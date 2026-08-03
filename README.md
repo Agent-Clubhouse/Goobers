@@ -108,23 +108,10 @@ opaque agent session.
 
 ## Try it locally
 
-There is no tagged release yet, so build with the Go toolchain declared in
-[`go.mod`](go.mod). The fastest path is a credential-free demo on Linux or
-macOS:
-
-```sh
-make build
-bin/goobers init --demo ./demo-instance
-bin/goobers run demo ./demo-instance
-bin/goobers trace <run-id> ./demo-instance
-```
-
-The demo uses mock providers and performs no network writes. It exercises
-curation, implementation, a review gate, and a merge preview, then leaves the
-run journal for `trace` to inspect. The [full quickstart](docs/guides/quickstart.md)
-then walks through a disposable GitHub-backed issue-to-PR run and a regular
-instance. Production-oriented definitions live in
-[`config-examples/`](config-examples/).
+Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered
+first-run path: a credential-free local demo, a disposable GitHub-backed run,
+and then a regular instance using the
+[production-oriented configuration examples](config-examples/README.md).
 
 For deeper context, read the [product vision](docs/VISION.md),
 [architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/), and
@@ -183,95 +170,19 @@ cloud-scale or superseded skeletons kept per the quarantine plan
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
-## Detailed local quickstart
+## Onboarding and operation
 
-New to declarative control systems? Read
-[How Goobers works](docs/concepts/README.md) first; it explains why `config/`
-defines behavior while runs, workcopies, and scheduler records are runtime
-state.
+The [canonical quickstart](docs/guides/quickstart.md) owns the complete,
+ordered first-run flow and CLI walkthrough. Use these focused guides only for
+the differences relevant to your environment:
 
-No tagged release exists yet, so build from source with the Go toolchain
-declared in [`go.mod`](go.mod). The fastest first run is the hermetic demo:
-
-```sh
-make build   # or: go build -o bin/goobers ./cmd/goobers
-
-bin/goobers init --demo ./demo-instance
-bin/goobers run demo ./demo-instance
-bin/goobers trace <run-id> ./demo-instance
-```
-
-The demo runs the full curate -> implement -> review -> merge-preview loop on
-Linux or macOS with mock providers, no credentials, and no network writes. It
-also shows how a run pauses at a gate before completing.
-
-From there, graduate in this order:
-
-1. Seed the disposable, token-bearing `quickstart@v1` path with
-   `bin/goobers init --template=quickstart ./tutorial-instance`.
-2. Scaffold a regular instance with `bin/goobers init ./my-instance` and run
-   its starter workflow with
-   `bin/goobers run default-implement ./my-instance`.
-3. Adapt the production-oriented definitions under [`config-examples/`](config-examples/),
-   which add review, CI, remediation, escalation, and merge-policy patterns.
-
-The [full quickstart](docs/guides/quickstart.md) walks through that progression
-and the remaining CLI surfaces.
-
-For a regular instance, the core inspection and operator commands are:
-
-```sh
-bin/goobers config show ./my-instance    # effective config (secrets redacted)
-bin/goobers run default-implement ./my-instance # trigger a run manually
-bin/goobers status ./my-instance         # list runs + their phase
-bin/goobers claims list ./my-instance    # inspect current claim leases
-bin/goobers claims release --force <item-id> ./my-instance # override a live holder
-# If an item ID is claimed in multiple namespaces, add:
-#   --gaggle=<name> --provider=<name>
-bin/goobers trace <run-id> ./my-instance # inspect one run's journal
-bin/goobers escalations ./my-instance    # list escalated runs
-bin/goobers escalations show <run-id> ./my-instance # inspect cause + artifacts
-```
-
-Once a tagged release exists, a checksummed installer script will let you
-install an exact release without a source checkout; see
-[Releases & packaging](docs/guides/releases.md#install-a-pinned-release) for
-that (currently unreleased) path and its reproducibility details.
-`goobers init --guided` is a first-run flow that separately selects the
-configuration source and target application repository. It creates or reuses a
-checked-in source tree (`instance.yaml.example`, `manifest.yaml`, and
-`gaggles/`), then materializes the runtime instance described in
-`docs/ARCHITECTURE.md §6` — `instance.yaml`, `config/`, `runs/`, `scheduler/`,
-`workcopies/`, and `telemetry.db`. The flow can also detect local coding-agent
-harnesses and, after an explicit harness and destination preview, install the
-release-matched agent toolkit only in the selected config source. Skipping that
-step writes no toolkit files. Populated source and instance destinations are
-never overwritten. Set the referenced credential environment variables at runtime
-and author the workforce in the selected configuration source; the instance
-records that source in `workflowSource` while runtime state remains outside it.
-After later source edits, stop the daemon and run
-`goobers config materialize ./my-instance` before restarting; this validates
-and reapplies the recorded desired state without touching runtime state. The
-`quickstart@v1` template is intentionally limited to a
-disposable first success and omits production remediation, escalation, CI, and
-merge policy.
-`goobers up` runs the daemon (embedded scheduler + local runner): it restarts
-any run interrupted by a prior crash via `Runner.Resume`, then drives
-scheduled workflows until interrupted, draining in-flight runs gracefully on
-SIGINT/SIGTERM. `run` remains the way to trigger one workflow manually
-without a daemon running. Platform-specific setup:
-[Linux quickstart](docs/guides/quickstart-linux.md),
-[Windows quickstart](docs/guides/quickstart-windows.md); run
-the daemon as a supervised service via
-[Daemon supervision](docs/guides/supervision.md)
-(systemd · launchd · Windows Service). How binaries are built, packaged, and
-verified for distribution: [Releases & packaging](docs/guides/releases.md).
-Before making the daemon API reachable beyond loopback, follow the
-[OIDC authentication guide](docs/guides/oidc-authentication.md).
-Azure DevOps instances can use
-[Azure CLI, workload identity, managed identity, or PAT authentication](docs/guides/ado-authentication.md).
-Operational workflows can query ADX or compiled organization adapters through
-[external telemetry connectors](docs/guides/external-telemetry-connectors.md).
+- [Linux host setup](docs/guides/quickstart-linux.md)
+- [Windows host setup](docs/guides/quickstart-windows.md)
+- [Release installation and verification](docs/guides/releases.md)
+- [Daemon supervision](docs/guides/supervision.md)
+- [OIDC authentication](docs/guides/oidc-authentication.md)
+- [Azure DevOps authentication](docs/guides/ado-authentication.md)
+- [External telemetry connectors](docs/guides/external-telemetry-connectors.md)
 
 ## Repository assistance with an agent
 
