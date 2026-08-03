@@ -53,3 +53,28 @@ func parseIssueSpecPin(body string) (issueSpecPin, bool) {
 	}
 	return pin, true
 }
+
+// replaceIssueSpecPin rewrites body's existing issue-spec-pin marker to
+// pin the issue at updatedAt, or returns body unchanged if it carries no
+// marker to replace (nothing for check-issue-staleness to have compared
+// against in the first place).
+//
+// check-issue-staleness calls this after it detects and reports a stale
+// PR: without it, the marker stays frozen at the original implementation-time
+// snapshot forever — no other stage ever rewrites it (open-pr, the only
+// other writer, belongs to implementation.yaml and never runs again once a
+// PR exists) — so every future run of check-issue-staleness re-compares
+// against that same stale snapshot and re-fires on the identical edit
+// indefinitely, even though it already flagged that edit and routed the PR
+// to remediation. Advancing the pin to the edit just observed means the
+// next check only fires on a genuinely new edit.
+func replaceIssueSpecPin(body, issueID, updatedAt string) string {
+	if !issueSpecPinPattern.MatchString(body) {
+		return body
+	}
+	replacement := formatIssueSpecPin(issueID, updatedAt)
+	if replacement == "" {
+		return body
+	}
+	return issueSpecPinPattern.ReplaceAllLiteralString(body, replacement)
+}

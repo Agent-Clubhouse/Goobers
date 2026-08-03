@@ -91,6 +91,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	pin, havePin := parseIssueSpecPin(poll.Body)
 	stale := false
 	var reason string
+	var refreshedUpdatedAt string
 	if havePin {
 		pinnedAt, parseErr := time.Parse(time.RFC3339, pin.UpdatedAt)
 		if parseErr != nil {
@@ -104,19 +105,29 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 				return failProviderStage(stderr, fmt.Sprintf("read pinned issue #%s", pin.IssueID), issueErr, resultFile)
 			case item.UpdatedAt != nil && item.UpdatedAt.After(pinnedAt):
 				stale = true
+				refreshedUpdatedAt = item.UpdatedAt.Format(time.RFC3339)
 				reason = fmt.Sprintf(
 					"issue #%s was updated at %s, after this PR's implementation-time snapshot (%s) — routing to remediation instead of reviewing stale criteria",
-					pin.IssueID, item.UpdatedAt.Format(time.RFC3339), pin.UpdatedAt,
+					pin.IssueID, refreshedUpdatedAt, pin.UpdatedAt,
 				)
 			}
 		}
 	}
 
 	if stale {
+		// Advance the pin to the edit just observed, in the same update that
+		// posts the label/comment. Without this, no stage ever rewrites the
+		// marker again (open-pr, the only other writer, belongs to
+		// implementation.yaml and never runs a second time for an existing
+		// PR), so every future check-issue-staleness run keeps re-comparing
+		// against this same original snapshot and re-fires on the identical
+		// already-reported edit forever, even after remediation responds.
+		refreshedBody := replaceIssueSpecPin(poll.Body, pin.IssueID, refreshedUpdatedAt)
 		if _, err := prProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo, ID: pullNumber,
 			AddLabels: []string{needsRemediationLabel},
 			Comment:   "**Issue spec changed since implementation began (#2340)**\n\n" + reason,
+			Body:      &refreshedBody,
 		}); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("label pr #%s for issue-spec staleness", pullNumber), err, resultFile)
 		}
