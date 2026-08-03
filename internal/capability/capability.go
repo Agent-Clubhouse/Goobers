@@ -38,6 +38,8 @@ const (
 	// its repository. It is runner-only: workflow stages and goobers cannot
 	// declare it, and its credential never comes from a target repository.
 	ConfigRepoRead Capability = "configrepo:read"
+	// GitHubIssuesRead grants read-only GitHub issue queries.
+	GitHubIssuesRead Capability = "github:issues:read"
 	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
 	// comment operations (the backlog-curation and work-nomination workflows'
 	// surface). It does not grant the trust decision represented by
@@ -129,7 +131,7 @@ const (
 func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
-		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
+		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}

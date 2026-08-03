@@ -663,6 +663,28 @@ func TestDashboardAssetFSRequiresIndex(t *testing.T) {
 	}
 }
 
+func TestRunDirectoryRevealerResolvesTheJournalDirectory(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	runDir := filepath.Join(layout.RunsDir(), "run-1")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalLauncher := launchRunDirectory
+	t.Cleanup(func() { launchRunDirectory = originalLauncher })
+	var launched string
+	launchRunDirectory = func(_ context.Context, path string) error {
+		launched = path
+		return nil
+	}
+
+	if err := runDirectoryRevealer(layout)(context.Background(), "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if launched != runDir {
+		t.Fatalf("launched path = %q, want %q", launched, runDir)
+	}
+}
+
 func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	root := initDemo(t)
 	ctx, cancel := context.WithCancel(context.Background())

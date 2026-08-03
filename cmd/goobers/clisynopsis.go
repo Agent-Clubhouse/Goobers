@@ -7,9 +7,9 @@ package main
 
 const gatherContextID = "gather-implement-context"
 
-// synopsisByID holds each command's verbatim entry in the top-level usage()
-// list, keyed by invocation-path id. usage() assembles these via the command
-// registry so the top-level surface cannot drift from per-command help (#1095).
+// synopsisByID holds each command's verbatim entry in the tiered usage lists,
+// keyed by invocation-path id. The help renderers assemble these via the command
+// registry so command discovery cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",

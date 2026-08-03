@@ -186,13 +186,17 @@ spec:
       onTimeout: salvage
       next: review
 
-    # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
-    # the implementation branch after syncing base.
+    # The merge tier and required declared-dependency integration gate from
+    # CONTRIBUTING.md's "Validation tier contract", run on the implementation
+    # branch after syncing base.
     - name: local-ci
       type: deterministic
-      goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
+      goal: Run the project's local CI-equivalent and strict declared-dependency integration validation in the worktree.
       run:
-        command: ["make", "ci"]
+        # One make invocation preserves the existing merge tier and runs the
+        # required strict integration target only after it succeeds, without a
+        # second sync or a duplicate workflow stage.
+        command: ["make", "ci", "test-integration-strict"]
         # Pull in build/test behavior fixes that landed after this run branched.
         syncBase: true
       # Declared, not inherited (#1969). The executor's built-in fallback is 10
@@ -202,8 +206,8 @@ spec:
       # reported as an ordinary CI failure, routed back to implement, and the
       # implementer — correctly finding no defect to fix — changes nothing, so
       # the run escalates on an identical diff. 25 minutes is ~2.5x the observed
-      # p99 and absorbs both contention and the cold golangci-lint cache each
-      # fresh worktree now pays for (#1971).
+      # p99 and absorbs both contention, the cold golangci-lint cache each fresh
+      # worktree now pays for (#1971), and the shorter integration tier.
       #
       # Deliberately still maxAttempts 1: a timeout is reported retryable, but
       # retrying immediately would meet the same contention, and two attempts at

@@ -103,6 +103,9 @@ export const goWireFixtures = {
       "issuesUrl": null,
       "chatUrl": null,
       "links": []
+    },
+    "capabilities": {
+      "revealRun": false
     }
   },
   "gaggles": {
