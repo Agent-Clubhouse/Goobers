@@ -48,20 +48,23 @@ type fakeIssueEvent struct {
 }
 
 type fakePR struct {
-	number     int
-	title      string
-	body       string
-	head       string
-	base       string
-	headSHA    string
-	baseSHA    string
-	draft      bool
-	labels     []string
-	checkState string
-	files      []fakePRFile
-	reviews    []fakeReview
-	state      string
-	merged     bool
+	number             int
+	title              string
+	body               string
+	head               string
+	base               string
+	headSHA            string
+	baseSHA            string
+	draft              bool
+	labels             []string
+	checkState         string
+	files              []fakePRFile
+	reviews            []fakeReview
+	author             string
+	assignees          []string
+	requestedReviewers []string
+	state              string
+	merged             bool
 	// selfReview, when set, makes POST /pulls/{n}/reviews return GitHub's
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
@@ -970,14 +973,34 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
 	}
+	assignees := make([]map[string]string, 0, len(pr.assignees))
+	for _, assignee := range pr.assignees {
+		assignees = append(assignees, map[string]string{"login": assignee})
+	}
+	requestedReviewers := make([]map[string]string, 0, len(pr.requestedReviewers))
+	for _, reviewer := range pr.requestedReviewers {
+		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
+	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
-		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
-		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
-		"labels": labels,
+		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
+		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
+		"user":                map[string]string{"login": pr.author},
+		"assignees":           assignees,
+		"requested_reviewers": requestedReviewers,
+		"labels":              labels,
 	}
+}
+
+func (s *fakeGitHubServer) setPRIdentities(number int, author string, assignees, requestedReviewers []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	pr.author = author
+	pr.assignees = assignees
+	pr.requestedReviewers = requestedReviewers
 }
 
 // setPRBody sets a fixture PR's body after addOpenPR — a separate setter

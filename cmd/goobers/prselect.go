@@ -57,6 +57,7 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"Select at most one open, non-draft, green-CI PR for merge-review to\n" +
 	"evaluate this cycle (a workflow stage). authorScope defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
+	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
 	"labeled goobers:no-merge-review are always excluded. Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
@@ -102,6 +103,11 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
 	excludeLabels = append(excludeLabels, noMergeReviewLabel)
+	identityFilters := providers.ListPullRequestsRequest{
+		Author:            providerInput("author", ""),
+		Assignee:          providerInput("assignee", ""),
+		RequestedReviewer: providerInput("requestedReviewer", ""),
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -112,7 +118,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, identityFilters, triggerRef, completeness)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -307,6 +313,7 @@ func pullRequestsForSelection(
 	base string,
 	headPrefixes []string,
 	authorScope string,
+	identityFilters providers.ListPullRequestsRequest,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
@@ -322,6 +329,9 @@ func pullRequestsForSelection(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+			return nil, openPRs, nil
+		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
@@ -332,6 +342,9 @@ func pullRequestsForSelection(
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
 		if authorScope != authorScopeAny && !hasAnyHeadPrefix(pr.Head, headPrefixes) {
+			continue
+		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
 			continue
 		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
