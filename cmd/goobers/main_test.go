@@ -356,6 +356,8 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), instanceYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	createDeclaredSkillPackages(t, root,
+		"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {

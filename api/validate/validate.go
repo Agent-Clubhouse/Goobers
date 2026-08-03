@@ -89,6 +89,9 @@ const (
 	// instances' actual runtime behavior by itself, it only surfaces the
 	// misconfiguration risk before it produces a live claim collision.
 	WarningSiblingLabelOverlap WarningCode = "SIB001"
+	// WarningMissingSkillPackage identifies a declared goober skill whose
+	// package directory is absent.
+	WarningMissingSkillPackage WarningCode = "SKILL002"
 )
 
 const (
@@ -636,7 +639,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		idx.add(r, doc)
 	}
 
-	idx.crossCheck(r)
+	idx.crossCheck(r, root)
 	sortIssues(r)
 	return r, nil
 }
@@ -810,7 +813,7 @@ func (ix *index) dupCheck(r *Report, doc loadedDoc, kind, name string, exists fu
 }
 
 // crossCheck applies the spec's reference rules across all loaded objects.
-func (ix *index) crossCheck(r *Report) {
+func (ix *index) crossCheck(r *Report, configRoot string) {
 	if len(ix.manifests) == 0 && ix.manifestDocsSeen == 0 {
 		r.add(errorMissingManifest, Error, "", "Manifest", "", "no Manifest object found in config directory")
 	}
@@ -925,6 +928,41 @@ func (ix *index) crossCheck(r *Report) {
 	// above) was buffered, not yet added to r — flush now that the run's full
 	// outcome (how many parse failures, how many reference gaps) is known.
 	ix.flushReferenceIssues(r)
+	ix.checkMissingSkillPackages(r, configRoot)
+}
+
+func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
+	if skill == "" || skill == "." || skill == ".." || strings.ContainsAny(skill, `/\`) || filepath.VolumeName(skill) != "" {
+		return "", "", false
+	}
+	configRoot = filepath.Clean(configRoot)
+	return filepath.Join(configRoot, "gaggles", gaggle, "skills", skill),
+		filepath.Join(filepath.Dir(configRoot), "skills", skill), true
+}
+
+func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
+	for _, g := range ix.goobers {
+		for _, skill := range g.Spec.Skills {
+			scoped, shared, ok := declaredSkillPackageDirs(configRoot, g.Spec.Gaggle, skill)
+			if !ok {
+				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
+					"spec.skills declares %q, but the skill name cannot resolve to a package directory under %q",
+					skill, "skills")
+				continue
+			}
+			scopedInfo, scopedErr := os.Stat(scoped)
+			sharedInfo, sharedErr := os.Stat(shared)
+			scopedMissing := errors.Is(scopedErr, fs.ErrNotExist) || (scopedErr == nil && !scopedInfo.IsDir())
+			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
+			if scopedMissing && sharedMissing {
+				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
+					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					skill,
+					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
+					filepath.ToSlash(filepath.Join("skills", skill)))
+			}
+		}
+	}
 }
 
 // dslSupportMatrix resolves the current binary's DSL version support matrix.

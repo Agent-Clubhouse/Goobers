@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -893,6 +894,164 @@ func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 		if !strings.Contains(all, want) {
 			t.Errorf("expected an error mentioning %q; full report:\n%s", want, all)
 		}
+	}
+}
+
+func TestGooberSkillPackageWarnings(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: instructions.md
+  skills:
+    - present-shared
+    - present-scoped
+    - missing
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "skills", "present-shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "gaggles", "example", "skills", "present-scoped"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			warnings = append(warnings, warning)
+		}
+	}
+	want := CodedWarning{
+		Code:        WarningMissingSkillPackage,
+		Severity:    Warning,
+		Scope:       "config.yaml Goober/coder",
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+	}
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
+	}
+	if report.HasErrors() {
+		t.Fatalf("missing skill package must remain non-fatal: %+v", report.Issues)
+	}
+}
+
+func TestGooberSkillPackageWarningsIncludeInvalidConfigsAndNames(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: missing.md
+  skills:
+    - missing
+    - nested/name
+    - ..
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected unrelated missing-instructions error")
+	}
+	var explanations []string
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			explanations = append(explanations, warning.Explanation)
+		}
+	}
+	for _, want := range []string{
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
+		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
+	} {
+		if !slices.Contains(explanations, want) {
+			t.Errorf("missing skill warnings = %q, want explanation %q", explanations, want)
+		}
+	}
+	if len(explanations) != 3 {
+		t.Errorf("missing skill warning count = %d, want 3: %q", len(explanations), explanations)
 	}
 }
 

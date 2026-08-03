@@ -26,7 +26,17 @@ func initDemo(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
+	createDeclaredSkillPackages(t, root, "implement", "run-tests")
 	return root
+}
+
+func createDeclaredSkillPackages(t *testing.T, root string, skills ...string) {
+	t.Helper()
+	for _, skill := range skills {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func initScheduledDemo(t *testing.T) string {

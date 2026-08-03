@@ -32,7 +32,7 @@ Usage:
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
-  goobers service install|uninstall|status [path]
+  goobers service install|uninstall|stop|start|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
                                 host a Temporal engine worker (tier-3, experimental)
@@ -175,7 +175,7 @@ Usage:
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [path]
                                 stage and request a supervised binary update
-  goobers service install|uninstall|status [path]
+  goobers service install|uninstall|stop|start|status [path]
                                 install and manage the platform-supervised daemon
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]
                                 host a Temporal engine worker (tier-3, experimental)
@@ -1455,9 +1455,12 @@ and owns validated self-update handoff, health checks, and rollback.
 Subcommands:
   install     install, enable, and start the service
   uninstall   gracefully stop, disable, and remove the service
+  start       resume an installed-but-stopped service
+  stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
-Run `goobers service install -h`, `goobers service uninstall -h`, or
+Run `goobers service install -h`, `goobers service uninstall -h`,
+`goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
 
 ### service install
@@ -1473,6 +1476,16 @@ binary updates use the self-update workflow instead.
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.
 
+### service start
+Usage: goobers service start [path]
+
+Resume an installed-but-stopped goobers daemon (#2073) without
+re-registering it. Starting an already-running service is a successful
+no-op.
+
+Exit codes: 0 = running, 1 = not installed/start error,
+2 = usage error or not an instance root.
+
 ### service status
 Usage: goobers service status [--json] [path]
 
@@ -1481,6 +1494,18 @@ and whether the goobers daemon is installed, loaded, and running.
 
 Exit codes: 0 = running, 1 = stopped/not installed/query error,
 2 = usage error or not an instance root.
+
+### service stop
+Usage: goobers service stop [path]
+
+Halt the running goobers daemon without disabling or removing its
+supervisor registration (#2073) — distinct from uninstall, which folds
+stop, disable, and removal into one step. `goobers service status` then
+reports "installed, not running"; `goobers service start` resumes it.
+Stopping an already-stopped service is a successful no-op.
+
+Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop
+error, 2 = usage error or not an instance root.
 
 ### service uninstall
 Usage: goobers service uninstall [path]

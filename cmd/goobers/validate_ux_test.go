@@ -252,6 +252,34 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 }
 
+func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
+	root := initDemo(t)
+	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `WARNING SKILL002 gaggles/example/goobers/coder/goober.yaml Goober/coder: spec.skills declares "implement"`) {
+		t.Fatalf("validate output omitted missing skill warning:\n%s", stdout)
+	}
+
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate with packages code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SKILL002") {
+		t.Fatalf("validate warned for present skill packages:\n%s", stdout)
+	}
+}
+
 func TestValidateModelFallbackWarnsAndUsesAdvisoryExit(t *testing.T) {
 	root := initDemo(t)
 	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
