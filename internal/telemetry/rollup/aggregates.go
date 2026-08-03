@@ -47,6 +47,11 @@ type StatsRequest struct {
 	GroupByHarnessVersion bool
 	Since                 time.Time
 	Until                 time.Time
+	// Now pins the reference instant readyPoolHealth measures currently-open
+	// implementation claims' in-flight age against (#2279). Zero defaults to
+	// time.Now() — set explicitly only by tests that need a deterministic
+	// age instead of a real wall-clock delta.
+	Now time.Time
 }
 
 // ErrBranchAttributionRequiresRebuild means an upgraded rollup contains rows

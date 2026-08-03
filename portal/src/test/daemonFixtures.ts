@@ -809,6 +809,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
       models: [],
       curation: {
+        everRecorded: true,
         runs: 3,
         reportedRuns: 3,
         ready: 8,
@@ -822,6 +823,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         bounced: 1,
       },
       readyPool: {
+        sampleEverRecorded: true,
         observedAt: "2026-07-15T10:00:00Z",
         depth: 5,
         averageAgeSeconds: 43_200,
@@ -829,7 +831,11 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         starved: false,
         claimAgeSamples: 4,
         averageClaimAgeSeconds: 64_800,
+        bounceEverRecorded: true,
         bounceRate: 1 / 9,
+        inFlightClaimSamples: 2,
+        averageInFlightClaimAgeSeconds: 5_400,
+        oldestInFlightClaimAgeSeconds: 10_800,
         forwardCurationThroughput: 8,
         implementationDemand: 6,
       },
@@ -972,6 +978,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
 
 function emptyCurationStats() {
   return {
+    everRecorded: false,
     runs: 0,
     reportedRuns: 0,
     ready: 0,
@@ -988,7 +995,12 @@ function emptyCurationStats() {
 
 function emptyReadyPool() {
   return {
+    sampleEverRecorded: false,
+    bounceEverRecorded: false,
     claimAgeSamples: 0,
+    inFlightClaimSamples: 0,
+    averageInFlightClaimAgeSeconds: 0,
+    oldestInFlightClaimAgeSeconds: 0,
     forwardCurationThroughput: 0,
     implementationDemand: 0,
   };

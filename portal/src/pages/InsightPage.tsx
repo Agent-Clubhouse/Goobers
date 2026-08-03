@@ -171,7 +171,11 @@ function InsightContent({
     (errorSignatures.status === "stale" && Boolean(errorSignatures.error));
   const hasCurationHealth =
     scope.kind === "instance" &&
-    (snapshot.stats.curation.runs > 0 || snapshot.stats.readyPool.depth !== undefined);
+    (snapshot.stats.curation.runs > 0 ||
+      snapshot.stats.readyPool.depth !== undefined ||
+      snapshot.stats.curation.everRecorded ||
+      snapshot.stats.readyPool.sampleEverRecorded ||
+      snapshot.stats.readyPool.bounceEverRecorded);
 
   if (
     !hasOutcomes &&
@@ -290,33 +294,52 @@ function CurationHealth({
         <div>
           <dt>Ready depth</dt>
           <dd className={readyPool.starved ? "curation-health-alert" : undefined}>
-            {depth === undefined ? "Unmeasured" : readyPool.starved ? "0 · Starved" : depth}
+            {depth === undefined
+              ? unmeasuredLabel(readyPool.sampleEverRecorded)
+              : readyPool.starved
+                ? "0 · Starved"
+                : depth}
           </dd>
         </div>
         <div>
           <dt>Oldest ready</dt>
-          <dd>{formatSeconds(readyPool.oldestAgeSeconds)}</dd>
+          <dd>{formatSeconds(readyPool.oldestAgeSeconds, readyPool.sampleEverRecorded)}</dd>
         </div>
         <div>
           <dt>Age before claim</dt>
-          <dd>{formatSeconds(readyPool.averageClaimAgeSeconds)}</dd>
+          <dd>{formatSeconds(readyPool.averageClaimAgeSeconds, true)}</dd>
+        </div>
+        <div>
+          <dt title="Time since claim for implementation items currently in progress">In flight now</dt>
+          <dd>
+            {readyPool.inFlightClaimSamples === 0
+              ? "0"
+              : `${formatDuration(readyPool.averageInFlightClaimAgeSeconds * 1_000)} average · ${readyPool.inFlightClaimSamples} claimed`}
+          </dd>
         </div>
         <div>
           <dt title="Share of items marked ready in the selected window that later moved to not-ready">
             Bounce rate
           </dt>
-          <dd>{readyPool.bounceRate === undefined ? "Unmeasured" : `${(readyPool.bounceRate * 100).toFixed(1)}%`}</dd>
+          <dd>
+            {readyPool.bounceRate === undefined
+              ? unmeasuredLabel(readyPool.bounceEverRecorded)
+              : `${(readyPool.bounceRate * 100).toFixed(1)}%`}
+          </dd>
         </div>
         <div>
           <dt>Throughput / demand</dt>
           <dd>
-            {readyPool.forwardCurationThroughput} / {readyPool.implementationDemand}
+            {curation.everRecorded ? readyPool.forwardCurationThroughput : unmeasuredLabel(false)} /{" "}
+            {readyPool.implementationDemand}
           </dd>
         </div>
         <div>
           <dt>Curation actions</dt>
           <dd>
-            {curation.ready} ready · {curation.needsHuman} needs human · {curation.closed} closed
+            {curation.everRecorded
+              ? `${curation.ready} ready · ${curation.needsHuman} needs human · ${curation.closed} closed`
+              : unmeasuredLabel(false)}
           </dd>
         </div>
       </dl>
@@ -324,8 +347,16 @@ function CurationHealth({
   );
 }
 
-function formatSeconds(value: number | undefined): string {
-  return value === undefined ? "Unmeasured" : formatDuration(value * 1_000);
+// unmeasuredLabel distinguishes a metric whose writer has never once
+// produced data (a dead write path, #2278) from one that simply has no
+// samples in the currently selected window — both otherwise look identical
+// (an absent/zero value) to an operator staring at the panel.
+function unmeasuredLabel(everRecorded: boolean): string {
+  return everRecorded ? "No data in window" : "Never recorded";
+}
+
+function formatSeconds(value: number | undefined, everRecorded: boolean): string {
+  return value === undefined ? unmeasuredLabel(everRecorded) : formatDuration(value * 1_000);
 }
 
 function FailureReasonBreakdown({

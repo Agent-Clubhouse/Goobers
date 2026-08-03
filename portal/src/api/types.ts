@@ -625,6 +625,7 @@ export interface TelemetryStatsResult {
 }
 
 export interface TelemetryCurationStats {
+  everRecorded: boolean;
   runs: number;
   reportedRuns: number;
   ready: number;
@@ -639,6 +640,7 @@ export interface TelemetryCurationStats {
 }
 
 export interface TelemetryReadyPool {
+  sampleEverRecorded: boolean;
   observedAt?: string;
   depth?: number;
   averageAgeSeconds?: number;
@@ -646,7 +648,11 @@ export interface TelemetryReadyPool {
   starved?: boolean;
   claimAgeSamples: number;
   averageClaimAgeSeconds?: number;
+  bounceEverRecorded: boolean;
   bounceRate?: number;
+  inFlightClaimSamples: number;
+  averageInFlightClaimAgeSeconds: number;
+  oldestInFlightClaimAgeSeconds: number;
   forwardCurationThroughput: number;
   implementationDemand: number;
 }
