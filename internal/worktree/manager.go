@@ -350,6 +350,12 @@ func repoKey(repoURL string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// RepositoryKey returns the stable filesystem segment used for repoURL.
+// Callers use it to preflight final workcopy paths before creating a Manager.
+func RepositoryKey(repoURL string) string {
+	return repoKey(repoURL)
+}
+
 const worktreeDirectoryHashBytes = 12
 
 // worktreeDirectoryName bounds the run-specific checkout path segment at 27

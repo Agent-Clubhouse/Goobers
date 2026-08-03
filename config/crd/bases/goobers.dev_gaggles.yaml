@@ -459,6 +459,19 @@ spec:
                   - project
                   type: object
                 type: array
+              workcopies:
+                description: |-
+                  Workcopies overrides the instance-level managed working-copy placement for
+                  this gaggle. Root is an absolute base path; the gaggle name is appended.
+                properties:
+                  root:
+                    description: Root is an absolute base path for this gaggle's managed
+                      working copies.
+                    minLength: 1
+                    type: string
+                required:
+                - root
+                type: object
             required:
             - backlog
             - isolation

@@ -64,6 +64,15 @@
             "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
           }
         },
+        "workcopies": {
+          "description": "Per-gaggle override for managed working-copy placement. The gaggle name and repository key are appended beneath this base path.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root"],
+          "properties": {
+            "root": { "type": "string", "minLength": 1, "description": "Absolute base path for this gaggle's managed mirrors and worktrees. Overrides instance.yaml workcopies.root." }
+          }
+        },
         "requireLabels": {
           "description": "Default requireLabels value every workflow's backlog-query task in this gaggle inherits unless the task declares its own requireLabels input (full replace, not merge — same shape as branchNamespace/headPrefix) (MIRC-2, #1901).",
           "type": "array",

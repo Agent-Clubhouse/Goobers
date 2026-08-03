@@ -49,6 +49,18 @@ headroom. Enable Windows and Git long-path support as described in the
 [Windows quickstart](quickstart-windows.md), but do not use that support as a
 reason to bury the instance under a deep source checkout.
 
+When journals and other runtime state should remain at the instance root,
+redirect only managed working copies with an absolute base path:
+
+```yaml
+workcopies:
+  root: C:\g
+```
+
+Goobers appends the gaggle name and repository key beneath this base. A gaggle
+may override the instance default in its own `spec.workcopies.root`; this keeps
+separate gaggles isolated even when they select the same short base path.
+
 Before creating a checkout, Goobers measures the deepest tracked path and
 refuses it when the worktree prefix plus that path exceeds the repository's
 budget. Windows defaults to the 260-character `MAX_PATH` ceiling. Configure a

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -553,14 +555,51 @@ func buildSchedulerDefinitions(
 	// entry here, so its runner falls back to the first repo's token unchanged.
 	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
 	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
+	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
+	workcopyPaths := make(map[string]string, len(set.Gaggles))
+	cloneURL := repoCloneURL
+	if cloneURL == nil {
+		cloneURL = runner.DefaultRepoCloneURL
+	}
 	for i := range set.Gaggles {
-		gaggleProjects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
-		gaggleAdditionalRepos[set.Gaggles[i].Name] = set.Gaggles[i].Spec.AdditionalRepos
+		gaggle := &set.Gaggles[i]
+		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
+		gaggleAdditionalRepos[gaggle.Name] = gaggle.Spec.AdditionalRepos
+		scoped, layoutErr := instance.EffectiveWorkcopiesLayout(l.ForGaggle(gaggle.Name), cfg, gaggle)
+		if layoutErr != nil {
+			return nil, fmt.Errorf("gaggle %s: %w", gaggle.Name, layoutErr)
+		}
+		managerRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			managerRoot = scoped.WorkcopiesBaseDir()
+		}
+		path, pathErr := filepath.Abs(managerRoot)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle.Name, pathErr)
+		}
+		repos := append([]apiv1.RepoRef{gaggle.Spec.Project}, gaggle.Spec.AdditionalRepos...)
+		for _, repo := range repos {
+			url, urlErr := cloneURL(repo)
+			if urlErr != nil {
+				return nil, fmt.Errorf("resolve repository URL for gaggle %s: %w", gaggle.Name, urlErr)
+			}
+			finalPath := filepath.Join(path, worktree.RepositoryKey(url))
+			key := filepath.Clean(finalPath)
+			if runtime.GOOS == "windows" {
+				key = strings.ToLower(key)
+			}
+			owner := url
+			if other, exists := workcopyPaths[key]; exists && other != owner {
+				return nil, fmt.Errorf("workcopies path collision: %s and %s resolve to %s", other, owner, finalPath)
+			}
+			workcopyPaths[key] = owner
+		}
+		workcopyLayouts[gaggle.Name] = scoped
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
-		scoped := l.ForGaggle(gaggle)
+		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,

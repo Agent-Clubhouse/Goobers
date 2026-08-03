@@ -665,8 +665,9 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	}
 }
 
-func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 	root := t.TempDir()
+	shortRoot := filepath.Join(t.TempDir(), "w")
 	project := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
@@ -683,7 +684,7 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 		},
 	}}}
 	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
+		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
 		instanceConfig,
 		nil,
 		nil,
@@ -704,12 +705,12 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
 		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
 	}
-	wantRoot, err := filepath.Abs(instance.NewLayout(root).WorkcopiesDir())
+	wantRoot, err := filepath.Abs(filepath.Join(shortRoot, "builders"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manager.Root != wantRoot {
-		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+		t.Fatalf("manager root = %q, want alternate gaggle root %q", manager.Root, wantRoot)
 	}
 }
 
