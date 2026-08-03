@@ -153,6 +153,51 @@ func initNonConflictingPRBranch(t *testing.T, prBranch string) (origin string) {
 	return origin
 }
 
+func initSharedFoundationPRBranches(t *testing.T, prBranch string) (origin string) {
+	t.Helper()
+	root := t.TempDir()
+	origin = filepath.Join(root, "origin.git")
+	runGitT(t, root, "init", "--bare", "-b", "main", origin)
+
+	work := filepath.Join(root, "work")
+	runGitT(t, root, "clone", origin, work)
+	runGitT(t, work, "config", "user.name", "seed")
+	runGitT(t, work, "config", "user.email", "seed@example.com")
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runGitT(t, work, "add", "README.md")
+	runGitT(t, work, "commit", "-m", "seed")
+	runGitT(t, work, "push", "origin", "main")
+
+	const foundationBranch = "goobers/impl/foundation"
+	runGitT(t, work, "checkout", "-b", foundationBranch)
+	if err := os.WriteFile(filepath.Join(work, "foundation.txt"), []byte("shared foundation\n"), 0o644); err != nil {
+		t.Fatalf("write foundation: %v", err)
+	}
+	runGitT(t, work, "add", "foundation.txt")
+	runGitT(t, work, "commit", "-m", "shared foundation")
+	foundationSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
+	runGitT(t, work, "push", "origin", foundationBranch)
+
+	runGitT(t, work, "checkout", "-b", prBranch)
+	if err := os.WriteFile(filepath.Join(work, "unique.txt"), []byte("unique PR work\n"), 0o644); err != nil {
+		t.Fatalf("write unique PR work: %v", err)
+	}
+	runGitT(t, work, "add", "unique.txt")
+	runGitT(t, work, "commit", "-m", "unique PR work")
+	runGitT(t, work, "push", "origin", prBranch)
+
+	runGitT(t, work, "checkout", "main")
+	runGitT(t, work, "merge", "--squash", foundationBranch)
+	runGitT(t, work, "commit", "-m", "land foundation through separate PR")
+	if landedSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD")); landedSHA == foundationSHA {
+		t.Fatalf("squash merge retained foundation SHA %q, want a distinct commit identity", foundationSHA)
+	}
+	runGitT(t, work, "push", "origin", "main")
+	return origin
+}
+
 func initAdjacentAdditionPRBranch(t *testing.T, prBranch string) (origin string) {
 	t.Helper()
 	return initAttributedAdjacentAdditionPRBranch(t, prBranch, "")
@@ -474,6 +519,75 @@ func TestRebasePRCleanNoSubstantiveForcePushesAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"needsAgent":"false"`) {
 		t.Fatalf("rebase-result.json = %s, want needsAgent=false", data)
+	}
+}
+
+func TestRebasePRDropsFoundationLandedThroughSeparatePR(t *testing.T) {
+	const prBranch = "goobers/impl/dependent"
+	origin := initSharedFoundationPRBranches(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+	runGitT(t, wt.Path, "config", "rebase.reapplyCherryPicks", "true")
+
+	st := &rebasePRServerState{labels: []string{needsRemediationLabel}}
+	server := st.start(t, "your-org", "your-repo", 61)
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "61",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
+	if result["needsAgent"] != "false" || result["conflict"] != "false" {
+		t.Fatalf("rebase-result.json = %#v, want already-landed foundation handled without escalation", result)
+	}
+
+	verify := filepath.Join(t.TempDir(), "check")
+	runGitT(t, filepath.Dir(verify), "clone", "--branch", prBranch, origin, verify)
+	if got := strings.TrimSpace(runGitOutputT(t, verify, "rev-list", "--count", "origin/main..HEAD")); got != "1" {
+		t.Fatalf("unique commit count = %s, want 1 after dropping the shared foundation", got)
+	}
+	if got := strings.TrimSpace(runGitOutputT(t, verify, "log", "--format=%s", "origin/main..HEAD")); got != "unique PR work" {
+		t.Fatalf("unique commits = %q, want only the dependent PR's work", got)
+	}
+	for _, name := range []string{"foundation.txt", "unique.txt"} {
+		if _, err := os.Stat(filepath.Join(verify, name)); err != nil {
+			t.Fatalf("%s missing from rebuilt PR branch: %v", name, err)
+		}
+	}
+}
+
+func TestRebaseFetchHeadArgsFallsBackWhenOptionIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim to emulate Git 2.17 help")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "rebase" ] && [ "$2" = "-h" ]; then
+	echo "usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] [<upstream> [<branch>]]"
+	exit 129
+fi
+exec "$GOOBERS_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("GOOBERS_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := rebaseFetchHeadArgs(t.TempDir())
+	want := []string{"rebase", "FETCH_HEAD"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("rebaseFetchHeadArgs() = %q, want %q", got, want)
 	}
 }
 
