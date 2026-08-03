@@ -132,6 +132,7 @@ func (p *ADOProvider) Kind() ProviderKind {
 // for this capability instead of the deleted fail-open stub.
 func (p *ADOProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
+		CapPRQueryAuthor, CapPRQueryRequestedReviewer,
 		CapPRStatusPublish,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRCompare, CapBranchDelete,

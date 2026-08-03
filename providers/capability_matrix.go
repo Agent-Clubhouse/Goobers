@@ -16,6 +16,7 @@ func AllCapabilities() []Capability {
 	return []Capability{
 		CapRepoClone, CapRepoBranch, CapRepoCommit, CapRepoPush,
 		CapPROpen, CapPRList, CapPRPoll, CapPRClose, CapPRFiles, CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll, CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead, CapPRStatusPublish,
@@ -53,6 +54,7 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapBranchDelete, CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapBacklogBlockers,
 	)
 }
@@ -69,6 +71,7 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 var knownGaps = map[ProviderKind]map[Capability]string{
 	ProviderADO: {
 		CapBacklogBlockers: "#2059",
+		CapPRQueryAssignee: "#2178", // ADO has no PR-assignee concept; reviewers are the closest analog.
 	},
 }
 
