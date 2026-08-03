@@ -29,7 +29,7 @@ var synopsisByID = map[string]string{
 	"down":                   "  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal\n",
 	"apply":                  "  goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now\n",
 	"self-update":            "  goobers self-update [--policy manual|on-release|on-main] [path]\n                                stage and request a supervised binary update\n",
-	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
+	"service":                "  goobers service install|uninstall|stop|start|status [path]\n                                install and manage the platform-supervised daemon\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",

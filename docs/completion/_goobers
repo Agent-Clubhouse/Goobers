@@ -225,7 +225,7 @@ _goobers_completion()
             ;;
         service)
             if (( CURRENT == 3 )); then
-                candidates=(install uninstall status)
+                candidates=(install uninstall stop start status)
                 _describe -V 'command' candidates
                 return
             fi

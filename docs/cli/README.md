@@ -80,7 +80,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
 | [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
 | [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
+| [`goobers service start`](#goobers-service-start) | resume an installed-but-stopped daemon |
 | [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
+| [`goobers service stop`](#goobers-service-stop) | halt the running daemon without disabling or removing it |
 | [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
@@ -2253,9 +2255,12 @@ and owns validated self-update handoff, health checks, and rollback.
 Subcommands:
   install     install, enable, and start the service
   uninstall   gracefully stop, disable, and remove the service
+  start       resume an installed-but-stopped service
+  stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
-Run `goobers service install -h`, `goobers service uninstall -h`, or
+Run `goobers service install -h`, `goobers service uninstall -h`,
+`goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
 ~~~
 
@@ -2292,6 +2297,28 @@ $ goobers service install
 $ goobers service install ./instance
 ~~~
 
+## `goobers service start`
+
+resume an installed-but-stopped daemon
+
+~~~text
+Usage: goobers service start [path]
+
+Resume an installed-but-stopped goobers daemon (#2073) without
+re-registering it. Starting an already-running service is a successful
+no-op.
+
+Exit codes: 0 = running, 1 = not installed/start error,
+2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service start
+$ goobers service start ./instance
+~~~
+
 ## `goobers service status`
 
 report whether the supervised daemon is installed and running
@@ -2311,6 +2338,30 @@ Exit codes: 0 = running, 1 = stopped/not installed/query error,
 ~~~console
 $ goobers service status
 $ goobers service status --json
+~~~
+
+## `goobers service stop`
+
+halt the running daemon without disabling or removing it
+
+~~~text
+Usage: goobers service stop [path]
+
+Halt the running goobers daemon without disabling or removing its
+supervisor registration (#2073) — distinct from uninstall, which folds
+stop, disable, and removal into one step. `goobers service status` then
+reports "installed, not running"; `goobers service start` resumes it.
+Stopping an already-stopped service is a successful no-op.
+
+Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop
+error, 2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service stop
+$ goobers service stop ./instance
 ~~~
 
 ## `goobers service uninstall`

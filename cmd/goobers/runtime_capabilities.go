@@ -246,6 +246,12 @@ func init() {
 			subcommand("service uninstall", "uninstall", apicontract.ActionDaemonLifecycle, runServiceUninstall).
 				withHelp("gracefully stop and remove the supervised daemon", serviceUninstallHelp).
 				withExamples("goobers service uninstall", "goobers service uninstall ./instance"),
+			subcommand("service stop", "stop", apicontract.ActionDaemonLifecycle, runServiceStop).
+				withHelp("halt the running daemon without disabling or removing it", serviceStopHelp).
+				withExamples("goobers service stop", "goobers service stop ./instance"),
+			subcommand("service start", "start", apicontract.ActionDaemonLifecycle, runServiceStart).
+				withHelp("resume an installed-but-stopped daemon", serviceStartHelp).
+				withExamples("goobers service start", "goobers service start ./instance"),
 			subcommand("service status", "status", apicontract.ActionReadOnlyNavigation, runServiceStatus).
 				withHelp("report whether the supervised daemon is installed and running", serviceStatusHelp).
 				withExamples("goobers service status", "goobers service status --json"),

@@ -489,6 +489,259 @@ func TestLaunchdStatusDistinguishesUnloadedFromQueryFailure(t *testing.T) {
 	}
 }
 
+// callsWithName filters calls to only those invoking the named command.
+func callsWithName(calls []commandCall, name string) []commandCall {
+	var matched []commandCall
+	for _, call := range calls {
+		if call.name == name {
+			matched = append(matched, call)
+		}
+	}
+	return matched
+}
+
+func containsCall(calls []commandCall, want commandCall) bool {
+	for _, call := range calls {
+		if reflect.DeepEqual(call, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSystemdStopAndStart is #2073: Stop must halt the unit with a bare
+// `stop` (never `disable`, which would also strip its enabled-on-boot
+// registration — Uninstall's job, not Stop's), and Start must resume it with
+// `start`. Both operate on the unit Install already created.
+func TestSystemdStopAndStart(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{},
+		{},
+		{},
+		{output: "LoadState=loaded\nActiveState=active\n", repeat: serviceReadinessChecks},
+		{output: "LoadState=loaded\nActiveState=active\n"}, // Stop(): Status() precheck
+		{}, // systemctl stop
+		{output: "LoadState=loaded\nActiveState=inactive\n"}, // wait-until-stopped
+		{output: "LoadState=loaded\nActiveState=inactive\n"}, // Start(): Status() precheck
+		{}, // systemctl start
+		{output: "LoadState=loaded\nActiveState=active\n", repeat: serviceReadinessChecks},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "linux",
+		Executable:   "/usr/local/bin/goobers",
+		InstanceRoot: "/srv/goobers",
+		HomeDir:      t.TempDir(),
+		UserName:     "test",
+		Runner:       runner,
+	})
+	if _, err := manager.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !containsCall(runner.calls, commandCall{name: "systemctl", args: []string{"--user", "stop", "goobers.service"}}) {
+		t.Fatalf("stop command not issued: %#v", runner.calls)
+	}
+	for _, call := range callsWithName(runner.calls, "systemctl") {
+		if len(call.args) > 1 && call.args[1] == "disable" {
+			t.Fatalf("Stop must never disable the unit: %#v", call)
+		}
+	}
+
+	status, err := manager.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status after Start = %+v, want Running", status)
+	}
+	if !containsCall(runner.calls, commandCall{name: "systemctl", args: []string{"--user", "start", "goobers.service"}}) {
+		t.Fatalf("start command not issued: %#v", runner.calls)
+	}
+}
+
+// TestLaunchdStopAndStart mirrors TestSystemdStopAndStart for launchd: Stop
+// uses `stop` (never `bootout`, which would unload the job — Uninstall's
+// job), and Start uses the same `kickstart` primitive Install already uses.
+func TestLaunchdStopAndStart(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{},
+		{},
+		{},
+		{output: "state = running\n", repeat: serviceReadinessChecks},
+		{output: "state = running\n"},     // Stop(): Status() precheck
+		{},                                // launchctl stop
+		{output: "state = not running\n"}, // wait-until-stopped
+		{output: "state = not running\n"}, // Start(): Status() precheck
+		{},                                // launchctl kickstart
+		{output: "state = running\n", repeat: serviceReadinessChecks},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "darwin",
+		Executable:   "/usr/local/bin/goobers",
+		InstanceRoot: "/srv/goobers",
+		HomeDir:      t.TempDir(),
+		UID:          "501",
+		Runner:       runner,
+	})
+	if _, err := manager.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !containsCall(runner.calls, commandCall{name: "launchctl", args: []string{"stop", "gui/501/com.agent-clubhouse.goobers"}}) {
+		t.Fatalf("stop command not issued: %#v", runner.calls)
+	}
+	if containsCall(runner.calls, commandCall{name: "launchctl", args: []string{"bootout", "gui/501/com.agent-clubhouse.goobers"}}) {
+		t.Fatalf("Stop must never boot out the job: %#v", runner.calls)
+	}
+
+	status, err := manager.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status after Start = %+v, want Running", status)
+	}
+	if !containsCall(runner.calls, commandCall{name: "launchctl", args: []string{"kickstart", "gui/501/com.agent-clubhouse.goobers"}}) {
+		t.Fatalf("kickstart command not issued: %#v", runner.calls)
+	}
+}
+
+// TestWindowsStopAndStart mirrors the other two platforms for the Windows
+// SCM: Stop uses `sc.exe stop` without a following `delete` (Uninstall's
+// job), and Start uses `sc.exe start`.
+func TestWindowsStopAndStart(t *testing.T) {
+	const stopped = "TYPE               : 10  WIN32_OWN_PROCESS\nSTATE              : 1  STOPPED\n"
+	const running = "TYPE               : 10  WIN32_OWN_PROCESS\nSTATE              : 4  RUNNING\n"
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: running}, // Stop(): Status() precheck
+		{},                // sc.exe stop
+		{output: stopped}, // wait-until-stopped
+		{output: stopped}, // Start(): Status() precheck
+		{},                // sc.exe start
+		{output: running, repeat: serviceReadinessChecks}, // wait-until-running
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\Program Files\goobers\goobers.exe`,
+		InstanceRoot: `C:\ProgramData\goobers\instance`,
+		Runner:       runner,
+	})
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !containsCall(runner.calls, commandCall{name: "sc.exe", args: []string{"stop", "goobers"}}) {
+		t.Fatalf("stop command not issued: %#v", runner.calls)
+	}
+	if containsCall(runner.calls, commandCall{name: "sc.exe", args: []string{"delete", "goobers"}}) {
+		t.Fatalf("Stop must never delete the registration: %#v", runner.calls)
+	}
+
+	status, err := manager.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status after Start = %+v, want Running", status)
+	}
+	if !containsCall(runner.calls, commandCall{name: "sc.exe", args: []string{"start", "goobers"}}) {
+		t.Fatalf("start command not issued: %#v", runner.calls)
+	}
+}
+
+// TestStopStartReturnErrNotInstalledWhenAbsent pins #2073's not-installed
+// contract: no unit file exists, so Status resolves Installed=false with no
+// runner call at all (os.Stat fails closed before ever invoking systemctl),
+// and both Stop and Start must surface that as ErrNotInstalled rather than
+// attempting an OS command against a nonexistent registration.
+func TestStopStartReturnErrNotInstalledWhenAbsent(t *testing.T) {
+	manager := newTestManager(t, Config{
+		GOOS:         "linux",
+		Executable:   "/usr/local/bin/goobers",
+		InstanceRoot: "/srv/goobers",
+		HomeDir:      t.TempDir(),
+		UserName:     "test",
+		Runner:       &fakeRunner{},
+	})
+
+	if err := manager.Stop(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Stop error = %v, want ErrNotInstalled", err)
+	}
+	if _, err := manager.Start(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Start error = %v, want ErrNotInstalled", err)
+	}
+}
+
+// TestStopIsNoOpWhenAlreadyStopped and TestStartIsNoOpWhenAlreadyRunning pin
+// #2073's idempotency contract: calling Stop on an already-stopped service
+// (or Start on an already-running one) succeeds without issuing a redundant
+// OS command, rather than relying on the underlying supervisors' own
+// inconsistent behavior here (sc.exe errors stopping an already-stopped
+// service; systemctl/launchctl don't).
+func TestStopIsNoOpWhenAlreadyStopped(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: "LoadState=loaded\nActiveState=inactive\n"},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "linux",
+		Executable:   "/usr/local/bin/goobers",
+		InstanceRoot: "/srv/goobers",
+		HomeDir:      t.TempDir(),
+		UserName:     "test",
+		Runner:       runner,
+	})
+	if err := os.MkdirAll(filepath.Dir(manager.systemdPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.systemdPath(), []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("Stop on an already-stopped service issued extra commands: %#v", runner.calls)
+	}
+}
+
+func TestStartIsNoOpWhenAlreadyRunning(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: "LoadState=loaded\nActiveState=active\n"},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "linux",
+		Executable:   "/usr/local/bin/goobers",
+		InstanceRoot: "/srv/goobers",
+		HomeDir:      t.TempDir(),
+		UserName:     "test",
+		Runner:       runner,
+	})
+	if err := os.MkdirAll(filepath.Dir(manager.systemdPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.systemdPath(), []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := manager.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status = %+v, want Running", status)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("Start on an already-running service issued extra commands: %#v", runner.calls)
+	}
+}
+
 func newTestManager(t *testing.T, config Config) *Manager {
 	t.Helper()
 	manager, err := NewWithConfig(config)

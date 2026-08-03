@@ -187,7 +187,7 @@ _goobers_completion()
             ;;
         service)
             if (( COMP_CWORD == 2 )); then
-                candidates="install uninstall status"
+                candidates="install uninstall stop start status"
             fi
             ;;
         run)
