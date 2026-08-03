@@ -874,6 +874,31 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 
+func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	itemID = blockedLookupID(itemID)
+	if repository.Provider == providers.ProviderADO {
+		provider, err := newADOProviderForStage(c.layout.Root, repository)
+		if err != nil {
+			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		}
+		return provider.ListComments(ctx, backlogRepoRefForGaggle(c.layout, repository), itemID)
+	}
+	ref := repository.Owner + "/" + repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+	}
+	c.reg.Register([]byte(token))
+	if repository.Provider == providers.ProviderGitea {
+		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+		if err != nil {
+			return nil, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.ListComments(ctx, repository, itemID)
+	}
+	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
+}
+
 // adoParkRemovalLabels rewrites a park/close removal set for an Azure DevOps
 // board. GitHub mirrors a claim with the plain LabelClaimed ("goobers:claimed")
 // tag, but ADO's ClaimWorkItem writes the status-label form
@@ -1099,9 +1124,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 				"Goobers run %s terminated `failed`: %s. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
 				o.RunID, cause, providers.LabelNeedsHuman,
 			)
-			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository: repoRef, ID: itemID, Comment: comment,
-			}); err != nil {
+			if err := gate.PostRunComment(ctx, poster, repoRef, itemID, o.RunID, o.Seq, comment); err != nil {
 				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 		}
