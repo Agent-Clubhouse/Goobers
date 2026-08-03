@@ -476,4 +476,55 @@ CREATE INDEX IF NOT EXISTS idx_run_phase_activity
 CREATE INDEX IF NOT EXISTS idx_run_gaggle_phase_activity
 	ON run(gaggle, phase, last_activity_at DESC, run_id ASC);
 `,
+
+	// v8: stage-scoped outcome pushdown (#2091).
+	//
+	// last_status cannot answer this filter: the journal-derived contract matches
+	// when ANY attempt has the requested status. The cumulative flags preserve
+	// exactly that predicate without copying attempt history into read.db.
+	// run_terminal is duplicated because every outcome-filtered list excludes
+	// in-flight runs, and a predicate on the joined run row would be residual.
+	`
+ALTER TABLE run_stage ADD COLUMN had_success INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN had_failure INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN had_other INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_stage ADD COLUMN run_terminal INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_success
+	ON run_stage(stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_success = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_success
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_success = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_failure
+	ON run_stage(stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_failure = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_failure
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_failure = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_other
+	ON run_stage(stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_other = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_other
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND had_other = 1;
+CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_terminal
+	ON run_stage(stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND (had_success = 1 OR had_failure = 1);
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_terminal
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND (had_success = 1 OR had_failure = 1);
+CREATE INDEX IF NOT EXISTS idx_run_stage_outcome_finished
+	ON run_stage(stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND (had_success = 1 OR had_failure = 1 OR had_other = 1);
+CREATE INDEX IF NOT EXISTS idx_run_stage_gaggle_outcome_finished
+	ON run_stage(gaggle, stage, run_started_at DESC, run_id ASC)
+	WHERE run_terminal = 1 AND (had_success = 1 OR had_failure = 1 OR had_other = 1);
+
+-- Existing rows cannot be backfilled from last_status without losing earlier
+-- attempts. Emptying the derived run projection makes startup rebuild it from
+-- the authoritative journals rather than briefly serving under-matched results.
+DELETE FROM run_stage;
+DELETE FROM run;
+`,
 }

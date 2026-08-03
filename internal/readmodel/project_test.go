@@ -179,6 +179,44 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	if len(p.Stages) != 1 || p.Stages[0].Stage != "implement" || p.Stages[0].Attempts != 2 {
 		t.Errorf("stage rows = %+v, want one 'implement' row with 2 attempts", p.Stages)
 	}
+	if !p.Stages[0].HadSuccess || !p.Stages[0].HadFailure {
+		t.Errorf("attempt status set = %+v, want both success and failure", p.Stages[0])
+	}
+}
+
+func TestStageOutcomeMatchesAnyAttempt(t *testing.T) {
+	store := openTestStore(t)
+	projection := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
+	if err := store.UpsertRun(t.Context(), projection); err != nil {
+		t.Fatalf("upsert projection: %v", err)
+	}
+
+	for _, outcome := range []Outcome{OutcomeSuccess, OutcomeFailure} {
+		page, err := store.ListRuns(t.Context(), ListOptions{
+			Stage: "implement", Outcome: outcome,
+		})
+		if err != nil {
+			t.Fatalf("list outcome %q: %v", outcome, err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != testIdentity().RunID {
+			t.Errorf("outcome %q returned runs %+v, want retried run", outcome, page.Runs)
+		}
+	}
+}
+
+func TestTerminalRunClosesOpenAttemptAsFailure(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) {
+			e.Stage = "implement"
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if len(projection.Stages) != 1 || !projection.Stages[0].HadFailure {
+		t.Fatalf("stage rows = %+v, want open attempt closed as failure", projection.Stages)
+	}
 }
 
 // singleStageEvents builds a completed run touching exactly one stage, whose

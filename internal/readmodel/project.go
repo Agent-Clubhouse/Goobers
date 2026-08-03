@@ -116,6 +116,10 @@ type StageRow struct {
 	LastAttemptClass string
 	StartedAt        *time.Time
 	FinishedAt       *time.Time
+	HadSuccess       bool
+	HadFailure       bool
+	HadOther         bool
+	openAttempts     int
 
 	// The four measurement flags (#1782, §5.7).
 	//
@@ -287,6 +291,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.CurrentStage = event.Stage
 			s := stageRow(stages, row.RunID, event.Stage)
 			s.Attempts++
+			s.openAttempts++
 			if s.StartedAt == nil {
 				at := event.Time
 				s.StartedAt = &at
@@ -297,8 +302,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				row.CurrentStage = ""
 			}
 			s := stageRow(stages, row.RunID, event.Stage)
+			if s.openAttempts > 0 {
+				s.openAttempts--
+			}
 			s.LastStatus = event.Status
 			s.LastAttemptClass = string(event.AttemptClass)
+			switch event.Status {
+			case "success":
+				s.HadSuccess = true
+			case "failure":
+				s.HadFailure = true
+			default:
+				s.HadOther = true
+			}
 			at := event.Time
 			s.FinishedAt = &at
 			countAttempt(&row, event)
@@ -315,6 +331,15 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.CurrentStage = event.Stage
 			row.RepassCount++
 		case journal.EventRunFinished:
+			// The journal-derived reference closes attempts still open at run
+			// termination as failures. Mirror that before projecting the run's
+			// terminal state so outcome=failure sees the same attempt set.
+			for _, stage := range stages {
+				if stage.openAttempts > 0 {
+					stage.HadFailure = true
+					stage.openAttempts = 0
+				}
+			}
 			phase := journal.RunPhase(event.Status)
 			// An unrecognised terminal status is NOT silently accepted: writing
 			// it would make phase — an indexed, filtered column — carry a value
