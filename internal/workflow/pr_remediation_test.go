@@ -56,7 +56,7 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	m, err := compileAcknowledged(
 		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		WithGoobers(goobers),
-		WithKnownChecks([]string{"output-equals", "status-equals"}))
+		WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}))
 
 	if err != nil {
 		t.Fatalf("compile pr-remediation against the real reference workflows' goobers: %v", err)
@@ -338,12 +338,25 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Fatal("local-gate not found")
 	}
 	for branch, want := range map[string]string{
-		"pass": "guard-before-push",
-		"fail": "guard-before-implement",
+		"pass":  "guard-before-push",
+		"fail":  "guard-before-implement",
+		"infra": "park-infrastructure-failure",
 	} {
 		if got := localGate.Branches[branch]; got != want {
 			t.Errorf("local-gate %s -> %q, want %q", branch, got, want)
 		}
+	}
+	if localGate.Automated == nil || localGate.Automated.Check != "failure-class" {
+		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
+	}
+	infraPark, ok := m.Task("park-infrastructure-failure")
+	if !ok {
+		t.Fatal("park-infrastructure-failure not found")
+	}
+	if infraPark.Next != "release-escalated-claim" ||
+		infraPark.Run == nil ||
+		!containsString(infraPark.Run.Command, "infrastructure-failure") {
+		t.Errorf("park-infrastructure-failure = %+v, want explicit infrastructure disposition before claim release", infraPark)
 	}
 
 	// A reviewer "fail" verdict must terminate ESCALATED, not merely abort

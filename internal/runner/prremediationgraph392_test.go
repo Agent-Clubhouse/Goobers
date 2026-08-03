@@ -128,7 +128,7 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	m, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"output-equals", "status-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -764,7 +764,7 @@ func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	machine, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "status-equals", "ci-status", "output-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {

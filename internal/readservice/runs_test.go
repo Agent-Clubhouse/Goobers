@@ -1866,6 +1866,10 @@ func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
 			name: "repass budget exhaustion after gate", stage: "park-invalid-finding-responses",
 			outcome: "budget-exhausted", reason: "finding response repass budget exhausted", attempted: true,
 		},
+		{
+			name: "infrastructure failure after gate", stage: "park-infrastructure-failure",
+			outcome: "infrastructure-failure", reason: "local CI timed out",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

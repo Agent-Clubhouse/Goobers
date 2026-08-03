@@ -1814,9 +1814,9 @@ state as a new sticky comment. Requires selectedNumber (inputsFrom
 gather-pr-context's selectedNumber output), remediationCauses, and the
 four per-cause budget inputs. --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
---escalate as did-not-converge (the default) or budget-exhausted.
+--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`
-(`did-not-converge`, `budget-exhausted`, or `policy-excluded`), whether
+(`did-not-converge`, `budget-exhausted`, `policy-excluded`, or `infrastructure-failure`), whether
 repair was attempted, and the attempted causes in both the sticky comment
 and stage result. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business

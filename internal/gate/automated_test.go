@@ -34,6 +34,46 @@ func TestStatusEqualsCustomTarget(t *testing.T) {
 	}
 }
 
+func TestFailureClass(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result apiv1.ResultEnvelope
+		want   string
+	}{
+		{name: "success", result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, want: OutcomePass},
+		{
+			name: "retryable infrastructure failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "timeout", Retryable: true},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "business failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit"},
+			},
+			want: OutcomeFail,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := AutomatedInputs(tc.result)
+			out, err := evalCheck(t, "failure-class", nil, inputs)
+			if err != nil || out != tc.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+			}
+			if tc.result.Error != nil {
+				if inputs[InputKeyErrorCode] != tc.result.Error.Code ||
+					inputs[InputKeyErrorRetryable] != tc.result.Error.Retryable {
+					t.Fatalf("error inputs = %v, want code=%q retryable=%t", inputs, tc.result.Error.Code, tc.result.Error.Retryable)
+				}
+			}
+		})
+	}
+}
+
 func TestOutputEqualsRequiresParams(t *testing.T) {
 	if _, err := evalCheck(t, "output-equals", nil, nil); err == nil {
 		t.Fatal("want error for missing params.key/equals")
