@@ -124,7 +124,13 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	}
 }
 
-func TestScanExcludesCrossPackagePRRegressionAbsentFromBase(t *testing.T) {
+func TestScanLedgersCrossPackagePRFailureAbsentFromBase(t *testing.T) {
+	// A novel failure in a package the PR didn't touch must still be
+	// ledgered even when it doesn't also reproduce on the base SHA: a
+	// nondeterministic flake commonly won't show up in the base's latest
+	// checks, and requiring that reproduction incorrectly treats
+	// non-reproduction as proof of regression, silently dropping real
+	// novel flakes (see merge-review finding on #2349).
 	t.Parallel()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	mux := http.NewServeMux()
@@ -155,8 +161,8 @@ func TestScanExcludesCrossPackagePRRegressionAbsentFromBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if len(result.Novel) != 0 {
-		t.Fatalf("novel = %+v, want cross-package PR regression excluded", result.Novel)
+	if len(result.Novel) != 1 || result.Novel[0].Test != "TestCache" {
+		t.Fatalf("novel = %+v, want cross-package PR failure ledgered despite absence from base", result.Novel)
 	}
 }
 

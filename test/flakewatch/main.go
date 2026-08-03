@@ -260,7 +260,6 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 	result := scanResult{Novel: []failure{}}
 	seen := make(map[string]bool)
 	novelIndex := make(map[string]int)
-	baseFailures := make(map[string]map[string]bool)
 	for _, failureSource := range sources {
 		candidates, err := client.failures(ctx, failureSource, observed)
 		if err != nil {
@@ -295,32 +294,6 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				}
 				result.KnownDispatched++
 				continue
-			}
-			if failureSource.PullRequest != 0 {
-				reproductions, found := baseFailures[failureSource.BaseSHA]
-				if !found {
-					reproductions = make(map[string]bool)
-					if failureSource.BaseSHA != "" {
-						baseCandidates, err := client.failures(ctx, source{
-							SHA: failureSource.BaseSHA, Since: failureSource.Since,
-						}, observed)
-						if err != nil {
-							return result, fmt.Errorf(
-								"scan PR #%d base %s: %w",
-								failureSource.PullRequest,
-								failureSource.BaseSHA,
-								err,
-							)
-						}
-						for _, baseCandidate := range baseCandidates {
-							reproductions[baseCandidate.Fingerprint] = true
-						}
-					}
-					baseFailures[failureSource.BaseSHA] = reproductions
-				}
-				if !reproductions[candidate.Fingerprint] {
-					continue
-				}
 			}
 			if flakeShape.MatchString(candidate.FailureText) {
 				if index, found := novelIndex[candidate.Fingerprint]; found {
