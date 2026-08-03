@@ -131,15 +131,16 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 	})
 
 	want := map[string]int{
-		"reconcile backlog metadata":           2,
-		"list open pull requests":              1,
-		"reconcile closed pull requests":       1,
-		"list work items":                      2,
-		"list ready items for re-sweep":        1,
-		"read ready-label transitions":         1,
-		"compute claimed-item staleness":       1,
-		"compute read-only re-sweep staleness": 1,
-		"release backlog claims":               1,
+		"reconcile backlog metadata":                2,
+		"list open pull requests":                   1,
+		"reconcile closed pull requests":            1,
+		"list work items":                           2,
+		"list blocked items for dependency recheck": 1,
+		"list ready items for re-sweep":             1,
+		"read ready-label transitions":              1,
+		"compute claimed-item staleness":            1,
+		"compute read-only re-sweep staleness":      1,
+		"release backlog claims":                    1,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)
