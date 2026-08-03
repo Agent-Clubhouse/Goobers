@@ -554,7 +554,7 @@ func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *tes
 	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
-	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
 	t.Chdir(t.TempDir())
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
 	if code != 0 {
@@ -571,6 +571,10 @@ func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *tes
 	}
 	if !strings.Contains(server.issues[7].comments[0], "local-ci") {
 		t.Fatalf("parking comment = %q, want upstream cause", server.issues[7].comments[0])
+	}
+	if !hasAnyLabel(server.issues[7].labels, []string{needsRemediationLabel}) ||
+		hasAnyLabel(server.issues[7].labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("driving issue labels = %v, want remediation without needs-human", server.issues[7].labels)
 	}
 	if !strings.Contains(server.prs[77].body, "Fixes #7") {
 		t.Fatalf("PR body = %q, want original description preserved", server.prs[77].body)
