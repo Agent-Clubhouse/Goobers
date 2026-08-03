@@ -74,6 +74,7 @@ type WorkItem struct {
 	Provider       ProviderKind           `json:"provider"`
 	ID             string                 `json:"id"`
 	ExternalID     string                 `json:"externalId,omitempty"`
+	Revision       string                 `json:"revision,omitempty"`
 	Type           string                 `json:"type,omitempty"`
 	Title          string                 `json:"title"`
 	Body           string                 `json:"body,omitempty"`
@@ -1035,6 +1036,29 @@ type CreateWorkItemRequest struct {
 	// committed create returns the original rather than filing a duplicate
 	// (#140). Optional — empty keeps the plain, non-idempotent create.
 	RunID string `json:"runId,omitempty"`
+}
+
+// AttachWorkItemChildRequest describes a provider-native parent/child link.
+// ExpectedParentRevision and ExpectedChildRevision are optimistic-concurrency
+// guards obtained immediately before the mutation.
+type AttachWorkItemChildRequest struct {
+	Repository             RepositoryRef `json:"repository"`
+	ParentID               string        `json:"parentId"`
+	ChildID                string        `json:"childId"`
+	ExpectedParentRevision string        `json:"expectedParentRevision"`
+	ExpectedChildRevision  string        `json:"expectedChildRevision"`
+}
+
+// RevisionConflictError reports that a mutation's immediately observed item
+// revision no longer matches the caller's guard.
+type RevisionConflictError struct {
+	ItemID   string
+	Expected string
+	Actual   string
+}
+
+func (e *RevisionConflictError) Error() string {
+	return fmt.Sprintf("work item %s revision changed: expected %q, got %q", e.ItemID, e.Expected, e.Actual)
 }
 
 // UpdateWorkItemStatusRequest describes a processing-status mirror update.

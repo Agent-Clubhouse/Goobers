@@ -760,6 +760,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		Provider:   ProviderADO,
 		ID:         strconv.Itoa(item.ID),
 		ExternalID: strconv.Itoa(item.Rev),
+		Revision:   strconv.Itoa(item.Rev),
 		Type:       stringField(item.Fields, "System.WorkItemType"),
 		Title:      stringField(item.Fields, "System.Title"),
 		Body:       stringField(item.Fields, "System.Description"),

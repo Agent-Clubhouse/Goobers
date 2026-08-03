@@ -1071,6 +1071,7 @@ func mapGiteaIssue(issue giteaIssue) WorkItem {
 		Provider:   ProviderGitea,
 		ID:         strconv.Itoa(issue.Number),
 		ExternalID: strconv.FormatInt(issue.ID, 10),
+		Revision:   timeRevision(issue.UpdatedAt),
 		Type:       "issue",
 		Title:      issue.Title,
 		Body:       issue.Body,
