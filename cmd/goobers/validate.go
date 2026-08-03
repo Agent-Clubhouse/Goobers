@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -304,9 +305,35 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
 	}
+	printResolvedLargeRepoPresets(stdout, cfg.Repos)
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {
+	for _, repo := range repos {
+		if !repo.LargeRepo {
+			continue
+		}
+		workspace := "worktrees"
+		mirrorRefspec := "all"
+		if repo.Pinned() {
+			workspace = "pinned"
+			mirrorRefspec = "heads+tags"
+		}
+		pathLength := "disabled"
+		if repo.PathLength != nil && !repo.PathLength.Disabled {
+			maximum := repo.PathLength.MaxPathLength
+			if maximum == 0 {
+				maximum = worktree.DefaultMaxPathLength
+			}
+			pathLength = fmt.Sprintf("enabled (max %d)", maximum)
+		}
+		pf(out, "Resolved large-repo preset for %s/%s: workspace=%s, cleanPolicy=%s, serial=%t, defaultStageTimeout=%s, stalledRunTimeout=%s, maxRunDuration=%s, pathLength=%s, mirrorRefspec=%s\n",
+			repo.Owner, repo.Name, workspace, repo.WorkspaceCleanPolicy(), repo.Pinned(),
+			repo.DefaultStageTimeout, repo.RunControls.StalledRunTimeout, repo.RunControls.MaxRunDuration, pathLength, mirrorRefspec)
+	}
 }
 
 func configSourceDiagnosticFile(root, configDir, source string) string {

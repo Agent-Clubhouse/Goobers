@@ -14,6 +14,31 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg.ResolveLargeRepoPresets()
+	var out strings.Builder
+	printResolvedLargeRepoPresets(&out, cfg.Repos)
+	for _, want := range []string{
+		"workspace=pinned",
+		"serial=true",
+		"defaultStageTimeout=4h",
+		"stalledRunTimeout=6h",
+		"maxRunDuration=24h",
+		"pathLength=enabled (max 260)",
+		"mirrorRefspec=heads+tags",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("resolved preset output missing %q: %s", want, out.String())
+		}
+	}
+}
+
 func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	type mutation func(t *testing.T, root string)
 	tests := []struct {

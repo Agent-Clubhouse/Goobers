@@ -45,6 +45,12 @@ const (
 	DefaultClaimsLockTimeout         = 30 * time.Second
 	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
 	DefaultTelemetryRetentionMaxRuns = 500
+	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
+	LargeRepoDefaultStageTimeout = "4h"
+	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
+	LargeRepoStalledRunTimeout = "6h"
+	// LargeRepoMaxRunDuration is the preset's total run-age limit.
+	LargeRepoMaxRunDuration = "24h"
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -354,6 +360,10 @@ type RepoRef struct {
 	Project string `json:"project,omitempty" yaml:"project,omitempty"`
 	// Name is the repo name.
 	Name string `json:"name" yaml:"name"`
+	// LargeRepo enables the monolith-safe execution preset. The preset supplies
+	// defaults only; explicit repository workspace, path-length, stage-timeout,
+	// and run-control settings override it.
+	LargeRepo bool `json:"largeRepo,omitempty" yaml:"largeRepo,omitempty"`
 	// Token is a reference to this repo's credential. Never an inline value
 	// (CFG-009, SEC-010). GitHub and ADO PAT auth require exactly one of Env
 	// or File. Entra-backed ADO auth and GitHub App auth do not use this
@@ -379,6 +389,13 @@ type RepoRef struct {
 	// state may persist between runs, so the target repository's .gitignore
 	// hygiene is load-bearing for clean run-branch diffs.
 	Workspace *RepoWorkspaceConfig `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// DefaultStageTimeout is the deadline for deterministic stages that omit
+	// timeoutSeconds. It overrides both the large-repo preset and the
+	// instance-wide runner.defaultStageTimeout for this repository.
+	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// RunControls overrides instance-level watchdog defaults for runs targeting
+	// this repository. Gaggle and workflow runControls remain more specific.
+	RunControls *apiv1.RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 }
 
 // RepoPathLengthConfig bounds paths a repository checkout and its build output
@@ -406,14 +423,48 @@ const (
 // Worktrees is explicit only so contradictory declarations fail loudly;
 // omitting Workspace retains the existing per-stage worktree behavior.
 type RepoWorkspaceConfig struct {
-	Pinned      bool   `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	Pinned      bool   `json:"pinned" yaml:"pinned"`
 	Worktrees   bool   `json:"worktrees,omitempty" yaml:"worktrees,omitempty"`
 	CleanPolicy string `json:"cleanPolicy,omitempty" yaml:"cleanPolicy,omitempty"`
+	pinnedSet   bool
+}
+
+// UnmarshalJSON preserves whether pinned was explicitly declared so false can
+// override the large-repo preset rather than looking identical to omission.
+func (c *RepoWorkspaceConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Pinned      *bool  `json:"pinned"`
+		Worktrees   bool   `json:"worktrees"`
+		CleanPolicy string `json:"cleanPolicy"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	c.Worktrees = wire.Worktrees
+	c.CleanPolicy = wire.CleanPolicy
+	c.pinnedSet = wire.Pinned != nil
+	if wire.Pinned != nil {
+		c.Pinned = *wire.Pinned
+	}
+	return nil
 }
 
 // Pinned reports whether this repository uses its node-local persistent copy.
 func (r RepoRef) Pinned() bool {
-	return r.Workspace != nil && r.Workspace.Pinned
+	if r.Workspace != nil {
+		if r.Workspace.Worktrees {
+			return false
+		}
+		if r.Workspace.pinnedSet {
+			return r.Workspace.Pinned
+		}
+		if r.Workspace.Pinned {
+			return true
+		}
+	}
+	return r.LargeRepo
 }
 
 // WorkspaceCleanPolicy returns the configured pinned clean policy, defaulting
@@ -423,6 +474,71 @@ func (r RepoRef) WorkspaceCleanPolicy() string {
 		return WorkspaceCleanNone
 	}
 	return r.Workspace.CleanPolicy
+}
+
+// EffectiveDefaultStageTimeout returns the repository-specific deterministic
+// stage default after applying the large-repo preset and instance fallback.
+func (r RepoRef) EffectiveDefaultStageTimeout(fallback string) string {
+	if r.DefaultStageTimeout != "" {
+		return r.DefaultStageTimeout
+	}
+	if r.LargeRepo {
+		return LargeRepoDefaultStageTimeout
+	}
+	return fallback
+}
+
+// EffectiveRunControls overlays repository defaults on instance run controls.
+// Gaggle and workflow controls are applied by runcontrol.Resolve afterwards.
+func (r RepoRef) EffectiveRunControls(base apiv1.RunControls) apiv1.RunControls {
+	if r.LargeRepo {
+		base.StalledRunTimeout = LargeRepoStalledRunTimeout
+		base.MaxRunDuration = LargeRepoMaxRunDuration
+	}
+	if r.RunControls == nil {
+		return base
+	}
+	if r.RunControls.MaxRepasses > 0 {
+		base.MaxRepasses = r.RunControls.MaxRepasses
+	}
+	if r.RunControls.StalledRunTimeout != "" {
+		base.StalledRunTimeout = r.RunControls.StalledRunTimeout
+	}
+	if r.RunControls.MaxRunDuration != "" {
+		base.MaxRunDuration = r.RunControls.MaxRunDuration
+	}
+	return base
+}
+
+// ResolveLargeRepoPresets materializes monolith-safe defaults so config
+// inspection and every runtime consumer see the same effective values.
+func (c *Config) ResolveLargeRepoPresets() {
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if !repo.LargeRepo {
+			continue
+		}
+		if repo.Workspace == nil {
+			repo.Workspace = &RepoWorkspaceConfig{Pinned: true}
+		} else if !repo.Workspace.Worktrees && !repo.Workspace.pinnedSet {
+			repo.Workspace.Pinned = true
+		}
+		if repo.PathLength == nil {
+			repo.PathLength = &RepoPathLengthConfig{}
+		}
+		if repo.DefaultStageTimeout == "" {
+			repo.DefaultStageTimeout = LargeRepoDefaultStageTimeout
+		}
+		if repo.RunControls == nil {
+			repo.RunControls = &apiv1.RunControls{}
+		}
+		if repo.RunControls.StalledRunTimeout == "" {
+			repo.RunControls.StalledRunTimeout = LargeRepoStalledRunTimeout
+		}
+		if repo.RunControls.MaxRunDuration == "" {
+			repo.RunControls.MaxRunDuration = LargeRepoMaxRunDuration
+		}
+	}
 }
 
 // RepoPolicyExpectation is one repo's declared forge-conformance manifest
@@ -1041,6 +1157,7 @@ func LoadConfig(path string) (*Config, error) {
 // IANA timezone — fail closed at load time rather than at the first cron
 // tick that tries to use it.
 func (c *Config) Validate() error {
+	c.ResolveLargeRepoPresets()
 	if err := c.validateAPIConfig(); err != nil {
 		return err
 	}
@@ -1157,6 +1274,16 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("repos[%d] (%s/%s): pathLength.buildOutputAllowance must not be negative", i, r.Owner, r.Name)
 			}
 		}
+		if r.DefaultStageTimeout != "" {
+			if _, err := (RunnerConfig{DefaultStageTimeout: r.DefaultStageTimeout}).DefaultStageTimeoutDuration(); err != nil {
+				return fmt.Errorf("repos[%d] (%s/%s): %w", i, r.Owner, r.Name, err)
+			}
+		}
+		if r.RunControls != nil {
+			if err := runcontrol.Validate(fmt.Sprintf("repos[%d].runControls", i), *r.RunControls); err != nil {
+				return err
+			}
+		}
 		if r.Workspace != nil {
 			if r.Workspace.Pinned && r.Workspace.Worktrees {
 				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.pinned and workspace.worktrees are mutually exclusive", i, r.Owner, r.Name)
@@ -1166,7 +1293,7 @@ func (c *Config) Validate() error {
 			default:
 				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy %q must be one of none, ignored-safe, or full", i, r.Owner, r.Name, policy)
 			}
-			if !r.Workspace.Pinned && r.Workspace.CleanPolicy != "" {
+			if !r.Pinned() && r.Workspace.CleanPolicy != "" {
 				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy requires workspace.pinned", i, r.Owner, r.Name)
 			}
 		}
