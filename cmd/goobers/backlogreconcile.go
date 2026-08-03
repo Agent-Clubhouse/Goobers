@@ -235,7 +235,17 @@ func hasReconciledMetadataLabel(item providers.WorkItem) bool {
 	return item.HasLabel(providers.LabelClaimed) ||
 		item.HasLabel(providers.LabelStale) ||
 		item.HasLabel(providers.LabelTracking) ||
-		(item.HasLabel(providers.LabelReady) && item.HasLabel(providers.LabelNeedsHuman))
+		(item.HasLabel(providers.LabelReady) && itemHasParkLabel(item))
+}
+
+// itemHasParkLabel reports whether item carries one of the park dispositions
+// (#2028) that cannot coexist with goobers:ready — goobers:needs-human (a
+// human decision is pending), goobers:blocked-on-sibling, or
+// goobers:needs-remediation.
+func itemHasParkLabel(item providers.WorkItem) bool {
+	return item.HasLabel(providers.LabelNeedsHuman) ||
+		item.HasLabel(blockedOnSiblingLabel) ||
+		item.HasLabel(needsRemediationLabel)
 }
 
 func inspectBacklogMetadata(
@@ -269,10 +279,11 @@ func inspectBacklogMetadata(
 			correction.reasons = append(correction.reasons, trackingCompleteReason)
 		}
 	}
-	if !validTracking && item.HasLabel(providers.LabelReady) && item.HasLabel(providers.LabelNeedsHuman) {
+	if !validTracking && item.HasLabel(providers.LabelReady) && itemHasParkLabel(item) {
 		correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
 		correction.reasons = append(correction.reasons,
-			"removed `goobers:ready` because it cannot coexist with the fail-closed `goobers:needs-human` state")
+			"removed `goobers:ready` because it cannot coexist with a park disposition "+
+				"(`goobers:needs-human`, `goobers:blocked-on-sibling`, or `goobers:needs-remediation`)")
 	}
 	if item.HasLabel(providers.LabelStale) {
 		reason := ""

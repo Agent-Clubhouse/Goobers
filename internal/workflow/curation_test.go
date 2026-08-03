@@ -180,7 +180,11 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
-	const wantDigest = "sha256:f23c44cf9054202d7f1e59258dfcb9106f3e0ba351d8796af090da3db991ccbe"
+	// #2028: query-backlog's excludeLabels now also excludes
+	// goobers:blocked-on-sibling and goobers:needs-remediation, so the
+	// curator never re-triages an issue already parked under the new
+	// taxonomy's status labels.
+	const wantDigest = "sha256:42f410bbd0ab654c83f9bf8fa5ee5dc582d2b426ab4a78086fb86e23285fb6e8"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

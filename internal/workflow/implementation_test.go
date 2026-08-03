@@ -218,8 +218,8 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// was removed so local-ci runs fully parallel again.
 	// #929: ci-gate's timeout branch now routes through park-escalated rather
 	// than straight at "@escalate". The run's terminal phase is unchanged, but
-	// the issue-side bookkeeping (clear ready, release claimed, apply
-	// needs-human) only runs if that stage does — see
+	// the issue-side bookkeeping (clear ready, release claimed, apply the park
+	// label) only runs if that stage does — see
 	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
 	// #947: open-pr now emits an `opened` output and routes through the new
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
@@ -229,7 +229,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// implement task's goal to describe this gaggle's actual `npm run ci`
 	// stack; no structural/behavioral change, but the goal text is hashed.
 	// #2213: ci-poll uses provider-neutral PR routing.
-	const wantDigest = "sha256:513b932d3106bb25a291cebec02dc8ea612c7b5c4009de61ceaaaab514f4e89c"
+	// #2028: park-escalated now declares status=needs-remediation instead of
+	// needs-human — every route into it (repass exhaustion, infra failure, an
+	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
+	// policy decision. park-needs-human (the reviewer's explicit "fail"
+	// verdict) is unchanged.
+	const wantDigest = "sha256:713386161f67ca0b833180ccb7f9079a9adcd27692a6876e30b7e17dd1593e97"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
