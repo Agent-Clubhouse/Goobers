@@ -185,9 +185,9 @@ func TestPinnedBenchmarkReusesWorkspaceAndPreservesBuildState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("benchmark: %v", err)
 	}
-	if rep.PinnedWorkspaceCreates != 1 || !rep.WorkspaceReused || !rep.BuildStatePreserved {
-		t.Fatalf("pinned warm-run evidence = creates:%d reused:%v state:%v",
-			rep.PinnedWorkspaceCreates, rep.WorkspaceReused, rep.BuildStatePreserved)
+	if rep.FirstRunWorkspaceCreates != 1 || rep.SecondRunWorkspaceCreates != 0 || rep.SecondRunCreateDelta != -1 || !rep.BuildStatePreserved {
+		t.Fatalf("pinned warm-run evidence = first creates:%d second creates:%d delta:%d state:%v",
+			rep.FirstRunWorkspaceCreates, rep.SecondRunWorkspaceCreates, rep.SecondRunCreateDelta, rep.BuildStatePreserved)
 	}
 	if rep.SecondRunWorkspaceBytes < rep.FirstRunWorkspaceBytes {
 		t.Fatalf("second workspace bytes = %d, first = %d", rep.SecondRunWorkspaceBytes, rep.FirstRunWorkspaceBytes)
@@ -214,19 +214,21 @@ func TestLargeRepoGatesRejectRegressions(t *testing.T) {
 		SteadyStateBytes:         largeRepoDiskCeiling,
 		DeepestRelativePathChars: 200,
 		PathBudgetAvailableChars: 200,
-		PinnedWorkspaceCreates:   1,
-		WorkspaceReused:          true,
+		FirstRunWorkspaceCreates: 1,
+		SecondRunCreateDelta:     -1,
 		BuildStatePreserved:      true,
 	}
 	if err := enforceLargeRepoGates(&passing); err != nil {
 		t.Fatalf("passing report rejected: %v", err)
 	}
 	tests := map[string]func(*report){
-		"working tree": func(rep *report) { rep.FirstRunWorkspaceBytes-- },
-		"path depth":   func(rep *report) { rep.Fixture.PathDepth-- },
-		"path budget":  func(rep *report) { rep.DeepestRelativePathChars++ },
-		"steady disk":  func(rep *report) { rep.SteadyStateBytes++ },
-		"warm reuse":   func(rep *report) { rep.WorkspaceReused = false },
+		"working tree":  func(rep *report) { rep.FirstRunWorkspaceBytes-- },
+		"path depth":    func(rep *report) { rep.Fixture.PathDepth-- },
+		"path budget":   func(rep *report) { rep.DeepestRelativePathChars++ },
+		"steady disk":   func(rep *report) { rep.SteadyStateBytes++ },
+		"cold creation": func(rep *report) { rep.FirstRunWorkspaceCreates = 0 },
+		"warm creation": func(rep *report) { rep.SecondRunWorkspaceCreates = 1 },
+		"warm delta":    func(rep *report) { rep.SecondRunCreateDelta = 0 },
 	}
 	for name, regress := range tests {
 		t.Run(name, func(t *testing.T) {

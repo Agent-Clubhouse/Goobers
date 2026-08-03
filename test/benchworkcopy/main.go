@@ -45,8 +45,9 @@
 //	                int     mirror + one pinned workspace + warm build state
 //	deepestRelativePathChars, pathBudgetAvailableChars
 //	                int     generated depth measured against LR-5 preflight
-//	pinnedWorkspaceCreates, workspaceReused, buildStatePreserved
-//	                counters/booleans pinned by the scheduled gate
+//	firstRunWorkspaceCreates, secondRunWorkspaceCreates,
+//	secondRunCreateDelta, buildStatePreserved
+//	                measured work counters pinned by the scheduled gate
 //
 // The small correctness corpus runs in normal tests. The >=10 GiB corpus runs
 // through make bench-large-repo in the scheduled large-repository lane.
@@ -93,31 +94,32 @@ type fixtureReport struct {
 }
 
 type report struct {
-	Schema                   string         `json:"schema"`
-	GOOS                     string         `json:"goos"`
-	GOARCH                   string         `json:"goarch"`
-	GitVersion               string         `json:"gitVersion"`
-	PartialClone             bool           `json:"partialClone"`
-	Mode                     string         `json:"mode"`
-	RepoURL                  string         `json:"repoURL"`
-	Fixture                  *fixtureReport `json:"fixture,omitempty"`
-	ColdCloneMs              int64          `json:"coldCloneMs"`
-	MirrorBytes              int64          `json:"mirrorBytes"`
-	WarmFetchMs              int64          `json:"warmFetchMs"`
-	Cycles                   []cycleResult  `json:"cycles"`
-	WorktreeAddMsMedian      int64          `json:"worktreeAddMsMedian"`
-	TeardownMsMedian         int64          `json:"teardownMsMedian"`
-	InitToFirstRunMs         int64          `json:"initToFirstRunMs,omitempty"`
-	SecondRunMs              int64          `json:"secondRunMs,omitempty"`
-	SecondRunDeltaMs         int64          `json:"secondRunDeltaMs,omitempty"`
-	FirstRunWorkspaceBytes   int64          `json:"firstRunWorkspaceBytes,omitempty"`
-	SecondRunWorkspaceBytes  int64          `json:"secondRunWorkspaceBytes,omitempty"`
-	SteadyStateBytes         int64          `json:"steadyStateBytes,omitempty"`
-	DeepestRelativePathChars int            `json:"deepestRelativePathChars,omitempty"`
-	PathBudgetAvailableChars int            `json:"pathBudgetAvailableChars,omitempty"`
-	PinnedWorkspaceCreates   int            `json:"pinnedWorkspaceCreates,omitempty"`
-	WorkspaceReused          bool           `json:"workspaceReused,omitempty"`
-	BuildStatePreserved      bool           `json:"buildStatePreserved,omitempty"`
+	Schema                    string         `json:"schema"`
+	GOOS                      string         `json:"goos"`
+	GOARCH                    string         `json:"goarch"`
+	GitVersion                string         `json:"gitVersion"`
+	PartialClone              bool           `json:"partialClone"`
+	Mode                      string         `json:"mode"`
+	RepoURL                   string         `json:"repoURL"`
+	Fixture                   *fixtureReport `json:"fixture,omitempty"`
+	ColdCloneMs               int64          `json:"coldCloneMs"`
+	MirrorBytes               int64          `json:"mirrorBytes"`
+	WarmFetchMs               int64          `json:"warmFetchMs"`
+	Cycles                    []cycleResult  `json:"cycles"`
+	WorktreeAddMsMedian       int64          `json:"worktreeAddMsMedian"`
+	TeardownMsMedian          int64          `json:"teardownMsMedian"`
+	InitToFirstRunMs          int64          `json:"initToFirstRunMs,omitempty"`
+	SecondRunMs               int64          `json:"secondRunMs,omitempty"`
+	SecondRunDeltaMs          int64          `json:"secondRunDeltaMs,omitempty"`
+	FirstRunWorkspaceBytes    int64          `json:"firstRunWorkspaceBytes,omitempty"`
+	SecondRunWorkspaceBytes   int64          `json:"secondRunWorkspaceBytes,omitempty"`
+	SteadyStateBytes          int64          `json:"steadyStateBytes,omitempty"`
+	DeepestRelativePathChars  int            `json:"deepestRelativePathChars,omitempty"`
+	PathBudgetAvailableChars  int            `json:"pathBudgetAvailableChars,omitempty"`
+	FirstRunWorkspaceCreates  int            `json:"firstRunWorkspaceCreates"`
+	SecondRunWorkspaceCreates int            `json:"secondRunWorkspaceCreates"`
+	SecondRunCreateDelta      int            `json:"secondRunCreateDelta"`
+	BuildStatePreserved       bool           `json:"buildStatePreserved,omitempty"`
 }
 
 const schemaID = "goobers.bench-workcopy/v2"
@@ -416,9 +418,7 @@ func benchmarkPinned(ctx context.Context, manager *worktree.Manager, repoURL str
 	}
 	first := firstLease.Worktree
 	rep.InitToFirstRunMs = time.Since(start).Milliseconds()
-	if first.PinnedWorkspaceCreated {
-		rep.PinnedWorkspaceCreates = 1
-	}
+	rep.FirstRunWorkspaceCreates = boolCount(first.PinnedWorkspaceCreated)
 	rep.FirstRunWorkspaceBytes, err = diskBytes(first.Path)
 	if err != nil {
 		_ = firstLease.Release()
@@ -464,7 +464,8 @@ func benchmarkPinned(ctx context.Context, manager *worktree.Manager, repoURL str
 	second := secondLease.Worktree
 	rep.SecondRunMs = time.Since(start).Milliseconds()
 	rep.SecondRunDeltaMs = rep.SecondRunMs - rep.InitToFirstRunMs
-	rep.WorkspaceReused = first.Path == second.Path && !second.PinnedWorkspaceCreated
+	rep.SecondRunWorkspaceCreates = boolCount(second.PinnedWorkspaceCreated)
+	rep.SecondRunCreateDelta = rep.SecondRunWorkspaceCreates - rep.FirstRunWorkspaceCreates
 	if info, statErr := os.Stat(cachePath); statErr == nil && info.Size() == opts.buildStateBytes {
 		rep.BuildStatePreserved = true
 	}
@@ -498,10 +499,17 @@ func enforceLargeRepoGates(rep *report) error {
 	if rep.SteadyStateBytes > largeRepoDiskCeiling {
 		return fmt.Errorf("large-repo gate: steady disk %s exceeds %s ceiling", humanBytes(rep.SteadyStateBytes), humanBytes(largeRepoDiskCeiling))
 	}
-	if rep.PinnedWorkspaceCreates != 1 || !rep.WorkspaceReused || !rep.BuildStatePreserved {
+	if rep.FirstRunWorkspaceCreates != 1 || rep.SecondRunWorkspaceCreates != 0 || rep.SecondRunCreateDelta != -1 || !rep.BuildStatePreserved {
 		return fmt.Errorf("large-repo gate: second run rematerialized the workspace or lost warm build state")
 	}
 	return nil
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func deepestRelativePath(root string) (string, error) {
