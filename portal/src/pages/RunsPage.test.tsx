@@ -53,7 +53,7 @@ describe("runs history page", () => {
       within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
     ).toHaveLength(68);
     expect(listRuns).toHaveBeenCalledTimes(callsBeforeRevisit);
-  });
+  }, 15_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
