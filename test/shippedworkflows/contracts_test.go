@@ -1252,7 +1252,7 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			continue
 		}
 		var source, destination any
-		var sourceFound, destinationFound bool
+		var sourceFound, destinationFound, consumerRan bool
 		for _, event := range events {
 			if event.Type != journal.EventStageFinished {
 				continue
@@ -1261,8 +1261,16 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			case contract.producer:
 				source, sourceFound = event.Outputs[contract.producerOutput]
 			case contract.consumer:
+				consumerRan = true
 				destination, destinationFound = event.Outputs[contract.consumerOutput]
 			}
+		}
+		// A terminal scenario that short-circuits before the consumer stage
+		// ever runs (e.g. #2340's issue-staleness-gate routing straight to a
+		// terminal stop) legitimately never exercises this handoff — that is
+		// a different scenario's contract to hold, not this one's to fail.
+		if !consumerRan {
+			continue
 		}
 		if !sourceFound || !destinationFound ||
 			!reflect.DeepEqual(source, contract.expectedValue) ||

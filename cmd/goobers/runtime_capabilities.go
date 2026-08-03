@@ -564,6 +564,10 @@ func init() {
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
+		stageCommand("check-issue-staleness", apicontract.ActionWorkflowExecution, runCheckIssueStaleness).
+			withSynopsis(synopsisByID["check-issue-staleness"]).
+			withHelp("route a PR to remediation if its linked issue changed since implementation began (a workflow stage)", checkIssueStalenessHelp).
+			withExamples("goobers check-issue-staleness"),
 		stageCommand("gather-sibling-context", apicontract.ActionWorkflowExecution, runGatherSiblingContext).
 			withSynopsis(synopsisByID["gather-sibling-context"]).
 			withHelp("load other open PRs as review evidence (a workflow stage)", gatherSiblingContextHelp).

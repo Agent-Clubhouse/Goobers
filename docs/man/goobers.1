@@ -286,6 +286,9 @@ query/claim one eligible backlog item (a workflow stage)
 \fBgoobers check-fail-first\fR
 enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
+\fBgoobers check-issue-staleness\fR
+route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+.TP
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
 .TP
@@ -393,6 +396,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
 \fBgoobers-check-fail-first\fR(1),
+\fBgoobers-check-issue-staleness\fR(1),
 \fBgoobers-claims\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),

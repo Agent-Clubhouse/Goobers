@@ -111,6 +111,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
 | [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
+| [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
@@ -517,6 +518,32 @@ evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
 
 ~~~console
 $ goobers check-fail-first
+~~~
+
+## `goobers check-issue-staleness`
+
+route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+
+~~~text
+Usage: goobers check-issue-staleness [path]
+
+Re-fetch the PR's pinned linked issue and compare its live updatedAt
+against the snapshot taken when the PR was opened. If the issue changed
+materially since implementation began, label the PR goobers:needs-
+remediation and post an explanatory comment instead of letting review
+proceed against stale copied criteria. A PR with no pin (predates this
+feature, or its linked issue never resolved an updatedAt) is never
+considered stale — there is nothing to compare against. Declared
+inputs: pullNumber (required), head/base/advisoryMode (passed through
+unchanged for the next stage's inputsFrom). Writes
+issueStale/number/head/base/advisoryMode to the declared result file.
+Exit codes: 0 = evaluated, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-issue-staleness
 ~~~
 
 ## `goobers claims`
