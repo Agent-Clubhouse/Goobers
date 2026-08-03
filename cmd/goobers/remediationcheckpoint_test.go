@@ -650,6 +650,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{needsRemediationLabel},
 	}
+
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
@@ -685,6 +686,45 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	defer st.mu.Unlock()
 	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
 		t.Fatalf("labels = %v, want merge-escalated on repeated no-cause failure", st.labels)
+	}
+}
+
+func TestRemediationCheckpointShortCircuitsImplementationEscalatedDigest(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	runGitT(t, ".", "checkout", "-b", "goobers/impl/remediation-364", "origin/goobers/impl/remediation-364")
+	digest, err := diffDigest(".", baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest: %v", err)
+	}
+	comment, err := implementationEscalationComment(implementationEscalationState{
+		DiffDigest: digest,
+		Reason:     "local-ci exceeded its timeout and the implementer produced no change",
+		Cause:      map[string]any{"kind": "stage-failure", "stage": "local-ci"},
+	})
+	if err != nil {
+		t.Fatalf("implementationEscalationComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{needsRemediationLabel}, comments: []string{comment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "byte-identical") {
+		t.Fatalf("stdout = %q, want pre-agent repeat-digest escalation", stdout)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, want merge-escalated", st.labels)
+	}
+	if len(st.comments) != 1 {
+		t.Fatalf("comments = %d, want the implementation marker updated in place", len(st.comments))
 	}
 }
 

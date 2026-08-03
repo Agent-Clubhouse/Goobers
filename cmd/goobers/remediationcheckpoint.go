@@ -177,6 +177,21 @@ type remediationState struct {
 // remediationStatePattern matches the machine-readable payload
 // remediationStateComment appends to its posted comment.
 var remediationStatePattern = regexp.MustCompile(`(?s)<!-- remediation-state: (.*?) -->`)
+var implementationEscalationPattern = regexp.MustCompile(`(?s)<!-- implementation-escalation: (.*?) -->`)
+
+type implementationEscalationState struct {
+	DiffDigest string         `json:"diffDigest"`
+	Reason     string         `json:"reason"`
+	Cause      map[string]any `json:"cause,omitempty"`
+}
+
+func implementationEscalationComment(state implementationEscalationState) (string, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return "", fmt.Errorf("marshal implementation escalation: %w", err)
+	}
+	return fmt.Sprintf("Implementation parked for human review: %s\n\n<!-- implementation-escalation: %s -->", state.Reason, data), nil
+}
 
 // remediationStateComment marshals s into the HTML-comment payload a
 // checkpoint run posts as a PR comment.
@@ -194,14 +209,28 @@ func remediationStateComment(s remediationState) (string, error) {
 // PR's first pr-remediation cycle, not a parse error.
 func parseRemediationStateComment(body string) (remediationState, bool) {
 	m := remediationStatePattern.FindStringSubmatch(body)
+	if m != nil {
+		var s remediationState
+		if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
+			return remediationState{}, false
+		}
+		return s, true
+	}
+	m = implementationEscalationPattern.FindStringSubmatch(body)
 	if m == nil {
 		return remediationState{}, false
 	}
-	var s remediationState
-	if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
+	var state implementationEscalationState
+	if err := json.Unmarshal([]byte(m[1]), &state); err != nil || state.DiffDigest == "" {
 		return remediationState{}, false
 	}
-	return s, true
+	// Seed the existing pre-agent same-diff guard. BaseSHA intentionally stays
+	// empty because implementation records the content digest, not PR metadata;
+	// remediationStalled's compatibility path compares the exact digest alone.
+	return remediationState{
+		LastDiffDigest:  state.DiffDigest,
+		EscalatedReason: state.Reason,
+	}, true
 }
 
 // renderRemediationComment builds the full sticky-comment body for state: a

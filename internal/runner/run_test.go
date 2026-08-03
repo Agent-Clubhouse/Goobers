@@ -4966,6 +4966,7 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated", res.Phase)
 	}
@@ -4975,6 +4976,80 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 	if !strings.Contains(commenter.requests[0].Comment, "repass budget exhausted") {
 		t.Fatalf("comment = %q, want automatic escalation reason", commenter.requests[0].Comment)
 	}
+}
+
+func TestTerminalGateNotificationDefersToParkingStage(t *testing.T) {
+	reason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "park-escalated",
+		Escalated: true, DuplicateDiff: true,
+	})
+	if notify || reason != "" {
+		t.Fatalf("terminalGateNotificationReason = %q,%t, want no runner comment when parking stage owns it", reason, notify)
+	}
+}
+
+func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
+	t.Run("CI failure", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-ci")
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultFailure),
+			Error: &journal.ErrorDetail{Code: "deadline_exceeded", Message: "exceeded its 10m timeout"},
+		}); err != nil {
+			t.Fatalf("append stage failure: %v", err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement"}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		cause, err := priorRepassCause(run, "implement")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "stage-failure" || cause.Stage != "local-ci" ||
+			cause.ErrorCode != "deadline_exceeded" {
+			t.Fatalf("cause = %+v, want local-ci deadline failure", cause)
+		}
+	})
+
+	t.Run("reviewer", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-review")
+		data, err := json.Marshal(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges, Rationale: "parser still accepts empty input",
+		})
+		if err != nil {
+			t.Fatalf("marshal verdict: %v", err)
+		}
+		ref, err := run.RecordArtifact("verdict/review-1.json", data)
+		if err != nil {
+			t.Fatalf("record verdict: %v", err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+			Target: "implement", Ref: &ref,
+		}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		cause, err := priorRepassCause(run, "implement")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "reviewer" || cause.Gate != "review" ||
+			!strings.Contains(cause.Rationale, "empty input") {
+			t.Fatalf("cause = %+v, want reviewer needs-changes rationale", cause)
+		}
+	})
+}
+
+func newRunnerTestJournal(t *testing.T, runID string) *journal.Run {
+	t.Helper()
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	return run
 }
 
 // TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
