@@ -50,11 +50,14 @@ func completeCall(kind string) string {
 	return fmt.Sprintf("$(command goobers __complete %s 2>/dev/null)", kind)
 }
 
-// commandNames lists the top-level command word forms in registry order.
+// commandNames lists core top-level commands. Advanced and stage commands keep
+// their completion arms when typed explicitly, but do not crowd discovery.
 func commandNames(m completionModel) []string {
 	out := make([]string, 0, len(m.commands))
 	for _, c := range m.commands {
-		out = append(out, c.name)
+		if c.tier == cliTierCore {
+			out = append(out, c.name)
+		}
 	}
 	return out
 }
@@ -177,6 +180,9 @@ func renderZshCompletion(m completionModel) string {
 	b.WriteString("    if (( CURRENT == 2 )); then\n")
 	b.WriteString("        commands=(\n")
 	for _, c := range m.commands {
+		if c.tier != cliTierCore {
+			continue
+		}
 		fmt.Fprintf(&b, "            %s\n", zshDescribeItem(c.name, c.desc))
 	}
 	for _, gf := range m.globalFlags {

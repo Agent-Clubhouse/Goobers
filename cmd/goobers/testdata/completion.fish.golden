@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up down apply self-update service worker dashboard run signal workflow runs status stats features schema explain reset-rate-limit workspace blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-assignment backlog-health backlog-query select-source validate-plan reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr pr-claim gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 

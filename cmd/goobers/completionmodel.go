@@ -34,6 +34,7 @@ type completionCommand struct {
 	name    string               // canonical leaf name (registry names[0])
 	id      string               // full space-joined invocation path
 	desc    string               // registry short help (renders as the zsh description)
+	tier    cliCommandTier       // controls top-level progressive disclosure
 	subs    []completionCommand  // nested subcommands, from the registry
 	flags   []completionFlagSpec // annotated flags (completionFlagSpecs[id])
 	argKind string               // dynamic positional arg kind (workflows|runs|escalations|examples)
@@ -308,6 +309,7 @@ func buildCompletionCommand(c cliCommand, name, id string) completionCommand {
 		name:    name,
 		id:      id,
 		desc:    c.short,
+		tier:    c.tier,
 		flags:   completionFlagSpecs[id],
 		argKind: completionPositionalArgKinds[id],
 	}
