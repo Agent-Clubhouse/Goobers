@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 const (
@@ -76,6 +77,43 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(inlineWorkflow.Spec.Tasks) == 0 || inlineWorkflow.Spec.Tasks[0].Run == nil ||
 		inlineWorkflow.Spec.Tasks[0].Run.Script == "" {
 		t.Fatalf("inline workflow does not exercise run.script: %+v", inlineWorkflow.Spec.Tasks)
+	}
+}
+
+func TestLoadConfigDirReportsMissingSkillPackagesAsWarnings(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	if err := os.CopyFS(configDir, os.DirFS("starter")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, report, err := LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with missing skill packages: %v (report: %+v)", err, report)
+	}
+	var missing []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			missing = append(missing, warning)
+		}
+	}
+	if len(missing) != 2 {
+		t.Fatalf("missing skill warnings = %+v, want implement and run-tests", missing)
+	}
+
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, report, err = LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with present skill packages: %v (report: %+v)", err, report)
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("present skill package emitted warning: %+v", warning)
+		}
 	}
 }
 

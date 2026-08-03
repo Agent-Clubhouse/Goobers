@@ -896,6 +896,84 @@ func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	}
 }
 
+func TestGooberSkillPackageWarnings(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: instructions.md
+  skills:
+    - present
+    - missing
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "skills", "present"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			warnings = append(warnings, warning)
+		}
+	}
+	want := CodedWarning{
+		Code:        WarningMissingSkillPackage,
+		Severity:    Warning,
+		Scope:       "config.yaml Goober/coder",
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "skills/missing"`,
+	}
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
+	}
+	if report.HasErrors() {
+		t.Fatalf("missing skill package must remain non-fatal: %+v", report.Issues)
+	}
+}
+
 // TestCompilerChecksSurfaceInValidate proves `goobers validate` inherits the
 // workflow compiler's deeper analysis (issue #9): a bad schedule expression, an
 // unreachable state, and a stage using a capability its goober does not grant

@@ -24,10 +24,11 @@ repos:
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
 
 type checkedInTree struct {
-	path            string
-	sourceTree      bool
-	strict          bool
-	allowedWarnings []string
+	path                   string
+	sourceTree             bool
+	strict                 bool
+	allowedWarnings        []string
+	allowedWarningPrefixes []string
 }
 
 var checkedInTrees = []checkedInTree{
@@ -36,6 +37,9 @@ var checkedInTrees = []checkedInTree{
 		sourceTree:      true,
 		strict:          true,
 		allowedWarnings: []string{docsUpdaterInertWarning},
+		allowedWarningPrefixes: []string{
+			"WARNING SKILL002 ",
+		},
 	},
 	{path: "config-examples"},
 	{path: "examples/ios-simulator"},
@@ -132,7 +136,7 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 			continue
 		}
 		if len(tree.allowedWarnings) > 0 {
-			got := validationWarnings(commandStdout.String())
+			got := withoutAllowedWarningPrefixes(validationWarnings(commandStdout.String()), tree.allowedWarningPrefixes)
 			if !equalStrings(got, tree.allowedWarnings) {
 				_, _ = fmt.Fprintf(
 					stderr,
@@ -149,6 +153,23 @@ func validateTrees(root string, trees []checkedInTree, validator validatorComman
 		return 1
 	}
 	return 0
+}
+
+func withoutAllowedWarningPrefixes(warnings, prefixes []string) []string {
+	filtered := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		allowed := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(warning, prefix) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			filtered = append(filtered, warning)
+		}
+	}
+	return filtered
 }
 
 func gitWorktreeEnv(root string) ([]string, error) {
