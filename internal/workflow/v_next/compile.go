@@ -403,8 +403,12 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				}
 			}
 		}
-		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.GitHubPRWrite)] {
-			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.GitHubPRWrite))
+		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.ProviderPRWrite)] {
+			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.ProviderPRWrite))
+		}
+		if capabilities[string(capability.ProviderPRWrite)] &&
+			(capabilities[string(capability.GitHubPRWrite)] || capabilities[string(capability.ADOPRWrite)]) {
+			problems = append(problems, fmt.Sprintf("task %q declares mutually exclusive provider-neutral and provider-specific PR write capabilities", t.Name))
 		}
 		if t.Inputs["kind"] == "external-telemetry" && !capabilities[string(capability.TelemetryRead)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))

@@ -17,6 +17,11 @@ This directory is the **config repo content** (`manifest.yaml` +
 It is not itself an instance root — `goobers init` creates one, and you point
 its `config/` at this directory's contents (see below).
 
+Complete the regular-instance steps in the
+[canonical quickstart](../docs/guides/quickstart.md) first. The setup below
+contains only the deltas for targeting the Goobers repository with its
+self-hosting workflows.
+
 ## What's in here
 
 ```
@@ -99,23 +104,11 @@ Do **not** grant merge or admin permissions — the instance is never supposed
 to merge, and branch protection should stay something only a human/repo
 admin can touch.
 
-## Setting up the instance
+## Apply the self-hosting configuration
 
-1. **Pick an instance root** — anywhere on your machine, e.g.
-   `~/goobers-instance`. This is *your* choice; nothing in this repo assumes
-   a specific path (the instance root is never checked in).
+After the canonical quickstart has created and validated a regular instance:
 
-2. **Initialize it:**
-
-   ```sh
-   goobers init ~/goobers-instance
-   ```
-
-   This scaffolds `instance.yaml`, `config/` (seeded with a generic starter
-   example), `runs/`, `scheduler/`, `workcopies/`, and a `telemetry.db`
-   placeholder.
-
-3. **Replace the seeded config with this one:**
+1. **Replace the seeded config with this one:**
 
    ```sh
    rm -rf ~/goobers-instance/config
@@ -125,7 +118,7 @@ admin can touch.
    cp reference-workflows/instance.yaml.example ~/goobers-instance/instance.yaml
    ```
 
-4. **Sign in and set repository tokens** (never inline them into
+2. **Sign in and set repository tokens** (never inline them into
    `instance.yaml` — the loader rejects that, `CFG-009`/`SEC-010`):
 
    ```sh
@@ -139,14 +132,14 @@ admin can touch.
    `GOOBERS_COPILOT_TOKEN` to a fine-grained PAT with Copilot Requests:
    Read-only.
 
-5. **Validate before starting anything:**
+3. **Validate the self-hosting definitions:**
 
    ```sh
    goobers validate ~/goobers-instance
    # OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))
    ```
 
-6. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
+4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
    re-run; `gh label create --force` creates or updates in place):
 
    ```sh
@@ -164,7 +157,7 @@ admin can touch.
    done
    ```
 
-7. **Start the daemon** (scheduler + runner + telemetry rollup):
+5. **Start the daemon** (scheduler + runner + telemetry rollup):
 
    ```sh
    goobers up ~/goobers-instance
@@ -172,11 +165,6 @@ admin can touch.
 
    Collector push is optional. To inspect local traces in Jaeger, follow the
    [Jaeger quickstart](../docs/guides/jaeger-quickstart.md).
-
-   > `goobers up`/`run`/`status`/`trace` land with issue #23 (CLI surface,
-   > in progress). Until then, `init`/`validate` are enough to prepare and
-   > check this config; `up` is where the daemon actually starts running
-   > cycles against the live backlog.
 
 ## What to expect per cycle
 

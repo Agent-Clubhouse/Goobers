@@ -8,7 +8,7 @@
     "semantics": "sha256:a3b0925880900fd71d9e502d3a15b40f0c9457be0ac90fcf6dae554f0c66fe07"
   },
   "runtime-policy.yaml": {
-    "machine": "sha256:a28ff7bcb38e9441542f53fc968ba78354c2c61515030bb40f6d06557de051c8",
-    "semantics": "sha256:8c55edfeb88f1b7bdbfb32fa961dad7431667c437ae3af542d6ba165a5bbf8bd"
+    "machine": "sha256:dfdf7dec7f2d1035d464b140bfe16f5c5a6f0f4058426d2dce9bae08af27846c",
+    "semantics": "sha256:ead40bf41718b18fcfb4ee70453550a1375c7b377f01fc82ce3a110d67dfe78f"
   }
 }

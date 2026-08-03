@@ -375,7 +375,15 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		if workflow != instance.GuidedWorkflowImplementation {
 			continue
 		}
-		ciText, promptErr := p.ask("Local CI command (space-separated argv or JSON array)", "make ci", validCommand)
+		cwd, _ := os.Getwd()
+		stack, detected := detectCICommandDefault(cwd)
+		defaultCI := strings.Join(detected, " ")
+		if stack != "" {
+			pf(stdout, "Detected %s build manifest in %s — defaulting the local CI command to `%s`.\n", stack, cwd, defaultCI)
+		} else {
+			pln(stdout, "No recognized build manifest (Makefile, go.mod, *.csproj/*.sln, package.json, pom.xml, build.gradle(.kts), Package.swift, pyproject.toml/setup.py/requirements.txt) found; enter the local CI command explicitly.")
+		}
+		ciText, promptErr := p.ask("Local CI command (space-separated argv or JSON array)", defaultCI, validCommand)
 		if promptErr != nil {
 			return instance.GuidedOptions{}, promptErr
 		}

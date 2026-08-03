@@ -5,6 +5,10 @@ curation run and one implementation pull request. It also shows how to add a
 second gaggle to the same local instance. It is the repository-neutral version
 of the [self-hosting runbook](../../reference-workflows/README.md).
 
+Complete the [canonical first-run quickstart](quickstart.md) before using this
+production-oriented guide. The steps here are the repository-onboarding deltas
+for replacing its disposable target with an adopter-owned repository.
+
 The guide uses the complete
 [`config-examples/`](../../config-examples/) definitions as a starting point,
 then removes workflows that are not needed for the first acceptance cycle.

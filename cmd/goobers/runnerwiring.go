@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -320,7 +321,26 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+}
+
+// daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
+// credential (static token or App-minted) is registered under (#1780),
+// namespaced away from repo refs ("owner/name") and explicit credentials:
+// refs ("credential:<key>") the same way those two are namespaced from each
+// other.
+const daemonIdentityRefName = "daemon-identity"
+
+// daemonIdentityCapabilities are the standard daemon-mutation capabilities a
+// configured DaemonIdentity backs by default (#1780) — deliberately a subset
+// of credentialedCapabilities: GitHubMilestonesWrite (roadmap mutation) and
+// GitHubIssuesApprove (the goobers:approved trust decision) are excluded
+// because both are explicitly documented (internal/capability) as separate,
+// deliberate decisions that must not silently follow whichever identity
+// authors ordinary PRs/issues — an instance that wants those on the daemon
+// identity too can still say so explicitly via credentials:.
+var daemonIdentityCapabilities = []capability.Capability{
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
@@ -455,6 +475,32 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
+	// Daemon identity (#1780/#1295): when configured, sources a single named
+	// ref backing the standard daemon-mutation capability set — one place
+	// instead of one credentials: entry per capability. Built before the
+	// explicit credentials: loop below so those entries, appended after,
+	// still win per RunnerGrants' last-wins-per-capability semantics
+	// (matches every explicit CredentialGrant's existing precedence over a
+	// repo-default grant).
+	var daemonIdentityOverrides []credentials.Grant
+	if cfg.DaemonIdentity != nil {
+		if cfg.DaemonIdentity.GitHubApp() {
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleName, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ResolveFunc)
+			}
+			sources[daemonIdentityRefName] = mint
+		} else {
+			refs = append(refs, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName))
+		}
+		daemonIdentityOverrides = make([]credentials.Grant, len(daemonIdentityCapabilities))
+		for i, c := range daemonIdentityCapabilities {
+			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+		}
+	}
 	// Explicit credential refs: each sources one capability or named BYO MCP
 	// credential from its own token, namespaced away from repo refs.
 	for _, cg := range cfg.Credentials {
@@ -473,7 +519,8 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	for i, c := range credentialedCapabilities {
 		caps[i] = string(c)
 	}
-	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
+	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
 		key, err := credentialGrantKey(cg)
 		if err != nil {
@@ -569,6 +616,33 @@ func credentialRefName(key string) string { return "credential:" + key }
 // production source caches until near expiry and single-flights refreshes.
 var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.Token, nil
+}
+
+// newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
+// source for a github-app-kind DaemonIdentity (#1780/#1779), scoped down to
+// this one gaggle's repo exactly like a repo's own github-app auth already
+// is (MGV-5 #1012) — a shared App installation must not hand one gaggle's
+// stages a token that reaches a sibling gaggle's repo. A package var, like
+// newGitHubAppTokenSource, so CLI tests substitute an httptest-backed source.
+var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	const keyRefName = "daemon-identity-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{d.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure daemon identity App key source: %w", err)
+	}
+	source, err := githubapp.New(githubapp.Config{
+		AppID:          string(d.AppID),
+		InstallationID: string(d.InstallationID),
+		Repositories:   []string{gaggleRepoName},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -696,6 +770,10 @@ type ciPollKindExecutor struct {
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	required := string(capability.ProviderPRWrite)
+	if !slices.Contains(env.Capabilities, required) {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q: %w", executor.KindCIPoll, required, credentials.ErrUndeclaredCapability)
+	}
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
@@ -709,7 +787,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}
@@ -719,7 +797,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}

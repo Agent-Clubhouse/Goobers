@@ -189,6 +189,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	expectedAuthorLogin := daemonIdentityAuthorLogin(ctx, root, provider)
 	// SkipCheckState: the list is the always-fresh probe (one request), but
 	// per-candidate check-state resolution is two more requests per PR. It is
 	// resolved below after file-list memoization so same-head CI reruns are
@@ -207,7 +208,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	}
 	next := make(map[string]siblingCacheEntry, len(prs))
 
-	var selectedHead, selectedHeadSHA, selectedBaseSHA string
+	var selectedHead, selectedHeadSHA, selectedBaseSHA, selectedAuthor string
 	selectedFound := false
 	var selectedFiles []string
 	var selectedLines int
@@ -222,6 +223,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			// pin against (design doc §6 D6), not whatever pr-select saw
 			// several stages ago.
 			selectedHead, selectedHeadSHA, selectedBaseSHA = pr.Head, pr.HeadSHA, pr.BaseSHA
+			selectedAuthor = pr.Author
 			// Its current labels, for the #1111 scope-drift flag's idempotency.
 			selectedLabels = pr.Labels
 			// Capture its own changed files too (#989), so overlap against
@@ -305,7 +307,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	if hasAnyLabel(selectedLabels, []string{noMergeReviewLabel}) {
 		return writeNoWorkResult(stdout, stderr, "selected PR opted out of merge-review")
 	}
-	expectedAdvisoryMode := authorScope == authorScopeAny && !hasAnyHeadPrefix(selectedHead, headPrefixes)
+	expectedAdvisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selectedAuthor, selectedHead, headPrefixes, expectedAuthorLogin)
 	if advisoryMode != expectedAdvisoryMode {
 		pf(stderr, "error: advisoryMode %t does not match selected PR head %q under authorScope %q and headPrefixes %q\n",
 			advisoryMode, selectedHead, authorScope, strings.Join(headPrefixes, ","))
