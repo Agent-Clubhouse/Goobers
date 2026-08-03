@@ -366,6 +366,7 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create journal: %v", err)
 	}
+
 	defer func() { _ = run.Close() }()
 	if err := run.Append(journal.Event{
 		Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "park-needs-human",
@@ -380,6 +381,121 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	}
 	if !strings.Contains(reason, "local-gate") || !strings.Contains(reason, "attempt 4") {
 		t.Fatalf("reason = %q, want local-gate and repass attempt", reason)
+	}
+}
+
+func TestIssueCloseOutDuplicateEscalationCarriesDigestAndCause(t *testing.T) {
+	runsDir := t.TempDir()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-duplicate", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	defer func() { _ = run.Close() }()
+	verdictData, err := json.Marshal(apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Rationale: "the prior repass was triggered by local-ci timing out; the implementer produced no change in response",
+	})
+	if err != nil {
+		t.Fatalf("marshal verdict: %v", err)
+	}
+	ref, err := run.RecordArtifact("verdict/review-2.json", verdictData)
+	if err != nil {
+		t.Fatalf("record verdict: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+		Target: "park-escalated", Ref: &ref,
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": "sha256:abc",
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("append gate event: %v", err)
+	}
+
+	state, ok, err := issueCloseOutDuplicateEscalation(runsDir, "run-duplicate")
+	if err != nil {
+		t.Fatalf("issueCloseOutDuplicateEscalation: %v", err)
+	}
+	if !ok || state.DiffDigest != "sha256:abc" || state.Cause["stage"] != "local-ci" ||
+		!strings.Contains(state.Reason, "local-ci") || !strings.Contains(state.Reason, "timed out") {
+		t.Fatalf("state = %#v, ok=%t", state, ok)
+	}
+}
+
+func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Stalled implementation", "goobers:approved", "goobers:ready", "goobers:claimed")
+	server.addIssue(77, "Implementation PR")
+
+	const runID = "run-duplicate"
+	head := providers.BranchNameIn(providerBranchNamespace(), "implementation", runID)
+	server.addOpenPR(77, head, "main", "head-sha", "base-sha", false, nil, nil)
+	server.setPRBody(77, "Fixes #7")
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated",
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": "sha256:abc",
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("append gate event: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if got := len(server.issues[7].comments); got != 1 {
+		t.Fatalf("driving issue comments = %d, want exactly one", got)
+	}
+	if got := len(server.issues[77].comments); got != 0 {
+		t.Fatalf("PR comments = %d, want none", got)
+	}
+	if !strings.Contains(server.issues[7].comments[0], "local-ci") {
+		t.Fatalf("parking comment = %q, want upstream cause", server.issues[7].comments[0])
+	}
+	if !strings.Contains(server.prs[77].body, "Fixes #7") {
+		t.Fatalf("PR body = %q, want original description preserved", server.prs[77].body)
+	}
+	state, ok := parseRemediationStateComment(server.prs[77].body)
+	if !ok || state.LastDiffDigest != "sha256:abc" {
+		t.Fatalf("PR body marker state = %#v, ok=%t", state, ok)
 	}
 }
 
