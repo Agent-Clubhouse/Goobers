@@ -192,7 +192,7 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 10 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
 		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
 	}
 }

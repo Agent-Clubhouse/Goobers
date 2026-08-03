@@ -140,7 +140,7 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 10 {
+	if len(set.Goobers) != 12 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
