@@ -53,7 +53,9 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 // subprocess (an active `az login` on the host), so no token is injected into
 // the stage env. PAT/workload/managed-identity auth kinds resolve their
 // credential through the same adoauth.Source seam.
-func newADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+var newADOProviderForStage = buildADOProviderForStage
+
+func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
 	repo, err := adoRepoRefForStage(root, routed)
 	if err != nil {
 		return nil, err

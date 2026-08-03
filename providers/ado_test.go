@@ -27,25 +27,51 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 	})
 }
 
-func TestADOProviderOpenPullRequest(t *testing.T) {
-	var posted struct {
+func TestADOProviderOpenPullRequestCreatesThenUpdates(t *testing.T) {
+	type requestBody struct {
 		SourceRefName string `json:"sourceRefName"`
 		TargetRefName string `json:"targetRefName"`
 		Title         string `json:"title"`
 		Description   string `json:"description"`
-		IsDraft       bool   `json:"isDraft"`
+		IsDraft       *bool  `json:"isDraft"`
 	}
+	var posted, patched requestBody
+	created := false
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+			value := []interface{}{}
+			if created {
+				value = append(value, map[string]interface{}{
+					"pullRequestId": 42,
+					"url":           "api-pr-url",
+					"sourceRefName": "refs/heads/goobers/implementation/run-1",
+					"targetRefName": "refs/heads/main",
+					"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+				})
+			}
+			writeJSON(t, w, map[string]interface{}{"value": value})
 		case http.MethodPost:
 			decodeJSON(t, r, &posted)
-			writeJSON(t, w, map[string]interface{}{"pullRequestId": 42, "url": "https://dev.azure.com/org/project/_git/repo/pullrequest/42"})
+			created = true
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+			})
 		default:
 			t.Fatalf("unexpected pullrequests method %s", r.Method)
 		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		decodeJSON(t, r, &patched)
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId": 42,
+			"url":           "api-pr-url",
+			"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+		})
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -62,15 +88,34 @@ func TestADOProviderOpenPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPullRequest returned error: %v", err)
 	}
-	if result.Number != 42 || result.ID != "42" || result.URL == "" {
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
 		t.Fatalf("OpenPullRequest result = %#v", result)
 	}
 	if posted.SourceRefName != "refs/heads/goobers/implementation/run-1" ||
 		posted.TargetRefName != "refs/heads/main" ||
 		posted.Title != "Implement ADO PR creation" ||
 		posted.Description != "Provider-neutral open" ||
-		!posted.IsDraft {
+		posted.IsDraft == nil || !*posted.IsDraft {
 		t.Fatalf("OpenPullRequest body = %#v", posted)
+	}
+
+	result, err = provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Updated title",
+		Body:       "Updated description",
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		Draft:      false,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest update returned error: %v", err)
+	}
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
+		t.Fatalf("OpenPullRequest update result = %#v", result)
+	}
+	if patched.Title != "Updated title" || patched.Description != "Updated description" ||
+		patched.IsDraft == nil || *patched.IsDraft {
+		t.Fatalf("OpenPullRequest update body = %#v", patched)
 	}
 }
 

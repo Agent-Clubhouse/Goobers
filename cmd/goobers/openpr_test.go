@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +14,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestOpenPRCreatesThenUpdatesOnRepass is #132's core CLI-level acceptance:
@@ -74,6 +79,100 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	server.mu.Unlock()
 	if prCountAfterRepass != 1 {
 		t.Fatalf("expected still exactly one PR after the repass, got %d (a duplicate was created)", prCountAfterRepass)
+	}
+}
+
+func TestOpenPRRoutesADOThroughConfiguredAuthentication(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Token:    instance.TokenRef{Env: "ADO_OPEN_PR_PAT"},
+	}}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var posted struct {
+		Title         string `json:"title"`
+		SourceRefName string `json:"sourceRefName"`
+		TargetRefName string `json:"targetRefName"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:test-pat"))
+		if got := r.Header.Get("Authorization"); got != wantAuth {
+			t.Fatalf("Authorization = %q, want configured PAT authentication", got)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{"value": []interface{}{}}); err != nil {
+				t.Fatalf("encode pull request list: %v", err)
+			}
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatalf("decode pull request: %v", err)
+			}
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"pullRequestId": 7,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/7"}},
+			}); err != nil {
+				t.Fatalf("encode pull request: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	oldADOProvider := newADOProviderForStage
+	newADOProviderForStage = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		provider, err := oldADOProvider(root, routed)
+		if err != nil {
+			return nil, err
+		}
+		provider.BaseURL = server.URL
+		return provider, nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = oldADOProvider })
+
+	t.Setenv("ADO_OPEN_PR_PAT", "test-pat")
+	t.Setenv("GOOBERS_RUN_ID", "run-ado")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
+	t.Setenv(executor.RepoOwnerEnvVar, "org")
+	t.Setenv(executor.RepoProjectEnvVar, "project")
+	t.Setenv(executor.RepoNameEnvVar, "repo")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "open-pr", root)
+	if code != 0 {
+		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if posted.Title != "Automated implementation" ||
+		posted.SourceRefName != "refs/heads/goobers/implementation/run-ado" ||
+		posted.TargetRefName != "refs/heads/main" {
+		t.Fatalf("ADO pull request body = %#v", posted)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "pr-result.json"))
+	if err != nil {
+		t.Fatalf("read pr-result.json: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal pr-result.json: %v", err)
+	}
+	if result["prNumber"] != "7" || result["pull-request-url"] != "https://ado.example/pr/7" {
+		t.Fatalf("pr-result.json = %#v", result)
 	}
 }
 

@@ -40,7 +40,20 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if existing, found, err := p.FindPullRequestByBranch(ctx, req.Repository, head, base); err != nil {
 		return PullRequestResult{}, err
 	} else if found {
-		return existing, nil
+		endpoint, err := p.repoURL(req.Repository, "pullrequests", existing.ID)
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		body := map[string]interface{}{
+			"title":       req.Title,
+			"description": capDescriptionWithFooter(req.Body, req.RunID, adoMaxPRDescriptionChars),
+			"isDraft":     req.Draft,
+		}
+		var out adoPullRequest
+		if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+			return PullRequestResult{}, err
+		}
+		return adoPullRequestResult(out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
@@ -57,7 +70,15 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
-	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: out.URL}, nil
+	return adoPullRequestResult(out), nil
+}
+
+func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
+	prURL := pr.URL
+	if pr.Links.Web.Href != "" {
+		prURL = pr.Links.Web.Href
+	}
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
 }
 
 // FindPullRequestByBranch resolves the open Azure DevOps pull request whose
