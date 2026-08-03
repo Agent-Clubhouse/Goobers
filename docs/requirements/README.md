@@ -1,9 +1,11 @@
 # Goobers — Requirements & Specs
 
-This directory turns the product vision (`../VISION.md`) into structured, traceable
-requirements that decompose into build work. The **architecture of record**
-is [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — one system across three deployment
-tiers, two runners behind one seam — and specs carry tier annotations aligned to it
+This directory contains structured, traceable requirements that decompose into build
+work. They originated from the historical product vision snapshot
+([`../VISION.md`](../VISION.md)); that snapshot is context, not current product
+documentation. The **architecture of record** is
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md) — one system across three deployment tiers,
+two runners behind one seam — and specs carry tier annotations aligned to it
 (`ARCHITECTURE.md §13`). Where an older spec passage contradicts it, the architecture
 doc wins and the spec is updated to match.
 
@@ -25,13 +27,14 @@ self-contained: purpose, model, requirements, and open questions.
   "(v1)" means explicitly out of scope for the V0/V1 milestones.
 - **Status** per spec: `Draft` → `Reviewed` (maintainer-reviewed) → `Approved`
   (locked for build).
-- **Traceability:** each spec links back to the vision section(s) it derives from.
+- **Traceability:** each spec links back to the historical vision section(s) it
+  originated from.
 - **Tier applicability** is annotated inline where useful — italic applicability
   suffixes (*(All tiers)*, *(Tiers 1–2)*) and the bold prefix **Tier 3 (V2):** for
   tier-3-only requirements. Tier-3-only requirements (Azure/cluster substrate) are
   marked, never deleted: they are the drop-in specs for V2.
-- **Open questions** live in each spec; their overall disposition is summarized in
-  `../VISION.md §8`.
+- **Open questions** live in each spec; their disposition at the time of the vision
+  snapshot is summarized in `../VISION.md §8`.
 
 ## Spec index (also our spec backlog)
 
@@ -55,6 +58,6 @@ self-contained: purpose, model, requirements, and open questions.
 
 ## Source decisions
 
-Foundational decisions are recorded in `../VISION.md §8`; the architectural ones are
-elaborated in `../ARCHITECTURE.md`. Specs must not contradict them; if a spec surfaces
-a reason to revisit one, flag it rather than diverging.
+Historical source decisions are recorded in `../VISION.md §8`. Current architectural
+decisions are defined in `../ARCHITECTURE.md`; specs must not contradict them. If a
+spec surfaces a reason to revisit one, flag it rather than diverging.
