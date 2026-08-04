@@ -212,3 +212,56 @@ func TestReadInputRefusesToFollowAnExistingSymlinkLeaf(t *testing.T) {
 		t.Fatal("expected read_input to refuse to read through an existing symlink")
 	}
 }
+
+// TestPublishOutputRefusesToTraverseANestedSymlinkedAncestor is a regression
+// test for a second review finding: for an artifactFile like
+// "link/new/out.md" where "link" is a symlink pointing outside the
+// workspace and "new" doesn't exist yet, the original fix's leaf-only check
+// missed it — filepath.EvalSymlinks(dir) fails (dir doesn't exist), that
+// error was silently ignored, and os.MkdirAll then walked straight through
+// "link" (MkdirAll follows symlinks at existing intermediate components)
+// and created "new" — and later wrote out.md — outside the workspace. This
+// proves the write is now rejected before anything is created, and that
+// nothing was ever created outside the workspace.
+func TestPublishOutputRefusesToTraverseANestedSymlinkedAncestor(t *testing.T) {
+	ws := t.TempDir()
+	outsideDir := t.TempDir()
+	link := filepath.Join(ws, "link")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "link/new/out.md"})
+	if _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
+		t.Fatal("expected publish_output to refuse to traverse a symlinked ancestor")
+	}
+
+	if _, err := os.Lstat(filepath.Join(outsideDir, "new")); !os.IsNotExist(err) {
+		t.Fatalf("directory was created outside the workspace through the symlink: err=%v", err)
+	}
+}
+
+// TestReadInputRefusesToTraverseANestedSymlinkedAncestor covers the same
+// gap on the read side: an input path whose intermediate directory is a
+// symlink pointing outside the workspace must be rejected even though the
+// file at the far end genuinely exists.
+func TestReadInputRefusesToTraverseANestedSymlinkedAncestor(t *testing.T) {
+	ws := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outsideDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outsideDir, "nested", "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("do not leak"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ws, "link")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewToolset(Config{Workspace: ws, Inputs: map[string]string{"x": "link/nested/secret.txt"}})
+	if _, err := tool.ReadInput("x", 0, 0); err == nil {
+		t.Fatal("expected read_input to refuse to traverse a symlinked ancestor")
+	}
+}

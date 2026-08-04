@@ -41,7 +41,23 @@ func NewToolset(cfg Config) *Toolset {
 // internal/sandbox use elsewhere, adapted to not require the leaf to already
 // exist (publish_output creates a new file; ResolveContainedPath's
 // EvalSymlinks on the full path would reject that).
-func (t *Toolset) resolveInWorkspace(rel string) (string, error) {
+//
+// A naive "EvalSymlinks the immediate parent, ignore the error if it
+// doesn't exist yet" check (the original version of this function) is
+// exploitable: for an artifact like "link/new/out.md" where link points
+// outside the workspace and "new" doesn't exist yet, EvalSymlinks(dir)
+// fails closed-looking but open — the error was silently ignored — and a
+// subsequent os.MkdirAll would then walk through "link" (MkdirAll follows
+// symlinks at existing intermediate components, same as any normal path
+// resolution) and create "new" outside the workspace. Instead: walk up from
+// the leaf's directory to the nearest ancestor that actually exists,
+// EvalSymlinks *that* (it's guaranteed to exist, so this can't silently
+// no-op), recheck containment on the result, and only then create the
+// missing intermediate components — one at a time with os.Mkdir, never
+// os.MkdirAll, so nothing created here can itself be, or traverse, a
+// symlink; os.Mkdir fails closed (EEXIST) rather than following anything
+// planted at that path between the walk-up and the create.
+func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("empty path")
 	}
@@ -54,16 +70,45 @@ func (t *Toolset) resolveInWorkspace(rel string) (string, error) {
 	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) || filepath.IsAbs(relBack) {
 		return "", fmt.Errorf("path %q escapes the workspace", rel)
 	}
-	// The parent directory may already contain a symlink pointing outside
-	// the workspace even though the leaf itself is new — resolve as far as
-	// exists and re-check containment on that prefix.
-	dir := filepath.Dir(full)
-	if resolvedDir, err := filepath.EvalSymlinks(dir); err == nil {
-		relDir, err := filepath.Rel(root, resolvedDir)
-		if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
-			return "", fmt.Errorf("path %q's directory escapes the workspace", rel)
+
+	// Walk up from the leaf's directory to the nearest ancestor that
+	// actually exists — an intermediate component further down may not
+	// exist yet, and EvalSymlinks requires its argument to exist.
+	existing := filepath.Dir(full)
+	var missing []string // deepest-first
+	for existing != root {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("path %q: %w", rel, err)
+		}
+		missing = append(missing, filepath.Base(existing))
+		existing = filepath.Dir(existing)
+	}
+
+	resolvedExisting, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", rel, err)
+	}
+	relExisting, err := filepath.Rel(root, resolvedExisting)
+	if err != nil || relExisting == ".." || strings.HasPrefix(relExisting, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q's directory escapes the workspace", rel)
+	}
+
+	dir := resolvedExisting
+	if len(missing) > 0 {
+		if !createMissingDirs {
+			return "", fmt.Errorf("path %q: no such directory", rel)
+		}
+		for i := len(missing) - 1; i >= 0; i-- {
+			dir = filepath.Join(dir, missing[i])
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				return "", fmt.Errorf("create directory for %q: %w", rel, err)
+			}
 		}
 	}
+
+	full = filepath.Join(dir, filepath.Base(full))
 	// The leaf itself may already exist as a symlink to somewhere outside
 	// the workspace — lexically "full" is still inside root, so the checks
 	// above pass, but os.WriteFile/os.ReadFile follow a symlink at open()
@@ -87,12 +132,9 @@ func (t *Toolset) PublishOutput(content string) (bytesWritten int, err error) {
 	if t.cfg.ArtifactFile == "" {
 		return 0, fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
 	}
-	full, err := t.resolveInWorkspace(t.cfg.ArtifactFile)
+	full, err := t.resolveInWorkspace(t.cfg.ArtifactFile, true)
 	if err != nil {
 		return 0, fmt.Errorf("resolve artifactFile: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return 0, fmt.Errorf("create artifactFile directory: %w", err)
 	}
 	data := []byte(content)
 	if err := os.WriteFile(full, data, 0o644); err != nil {
@@ -141,7 +183,7 @@ func (t *Toolset) readInputFile(name string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("no input named %q — call list_inputs first", name)
 	}
-	full, err := t.resolveInWorkspace(rel)
+	full, err := t.resolveInWorkspace(rel, false)
 	if err != nil {
 		return nil, fmt.Errorf("input %q: %w", name, err)
 	}
