@@ -13,10 +13,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 const portalBuildMakeEnv = "GOOBERS_TEST_PORTAL_BUILD_MAKE"
@@ -26,9 +28,16 @@ const portalBuildMakeEnv = "GOOBERS_TEST_PORTAL_BUILD_MAKE"
 // never lists PRs — its core inputs arrive via InputsFrom, mirroring the real
 // pr-remediation.yaml wiring.
 type rebasePRServerState struct {
-	mu                  sync.Mutex
-	labels              []string
-	comments            []string
+	mu       sync.Mutex
+	labels   []string
+	comments []string
+	// commentAuthors and commentCreatedAt are optional, index-aligned with
+	// comments: an empty (or short) entry falls back to the bot login /
+	// default timestamp, so existing tests that only set comments are
+	// unaffected. They let the human-comment detection tests vary a comment's
+	// author and created-at independently.
+	commentAuthors      []string
+	commentCreatedAt    []string
 	rejectCommentUpdate bool
 }
 
@@ -55,9 +64,17 @@ func (s *rebasePRServerState) start(t *testing.T, owner, repo string, prNumber i
 		defer s.mu.Unlock()
 		out := make([]map[string]interface{}, len(s.comments))
 		for i, comment := range s.comments {
+			login := "goobers-bot"
+			if i < len(s.commentAuthors) && s.commentAuthors[i] != "" {
+				login = s.commentAuthors[i]
+			}
+			createdAt := "2026-07-15T00:00:00Z"
+			if i < len(s.commentCreatedAt) && s.commentCreatedAt[i] != "" {
+				createdAt = s.commentCreatedAt[i]
+			}
 			out[i] = map[string]interface{}{
-				"id": i + 1, "user": map[string]string{"login": "goobers-bot"},
-				"body": comment, "created_at": "2026-07-15T00:00:00Z",
+				"id": i + 1, "user": map[string]string{"login": login},
+				"body": comment, "created_at": createdAt,
 			}
 		}
 		writeFakeJSON(w, out)
@@ -684,6 +701,7 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 		substantive        bool
 		failingCI          bool
 		siblingOverlap     bool
+		humanComment       bool
 		wantNeedsAgent     bool
 		wantPolicyExcluded bool
 		wantReasonContains string
@@ -767,10 +785,25 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 			wantPolicyExcluded: true,
 			wantReasonContains: "conflict",
 		},
+		{
+			name:           "human comment fires alone under the new liberal default",
+			remediate:      defaultRemediatePolicy,
+			humanComment:   true,
+			wantNeedsAgent: true,
+			wantCauses:     "human-comment",
+		},
+		{
+			name:               "old pinned five-cause policy excludes a detected human comment",
+			remediate:          "conflict,substantive,failing-ci,behind-base,sibling-overlap",
+			humanComment:       true,
+			wantNeedsAgent:     true,
+			wantPolicyExcluded: true,
+			wantReasonContains: "human-comment",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := evaluateRemediatePolicy(test.remediate, test.conflict, test.substantive, test.failingCI, test.siblingOverlap)
+			got := evaluateRemediatePolicy(test.remediate, test.conflict, test.substantive, test.failingCI, test.siblingOverlap, test.humanComment)
 			if got.needsAgent != test.wantNeedsAgent {
 				t.Fatalf("needsAgent = %v, want %v", got.needsAgent, test.wantNeedsAgent)
 			}
@@ -787,6 +820,242 @@ func TestEvaluateRemediatePolicy(t *testing.T) {
 				t.Fatalf("remediation causes = %q, want %q", causes, test.wantCauses)
 			}
 		})
+	}
+}
+
+// TestHasNewHumanCommentSince is the pure-table coverage of the human-comment
+// detection predicate: which issue-level comment retriggers remediation, given
+// the watermark the last checkpoint recorded.
+func TestHasNewHumanCommentSince(t *testing.T) {
+	const bot = "goobers-bot"
+	ptr := func(tm time.Time) *time.Time { return &tm }
+	wm := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	after := wm.Add(time.Hour)
+	before := wm.Add(-time.Hour)
+
+	stateWith := func(s remediationState) providers.Comment {
+		body, err := remediationStateComment(s)
+		if err != nil {
+			t.Fatalf("remediationStateComment: %v", err)
+		}
+		// The bot's own machine-payload comment, timestamped after the
+		// watermark — it must never itself count as a human comment.
+		return providers.Comment{ID: "state", Author: bot, Body: body, CreatedAt: ptr(after)}
+	}
+	watermarked := stateWith(remediationState{Cycles: 1, LastSeenCommentAt: wm.Format(time.RFC3339)})
+	verdict := renderVerdictComment(apiv1.Verdict{Decision: apiv1.VerdictPass})
+
+	tests := []struct {
+		name     string
+		comments []providers.Comment
+		want     bool
+	}{
+		{
+			name: "human comment strictly after the watermark",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "alice", Body: "please tweak this", CreatedAt: ptr(after)},
+			},
+			want: true,
+		},
+		{
+			name: "human comment exactly at the watermark does not retrigger",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "alice", Body: "old", CreatedAt: ptr(wm)},
+			},
+			want: false,
+		},
+		{
+			name: "human comment before the watermark does not retrigger",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "alice", Body: "older", CreatedAt: ptr(before)},
+			},
+			want: false,
+		},
+		{
+			name: "bot-typed author is ignored even after the watermark",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "some-app", AuthorType: "Bot", Body: "ci", CreatedAt: ptr(after)},
+			},
+			want: false,
+		},
+		{
+			name: "the authenticated bot itself is ignored",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: bot, Body: "housekeeping", CreatedAt: ptr(after)},
+			},
+			want: false,
+		},
+		{
+			name: "state present but no watermark fails closed",
+			comments: []providers.Comment{
+				stateWith(remediationState{Cycles: 1}),
+				{ID: "c", Author: "alice", Body: "new", CreatedAt: ptr(after)},
+			},
+			want: false,
+		},
+		{
+			name: "corrupt watermark fails closed",
+			comments: []providers.Comment{
+				stateWith(remediationState{Cycles: 1, LastSeenCommentAt: "not-a-timestamp"}),
+				{ID: "c", Author: "alice", Body: "new", CreatedAt: ptr(after)},
+			},
+			want: false,
+		},
+		{
+			name: "no state ever recorded fails open on any human comment",
+			comments: []providers.Comment{
+				{ID: "c", Author: "alice", Body: "please look", CreatedAt: ptr(before)},
+			},
+			want: true,
+		},
+		{
+			name: "nil CreatedAt never counts",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "alice", Body: "no timestamp", CreatedAt: nil},
+			},
+			want: false,
+		},
+		{
+			name: "machine-payload body never counts even from a human author after the watermark",
+			comments: []providers.Comment{
+				watermarked,
+				{ID: "c", Author: "alice", Body: verdict, CreatedAt: ptr(after)},
+			},
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasNewHumanCommentSince(test.comments, bot); got != test.want {
+				t.Fatalf("hasNewHumanCommentSince = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestRebasePRNewHumanCommentDefersToCheckpoint mirrors
+// TestRebasePRFailingCIPushesCleanRebaseAndDefersToCheckpoint: a clean rebase
+// with no findings and green CI, but a new human comment postdating the sticky
+// state's watermark, force-pushes the clean rebase and routes to the checkpoint
+// with remediationCauses=human-comment — without clearing needs-remediation.
+func TestRebasePRNewHumanCommentDefersToCheckpoint(t *testing.T) {
+	const prBranch = "goobers/impl/run-human-comment"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	watermark := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	priorState, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: "sha256:prior", LastSeenCommentAt: watermark.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	newer := watermark.Add(time.Hour).Format(time.RFC3339)
+	st := &rebasePRServerState{
+		labels:           []string{needsRemediationLabel},
+		comments:         []string{priorState, "please rename this function"},
+		commentAuthors:   []string{"goobers-bot", "alice"},
+		commentCreatedAt: []string{watermark.Format(time.RFC3339), newer},
+	}
+	server := st.start(t, "your-org", "your-repo", 59)
+
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "59",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+		"hasFailingCI":           "false",
+		"remediate":              defaultRemediatePolicy,
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"true"`) ||
+		!strings.Contains(string(data), `"conflict":"false"`) ||
+		!strings.Contains(string(data), `"remediationCauses":"human-comment"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=true conflict=false cause=human-comment", data)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 1 || labels[0] != needsRemediationLabel {
+		t.Fatalf("labels = %v, want %s left in place (routed to checkpoint, not cleared)", labels, needsRemediationLabel)
+	}
+
+	// The clean rebase must have been force-pushed so CI re-runs on it.
+	verify := t.TempDir()
+	runGitT(t, verify, "clone", "--branch", prBranch, origin, filepath.Join(verify, "check"))
+	if _, err := os.Stat(filepath.Join(verify, "check", "unrelated.txt")); err != nil {
+		t.Fatalf("origin's branch missing clean rebase before checkpoint routing: %v", err)
+	}
+}
+
+// TestRebasePROldPolicyIgnoresHumanComment is the parking-regression guard: the
+// same state and new human comment, but a policy pinned to the old five causes,
+// must NOT detect the comment — the PR is a clean green rebase, so it is
+// force-pushed and needs-remediation is cleared, exactly as before this cause.
+func TestRebasePROldPolicyIgnoresHumanComment(t *testing.T) {
+	const prBranch = "goobers/impl/run-human-comment-old-policy"
+	origin := initNonConflictingPRBranch(t, prBranch)
+	wt := prWorktree(t, origin, prBranch)
+
+	watermark := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	priorState, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: "sha256:prior", LastSeenCommentAt: watermark.Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	newer := watermark.Add(time.Hour).Format(time.RFC3339)
+	st := &rebasePRServerState{
+		labels:           []string{needsRemediationLabel},
+		comments:         []string{priorState, "please rename this function"},
+		commentAuthors:   []string{"goobers-bot", "alice"},
+		commentCreatedAt: []string{watermark.Format(time.RFC3339), newer},
+	}
+	server := st.start(t, "your-org", "your-repo", 60)
+
+	instanceRoot := rebasePREnv(t, server.URL, wt.Path, map[string]string{
+		"selectedNumber":         "60",
+		"head":                   prBranch,
+		"base":                   "main",
+		"hasSubstantiveFindings": "false",
+		"hasFailingCI":           "false",
+		"remediate":              "conflict,substantive,failing-ci,behind-base,sibling-overlap",
+	})
+
+	code, stdout, stderr := runArgs(t, "rebase-pr", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt.Path, "rebase-result.json"))
+	if err != nil {
+		t.Fatalf("read rebase-result.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"needsAgent":"false"`) {
+		t.Fatalf("rebase-result.json = %s, want needsAgent=false under the old pinned policy", data)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	st.mu.Unlock()
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want %s cleared on a clean green rebase the old policy leaves untouched", labels, needsRemediationLabel)
 	}
 }
 
