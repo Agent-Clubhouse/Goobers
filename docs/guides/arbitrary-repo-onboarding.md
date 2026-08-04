@@ -362,8 +362,11 @@ not a substitute for applying the checked-in source.
 
 Press `Ctrl-C` in the foreground daemon, or send its exact process ID
 `SIGTERM`. `goobers up` stops admitting work, asks in-flight runs to drain, and
-checkpoints before exiting. If a stage exceeds the bounded drain window, the
-next `goobers up` resumes the non-terminal run from its journal.
+prints the remaining workflow/run IDs every 10 seconds while stages reach their
+next checkpoints. Graceful drain waits indefinitely by default. Send a second
+`SIGINT`/`SIGTERM`, or start with `--drain-timeout <duration>`, to terminate
+in-flight stage process groups without a prompt; the next `goobers up` resumes
+those non-terminal runs from their last durable checkpoints.
 
 Do not use `kill -9`, delete `gaggles/*/runs/`, or delete `scheduler/` as a normal stop
 procedure. Confirm shutdown with:

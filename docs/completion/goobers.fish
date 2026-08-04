@@ -83,6 +83,7 @@ complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress li
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l notify -d 'Desktop-notify on escalated/failed runs (=all for every outcome)'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l watch-config -d 'Experimental: hot-reload config edits'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l drain-timeout -r -d 'Force shutdown after this graceful-drain duration'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l disable-read-model-reads -d 'Read-model rollback: force journal-derived list paths for this run'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'

@@ -967,7 +967,7 @@ type trackedStarter struct {
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	untrack := s.runners.Track(req.RunID, s.r)
+	untrack := s.runners.Track(req.RunID, s.machine.Def.Name, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:                req.RunID,
@@ -1123,7 +1123,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 			resumed = append(resumed, id.RunID)
 			wg.Add(1)
-			untrack := runnerRegistry.Track(id.RunID, rn)
+			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
@@ -1159,38 +1159,6 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		}
 	}
 	return resumed, warned, nil
-}
-
-// waitDrained waits for wg to finish, returning false if timeout elapses
-// first. The background goroutine it starts is not leaked: wg.Wait()
-// returning always lets it close done and exit, whether or not the select
-// below already gave up waiting.
-func waitDrained(wg *sync.WaitGroup, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
-func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		scheduler.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
 }
 
 // buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).

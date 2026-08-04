@@ -2778,12 +2778,15 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
 listener (default path "."). Blocks
-until interrupted (SIGINT/SIGTERM), then drains in-flight runs before
+until interrupted (SIGINT/SIGTERM), then drains in-flight runs indefinitely
+by default. --drain-timeout forces shutdown after a deadline; a repeated
+signal always forces shutdown without prompting. Interrupted runs resume
+from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 
