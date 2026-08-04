@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: wizard-dreamer
+spec:
+  gaggle: <your-gaggle>
+  role: curator
+  displayName: Wizard-dreamer (memory consolidator)
+  instructions: instructions.md
+  harness: copilot
+  # The consolidator runs once nightly and decides what the fleet believes.
+  # Use your STRONGEST model — this is the highest-leverage judgment in the
+  # whole memory loop.
+  model: <fill-in>
+  harnessOptions: {}
+  # Writes only a decisions file into dream/. No repo/PR/issue write capability;
+  # the deterministic promote stage applies its decision under the hard rules.
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - dream

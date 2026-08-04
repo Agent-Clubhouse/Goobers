@@ -1,0 +1,69 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: implement-with-reflect
+spec:
+  gaggle: <your-gaggle>
+  displayName: Implement with memory reflect
+  # SNIPPET: how to add a memory-reflect step to the END of a workflow. A scribe
+  # goober captures any durable, cross-run learning as a candidate memory file
+  # and writes it via `gaggle-memory propose`. Reflect writes ONLY into
+  # proposed/ — it can nominate a memory but never promote one. Promotion is the
+  # nightly dream's job.
+  #
+  # `--store` points at the gaggle's PERSISTENT memory store; replace the path.
+  triggers:
+    - type: manual
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the assigned change.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      next: reflect
+
+    - name: reflect
+      type: agentic
+      goober: scribe
+      goal: >-
+        If this run learned something durable and cross-run (a fragility, a
+        known-failure, a procedure, a decision), write ONE candidate memory file
+        with a non-empty ## Evidence section and register it with
+        `gaggle-memory propose --source run:<this-run-id> --proposed-by scribe`.
+        Propose nothing speculative; if there is no durable learning, propose
+        nothing. Never claim confidence: proven — the tool downgrades it anyway.
+      contextFrom:
+        - implement
+      capabilities:
+        - agent:model
+      # Reflection is best-effort bookkeeping; it must not fail the run.
+      continueOnError: true
+
+    # PARKED-RUN VARIANT
+    # ------------------
+    # When a run PARKS (blocks on a sibling PR, waits on a human, hits a gate it
+    # cannot clear), route it through this reflect task instead so the *reason*
+    # for parking is captured. The next run to touch the same area then recalls
+    # why it parked rather than re-hitting the same wall. Wire it on the parking
+    # branch of whichever gate parks the run:
+    #
+    #   - name: reflect-parked
+    #     type: agentic
+    #     goober: scribe
+    #     goal: >-
+    #       This run parked. Capture WHY as a candidate memory (type:
+    #       known-failure or fragility) with the blocking condition in ##
+    #       Evidence, and register it with `gaggle-memory propose --source
+    #       run:<this-run-id> --proposed-by scribe`. Scope it to the area and
+    #       workflow that parked so the next run recalls the blocker.
+    #     contextFrom:
+    #       - <the-parking-gate-or-task>
+    #     capabilities:
+    #       - agent:model
+    #     continueOnError: true
