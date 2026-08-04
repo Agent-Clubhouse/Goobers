@@ -75,6 +75,10 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	if declaresGoobersIO(req) {
+		b.WriteString(goobersIOPromptSection(req))
+	}
+
 	if completionInResponse {
 		b.WriteString(renderResponseCompletionContract(req))
 		return b.String()

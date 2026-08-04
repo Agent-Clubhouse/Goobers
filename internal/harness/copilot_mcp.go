@@ -33,21 +33,25 @@ type copilotMCPServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
+// prepareCopilotMCP returns the rewritten env and the scoped COPILOT_HOME it
+// created (empty if req.MCPServers is empty, so the caller can tell whether
+// a scratch home now exists to write further per-invocation config into —
+// see writeGoobersIOConfig).
+func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, string, error) {
 	if len(req.MCPServers) == 0 {
-		return env, nil
+		return env, "", nil
 	}
 	if err := mcpconfig.ValidateForHarness(apiv1.HarnessCopilot, req.MCPServers, req.Envelope.Capabilities, req.Tools); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
 	}
 
 	runtimeRoot := filepath.Join(req.Workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
 	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime root: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: create scoped MCP runtime root: %w", err)
 	}
 	base, err := os.MkdirTemp(runtimeRoot, copilotMCPRuntimePrefix)
 	if err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: create scoped MCP runtime: %w", err)
 	}
 	home := filepath.Join(base, "copilot-home")
 	env = overrideEnv(env, "COPILOT_HOME", home)
@@ -57,7 +61,7 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	env = removeEnvironment(env, copilotPluginDirOnlyEnv)
 	env = append(env, copilotPluginDirOnlyEnv+"=true")
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
 	}
 	// Ambient config.json may contain OAuth or BYOK credentials that were not
 	// resolver-registered, so the scoped home must start empty.
@@ -76,12 +80,12 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 		}
 		for refIndex, ref := range server.CredentialRefs {
 			if req.Credentials == nil {
-				return nil, fmt.Errorf("harness: copilot-cli: MCP server %q requires credentials but none were materialized", server.Name)
+				return nil, "", fmt.Errorf("harness: copilot-cli: MCP server %q requires credentials but none were materialized", server.Name)
 			}
 			key := mcpconfig.CredentialKey(ref)
 			token, err := req.Credentials.Token(ctx, key)
 			if err != nil {
-				return nil, fmt.Errorf("harness: copilot-cli: resolve MCP server %q credential %q: %w", server.Name, key, err)
+				return nil, "", fmt.Errorf("harness: copilot-cli: resolve MCP server %q credential %q: %w", server.Name, key, err)
 			}
 			envName := fmt.Sprintf("GOOBERS_MCP_CREDENTIAL_%d_%d", serverIndex, refIndex)
 			env = overrideEnv(env, envName, token)
@@ -109,12 +113,12 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 
 	data, err := json.Marshal(config)
 	if err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: encode scoped MCP config: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: encode scoped MCP config: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "mcp-config.json"), data, 0o600); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: write scoped MCP config: %w", err)
+		return nil, "", fmt.Errorf("harness: copilot-cli: write scoped MCP config: %w", err)
 	}
-	return env, nil
+	return env, home, nil
 }
 
 func removeEnvironment(env []string, name string) []string {

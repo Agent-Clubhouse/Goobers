@@ -624,6 +624,10 @@ func init() {
 			withSynopsis(synopsisByID["respond-to-findings"]).
 			withHelp("post a validated per-finding remediation response to the claimed PR (a workflow stage)", respondToFindingsHelp).
 			withExamples("goobers respond-to-findings"),
+		stageCommand("mcp-io", apicontract.ActionWorkflowExecution, runMCPIO).
+			withSynopsis(synopsisByID["mcp-io"]).
+			withHelp("run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)", mcpIOHelp).
+			withExamples("goobers mcp-io"),
 		coreAliasCommand(
 			"help",
 			[]string{"-h", "--help", "help"},

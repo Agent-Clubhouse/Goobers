@@ -1,0 +1,157 @@
+package mcpio
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func newTestServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	ws := t.TempDir()
+	contextDir := filepath.Join(ws, ".goobers", "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upstream := filepath.Join(contextDir, "00-churn-data.artifact_0_")
+	if err := os.WriteFile(upstream, []byte("upstream content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Workspace:    ws,
+		ArtifactFile: "findings.md",
+		Inputs:       map[string]string{"churn-data.artifact[0]": ".goobers/context/00-churn-data.artifact_0_"},
+	}
+	return NewServer(NewToolset(cfg)), ws
+}
+
+func rpcLine(t *testing.T, id int, method string, params interface{}) string {
+	t.Helper()
+	req := map[string]interface{}{"jsonrpc": "2.0", "method": method}
+	if id >= 0 {
+		req["id"] = id
+	}
+	if params != nil {
+		req["params"] = params
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data) + "\n"
+}
+
+func TestServeFullSession(t *testing.T) {
+	srv, ws := newTestServer(t)
+
+	var in bytes.Buffer
+	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{}))
+	in.WriteString(rpcLine(t, -1, "notifications/initialized", nil))
+	in.WriteString(rpcLine(t, 2, "tools/list", map[string]interface{}{}))
+	in.WriteString(rpcLine(t, 3, "tools/call", map[string]interface{}{
+		"name":      "publish_output",
+		"arguments": map[string]interface{}{"content": "# Findings\n\nfound stuff"},
+	}))
+	in.WriteString(rpcLine(t, 4, "tools/call", map[string]interface{}{
+		"name": "list_inputs",
+	}))
+	in.WriteString(rpcLine(t, 5, "tools/call", map[string]interface{}{
+		"name":      "read_input",
+		"arguments": map[string]interface{}{"name": "churn-data.artifact[0]"},
+	}))
+
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	if err := srv.Serve(&in, &out, &errBuf); err != nil {
+		t.Fatalf("Serve: %v (stderr: %s)", err, errBuf.String())
+	}
+	if errBuf.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", errBuf.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 responses (init, list, 3 calls), got %d: %v", len(lines), lines)
+	}
+
+	var responses []rpcResponse
+	for _, line := range lines {
+		var r rpcResponse
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("bad response line %q: %v", line, err)
+		}
+		responses = append(responses, r)
+	}
+
+	// initialize
+	if responses[0].Error != nil {
+		t.Fatalf("initialize errored: %+v", responses[0].Error)
+	}
+
+	// tools/list — 3 tools present
+	listResult, _ := json.Marshal(responses[1].Result)
+	if !strings.Contains(string(listResult), "publish_output") ||
+		!strings.Contains(string(listResult), "list_inputs") ||
+		!strings.Contains(string(listResult), "read_input") {
+		t.Fatalf("tools/list missing an expected tool: %s", listResult)
+	}
+
+	// publish_output — actually wrote the file
+	written, err := os.ReadFile(filepath.Join(ws, "findings.md"))
+	if err != nil {
+		t.Fatalf("findings.md not written: %v", err)
+	}
+	if string(written) != "# Findings\n\nfound stuff" {
+		t.Fatalf("unexpected file content: %q", written)
+	}
+	publishResult, _ := json.Marshal(responses[2].Result)
+	if !strings.Contains(string(publishResult), `status`) || !strings.Contains(string(publishResult), `ok`) {
+		t.Fatalf("publish_output result missing status ok: %s", publishResult)
+	}
+
+	// list_inputs — names our one seeded input
+	listInputsResult, _ := json.Marshal(responses[3].Result)
+	if !strings.Contains(string(listInputsResult), "churn-data.artifact[0]") {
+		t.Fatalf("list_inputs missing seeded input: %s", listInputsResult)
+	}
+
+	// read_input — returns its content
+	readInputResult, _ := json.Marshal(responses[4].Result)
+	if !strings.Contains(string(readInputResult), "upstream content") {
+		t.Fatalf("read_input missing content: %s", readInputResult)
+	}
+}
+
+func TestPublishOutputWithoutArtifactFileErrors(t *testing.T) {
+	ws := t.TempDir()
+	srv := NewServer(NewToolset(Config{Workspace: ws}))
+
+	var in bytes.Buffer
+	in.WriteString(rpcLine(t, 1, "tools/call", map[string]interface{}{
+		"name":      "publish_output",
+		"arguments": map[string]interface{}{"content": "x"},
+	}))
+	var out, errBuf bytes.Buffer
+	if err := srv.Serve(&in, &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	var resp rpcResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := json.Marshal(resp.Result)
+	if !strings.Contains(string(result), `"isError":true`) {
+		t.Fatalf("expected isError result, got %s", result)
+	}
+}
+
+func TestResolveInWorkspaceRejectsEscape(t *testing.T) {
+	ws := t.TempDir()
+	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "../../etc/passwd"})
+	if _, err := tool.PublishOutput("x"); err == nil {
+		t.Fatal("expected escape to be rejected")
+	}
+}

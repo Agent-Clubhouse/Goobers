@@ -113,7 +113,7 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 		},
 	}
 
-	env, err := prepareCopilotMCP(
+	env, _, err := prepareCopilotMCP(
 		context.Background(),
 		req,
 		[]string{"HOME=/ambient/operator", "COPILOT_HOME=/ambient/copilot"},
@@ -176,7 +176,7 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 
 func TestPrepareCopilotMCPRejectsCredentialExposureToLocalSibling(t *testing.T) {
 	workspace := t.TempDir()
-	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+	_, _, err := prepareCopilotMCP(context.Background(), RunRequest{
 		Envelope:    testEnvelope(workspace),
 		Workspace:   workspace,
 		Credentials: mcpTestCredentials(t, mcpconfig.BYOCredentialKey("vendor-api"), "remote-mcp-secret"),
@@ -204,7 +204,7 @@ func TestPrepareCopilotMCPRejectsCredentialExposureToLocalSibling(t *testing.T) 
 
 func TestPrepareCopilotMCPLeavesOmittedToolUnreachable(t *testing.T) {
 	workspace := t.TempDir()
-	env, err := prepareCopilotMCP(context.Background(), RunRequest{
+	env, _, err := prepareCopilotMCP(context.Background(), RunRequest{
 		Envelope:   testEnvelope(workspace),
 		Workspace:  workspace,
 		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
@@ -232,7 +232,7 @@ func TestPrepareCopilotMCPLeavesOmittedToolUnreachable(t *testing.T) {
 
 func TestPrepareCopilotMCPRejectsWildcardToolBeforeMaterialization(t *testing.T) {
 	workspace := t.TempDir()
-	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+	_, _, err := prepareCopilotMCP(context.Background(), RunRequest{
 		Envelope:   testEnvelope(workspace),
 		Workspace:  workspace,
 		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},

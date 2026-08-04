@@ -562,6 +562,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
+	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
+	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
+	// credential/prep block all need to see the goobers-io server and tools
+	// as already present, not added after the fact. A task with no declared
+	// artifactFile and no upstream inputs is untouched.
+	req = withAutoGoobersIO(req, c.SelfBin)
 	resolution := ConfigResolution{
 		Model:          req.Model,
 		HarnessOptions: cloneHarnessOptions(req.HarnessOptions),
@@ -661,9 +667,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		argv = append(argv, "--log-dir", confinement.logDir)
 	}
 	if len(req.MCPServers) > 0 {
-		env, err = prepareCopilotMCP(ctx, req, env)
+		var mcpHome string
+		env, mcpHome, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {
 			return Outcome{}, err
+		}
+		if declaresGoobersIO(req) {
+			if err := writeGoobersIOConfig(req, mcpHome); err != nil {
+				return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
+			}
 		}
 		if !copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, "--disable-builtin-mcps")

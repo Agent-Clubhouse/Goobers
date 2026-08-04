@@ -123,6 +123,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers ios-simulator-test`](#goobers-ios-simulator-test) | run XCUITest on an iOS simulator and parse its xcresult (a workflow stage) |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
+| [`goobers mcp-io`](#goobers-mcp-io) | run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage) |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
@@ -1426,6 +1427,31 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 $ goobers lint
 $ goobers lint --json
 $ goobers lint --check-harness --check-repos
+~~~
+
+## `goobers mcp-io`
+
+run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
+
+~~~text
+Usage: goobers mcp-io
+
+Run the goobers-io MCP server over stdio: publish_output, list_inputs,
+and read_input, the generic replacement for writing an agentic stage's
+declared output with a file-editing tool (#2406). Not meant to be run
+interactively — a harness spawns this as a local MCP server for a
+goober that declares mcpServers: [{name: goobers-io, command: goobers,
+args: [mcp-io]}]. Configuration (workspace, declared artifactFile,
+available inputs) is read from $COPILOT_HOME/goobers-io-config.json,
+written by the harness before invocation — there is no other input.
+Exit codes: 0 = the stdio session ended cleanly (stdin closed),
+1 = missing or invalid configuration, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers mcp-io
 ~~~
 
 ## `goobers merge-pr`
