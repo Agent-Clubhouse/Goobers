@@ -427,18 +427,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	githubProvider, githubSelected := provider.(*providers.GitHubProvider)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	if advisoryMode {
+		if !githubSelected {
+			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
+			return 1
+		}
 		return applyAdvisoryVerdict(
-			ctx, provider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
+			ctx, githubProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
 			*verdict, runID, resultFile, stdout, stderr,
 		)
 	}
@@ -459,13 +463,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the demotion signal must never itself become a merge outage, and an empty
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
-	demoted, derr := demotedSet(ctx, provider, repo, prs)
-	if derr != nil {
-		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
-		demoted = nil
+	var demoted map[int]bool
+	if githubSelected {
+		var derr error
+		demoted, derr = demotedSet(ctx, githubProvider, repo, prs)
+		if derr != nil {
+			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
+			demoted = nil
+		}
 	}
 
-	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
 	}
@@ -499,8 +507,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// still stand". Best-effort — a comment write must never turn a moot
 		// verdict into a stage failure, since the re-review next cycle is what
 		// actually resolves this.
-		if cerr := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); cerr != nil {
-			pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+		if githubSelected {
+			if cerr := markMergeReviewVerdictStale(ctx, githubProvider, repo, selectedNumber, reason); cerr != nil {
+				pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+			}
 		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
@@ -525,7 +535,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if reason, moot := mootFailReason(ctx, provider, repo, &current); moot {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
-		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, &current); dup {
+		if !githubSelected {
+			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+			return 1
+		}
+		if reason, dup := duplicateOfEarlierPR(ctx, githubProvider, repo, &current); dup {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 		// Superseded by a byte-identical earlier open sibling (#1211): two PRs
@@ -533,9 +547,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// tree, which duplicateOfEarlierPR (shared-issue only) misses — the
 		// deadlock #1179/#1180 filed. Same disposition: the earlier one wins,
 		// this redundant later one is closed as no-longer-needed.
-		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, &current); superseded {
+		if reason, superseded := supersededByIdenticalSibling(ctx, githubProvider, repo, &current); superseded {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
+	}
+	if !githubSelected {
+		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+		return 1
 	}
 
 	posted := *verdict
@@ -568,7 +586,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
-		ctx, provider, repo, policyInput, selectedNumber, clusterBlockers, prs)
+		ctx, githubProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
 		return failProviderStage(stderr, "resolve election policy "+policyInput, perr, "")
 	}
@@ -599,7 +617,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	verdictAuthor, err := githubProvider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
 	}
@@ -708,7 +726,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
@@ -730,7 +748,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
 	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
@@ -1104,7 +1122,7 @@ func resolvedIssueNumbers(body string) []string {
 // Fails closed in every ambiguous case: a provider error, an unresolvable
 // issue, or a pull request that references no issue at all all return false and
 // take the ordinary escalate-to-a-human path.
-func mootFailReason(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+func mootFailReason(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
 	// Condition 1: the pull request no longer changes anything. Whatever it
 	// proposed is already contained in its base, so there is nothing to merge
 	// and nothing to decide. This is the general "already fixed elsewhere"
@@ -1269,7 +1287,7 @@ func changedDiffDigest(ctx context.Context, provider *providers.GitHubProvider, 
 // No native review is submitted first: a changes-requested review on a pull
 // request being closed in the same breath is noise, and #870 means it would
 // frequently be refused as a self-review anyway.
-func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
+func closeMootPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
 	comment := fmt.Sprintf(
 		"Closing this pull request automatically: %s.\n\nThis change is **no longer needed** rather than wrong — there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
 		reason, strings.ReplaceAll(strings.TrimSpace(verdict.Rationale), "\n", "\n> "))
@@ -1282,6 +1300,45 @@ func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvide
 	}
 	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", "", stderr)
+}
+
+func currentPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error) {
+	if githubProvider, ok := provider.(*providers.GitHubProvider); ok {
+		return githubProvider.GetPullRequest(ctx, repo, pullID)
+	}
+	current, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return providers.PullRequestSummary{}, err
+	}
+	return providers.PullRequestSummary{
+		ID:        pullID,
+		Number:    current.Number,
+		State:     current.State,
+		Merged:    current.Merged,
+		HeadSHA:   current.HeadSHA,
+		BaseSHA:   current.BaseSHA,
+		Body:      current.Body,
+		Labels:    current.Labels,
+		Integrity: current.Integrity,
+	}, nil
+}
+
+func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+	switch repo.Provider {
+	case providers.ProviderADO:
+		return newADOProviderForStage(root, repo)
+	case providers.ProviderGitHub:
+		token, err := providerToken(capability.ProviderPRWrite)
+		if err != nil {
+			return nil, err
+		}
+		return newCachedGitHubProvider(root, token), nil
+	default:
+		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
+	}
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {

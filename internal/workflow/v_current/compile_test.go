@@ -915,17 +915,17 @@ func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
 			Type:          apiv1.TaskDeterministic,
 			Goal:          "apply verdict",
 			Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}},
-			PolicyActions: []string{"publish-review", "route-verdict", "close-pr"},
+			PolicyActions: []string{"publish-review", "route-provider-verdict", "close-pr"},
 			Capabilities:  []string{string(capability.GitHubPRReview)},
 		}},
 	}
 
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "github:pr:write", but the task does not declare it`) {
+	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "provider:pr:write", but the task does not declare it`) {
 		t.Fatalf("Compile error = %v, want missing policy-action capability", err)
 	}
 
-	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite))
+	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.ProviderPRWrite))
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("policy actions with their capabilities should compile: %v", err)
 	}

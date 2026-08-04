@@ -16,6 +16,11 @@ func TestRequiredCapabilities(t *testing.T) {
 		want    []capability.Capability
 	}{
 		{
+			name:    "provider-neutral verdict application",
+			command: "apply-verdict",
+			want:    []capability.Capability{capability.ProviderPRWrite, capability.GitHubPRReview},
+		},
+		{
 			name:    "claiming backlog query",
 			command: "backlog-query",
 			args:    []string{"--claim"},

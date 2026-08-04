@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -310,5 +311,24 @@ func TestADOProviderClosePullRequestAbandons(t *testing.T) {
 	}
 	if result.Number != 42 || result.Merged || result.State != "closed" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestADOProviderClosePullRequestFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		http.Error(w, "close failed", http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "42",
+	})
+	if err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("ClosePullRequest error = %v, want status 500", err)
 	}
 }

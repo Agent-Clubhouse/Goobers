@@ -454,8 +454,9 @@ therefore have no action row.
 | Open or update a PR (`open-or-update-pr`) | `implementation/open-pr`, `tutor/open-pr` | `github:pr:write` | Covered |
 | Comment on and update the driving issue's status (`update-issue`) | `implementation/close-out`, `park-escalated`, `park-needs-human` | `github:issues:write` | Covered |
 | Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
-| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `merge-review/apply-verdict`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
-| Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Route a verdict through the configured repository provider (`route-provider-verdict`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
+| Route a verdict to remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
+| Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
 | Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `github:pr:write` | Covered |
 | Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` | Covered |
