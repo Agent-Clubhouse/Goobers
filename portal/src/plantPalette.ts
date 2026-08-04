@@ -42,6 +42,14 @@ export interface PlantScenePalette {
   /** Hall enclosure. */
   wall: string;
   wallTrim: string;
+  window: string;
+  roof: string;
+  pipe: string;
+  utility: string;
+  storage: string;
+  pallet: string;
+  commons: string;
+  water: string;
 
   /* Workflow bays -------------------------------------------------------- */
   pad: string;
@@ -132,7 +140,7 @@ export interface PlantScenePalette {
  * stand on so a silhouette survives a grayscale print.
  */
 export const PLANT_LIGHT_SCENE_PALETTE: PlantScenePalette = {
-  accent: "#5b3fc4",
+  accent: "#a93156",
   aisle: "#dad7cd",
   aisleMarking: "#a8841c",
   background: "#e7e9ec",
@@ -157,7 +165,7 @@ export const PLANT_LIGHT_SCENE_PALETTE: PlantScenePalette = {
   machineBody: "#3f454e",
   machineBodyAlt: "#303640",
   machineCap: "#515965",
-  machineTrim: "#5b3fc4",
+  machineTrim: "#2f6f9f",
   pad: "#d6d9de",
   padAlternate: "#cdd1d7",
   padEdge: "#71777f",
@@ -185,6 +193,14 @@ export const PLANT_LIGHT_SCENE_PALETTE: PlantScenePalette = {
   theme: "light",
   wall: "#dcdee2",
   wallTrim: "#b3b7be",
+  window: "#78acd0",
+  roof: "#496f8d",
+  pipe: "#52616f",
+  utility: "#6d7f92",
+  storage: "#657688",
+  pallet: "#78899a",
+  commons: "#4b8296",
+  water: "#67add2",
   worker: "#1f4a8c",
   workerIdle: "#6e747d",
   workerVisor: "#22262c",
@@ -199,7 +215,7 @@ export const PLANT_LIGHT_SCENE_PALETTE: PlantScenePalette = {
  * survive the theme change.
  */
 export const PLANT_DARK_SCENE_PALETTE: PlantScenePalette = {
-  accent: "#a98cff",
+  accent: "#e17b9b",
   aisle: "#545c67",
   aisleMarking: "#c9a63f",
   background: "#333a44",
@@ -224,7 +240,7 @@ export const PLANT_DARK_SCENE_PALETTE: PlantScenePalette = {
   machineBody: "#f0f3f7",
   machineBodyAlt: "#e7ebf0",
   machineCap: "#ffffff",
-  machineTrim: "#a98cff",
+  machineTrim: "#78b7e3",
   pad: "#525a65",
   padAlternate: "#4c545e",
   padEdge: "#aab4c1",
@@ -252,6 +268,14 @@ export const PLANT_DARK_SCENE_PALETTE: PlantScenePalette = {
   theme: "dark",
   wall: "#3b424c",
   wallTrim: "#5f6773",
+  window: "#47799e",
+  roof: "#6f9fc2",
+  pipe: "#a8b2bf",
+  utility: "#9aabba",
+  storage: "#8295a9",
+  pallet: "#889aaa",
+  commons: "#69a6b8",
+  water: "#4b91bb",
   worker: "#3f6fbf",
   workerIdle: "#6a7280",
   workerVisor: "#e2e7ee",

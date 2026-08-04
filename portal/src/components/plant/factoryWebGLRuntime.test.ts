@@ -322,8 +322,13 @@ describe("Factory WebGL runtime lifecycle", () => {
     expect(batchGroup?.children.every((child) => child instanceof THREE.InstancedMesh)).toBe(
       true,
     );
-    expect(runtime.inspect().batches).toBeLessThanOrEqual(
+    expect(runtime.inspect().batches).toBeGreaterThanOrEqual(
       next.layout.instanceBatches.length,
+    );
+    // Each semantic batch has one primary mesh and at most three bounded
+    // companion layers: machine trim, a risk marker, and a risk ring.
+    expect(runtime.inspect().batches).toBeLessThanOrEqual(
+      next.layout.instanceBatches.length * 4,
     );
 
     const machine = runtime.scene.getObjectByName(

@@ -416,7 +416,7 @@ describe("renderer-neutral Factory Plant layout", () => {
       workers: 0,
     });
     expect(layout.instanceBatches.length).toBeLessThanOrEqual(48);
-    expect(layout.aggregatePlan.drawCalls.instancedPlan).toBeLessThanOrEqual(64);
+    expect(layout.aggregatePlan.drawCalls.instancedPlan).toBeLessThanOrEqual(80);
     expect(layout.lod.maxDomItems).toBeLessThanOrEqual(
       FACTORY_PLANT_LOD_THRESHOLDS.maxDetailDomItems,
     );

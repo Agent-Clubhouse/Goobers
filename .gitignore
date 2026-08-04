@@ -38,6 +38,7 @@ coverage.html
 /stress-results/
 *.test
 *.out
+*.exe
 
 # Portal build artifacts
 /node_modules/

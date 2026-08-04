@@ -61,7 +61,7 @@ const STANDARD_BAY_STATION_CAPACITY =
 const MACHINE_HALF_FOOTPRINT = 0.98;
 const FLOOR_MARGIN = 4;
 const HALL_HEIGHT = 4.8;
-const STATIC_DRAW_CALLS = 8;
+const STATIC_DRAW_CALLS = 31;
 const DEFAULT_CAMERA_PADDING = 1.6;
 
 export interface PlantGridPoint {
@@ -1364,9 +1364,9 @@ function buildWorkerAnchors(
           }
         : commons
           ? {
-              x: commons.minX + 2 + (index % 6) * 1.1,
+              x: commons.minX + 2 + (index % 3) * 5,
               y: 0,
-              z: commons.minZ + 2 + Math.floor(index / 6) * 1.1,
+              z: commons.minZ + 2 + Math.floor(index / 3) * 4,
             }
           : { x: -2, y: 0, z: 2 + index };
       anchors.push(workerAnchor(placement, workerId, position));

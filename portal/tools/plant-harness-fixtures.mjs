@@ -591,6 +591,9 @@ export function plantFixtureResponse(requestUrl, state = { eventRequests: 0 }) {
 
   if (path === "/api/v1/runs") {
     if (url.searchParams.get("phase") === "running") {
+      if (state.variant === "commons") {
+        return json({ runs: [] });
+      }
       state.activeRunRequests = (state.activeRunRequests ?? 0) + 1;
       const refreshedRun =
         state.refreshEnabled === true

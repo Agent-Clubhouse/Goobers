@@ -88,6 +88,17 @@ work-order crates, and posted goobers. It does not load remote models or
 textures. Theme and lens changes recolour retained resources; they do not
 recreate the renderer or scene.
 
+The hall is a miniature industrial place rather than a diagram on a slab.
+Bounded instanced architecture supplies clerestory windows, rooflines, gantries,
+service pipes, utility tanks, storage and material yards, perimeter buildings,
+and landscaping. Machine archetypes also carry material-separated trim so
+their silhouettes do not collapse into repeated neutral blocks. These details
+are static context only: they may establish districts and scale, but they must
+never imply an order, owner, stage state, movement, capacity, or alarm that is
+not present in the model. Their instance counts remain fixed by authored caps,
+so workflow cardinality cannot turn environmental richness into unbounded draw
+calls.
+
 The approved factory image remains mounted underneath the canvas. The canvas
 becomes visible only after a renderer has initialized and completed its first
 render. A browser without WebGL, or a renderer that throws during

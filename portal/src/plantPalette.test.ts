@@ -23,6 +23,31 @@ const PALETTES: readonly PlantScenePalette[] = [
   PLANT_DARK_SCENE_PALETTE,
 ];
 
+function hue(color: string): number {
+  const { b, g, r } = parseHexColor(color);
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const range = max - min;
+  if (range === 0) {
+    return 0;
+  }
+  const sector =
+    max === red
+      ? ((green - blue) / range) % 6
+      : max === green
+        ? (blue - red) / range + 2
+        : (red - green) / range + 4;
+  return (sector * 60 + 360) % 360;
+}
+
+function hueDistance(first: string, second: string): number {
+  const distance = Math.abs(hue(first) - hue(second));
+  return Math.min(distance, 360 - distance);
+}
+
 describe("plant scene palette", () => {
   it("resolves a theme without reading a single UI token", () => {
     expect(plantScenePalette("dark")).toBe(PLANT_DARK_SCENE_PALETTE);
@@ -150,9 +175,8 @@ describe("plant scene palette", () => {
     expect(light.padLuminance).toBeGreaterThan(PLANT_LUMINANCE_BANDS.light.minMean);
   });
 
-  it("keeps the accent as trim only, and never as a deck or a body", () => {
+  it("keeps the accent off decks and machine bodies", () => {
     for (const palette of PALETTES) {
-      expect(palette.machineTrim).toBe(palette.accent);
       for (const surface of [
         palette.pad,
         palette.padAlternate,
@@ -162,6 +186,38 @@ describe("plant scene palette", () => {
         palette.background,
       ]) {
         expect(surface, `${palette.theme} large surface`).not.toBe(palette.accent);
+      }
+    }
+  });
+
+  it("separates always-on machine and storage colour from alarm hues", () => {
+    for (const palette of PALETTES) {
+      const alarms = [
+        palette.statusBlocked,
+        palette.statusHeld,
+        palette.statusRunning,
+        palette.riskBeaconBlocked,
+        palette.riskBeaconHeld,
+        palette.riskBeaconImpeded,
+      ];
+      const environmentalContext = [
+        palette.machineTrim,
+        palette.storage,
+        palette.utility,
+        palette.pallet,
+        palette.commons,
+        palette.water,
+        palette.roof,
+        palette.window,
+        palette.pipe,
+      ];
+      for (const context of environmentalContext) {
+        for (const alarm of alarms) {
+          expect(
+            hueDistance(context, alarm),
+            `${palette.theme} context ${context} vs alarm ${alarm}`,
+          ).toBeGreaterThanOrEqual(35);
+        }
       }
     }
   });

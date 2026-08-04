@@ -270,7 +270,14 @@ async function main() {
       await waitFor(
         page,
         "a live model refresh",
-        `window.__plantProbe.snapshot().modelUpdates >= 1`,
+        `(() => {
+          const snapshot = window.__plantProbe.snapshot();
+          return snapshot.modelUpdates >= 1 &&
+            snapshot.model?.counts?.activeRuns === 6 &&
+            snapshot.overlay?.entries?.some(
+              (entry) => entry.anchorId?.includes("01PLANTREFRESH"),
+            );
+        })()`,
         20_000,
       );
     } catch (error) {
@@ -682,6 +689,59 @@ async function main() {
     );
   } finally {
     await closeBrowser(stress);
+  }
+
+  const commons = await launchBrowser(browserPath, "commons", []);
+  try {
+    const page = await openPage(commons, baseUrl, "ready", { fixture: "commons" });
+    captures.commons = await captureScenario(page, "commons-idle-workers");
+    check(
+      "idle roster workers render in the commons without invented work",
+      captures.commons.snapshot.model?.counts?.carriers === 0 &&
+        captures.commons.snapshot.model?.counts?.workers === 2 &&
+        captures.commons.snapshot.model?.counts?.renderedWorkers === 2,
+      { model: captures.commons.snapshot.model },
+    );
+    const commonsWorkerTargets = await evaluate(
+      page,
+      `(() => {
+        const rects = [...document.querySelectorAll(
+          '.factory-plant-overlay-item[data-kind="worker"] .factory-plant-overlay-hit',
+        )].map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+        });
+        const overlaps = [];
+        for (let left = 0; left < rects.length; left += 1) {
+          for (let right = left + 1; right < rects.length; right += 1) {
+            const a = rects[left];
+            const b = rects[right];
+            if (
+              a.left < b.right &&
+              a.right > b.left &&
+              a.top < b.bottom &&
+              a.bottom > b.top
+            ) {
+              overlaps.push([left, right]);
+            }
+          }
+        }
+        return { count: rects.length, overlaps };
+      })()`,
+    );
+    check(
+      "commons worker hit targets remain individually usable",
+      commonsWorkerTargets.count === 2 &&
+        commonsWorkerTargets.overlaps.length === 0,
+      commonsWorkerTargets,
+    );
+    check(
+      "the commons frame stays inside render budgets",
+      budgetReport(captures.commons).ok,
+      { budget: budgetReport(captures.commons) },
+    );
+  } finally {
+    await closeBrowser(commons);
   }
 
   const rejectedChunk = await launchBrowser(browserPath, "chunk-rejection", []);

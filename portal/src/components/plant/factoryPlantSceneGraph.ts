@@ -6,12 +6,12 @@
  * mesh/material archetype; keyed entity anchors preserve semantic identity
  * while crates and posted goobers retain their one-shot motion objects.
  *
- * Art direction is neutral-first and diagram-grade. Surfaces are matte, the
- * brand accent appears only as machine trim, and every stage kind gets a
- * distinct silhouette so the hall reads in grayscale, in a screenshot, and to
- * an operator who cannot separate red from green. Colour carries status on top
- * of shape, never instead of it. There is no fog, no bloom, and no simulated
- * activity: a thing moves only because the daemon confirmed it moved.
+ * Art direction is a legible miniature industrial world. Matte architecture,
+ * utility tanks, storage, gantries, windows, commons planting, and machine trim
+ * make the hall feel inhabited without inventing work. Every stage kind still
+ * gets a distinct silhouette so the hall reads in grayscale and colour carries
+ * status on top of shape, never instead of it. There is no simulated activity:
+ * a thing moves only because the daemon confirmed it moved.
  *
  * Geometry is shared through one cache per runtime. Two crates are the same
  * box, so the box is allocated once, kept alive while the runtime lives, and
@@ -108,6 +108,18 @@ const MAX_AISLE_MARKS = 60;
 const MAX_GUARDRAILS = 48;
 const MAX_CONSOLES = 24;
 const MAX_PYLONS = 24;
+const MAX_BAY_DETAILS = 24;
+const MAX_CANOPY_PARTS = MAX_BAY_DETAILS * 4 + 8;
+const MAX_STORAGE_RACKS = MAX_BAY_DETAILS * 3 + 12;
+const MAX_UTILITY_TANKS = MAX_BAY_DETAILS * 2 + 6;
+const MAX_PALLETS = MAX_BAY_DETAILS * 3 + 12;
+const MAX_WINDOWS = 26;
+const MAX_PIPES = 18;
+const MAX_COMMONS_TREES = 20;
+const MAX_LANDMARK_BODIES = 8;
+const MAX_LANDMARK_ROOFS = 4;
+const MAX_LANDMARK_STACKS = 6;
+const MAX_BAY_HOUSES = MAX_BAY_DETAILS;
 
 /**
  * Tracks every GPU-backed resource release so double disposal is a measurement
@@ -264,6 +276,10 @@ export function createPlantStatics(
   group.add(rim);
 
   const unitBox = geometry(new THREE.BoxGeometry(1, 1, 1));
+  const unitCylinder = geometry(new THREE.CylinderGeometry(0.5, 0.5, 1, 12));
+  const unitCrown = geometry(new THREE.IcosahedronGeometry(0.5, 1));
+  const unitGable = geometry(new THREE.CylinderGeometry(0.58, 0.58, 1, 3));
+  unitGable.rotateZ(Math.PI / 2);
 
   const floorMaterial = matte("floor", { roughness: 0.96 });
   const floor = new THREE.Mesh(unitBox, floorMaterial);
@@ -334,6 +350,113 @@ export function createPlantStatics(
   group.add(crossbeam);
   const gantryLegs = batch("plant:gantry-legs", unitBox, gantryMaterial, 2);
   gantryLegs.castShadow = true;
+
+  // The reference factory reads as a place because it has districts and
+  // secondary industrial systems, not just primary machines. These bounded
+  // instanced details are architectural context only: they never imply work.
+  const windowMaterial = matte(
+    "window",
+    { metalness: 0.05, roughness: 0.28 },
+    "window",
+    0.08,
+  );
+  const windows = batch("plant:clerestory-windows", unitBox, windowMaterial, MAX_WINDOWS);
+  const roofMaterial = matte("roof", { metalness: 0.18, roughness: 0.58 });
+  const canopies = batch("plant:bay-canopies", unitBox, roofMaterial, MAX_CANOPY_PARTS);
+  canopies.castShadow = true;
+  const pipeMaterial = matte("pipe", { metalness: 0.35, roughness: 0.46 });
+  const pipes = batch("plant:service-pipes", unitBox, pipeMaterial, MAX_PIPES);
+  const utilityMaterial = matte("utility", { metalness: 0.18, roughness: 0.5 });
+  const utilityTanks = batch(
+    "plant:utility-tanks",
+    unitCylinder,
+    utilityMaterial,
+    MAX_UTILITY_TANKS,
+  );
+  utilityTanks.castShadow = true;
+  const storageMaterial = matte("storage", { roughness: 0.62 });
+  const storageRacks = batch(
+    "plant:storage-racks",
+    unitBox,
+    storageMaterial,
+    MAX_STORAGE_RACKS,
+  );
+  storageRacks.castShadow = true;
+  const palletMaterial = matte("pallet", { roughness: 0.82 });
+  const pallets = batch("plant:material-pallets", unitBox, palletMaterial, MAX_PALLETS);
+  pallets.castShadow = true;
+  const commonsMaterial = matte("commons", { roughness: 0.9 });
+  const treeTrunks = batch(
+    "plant:commons-trunks",
+    unitCylinder,
+    palletMaterial,
+    MAX_COMMONS_TREES,
+  );
+  const treeCrowns = batch(
+    "plant:commons-crowns",
+    unitCrown,
+    commonsMaterial,
+    MAX_COMMONS_TREES,
+  );
+  treeCrowns.castShadow = true;
+  const planter = new THREE.Mesh(unitCylinder, commonsMaterial);
+  planter.name = "plant:commons-planter";
+  planter.receiveShadow = true;
+  planter.visible = false;
+  group.add(planter);
+  const waterMaterial = matte(
+    "water",
+    { metalness: 0.05, roughness: 0.2 },
+    "water",
+    0.06,
+  );
+  const water = new THREE.Mesh(unitCylinder, waterMaterial);
+  water.name = "plant:commons-water";
+  water.visible = false;
+  group.add(water);
+
+  const landmarkBodyMaterial = matte("wall", { roughness: 0.88 });
+  const landmarkBodies = batch(
+    "plant:landmark-bodies",
+    unitBox,
+    landmarkBodyMaterial,
+    MAX_LANDMARK_BODIES,
+  );
+  landmarkBodies.castShadow = true;
+  landmarkBodies.receiveShadow = true;
+  const landmarkRoofMaterial = matte("storage", {
+    metalness: 0.08,
+    roughness: 0.62,
+  });
+  const landmarkRoofs = batch(
+    "plant:landmark-roofs",
+    unitGable,
+    landmarkRoofMaterial,
+    MAX_LANDMARK_ROOFS,
+  );
+  landmarkRoofs.castShadow = true;
+  const landmarkStacks = batch(
+    "plant:landmark-stacks",
+    unitCylinder,
+    utilityMaterial,
+    MAX_LANDMARK_STACKS,
+  );
+  landmarkStacks.castShadow = true;
+  const bayHouses = batch(
+    "plant:bay-service-houses",
+    unitBox,
+    landmarkBodyMaterial,
+    MAX_BAY_HOUSES,
+  );
+  bayHouses.castShadow = true;
+  bayHouses.receiveShadow = true;
+  const bayHouseRoofs = batch(
+    "plant:bay-service-roofs",
+    unitGable,
+    roofMaterial,
+    MAX_BAY_HOUSES,
+  );
+  bayHouseRoofs.castShadow = true;
 
   world.add(group);
   const matrix = new THREE.Matrix4();
@@ -565,6 +688,423 @@ export function createPlantStatics(
       }
       updateInstances(gantryLegs, legIndex);
 
+      let windowIndex = 0;
+      const backWindowCount = Math.min(12, Math.max(4, Math.floor(width / 3.2)));
+      for (let index = 0; index < backWindowCount; index += 1) {
+        windowIndex = place(
+          windows,
+          windowIndex,
+          bounds.minX + ((index + 0.5) / backWindowCount) * width,
+          Math.max(1.8, wallHeight * 0.62),
+          bounds.minZ + 0.015,
+          Math.max(1.2, width / backWindowCount - 0.55),
+          0.72,
+          0.035,
+        );
+      }
+      const sideWindowCount = Math.min(
+        MAX_WINDOWS - windowIndex,
+        Math.max(3, Math.floor(depth / 3.6)),
+      );
+      for (let index = 0; index < sideWindowCount; index += 1) {
+        windowIndex = place(
+          windows,
+          windowIndex,
+          bounds.minX + 0.015,
+          Math.max(1.8, wallHeight * 0.62),
+          bounds.minZ + ((index + 0.5) / sideWindowCount) * depth,
+          0.035,
+          0.72,
+          Math.max(1.2, depth / sideWindowCount - 0.55),
+        );
+      }
+      updateInstances(windows, windowIndex);
+
+      let pipeIndex = 0;
+      for (let index = 0; index < 3; index += 1) {
+        pipeIndex = place(
+          pipes,
+          pipeIndex,
+          centerX,
+          1.15 + index * 0.28,
+          bounds.minZ + 0.32 + index * 0.12,
+          width - 1.1,
+          0.08,
+          0.08,
+        );
+      }
+
+      let canopyIndex = 0;
+      let rackIndex = 0;
+      let tankIndex = 0;
+      let palletIndex = 0;
+      let bayHouseIndex = 0;
+      let bayHouseRoofIndex = 0;
+      for (const bay of layout.bays.slice(0, MAX_BAY_DETAILS)) {
+        const rect = bay.bounds;
+        const canopyZ = rect.minZ + Math.min(0.7, rect.depth * 0.2);
+        const canopyHeight = Math.min(2.45, wallHeight - 0.55);
+        canopyIndex = place(
+          canopies,
+          canopyIndex,
+          rect.minX + 0.32,
+          canopyHeight / 2,
+          canopyZ,
+          0.1,
+          canopyHeight,
+          0.1,
+        );
+        canopyIndex = place(
+          canopies,
+          canopyIndex,
+          rect.maxX - 0.32,
+          canopyHeight / 2,
+          canopyZ,
+          0.1,
+          canopyHeight,
+          0.1,
+        );
+        canopyIndex = place(
+          canopies,
+          canopyIndex,
+          (rect.minX + rect.maxX) / 2,
+          canopyHeight,
+          canopyZ,
+          Math.max(0.6, rect.width - 0.55),
+          0.12,
+          0.18,
+        );
+
+        const serviceZ = rect.maxZ - Math.min(0.62, rect.depth * 0.18);
+        const houseWidth = Math.min(2.2, Math.max(1.45, rect.width * 0.34));
+        const houseDepth = Math.min(1.55, Math.max(1.1, rect.depth * 0.28));
+        const houseX = rect.maxX - houseWidth / 2 - 0.28;
+        bayHouseIndex = place(
+          bayHouses,
+          bayHouseIndex,
+          houseX,
+          0.62,
+          serviceZ,
+          houseWidth,
+          1.24,
+          houseDepth,
+        );
+        bayHouseRoofIndex = place(
+          bayHouseRoofs,
+          bayHouseRoofIndex,
+          houseX,
+          1.39,
+          serviceZ,
+          houseWidth * 1.08,
+          houseWidth * 0.58,
+          houseDepth * 0.74,
+        );
+        canopyIndex = place(
+          canopies,
+          canopyIndex,
+          rect.minX + 1.15,
+          1.5,
+          serviceZ,
+          1.8,
+          0.12,
+          1.35,
+        );
+        rackIndex = place(
+          storageRacks,
+          rackIndex,
+          rect.minX + 1.25,
+          0.42,
+          serviceZ,
+          0.68,
+          0.84,
+          1.2,
+        );
+        rackIndex = place(
+          storageRacks,
+          rackIndex,
+          rect.minX + 1.25,
+          0.86,
+          serviceZ,
+          0.76,
+          0.08,
+          1.28,
+        );
+        rackIndex = place(
+          storageRacks,
+          rackIndex,
+          rect.maxX - 0.9,
+          0.72,
+          serviceZ,
+          1.35,
+          1.35,
+          0.72,
+        );
+        tankIndex = place(
+          utilityTanks,
+          tankIndex,
+          rect.minX + 0.5,
+          0.58,
+          serviceZ,
+          0.58,
+          1.16,
+          0.58,
+        );
+        if (rect.width > 5.4) {
+          tankIndex = place(
+            utilityTanks,
+            tankIndex,
+            rect.minX + 1.15,
+            0.48,
+            serviceZ,
+            0.46,
+            0.96,
+            0.46,
+          );
+        }
+        for (let pallet = 0; pallet < 3; pallet += 1) {
+          palletIndex = place(
+            pallets,
+            palletIndex,
+            rect.minX + 1.85 + pallet * 0.62,
+            0.1,
+            serviceZ,
+            0.48,
+            0.2 + (pallet % 2) * 0.12,
+            0.56,
+          );
+        }
+        pipeIndex = place(
+          pipes,
+          pipeIndex,
+          (rect.minX + rect.maxX) / 2,
+          canopyHeight - 0.2,
+          rect.maxZ - 0.18,
+          Math.max(0.8, rect.width - 0.8),
+          0.07,
+          0.07,
+        );
+      }
+
+      // Two authored landmarks stop a sparse live model from reading as an
+      // empty diagram: a utility silo bank at the rear and a material yard at
+      // the loading edge. They are static architecture, never fake activity.
+      const landmarkScale = Math.max(0.8, Math.min(1.35, width / 18));
+      for (let silo = 0; silo < 3; silo += 1) {
+        tankIndex = place(
+          utilityTanks,
+          tankIndex,
+          bounds.minX + 0.8 + silo * 0.82 * landmarkScale,
+          1.05 + (silo % 2) * 0.18,
+          bounds.minZ + 0.9,
+          0.72 * landmarkScale,
+          (2.1 + (silo % 2) * 0.35) * landmarkScale,
+          0.72 * landmarkScale,
+        );
+      }
+      const yardStartX = Math.max(bounds.minX + 1.4, bounds.maxX - 5.2);
+      const yardZ = bounds.maxZ - 2.2;
+      for (let container = 0; container < 4; container += 1) {
+        const upper = container >= 2;
+        rackIndex = place(
+          storageRacks,
+          rackIndex,
+          yardStartX + (container % 2) * 1.65,
+          upper ? 0.72 : 0.34,
+          yardZ - (upper ? 0.05 : 0),
+          1.45,
+          0.58,
+          0.72,
+        );
+        palletIndex = place(
+          pallets,
+          palletIndex,
+          yardStartX + (container % 2) * 1.65,
+          upper ? 0.39 : 0.04,
+          yardZ,
+          1.58,
+          0.12,
+          0.84,
+        );
+      }
+      updateInstances(canopies, canopyIndex);
+      updateInstances(bayHouses, bayHouseIndex);
+      updateInstances(bayHouseRoofs, bayHouseRoofIndex);
+      updateInstances(storageRacks, rackIndex);
+      updateInstances(utilityTanks, tankIndex);
+      updateInstances(pallets, palletIndex);
+      updateInstances(pipes, pipeIndex);
+
+      let trunkIndex = 0;
+      let crownIndex = 0;
+      const commons = layout.hall.commons;
+      planter.visible = Boolean(commons);
+      water.visible = Boolean(commons);
+      if (commons) {
+        const commonsCenterX = (commons.minX + commons.maxX) / 2;
+        const commonsCenterZ = (commons.minZ + commons.maxZ) / 2;
+        planter.position.set(commonsCenterX, 0.04, commonsCenterZ);
+        planter.scale.set(
+          Math.max(1.4, commons.width * 0.72),
+          0.08,
+          Math.max(1.4, commons.depth * 0.72),
+        );
+        water.position.set(
+          commons.minX + commons.width * 0.72,
+          0.11,
+          commons.minZ + commons.depth * 0.55,
+        );
+        water.scale.set(
+          Math.max(0.7, commons.width * 0.16),
+          0.04,
+          Math.max(0.7, commons.depth * 0.16),
+        );
+        const waterRadiusX = water.scale.x / 2;
+        const waterRadiusZ = water.scale.z / 2;
+        const treeCount = Math.min(
+          MAX_COMMONS_TREES,
+          Math.max(4, Math.floor((commons.width + commons.depth) / 2.4)),
+        );
+        for (let index = 0; index < treeCount; index += 1) {
+          const side = index % 4;
+          const progress = (Math.floor(index / 4) + 1) / (Math.ceil(treeCount / 4) + 1);
+          const x =
+            side === 0
+              ? commons.minX + 0.65
+              : side === 1
+                ? commons.maxX - 0.65
+                : commons.minX + progress * commons.width;
+          const z =
+            side === 2
+              ? commons.minZ + 0.65
+              : side === 3
+                ? commons.maxZ - 0.65
+                : commons.minZ + progress * commons.depth;
+          if (
+            Math.abs(x - water.position.x) <= waterRadiusX + 0.5 &&
+            Math.abs(z - water.position.z) <= waterRadiusZ + 0.5
+          ) {
+            continue;
+          }
+          trunkIndex = place(
+            treeTrunks,
+            trunkIndex,
+            x,
+            0.38,
+            z,
+            0.16,
+            0.76,
+            0.16,
+          );
+          crownIndex = place(
+            treeCrowns,
+            crownIndex,
+            x,
+            0.96,
+            z,
+            0.82,
+            0.95,
+            0.82,
+          );
+        }
+      }
+
+      // A few perimeter buildings give the hall a memorable skyline even
+      // when live data contains only one or two workflows. They remain outside
+      // the bay interiors and do not claim any stage, owner, or activity.
+      let landmarkBodyIndex = 0;
+      let landmarkRoofIndex = 0;
+      let landmarkStackIndex = 0;
+      const buildingScale = Math.max(0.82, Math.min(1.18, width / 20));
+      const placeGabledBuilding = (
+        x: number,
+        z: number,
+        buildingWidth: number,
+        buildingDepth: number,
+      ) => {
+        landmarkBodyIndex = place(
+          landmarkBodies,
+          landmarkBodyIndex,
+          x,
+          0.72 * buildingScale,
+          z,
+          buildingWidth,
+          1.44 * buildingScale,
+          buildingDepth,
+        );
+        landmarkRoofIndex = place(
+          landmarkRoofs,
+          landmarkRoofIndex,
+          x,
+          1.62 * buildingScale,
+          z,
+          buildingWidth * 1.08,
+          buildingWidth * 0.62,
+          buildingDepth * 0.72,
+        );
+      };
+      placeGabledBuilding(
+        bounds.minX + 2.1,
+        bounds.maxZ - 2.25,
+        2.7 * buildingScale,
+        1.55 * buildingScale,
+      );
+      placeGabledBuilding(
+        bounds.maxX - 2.2,
+        bounds.minZ + 1.15,
+        2.5 * buildingScale,
+        1.5 * buildingScale,
+      );
+      landmarkBodyIndex = place(
+        landmarkBodies,
+        landmarkBodyIndex,
+        bounds.maxX - 0.72,
+        1.45 * buildingScale,
+        bounds.minZ + 2.7,
+        1.1 * buildingScale,
+        2.9 * buildingScale,
+        1.1 * buildingScale,
+      );
+      landmarkRoofIndex = place(
+        landmarkRoofs,
+        landmarkRoofIndex,
+        bounds.maxX - 0.72,
+        3.08 * buildingScale,
+        bounds.minZ + 2.7,
+        1.24 * buildingScale,
+        0.85 * buildingScale,
+        0.86 * buildingScale,
+      );
+      for (let stack = 0; stack < 2; stack += 1) {
+        landmarkStackIndex = place(
+          landmarkStacks,
+          landmarkStackIndex,
+          bounds.minX + 0.78 + stack * 0.62,
+          1.45 * buildingScale,
+          bounds.maxZ - 2.5,
+          0.32 * buildingScale,
+          (2.9 + stack * 0.45) * buildingScale,
+          0.32 * buildingScale,
+        );
+      }
+      updateInstances(landmarkBodies, landmarkBodyIndex);
+      updateInstances(landmarkRoofs, landmarkRoofIndex);
+      updateInstances(landmarkStacks, landmarkStackIndex);
+
+      if (!commons) {
+        const treeCenterX = centerX - Math.min(0.8, width * 0.04);
+        const treeSites = [
+          [treeCenterX - 1.15, bounds.maxZ - 2.15],
+          [treeCenterX, bounds.maxZ - 2.2],
+          [treeCenterX + 1.15, bounds.maxZ - 2.15],
+        ] as const;
+        for (const [x, z] of treeSites) {
+          trunkIndex = place(treeTrunks, trunkIndex, x, 0.35, z, 0.14, 0.7, 0.14);
+          crownIndex = place(treeCrowns, crownIndex, x, 0.9, z, 0.76, 0.88, 0.76);
+        }
+      }
+      updateInstances(treeTrunks, trunkIndex);
+      updateInstances(treeCrowns, crownIndex);
+
       const shadowRadius = Math.max(width, depth) * 0.75;
       key.shadow.camera.left = -shadowRadius;
       key.shadow.camera.right = shadowRadius;
@@ -632,7 +1172,7 @@ export function createPlantStatics(
     },
     get drawCalls() {
       // Lights and the group itself never draw; meshes and the grid helper do.
-      return 5 + instanced.length;
+      return 8 + instanced.length;
     },
   };
 }
@@ -646,6 +1186,10 @@ interface BatchRecord {
   mesh: THREE.InstancedMesh;
   material: THREE.MeshStandardMaterial;
   baseEmissive: number;
+  trim?: {
+    mesh: THREE.InstancedMesh;
+    material: THREE.MeshStandardMaterial;
+  };
   /** Confirmed-hazard beacon or unread marker riding on the same transforms. */
   marker?: {
     mesh: THREE.InstancedMesh;
@@ -676,6 +1220,11 @@ export function createPlantInstanceScene(
     group.remove(record.mesh);
     ledger.release(record.mesh);
     ledger.release(record.material);
+    if (record.trim) {
+      group.remove(record.trim.mesh);
+      ledger.release(record.trim.mesh);
+      ledger.release(record.trim.material);
+    }
     if (record.marker) {
       group.remove(record.marker.mesh);
       ledger.release(record.marker.mesh);
@@ -710,6 +1259,21 @@ export function createPlantInstanceScene(
     const record: BatchRecord = { baseEmissive: 0, batch, material, mesh };
     applyInstanceIdentity(record);
     group.add(mesh);
+    if (batch.meshArchetype.startsWith("machine")) {
+      const trimMaterial = new THREE.MeshStandardMaterial({
+        metalness: 0.18,
+        roughness: 0.48,
+      });
+      const trimMesh = new THREE.InstancedMesh(
+        machineTrimGeometry(batch.meshArchetype, cache),
+        trimMaterial,
+        batch.instances.length,
+      );
+      trimMesh.name = `trim:${batch.key}`;
+      trimMesh.castShadow = true;
+      group.add(trimMesh);
+      record.trim = { material: trimMaterial, mesh: trimMesh };
+    }
 
     const level = batchRiskLevel(batch.materialArchetype);
     if (
@@ -840,7 +1404,11 @@ export function createPlantInstanceScene(
     get drawCalls() {
       return [...records.values()].reduce(
         (total, record) =>
-          total + 1 + (record.marker ? 1 : 0) + (record.ring ? 1 : 0),
+          total +
+          1 +
+          (record.trim ? 1 : 0) +
+          (record.marker ? 1 : 0) +
+          (record.ring ? 1 : 0),
         0,
       );
     },
@@ -991,6 +1559,54 @@ function markerGeometry(
   }
 }
 
+function machineTrimGeometry(
+  archetype: string,
+  cache: PlantGeometryCache,
+): THREE.BufferGeometry {
+  switch (archetype) {
+    case "machine:agentic":
+      return cache.get("trim:machine:agentic", () =>
+        mergePlantGeometries([
+          translated(horizontalTorus(0.39, 0.055, 16), 0, 0.18, 0),
+          translated(horizontalTorus(0.31, 0.045, 16), 0, 0.62, 0),
+        ]),
+      );
+    case "machine:gate":
+      return cache.get("trim:machine:gate", () =>
+        mergePlantGeometries([
+          translated(new THREE.BoxGeometry(0.1, 0.7, 0.3), -0.36, 0, 0),
+          translated(new THREE.BoxGeometry(0.1, 0.7, 0.3), 0.36, 0, 0),
+          translated(new THREE.BoxGeometry(0.62, 0.09, 0.34), 0, 0.55, 0),
+        ]),
+      );
+    case "machine:evaluator":
+      return cache.get("trim:machine:evaluator", () =>
+        mergePlantGeometries([
+          translated(horizontalTorus(0.35, 0.045, 18), 0, 0.18, 0),
+          translated(new THREE.BoxGeometry(0.8, 0.06, 0.3), 0, 0.43, 0),
+        ]),
+      );
+    case "machine:parallel":
+      return cache.get("trim:machine:parallel", () =>
+        mergePlantGeometries([
+          translated(new THREE.BoxGeometry(0.42, 0.1, 0.76), -0.26, 0.42, 0),
+          translated(new THREE.BoxGeometry(0.42, 0.1, 0.76), 0.26, 0.28, 0),
+        ]),
+      );
+    case "machine:deterministic":
+      return cache.get("trim:machine:deterministic", () =>
+        mergePlantGeometries([
+          translated(new THREE.BoxGeometry(0.96, 0.1, 0.82), 0, 0.2, 0),
+          translated(new THREE.BoxGeometry(0.66, 0.08, 0.56), 0, 0.58, 0),
+        ]),
+      );
+    default:
+      return cache.get("trim:machine:unknown", () =>
+        horizontalTorus(0.48, 0.05, 16),
+      );
+  }
+}
+
 function applyBatchRecord(
   record: BatchRecord,
   risk: boolean,
@@ -1019,11 +1635,20 @@ function applyBatchRecord(
   // Healthy context stays visible: the hazard has to be *somewhere*, and an
   // erased plant deletes the map it is somewhere on.
   applyDim([record.material], context);
+  if (record.trim) {
+    const trim = context
+      ? desaturateHexColor(palette.machineTrim, PLANT_RISK_CONTEXT_DESATURATION)
+      : palette.machineTrim;
+    record.trim.material.color.set(trim);
+    record.trim.material.emissive.set(trim);
+    record.trim.material.emissiveIntensity = record.batch.active ? 0.18 : 0.06;
+    applyDim([record.trim.material], context);
+  }
 
   if (record.marker) {
     const markerLevel = record.marker.level;
     if (record.marker.material instanceof THREE.MeshBasicMaterial) {
-      record.marker.material.color.set(palette.statusUnknown);
+      record.marker.material.color.set(palette.riskMarkerUnknown);
     } else if (record.marker.material instanceof THREE.MeshStandardMaterial) {
       record.marker.material.color.set(riskBeaconColor(markerLevel, palette));
       record.marker.material.emissive.set(riskStatusColor(markerLevel, palette));
@@ -1107,6 +1732,7 @@ function applyBatchMatrices(
         : 0;
     matrixForInstance(instance, matrix, transfer, bob);
     record.mesh.setMatrixAt(index, matrix);
+    record.trim?.mesh.setMatrixAt(index, matrix);
 
     const { position, scale } = instance.transform;
     const x = position.x + (transfer?.x ?? 0);
@@ -1136,6 +1762,11 @@ function applyBatchMatrices(
   record.mesh.instanceMatrix.needsUpdate = true;
   record.mesh.boundingBox = null;
   record.mesh.boundingSphere = null;
+  if (record.trim) {
+    record.trim.mesh.instanceMatrix.needsUpdate = true;
+    record.trim.mesh.boundingBox = null;
+    record.trim.mesh.boundingSphere = null;
+  }
   if (record.marker) {
     record.marker.mesh.instanceMatrix.needsUpdate = true;
     record.marker.mesh.boundingBox = null;
@@ -1523,6 +2154,16 @@ function translated(
   z: number,
 ): THREE.BufferGeometry {
   geometry.translate(x, y, z);
+  return geometry;
+}
+
+function horizontalTorus(
+  radius: number,
+  tube: number,
+  radialSegments: number,
+): THREE.BufferGeometry {
+  const geometry = new THREE.TorusGeometry(radius, tube, 6, radialSegments);
+  geometry.rotateX(Math.PI / 2);
   return geometry;
 }
 
