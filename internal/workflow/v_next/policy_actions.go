@@ -23,7 +23,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"comment-on-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":                 {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
@@ -36,7 +36,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -44,7 +44,6 @@ var policyActionContracts = map[string]policyActionContract{
 	"record-merge-refusal":          {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"record-remediation-checkpoint": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	// report-pr-status publishes goobers' own evidence (reviewer verdict +
 	// local-CI result) as a provider-native, policy-gate-able pull-request
 	// status. Unlike the backlog/PR actions above — whose canonical capability
@@ -55,7 +54,6 @@ var policyActionContracts = map[string]policyActionContract{
 	"respond-to-findings":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"rework-pr":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"route-provider-verdict":   {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"route-verdict":            {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"unpark-resolved-siblings": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"update-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -64,9 +62,8 @@ var policyActionContracts = map[string]policyActionContract{
 }
 
 var commandPolicyActions = map[string][]string{
-	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
+	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
-	"check-issue-staleness":  {"route-verdict"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
@@ -74,7 +71,7 @@ var commandPolicyActions = map[string][]string{
 	"open-pr":                {"open-or-update-pr"},
 	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
-	"pr-claim":               {"release-pr-claim"},
+	"pr-comment-watch":       {"label-issue"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},
