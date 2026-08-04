@@ -36,20 +36,37 @@ import { isSelected } from "../factorySelection";
  * native rather than simulated on SVG shapes.
  */
 export function FactoryFloor({
+  ariaLabel = "Factory floor",
   animateTransitions,
+  focusIdFor,
   model,
   lens,
   onSelect,
   reducedMotion,
   selection,
 }: {
+  ariaLabel?: string;
   animateTransitions: boolean;
+  focusIdFor?: (
+    kind: "bay" | "carrier" | "overflow" | "station" | "worker",
+    entityId: string,
+    overflow?: "queued" | "ready" | "runs" | "staff",
+  ) => string | undefined;
   model: FactoryFloorModel;
   lens: FactoryLens;
   onSelect: (selection: FactorySelection) => void;
   reducedMotion: boolean;
   selection: FactorySelection;
 }) {
+  const focusId = (
+    kind: "bay" | "carrier" | "overflow" | "station" | "worker",
+    entityId: string,
+    overflow?: "queued" | "ready" | "runs" | "staff",
+  ) =>
+    focusIdFor?.(kind, entityId, overflow) ??
+    (kind === "overflow"
+      ? `overflow:${overflow}:${entityId}`
+      : `${kind}:${entityId}`);
   const domId = useId().replaceAll(":", "");
   const tileId = `factory-tile-${domId}`;
   const hazardId = `factory-hazard-${domId}`;
@@ -72,7 +89,7 @@ export function FactoryFloor({
 
   return (
     <div
-      aria-label="Factory floor"
+      aria-label={ariaLabel}
       className="factory-floor"
       data-lens={lens}
       data-motion={reducedMotion ? "reduced" : "full"}
@@ -171,6 +188,8 @@ export function FactoryFloor({
 
         {model.lanes.map((lane) => (
           <LaneShell
+            focusId={focusId("bay", lane.id)}
+            overflowFocusId={focusId("overflow", lane.id, "queued")}
             key={lane.id}
             lane={lane}
             onSelect={onSelect}
@@ -181,10 +200,13 @@ export function FactoryFloor({
 
         {model.stations.map((station) => (
           <Station
+            focusId={focusId("station", station.id)}
             key={station.id}
             onSelect={onSelect}
             selected={isSelected(selection, { kind: "station", id: station.id })}
             station={station}
+            runOverflowFocusId={focusId("overflow", station.id, "runs")}
+            staffOverflowFocusId={focusId("overflow", station.id, "staff")}
             workers={workersByStation.get(station.id) ?? []}
           />
         ))}
@@ -193,6 +215,7 @@ export function FactoryFloor({
           <Carrier
             animateTransitions={animateTransitions}
             carrier={carrier}
+            focusId={focusId("carrier", carrier.runId)}
             key={carrier.runId}
             onSelect={onSelect}
             selected={isSelected(selection, { kind: "run", id: carrier.runId })}
@@ -202,6 +225,7 @@ export function FactoryFloor({
         {model.workers.flatMap((worker) =>
           worker.placements.filter((placement) => placement.rendered).map((placement) => (
             <Worker
+              focusId={focusId("worker", placement.id)}
               key={placement.id}
               onSelect={onSelect}
               placement={placement}
@@ -219,6 +243,7 @@ export function FactoryFloor({
           <button
             aria-label={`${model.commons.overflowWorkerCount} additional ready goobers. Select the floor summary.`}
             className="factory-overflow factory-commons-overflow"
+            data-plant-focus-id={focusId("overflow", "commons", "ready")}
             onClick={() => onSelect({ kind: "overview" })}
             style={{
               left: `${model.commons.x + model.commons.width - 104}px`,
@@ -365,13 +390,17 @@ function Dock({ dock }: { dock: FactoryDock }) {
 }
 
 function LaneShell({
+  focusId,
   lane,
   onSelect,
+  overflowFocusId,
   partial,
   selected,
 }: {
+  focusId?: string;
   lane: FactoryLane;
   onSelect: (selection: FactorySelection) => void;
+  overflowFocusId?: string;
   partial: boolean;
   selected: boolean;
 }) {
@@ -387,6 +416,7 @@ function LaneShell({
         aria-pressed={selected}
         className="factory-lane-plaque"
         data-blocked={lane.blockedRuns > 0 ? "true" : "false"}
+        data-plant-focus-id={focusId}
         onClick={() => onSelect({ kind: "lane", id: lane.id })}
         type="button"
         >
@@ -432,6 +462,7 @@ function LaneShell({
         <button
         aria-label={`${lane.yard.overflowRunCount} additional runs waiting at inbound for ${lane.displayName}. Select the workflow line.`}
         className="factory-overflow factory-yard-overflow"
+        data-plant-focus-id={overflowFocusId}
         onClick={() => onSelect({ kind: "lane", id: lane.id })}
         style={{
           left: `${lane.yard.x + 8}px`,
@@ -448,13 +479,19 @@ function LaneShell({
 
 
 function Station({
+  focusId,
   onSelect,
+  runOverflowFocusId,
   selected,
+  staffOverflowFocusId,
   station,
   workers,
 }: {
+  focusId?: string;
   onSelect: (selection: FactorySelection) => void;
+  runOverflowFocusId?: string;
   selected: boolean;
+  staffOverflowFocusId?: string;
   station: FactoryStation;
   workers: readonly FactoryWorker[];
 }) {
@@ -480,6 +517,8 @@ function Station({
         className="factory-station"
         data-alarm={alarm}
         data-kind={station.kind}
+        data-plant-focus-id={focusId}
+        data-plant-probe-id={station.id}
         data-source={station.source}
         data-status={station.status}
         onClick={() => onSelect({ kind: "station", id: station.id })}
@@ -521,6 +560,7 @@ function Station({
         <button
           aria-label={`${station.overflowRunCount} additional runs at stage ${station.stageId}. Select the stage to inspect all runs.`}
           className="factory-overflow factory-carrier-overflow"
+          data-plant-focus-id={runOverflowFocusId}
           onClick={() => onSelect({ kind: "station", id: station.id })}
           style={{
             left: `${station.x + 8}px`,
@@ -535,6 +575,7 @@ function Station({
         <button
           aria-label={`${station.workerOverflowCount} additional goobers at stage ${station.stageId}. Select the stage to inspect staffing.`}
           className="factory-overflow factory-worker-overflow"
+          data-plant-focus-id={staffOverflowFocusId}
           onClick={() => onSelect({ kind: "station", id: station.id })}
           style={{
             left: `${station.x + 108}px`,
@@ -554,11 +595,13 @@ function Station({
 function Carrier({
   animateTransitions,
   carrier,
+  focusId,
   onSelect,
   selected,
 }: {
   animateTransitions: boolean;
   carrier: FactoryCarrier;
+  focusId?: string;
   onSelect: (selection: FactorySelection) => void;
   selected: boolean;
 }) {
@@ -572,6 +615,7 @@ function Carrier({
         moved ? "factory-carrier is-transitioning" : "factory-carrier"
       }
       data-moved={moved ? "true" : "false"}
+      data-plant-focus-id={focusId}
       data-state={carrier.state}
       onClick={() => onSelect({ kind: "run", id: carrier.runId })}
       style={{ transform: `translate(${carrier.x}px, ${carrier.y}px)` }}
@@ -587,12 +631,14 @@ function Carrier({
 
 
 function Worker({
+  focusId,
   onSelect,
   placement,
   selected,
   working,
   worker,
 }: {
+  focusId?: string;
   onSelect: (selection: FactorySelection) => void;
   placement: FactoryWorkerPlacement;
   selected: boolean;
@@ -605,6 +651,7 @@ function Worker({
       aria-pressed={selected}
       className="factory-worker"
       data-active={placement.active ? "true" : "false"}
+      data-plant-focus-id={focusId}
       data-working={working ? "true" : "false"}
       onClick={() => onSelect({ kind: "worker", id: worker.id })}
       style={{ left: `${placement.x}px`, top: `${placement.y}px` }}

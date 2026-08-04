@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { DaemonClient } from "../api/types";
 import { FactoryFloor } from "../components/FactoryFloor";
 import { FactoryInspector } from "../components/FactoryInspector";
@@ -14,8 +14,18 @@ import {
   type FactoryLayout,
 } from "../factoryLayout";
 import { FACTORY_LENSES, type FactoryFloorModel, type FactoryLens } from "../factoryModel";
+import {
+  observePlantForcedColors,
+  plantForcedColorsActive,
+} from "../plantForcedColors";
 import { overviewSelection, type FactorySelection } from "../factorySelection";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
+import { useLiveData } from "../liveData";
+import {
+  summarizePlantRisk,
+  type PlantReadState,
+  type PlantRiskSummary,
+} from "../plantRisk";
 import type { FactoryRouteScope, Navigate } from "../routing";
 
 /**
@@ -51,15 +61,88 @@ export function FactoryPage({
     [scope?.gaggle, scope?.workflow],
   );
   const query = useFactoryFloor(client, requested);
+  const { dataFreshness, freshness: transport } = useLiveData();
   const reducedMotion = usePrefersReducedMotion();
-  const [selection, setSelection] = useState<FactorySelection>(overviewSelection);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
   const inspectorToggleRef = useRef<HTMLButtonElement>(null);
+  const plantShellRef = useRef<HTMLDivElement>(null);
+  const pendingPlantFocusRef = useRef<string | undefined>(undefined);
+  const capturePlantFocus = useCallback(() => {
+    const active = document.activeElement;
+    const shell = plantShellRef.current;
+    if (!(active instanceof HTMLElement) || !shell?.contains(active)) {
+      return;
+    }
+    const control = active.closest<HTMLElement>("[data-plant-focus-id]");
+    if (control?.dataset.plantFocusId) {
+      pendingPlantFocusRef.current = control.dataset.plantFocusId;
+    }
+  }, []);
+  const forcedColors = usePlantForcedColors(capturePlantFocus);
+  const shortViewport = useShortFactoryViewport();
+  const [selection, setSelection] = useState<FactorySelection>(overviewSelection);
+  const [inspectorOpen, setInspectorOpen] = useState(() => !shortViewport);
   const transitionModel =
     query.state.status === "ready" || query.state.status === "stale"
       ? query.state.data.model
       : undefined;
   const animateTransitions = useTransitionAnimation(transitionModel, layout);
+
+  useEffect(() => {
+    if (shortViewport) {
+      setInspectorOpen(false);
+    }
+  }, [shortViewport]);
+
+  useEffect(() => {
+    const trackPlantFocus = (event: FocusEvent) => {
+      const target = event.target;
+      const shell = plantShellRef.current;
+      if (!(target instanceof HTMLElement) || !shell) {
+        return;
+      }
+      if (shell.contains(target)) {
+        const control = target.closest<HTMLElement>("[data-plant-focus-id]");
+        if (control?.dataset.plantFocusId) {
+          pendingPlantFocusRef.current = control.dataset.plantFocusId;
+        }
+        return;
+      }
+      if (target !== document.body && target !== document.documentElement) {
+        pendingPlantFocusRef.current = undefined;
+      }
+    };
+    document.addEventListener("focusin", trackPlantFocus);
+    return () => document.removeEventListener("focusin", trackPlantFocus);
+  }, []);
+
+  useLayoutEffect(() => {
+    const shell = plantShellRef.current;
+    const pendingFocus = pendingPlantFocusRef.current;
+    if (!pendingFocus || !shell) {
+      return;
+    }
+    const restore = () => {
+      const target = Array.from(
+        shell.querySelectorAll<HTMLElement>("[data-plant-focus-id]"),
+      ).find((element) => element.dataset.plantFocusId === pendingFocus);
+      if (!target) {
+        return false;
+      }
+      target.focus({ preventScroll: true });
+      pendingPlantFocusRef.current = undefined;
+      return true;
+    };
+    if (restore()) {
+      return;
+    }
+    const observer = new MutationObserver(() => {
+      if (restore()) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(shell, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [forcedColors, layout]);
 
   if (query.state.status === "loading") {
     return (
@@ -92,6 +175,13 @@ export function FactoryPage({
   const data = query.state.data;
   const stale = query.state.status === "stale";
   const error = query.state.status === "stale" ? query.state.error : undefined;
+  const freshness = freshnessFor(stale, Boolean(error));
+  const readState: PlantReadState = {
+    data: dataFreshness,
+    query: freshness.state,
+    transport,
+  };
+  const risk = summarizePlantRisk({ model: data.model, readState });
 
   return (
     <div className="factory-page">
@@ -132,7 +222,7 @@ export function FactoryPage({
         )}
       </div>
 
-      <FactoryStatusStrip model={data.model} />
+      <FactoryStatusStrip model={data.model} risk={risk} />
 
       <div className="factory-layout">
         <div className="factory-stage-area">
@@ -143,31 +233,68 @@ export function FactoryPage({
               </p>
             )}
           </div>
+          <div
+            className="factory-viewport-shell"
+            ref={plantShellRef}
+          >
           {data.model.emptyReason === "no-gaggles" ||
           data.model.emptyReason === "no-workflows" ? (
             <FactoryEmptyState data={data} standalone={standalone} />
           ) : (
             layout === "plant" ? (
                 <FactoryViewport
+                  inspectorOpen={inspectorOpen}
                   key="plant"
-                  label="Factory plant"
-                  worldHeight={CLASSIC_PLANT_HEIGHT}
-                  worldWidth={CLASSIC_PLANT_WIDTH}
+                  label={
+                    forcedColors
+                      ? "Factory plant exact high-contrast topology"
+                      : "Factory plant"
+                  }
+                  worldHeight={
+                    forcedColors ? data.model.height : CLASSIC_PLANT_HEIGHT
+                  }
+                  worldWidth={
+                    forcedColors ? data.model.width : CLASSIC_PLANT_WIDTH
+                  }
                 >
-                  <FactoryPlant
-                    animateTransitions={animateTransitions}
-                    lens={lens}
-                    model={data.model}
-                    onSelect={(next) => {
-                      setSelection(next);
-                      setInspectorOpen(true);
-                    }}
-                    reducedMotion={reducedMotion}
-                    selection={selection}
-                  />
+                  {forcedColors ? (
+                    <div
+                      className="factory-forced-colors-exact"
+                      data-exact-topology="true"
+                    >
+                      <p className="factory-forced-colors-notice" role="status">
+                        High-contrast mode uses the exact Lines topology.
+                      </p>
+                      <FactoryFloor
+                        animateTransitions={animateTransitions}
+                        lens={lens}
+                        model={data.model}
+                        onSelect={(next) => {
+                          setSelection(next);
+                          setInspectorOpen(true);
+                        }}
+                        reducedMotion={reducedMotion}
+                        selection={selection}
+                      />
+                    </div>
+                  ) : (
+                    <FactoryPlant
+                      animateTransitions={animateTransitions}
+                      lens={lens}
+                      model={data.model}
+                      onSelect={(next) => {
+                        setSelection(next);
+                        setInspectorOpen(true);
+                      }}
+                      reducedMotion={reducedMotion}
+                      readState={readState}
+                      selection={selection}
+                    />
+                  )}
                 </FactoryViewport>
               ) : (
                 <FactoryViewport
+                  inspectorOpen={inspectorOpen}
                   key="lines"
                   label="Factory lines"
                   worldHeight={data.model.height}
@@ -187,29 +314,36 @@ export function FactoryPage({
                 </FactoryViewport>
               )
           )}
-          <FloorLegend layout={layout} model={data.model} stale={stale} />
-        </div>
-        <div
-          aria-hidden={!inspectorOpen}
-          className={inspectorOpen ? "factory-inspector-drawer is-open" : "factory-inspector-drawer"}
-          inert={!inspectorOpen}
-        >
-          <button
-            aria-label="Close factory inspector"
-            className="factory-inspector-close"
-            onClick={() => {
-              setInspectorOpen(false);
-              window.requestAnimationFrame(() => inspectorToggleRef.current?.focus());
-            }}
-            type="button"
-          >
-            ×
-          </button>
-          <FactoryInspector
-            data={data}
-            freshness={freshnessFor(stale, Boolean(error))}
-            onSelect={setSelection}
-            selection={selection}
+            <div
+              aria-hidden={!inspectorOpen}
+              className={inspectorOpen ? "factory-inspector-drawer is-open" : "factory-inspector-drawer"}
+              inert={!inspectorOpen}
+            >
+              <button
+                aria-label="Close factory inspector"
+                className="factory-inspector-close"
+                onClick={() => {
+                  setInspectorOpen(false);
+                  window.requestAnimationFrame(() => inspectorToggleRef.current?.focus());
+                }}
+                type="button"
+              >
+                ×
+              </button>
+              <FactoryInspector
+                data={data}
+                freshness={freshness}
+                onSelect={setSelection}
+                selection={selection}
+              />
+            </div>
+          </div>
+          <FloorLegend
+            layout={layout}
+            lens={lens}
+            model={data.model}
+            risk={risk}
+            stale={stale}
           />
         </div>
       </div>
@@ -217,14 +351,22 @@ export function FactoryPage({
   );
 }
 
-function FactoryStatusStrip({ model }: { model: FactoryFloorModel }) {
+function FactoryStatusStrip({
+  model,
+  risk,
+}: {
+  model: FactoryFloorModel;
+  risk: PlantRiskSummary;
+}) {
   const workingGoobers = model.counts.goobers - model.counts.idleGoobers;
-  const status = model.runsTruncated
-    ? "Partial view"
-    : model.counts.blockedStages > 0
+  const status = model.counts.blockedStages > 0
       ? "Intervention required"
       : model.counts.heldStages > 0
         ? "Human hold"
+      : model.runsTruncated
+        ? "Partial view"
+      : !risk.complete
+        ? "Read incomplete"
       : model.counts.unreadRuns > 0
         ? "Signals incomplete"
         : model.counts.activeRuns > 0
@@ -236,21 +378,29 @@ function FactoryStatusStrip({ model }: { model: FactoryFloorModel }) {
         className="factory-status-card factory-status-card-primary"
         data-alert={model.counts.blockedStages > 0 ? "on" : "off"}
         data-state={
-          model.runsTruncated
-            ? "partial"
-            : model.counts.blockedStages > 0
+          model.counts.blockedStages > 0
               ? "blocked"
               : model.counts.heldStages > 0
                 ? "held"
+            : model.runsTruncated
+              ? "partial"
+            : !risk.complete
+              ? "incomplete"
                 : "normal"
         }
       >
         <span>Plant state</span>
         <strong>{status}</strong>
         <small>
-          {model.runsTruncated
-            ? "More active runs exist beyond this batch"
-            : `${model.counts.blockedStages} blocked · ${model.counts.heldStages} held · ${model.counts.unreadRuns} unread`}
+          {`${model.counts.blockedStages} blocked · ${model.counts.heldStages} held · ${model.counts.unreadRuns} unread${
+                model.runsTruncated
+                  ? " · more active runs exist beyond this batch"
+                  : ""
+              }${
+                risk.complete
+                  ? ""
+                  : ` · ${risk.detail || "current plant risk cannot be confirmed"}`
+              }`}
         </small>
       </div>
       <div className="factory-status-card">
@@ -484,11 +634,15 @@ function lensLabel(lens: FactoryLens): string {
 
 function FloorLegend({
   layout,
+  lens,
   model,
+  risk,
   stale,
 }: {
   layout: FactoryLayout;
+  lens: FactoryLens;
   model: FactoryFloorModel;
+  risk: PlantRiskSummary;
   stale: boolean;
 }) {
   return (
@@ -503,10 +657,15 @@ function FloorLegend({
       </div>
       {layout === "plant" ? (
         <div className="factory-legend-group" data-layout-legend="plant">
-          <strong>Plant</strong>
-          <span className="factory-legend-item" data-legend="beacon">Beacon alarm</span>
-          <span className="factory-legend-item" data-legend="placard">Placard status</span>
-          <span className="factory-legend-item" data-legend="commons">Ready commons</span>
+          <strong>Stage shape</strong>
+          <span className="factory-legend-item" data-legend="shape-agentic">Silo: agentic</span>
+          <span className="factory-legend-item" data-legend="shape-gate">Arch: gate</span>
+          <span className="factory-legend-item" data-legend="shape-evaluator">Beam: evaluator</span>
+          <span className="factory-legend-item" data-legend="shape-deterministic">Press: deterministic</span>
+          <span className="factory-legend-item" data-legend="shape-parallel">Twin press: parallel</span>
+          <span className="factory-legend-item" data-legend="shape-terminal">Cone: terminal</span>
+          <span className="factory-legend-item" data-legend="beacon">Beacon: confirmed hazard</span>
+          <span className="factory-legend-item" data-legend="unknown">Open marker: unread</span>
           <span className="factory-legend-item" data-legend="observed">Dashed means order unknown</span>
         </div>
       ) : (
@@ -520,6 +679,17 @@ function FloorLegend({
           <span className="factory-legend-item" data-legend="observed">Observed, order unknown</span>
         </div>
       )}
+      {lens === "risk" ? (
+        <p
+          className="factory-legend-risk"
+          data-complete={risk.complete ? "true" : "false"}
+          data-risk={risk.level}
+          role="status"
+        >
+          <strong>{risk.headline}</strong>
+          {risk.detail ? <span> {risk.detail}</span> : null}
+        </p>
+      ) : null}
       <span className="factory-legend-readout">
         {model.counts.activeRuns}{model.runsTruncated ? "+" : ""} active ·{" "}
         {model.counts.blockedRuns} held · {model.counts.blockedStages} blocked ·{" "}
@@ -576,6 +746,39 @@ function useTransitionAnimation(
     state.layout === layout &&
     state.animate
   );
+}
+
+function usePlantForcedColors(onBeforeChange: () => void): boolean {
+  const [active, setActive] = useState(() => plantForcedColorsActive());
+  useEffect(
+    () =>
+      observePlantForcedColors((next) => {
+        onBeforeChange();
+        setActive(next);
+      }),
+    [onBeforeChange],
+  );
+  return active;
+}
+
+function useShortFactoryViewport(): boolean {
+  const query = "(max-height: 420px)";
+  const [short, setShort] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(query).matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia(query);
+    const update = () => setShort(media.matches);
+    media.addEventListener?.("change", update);
+    update();
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return short;
 }
 
 function modelHasTransition(model: FactoryFloorModel): boolean {

@@ -44,6 +44,7 @@ coverage.html
 /portal/node_modules/
 /portal/dist/
 /portal/coverage/
+/portal/.plant-harness/
 /portal/*.tsbuildinfo
 
 # Editor / OS cruft

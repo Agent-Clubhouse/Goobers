@@ -54,6 +54,7 @@ export const FACTORY_WORKFLOW_DETAIL_LIMIT = 12;
 export interface FactoryDetail {
   activeRuns: RunSummary[];
   workflowDetails: Map<string, WorkflowDetail>;
+  workflowReadFailures: Set<string>;
   runSignals: Map<string, FactoryRunSignal>;
   runsTruncated: boolean;
 }
@@ -107,6 +108,7 @@ export function useFactoryFloor(
     return buildFactoryFloorModel({
       inventories: snapshotData.inventories,
       workflowDetails: detailData?.workflowDetails,
+      workflowReadFailures: detailData?.workflowReadFailures,
       activeRuns: detailData?.activeRuns ?? [],
       runSignals: detailData?.runSignals,
       recentOutcomes: snapshotData.runs,
@@ -421,11 +423,14 @@ export async function loadFactoryDetail(
   );
   throwIfAborted(signal);
   const workflowDetails = new Map<string, WorkflowDetail>(retainedWorkflowDetails);
+  const workflowReadFailures = new Set<string>();
   detailResults.forEach((result, index) => {
     // A failed refresh keeps the last confirmed topology. A workflow that has
     // never been read still degrades to stages observed from live runs.
     if (result.status === "fulfilled") {
       workflowDetails.set(keys[index], result.value);
+    } else {
+      workflowReadFailures.add(keys[index]);
     }
   });
 
@@ -446,7 +451,13 @@ export async function loadFactoryDetail(
     );
   });
 
-  return { activeRuns, workflowDetails, runSignals, runsTruncated };
+  return {
+    activeRuns,
+    workflowDetails,
+    workflowReadFailures,
+    runSignals,
+    runsTruncated,
+  };
 }
 
 async function loadRunSignal(

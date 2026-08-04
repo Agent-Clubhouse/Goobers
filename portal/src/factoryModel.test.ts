@@ -968,6 +968,7 @@ describe("privacy", () => {
         "runsTruncated",
         "scope",
         "stations",
+        "topologyReadFailures",
         "width",
         "workers",
         "workflows",

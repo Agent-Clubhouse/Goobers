@@ -78,6 +78,53 @@ describe("factory layout toggle", () => {
     expect(await screen.findByRole("group", { name: PLANT_LAYOUT })).toBeInTheDocument();
   });
 
+  it("uses the exact Lines topology in forced colors and preserves interaction state", async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === "(forced-colors: active)",
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => true,
+      }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      window.location.hash = "#/factory?layout=plant";
+      const user = userEvent.setup();
+      render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
+
+      expect(
+        await screen.findByText("High-contrast mode uses the exact Lines topology."),
+      ).toBeVisible();
+      const floor = screen.getByRole("group", { name: LINE_LAYOUT });
+      expect(document.querySelector("canvas.factory-plant-webgl")).toBeNull();
+
+      const stage = within(floor).getByRole("button", {
+        name: /^Stage implement\..*gaggle core/,
+      });
+      await user.click(stage);
+      expect(stage).toHaveAttribute("aria-pressed", "true");
+      expect(
+        within(
+          screen.getByRole("complementary", { name: "Factory inspector" }),
+        ).getByRole("heading", { name: "implement" }),
+      ).toBeVisible();
+
+      await user.click(screen.getByRole("button", { name: "Risk" }));
+      expect(window.location.hash).toBe("#/factory?lens=risk&layout=plant");
+      expect(screen.getByLabelText("Gaggle")).toHaveValue("");
+      expect(screen.getByLabelText("Workflow")).toHaveValue("");
+      expect(
+        screen.getByText("High-contrast mode uses the exact Lines topology."),
+      ).toBeVisible();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
   it("keeps gaggle, workflow and lens scope across a layout change", async () => {
     window.location.hash = "#/factory?gaggle=tools&lens=risk";
     const user = userEvent.setup();
@@ -254,12 +301,16 @@ describe("plant layout honesty", () => {
 
     const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
     expect(plant).toHaveAttribute("data-working", "true");
-    expect(within(plant).getByText("FACTORY WORKING")).toBeInTheDocument();
+    expect(within(plant).getByText("ATTENTION REQUIRED")).toBeInTheDocument();
     expect(
-      plant.querySelector('.factory-plant-machine[data-status="running"]'),
+      plant.querySelector(
+        '.factory-station[data-status="running"], .factory-plant-machine[data-status="running"]',
+      ),
     ).toBeInTheDocument();
     expect(
-      plant.querySelector('.factory-plant-staff[data-working="true"]'),
+      plant.querySelector(
+        '.factory-worker[data-working="true"], .factory-plant-staff[data-working="true"]',
+      ),
     ).toBeInTheDocument();
   });
 
@@ -275,20 +326,32 @@ describe("plant layout honesty", () => {
     expect(plant).toHaveAttribute("data-working", "false");
     expect(within(plant).getByText("ATTENTION REQUIRED")).toBeInTheDocument();
     expect(
-      plant.querySelector('.factory-plant-staff[data-active="true"]'),
+      plant.querySelector(
+        '.factory-worker[data-active="true"], .factory-plant-staff[data-active="true"]',
+      ),
     ).toBeInTheDocument();
     expect(
-      plant.querySelector('.factory-plant-staff[data-working="true"]'),
+      plant.querySelector(
+        '.factory-worker[data-working="true"], .factory-plant-staff[data-working="true"]',
+      ),
     ).not.toBeInTheDocument();
   });
 
-  it("uses truthful workflow identity for floor paint", async () => {
+  it("uses truthful workflow bay summaries instead of decorative zones", async () => {
     window.location.hash = "#/factory?gaggle=core&layout=plant";
     render(<App client={new FixtureDaemonClient(factoryFloorFixtures())} />);
 
     const plant = await screen.findByRole("group", { name: PLANT_LAYOUT });
-    expect(within(plant).getByText("Core product · Implementation")).toBeInTheDocument();
+    expect(
+      within(plant).getByRole("button", {
+        name: /^Workflow Implementation, gaggle Core product/,
+      }),
+    ).toBeInTheDocument();
     expect(within(plant).queryByText("LINE 01")).not.toBeInTheDocument();
+    expect(plant.querySelector(".factory-plant-zone-card")).not.toBeInTheDocument();
+    expect(
+      within(plant).getByText(/\d+ active · workflow limit/),
+    ).toBeVisible();
   });
 
   it("raises a red block and an amber hold with text, not colour alone", async () => {
@@ -381,6 +444,21 @@ describe("plant layout honesty", () => {
     expect(screen.getByText("Partial view")).toBeVisible();
   });
 
+  it("keeps a confirmed block primary when the active list is also truncated", async () => {
+    window.location.hash = "#/factory?layout=plant";
+    const fixtures = factoryFloorFixtures();
+    fixtures.runs = {
+      nextCursor: "more",
+      runs: fixtures.runs.runs.filter((run) => run.id === "01JZ500BLOCKED"),
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("Intervention required"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Partial view")).not.toBeInTheDocument();
+  });
+
   it("caps idle commons goobers and still shows the configured plant", async () => {
     window.location.hash = "#/factory?layout=plant";
     render(<App client={new FixtureDaemonClient(denseCommonsFixtures(20))} />);
@@ -424,9 +502,12 @@ describe("plant layout honesty", () => {
       /topology was not read in this batch/.test(line.getAttribute("aria-label") ?? ""),
     );
     expect(unread.length).toBeGreaterThan(0);
-    expect(within(plant).getAllByText("3 stages unread").length).toBeGreaterThanOrEqual(
-      unread.length,
-    );
+    expect(
+      within(plant).getAllByText("topology not read in this batch").length,
+    ).toBeGreaterThanOrEqual(unread.length);
+    expect(
+      within(plant).getAllByText("3 configured, 0 drawn").length,
+    ).toBeGreaterThanOrEqual(unread.length);
     for (const line of unread) {
       expect(line).toHaveAccessibleName(/3 stages are configured and none are drawn/);
     }
@@ -640,13 +721,15 @@ describe("plant layout presentation contracts", () => {
 
     await screen.findByRole("group", { name: LINE_LAYOUT });
     expect(screen.getByText("Machines")).toBeVisible();
-    expect(screen.queryByText("Beacon alarm")).not.toBeInTheDocument();
+    expect(screen.queryByText("Silo: agentic")).not.toBeInTheDocument();
 
     await switchToPlant(user);
-    expect(screen.getByText("Plant", { selector: "strong" })).toBeVisible();
-    expect(screen.getByText("Beacon alarm")).toBeVisible();
-    expect(screen.getByText("Placard status")).toBeVisible();
-    expect(screen.getByText("Ready commons")).toBeVisible();
+    expect(screen.getByText("Stage shape", { selector: "strong" })).toBeVisible();
+    expect(screen.getByText("Silo: agentic")).toBeVisible();
+    expect(screen.getByText("Arch: gate")).toBeVisible();
+    expect(screen.getByText("Beam: evaluator")).toBeVisible();
+    expect(screen.getByText("Beacon: confirmed hazard")).toBeVisible();
+    expect(screen.getByText("Open marker: unread")).toBeVisible();
     expect(screen.getByText("Dashed means order unknown")).toBeVisible();
     expect(screen.queryByText("Machines")).not.toBeInTheDocument();
   });

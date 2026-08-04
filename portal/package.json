@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "tsc --noEmit -p tsconfig.e2e.json && playwright test",
+    "test:plant": "node tools/plant-harness.mjs",
+    "test:plant:live": "node tools/plant-harness.mjs --live-daemon",
     "test:contract": "vitest run src/api/wireContract.test.ts",
     "preview": "vite preview"
   },

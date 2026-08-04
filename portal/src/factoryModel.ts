@@ -384,6 +384,8 @@ export interface FactoryFloorModel {
   emptyReason: FactoryEmptyReason;
   /** True when the daemon reports more active runs beyond the 50-run floor bound. */
   runsTruncated: boolean;
+  /** Workflow graphs retained from a previous read whose latest refresh failed. */
+  topologyReadFailures?: readonly string[];
   width: number;
   height: number;
 }
@@ -391,6 +393,7 @@ export interface FactoryFloorModel {
 export interface FactoryModelInput {
   inventories: readonly GaggleInventory[];
   workflowDetails?: ReadonlyMap<string, WorkflowDetail>;
+  workflowReadFailures?: ReadonlySet<string>;
   activeRuns: readonly RunSummary[];
   runSignals?: ReadonlyMap<string, FactoryRunSignal>;
   recentOutcomes?: readonly RunSummary[];
@@ -702,6 +705,9 @@ export function buildFactoryFloorModel(input: FactoryModelInput): FactoryFloorMo
     capacity,
     emptyReason: emptyReason(inventories, lanes, carriers),
     runsTruncated: input.runsTruncated ?? false,
+    topologyReadFailures: [...(input.workflowReadFailures ?? [])]
+      .filter((key) => lanes.some((lane) => lane.id === key))
+      .sort((left, right) => left.localeCompare(right)),
     width: canvasWidth,
     height:
       commons.height > 0

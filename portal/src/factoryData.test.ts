@@ -154,6 +154,36 @@ describe("factory workflow detail selection", () => {
     ]);
   });
 
+  it("marks retained topology incomplete when its latest refresh fails", async () => {
+    const { fixtures, inventory } = manyWorkflowFixtures(1);
+    const key = fixtureKey("core", "flow-00");
+    const retained = fixtures.workflowDetails![key];
+    delete fixtures.workflowDetails![key];
+
+    const detail = await loadFactoryDetail(
+      new FixtureDaemonClient(fixtures),
+      { gaggle: "core", workflow: "flow-00" },
+      ["core/flow-00"],
+      undefined,
+      new Map([["core/flow-00", retained]]),
+    );
+    const model = buildFactoryFloorModel({
+      inventories: [inventory],
+      workflowDetails: detail.workflowDetails,
+      workflowReadFailures: detail.workflowReadFailures,
+      activeRuns: detail.activeRuns,
+      runSignals: detail.runSignals,
+      scope: { gaggle: "core", workflow: "flow-00" },
+    });
+
+    expect(detail.workflowDetails.get("core/flow-00")).toBe(retained);
+    expect(detail.workflowReadFailures).toEqual(
+      new Set(["core/flow-00"]),
+    );
+    expect(model.lanes[0].source).toBe("declared");
+    expect(model.topologyReadFailures).toEqual(["core/flow-00"]);
+  });
+
   it("reserves the 12-detail batch for active workflows in stable identity order", async () => {
     const { fixtures, inventory } = manyWorkflowFixtures(14);
     const runs = [

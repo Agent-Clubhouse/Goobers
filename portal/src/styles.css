@@ -5335,6 +5335,15 @@ a.telemetry-error-row:hover {
   min-height: 0;
 }
 
+.factory-viewport-shell {
+  min-height: 0;
+  position: relative;
+}
+
+.factory-viewport-shell > .factory-viewport {
+  height: 100%;
+}
+
 .factory-viewport {
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -5417,17 +5426,82 @@ a.telemetry-error-row:hover {
   width: 1450px;
 }
 
+.factory-plant-exact-fallback {
+  align-items: center;
+  background: var(--surface);
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+  z-index: 100;
+}
+
+.factory-plant-exact-fallback-world {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  transform-origin: center;
+}
+
+.factory-plant-exact-fallback .factory-floor {
+  flex: 0 0 auto;
+}
+
+.factory-forced-colors-exact {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
+.factory-forced-colors-notice {
+  background: Canvas;
+  border: 2px solid CanvasText;
+  color: CanvasText;
+  font-size: 12px;
+  font-weight: 700;
+  left: 12px;
+  margin: 0;
+  padding: 7px 10px;
+  position: absolute;
+  top: 12px;
+  z-index: 10000;
+}
+
+@media (forced-colors: active) {
+  .factory-forced-colors-exact,
+  .factory-forced-colors-exact .factory-floor {
+    forced-color-adjust: auto;
+  }
+}
+
+/*
+ * Inspector geometry, shared with factoryViewportSafeArea.ts.
+ *
+ * The camera fit, the overlay clamp and the probe all subtract exactly this
+ * drawer. A second copy of "350px" is how a selected machine ends up hidden
+ * behind the drawer that was opened to describe it, so the numbers live in one
+ * place and are asserted equal by test.
+ */
+.factory-page {
+  --factory-inspector-width: 350px;
+  --factory-inspector-inset: 8px;
+  --factory-inspector-narrow-inset: 6px;
+  --factory-inspector-sheet-top: 30%;
+}
+
 .factory-inspector-drawer {
-  bottom: 8px;
-  max-width: calc(100% - 16px);
+  bottom: var(--factory-inspector-inset);
+  max-width: calc(100% - var(--factory-inspector-inset) * 2);
   pointer-events: none;
   position: absolute;
-  right: 8px;
-  top: 8px;
+  right: var(--factory-inspector-inset);
+  top: var(--factory-inspector-inset);
   transform: translateX(calc(100% + 18px));
   transition: transform 160ms ease;
   visibility: hidden;
-  width: 350px;
+  width: var(--factory-inspector-width);
   z-index: 21000;
 }
 
@@ -5492,17 +5566,133 @@ a.telemetry-error-row:hover {
   }
 
   .factory-inspector-drawer {
-    bottom: 6px;
-    left: 6px;
+    bottom: var(--factory-inspector-narrow-inset);
+    left: var(--factory-inspector-narrow-inset);
     max-width: none;
-    right: 6px;
-    top: 30%;
+    right: var(--factory-inspector-narrow-inset);
+    top: var(--factory-inspector-sheet-top);
     transform: translateY(calc(100% + 12px));
     width: auto;
   }
 
   .factory-inspector-drawer.is-open {
     transform: translateY(0);
+  }
+}
+
+/*
+ * Short operations screens reserve the pixels for the plant, not chrome.
+ *
+ * The inspector starts closed in this mode and its toolbar button is the
+ * compact summary trigger. If opened, the drawer is capped to the space left
+ * after the explicit 84px Plant safe-area floor.
+ */
+@media (max-height: 600px) {
+  .portal-frame-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .portal-frame-workspace > .sidebar,
+  .portal-main-workspace > .topbar {
+    display: none;
+  }
+
+  .portal-main-workspace {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .page-content-workspace {
+    min-height: 260px;
+    overflow-y: auto;
+    padding: 4px;
+  }
+
+  .page-content-workspace.page-content-workspace :where(.factory-page) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .page-content-workspace.page-content-workspace :where(.factory-heading) {
+    height: 36px;
+    max-height: 36px;
+    min-height: 36px;
+    overflow: hidden;
+    padding: 3px 5px;
+  }
+
+  .factory-heading-title,
+  .page-content-workspace .factory-notices,
+  .page-content-workspace .factory-control-caption,
+  .page-content-workspace .factory-status-strip,
+  .page-content-workspace .factory-legend {
+    display: none;
+  }
+
+  .page-content-workspace .factory-control {
+    flex: 0 0 auto;
+  }
+
+  .page-content-workspace .factory-control > span {
+    display: none;
+  }
+
+  .page-content-workspace .factory-control select {
+    max-width: 104px;
+    min-height: 28px;
+  }
+
+  .page-content-workspace .factory-controls {
+    flex-wrap: nowrap;
+    gap: 4px;
+    justify-content: flex-end;
+    overflow-x: auto;
+    overflow-y: hidden;
+    width: 100%;
+  }
+
+  .page-content-workspace .factory-layout-button,
+  .page-content-workspace .factory-lens-button,
+  .page-content-workspace .factory-inspector-toggle {
+    min-height: 28px;
+    padding: 4px 7px;
+    white-space: nowrap;
+  }
+
+  .page-content-workspace .factory-stage-area {
+    grid-template-rows: minmax(84px, 1fr);
+  }
+
+  .page-content-workspace .factory-layout {
+    flex: 1 1 auto;
+    min-height: 84px;
+  }
+
+  .page-content-workspace .factory-stage-notices {
+    display: none;
+  }
+
+  .factory-inspector-drawer {
+    bottom: var(--factory-inspector-narrow-inset);
+    box-sizing: border-box;
+    height: min(180px, max(0px, calc(100% - 102px)));
+    left: var(--factory-inspector-narrow-inset);
+    min-height: 0;
+    right: var(--factory-inspector-narrow-inset);
+    top: auto;
+    transform: translateY(calc(100% + 12px));
+    width: auto;
+  }
+
+  .factory-inspector-drawer.is-open {
+    transform: translateY(0);
+  }
+
+  .factory-inspector-drawer .factory-inspector {
+    min-height: 0;
+    overflow: auto;
+    padding: 24px 8px 4px;
   }
 }
 
@@ -6750,14 +6940,15 @@ a.telemetry-error-row:hover {
   border-color: var(--danger);
 }
 
+/* Unread is a completeness gap, not a hazard, so it never borrows hold amber. */
 .factory-legend-item[data-legend="unknown"]::before {
   background: repeating-linear-gradient(
     135deg,
-    color-mix(in srgb, var(--warning) 25%, var(--panel)) 0 3px,
+    color-mix(in srgb, var(--muted) 30%, var(--panel)) 0 3px,
     var(--panel) 3px 6px
   );
-  border-color: var(--warning);
-  border-style: dotted;
+  border-color: var(--muted-strong);
+  border-style: dashed;
 }
 
 .factory-legend-item[data-legend="idle"]::before {
@@ -6819,6 +7010,82 @@ a.telemetry-error-row:hover {
 .factory-legend-item[data-legend="commons"]::before {
   background: var(--panel);
   border-style: dashed;
+}
+
+/*
+ * Stage shape is the plant's primary channel, so each legend swatch is the
+ * silhouette itself. These read with colour off, in greyscale, and in forced
+ * colours, which is the whole point of authoring shape before hue.
+ */
+.factory-legend-item[data-legend^="shape-"]::before {
+  background: var(--muted-strong);
+  border: 0;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-legend-item[data-legend="shape-agentic"]::before {
+  border-radius: 999px 999px 2px 2px;
+}
+
+.factory-legend-item[data-legend="shape-gate"]::before {
+  clip-path: polygon(0 100%, 0 34%, 50% 0, 100% 34%, 100% 100%, 72% 100%, 72% 52%, 28% 52%, 28% 100%);
+}
+
+.factory-legend-item[data-legend="shape-evaluator"]::before {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.factory-legend-item[data-legend="shape-deterministic"]::before {
+  border-radius: 1px;
+}
+
+.factory-legend-item[data-legend="shape-parallel"]::before {
+  background: linear-gradient(
+    90deg,
+    var(--muted-strong) 0 40%,
+    transparent 40% 60%,
+    var(--muted-strong) 60% 100%
+  );
+}
+
+.factory-legend-item[data-legend="shape-terminal"]::before {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+/*
+ * The Risk sentence. It is a live region because it is the one place the
+ * plant states whether the all-clear is a genuine all-clear or only the
+ * absence of confirmed risk in an incomplete read.
+ */
+.factory-legend-risk {
+  align-items: baseline;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted-strong);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding-left: 8px;
+}
+
+.factory-legend-risk > strong {
+  color: var(--ink);
+}
+
+.factory-legend-risk[data-risk="blocked"] {
+  border-left-color: var(--danger);
+}
+
+.factory-legend-risk[data-risk="held"],
+.factory-legend-risk[data-risk="impeded"] {
+  border-left-color: var(--warning);
+}
+
+.factory-legend-risk[data-risk="unknown"],
+.factory-legend-risk[data-complete="false"] {
+  border-left-style: dashed;
+  border-left-color: var(--muted-strong);
 }
 
 .factory-legend-readout {
@@ -7474,7 +7741,7 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-machine[data-status="unknown"] {
-  --machine-tint: var(--warning);
+  --machine-tint: var(--muted-strong);
 }
 
 .factory-plant-art {
@@ -7696,9 +7963,13 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-machine[data-status="held"] .factory-plant-placard-status,
-.factory-plant-machine[data-status="unknown"] .factory-plant-placard-status,
 .factory-plant-machine[data-status="impeded"] .factory-plant-placard-status {
   color: var(--warning-ink);
+}
+
+.factory-plant-machine[data-status="unknown"] .factory-plant-placard-status {
+  color: var(--muted-strong);
+  text-decoration: underline dashed;
 }
 
 .factory-plant-placard-name {
@@ -8070,36 +8341,338 @@ a.telemetry-error-row:hover {
   opacity: 1;
 }
 
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  :is(.factory-plant-machine, .factory-plant-crate, .factory-plant-staff) {
-  left: var(--factory-webgl-left);
-  top: var(--factory-webgl-top);
+.factory-plant-renderer-status {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  bottom: 6.2%;
+  color: var(--muted-strong);
+  display: flex;
+  font-size: 0.62cqw;
+  gap: 0.55cqw;
+  left: 50%;
+  padding: 0.34cqw 0.52cqw;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 55;
 }
 
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-machine {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
+.factory-plant-renderer-status button {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0.2cqw 0.42cqw;
+  white-space: nowrap;
 }
 
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-machine-core,
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-crate
-  > span:not(.sr-only),
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-staff-head,
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-staff-body {
+/*
+ * The authored hall floor, in CSS.
+ *
+ * This is the complete fallback: it is present in the very first frame, needs
+ * no network, and reads as the same neutral operating floor the renderer
+ * authors. The 540 KB illustration is progressive enhancement mounted only
+ * once we are actually on the fallback, so the successful WebGL path never
+ * pays for it.
+ */
+.factory-plant-backdrop-authored {
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--panel) 88%, var(--ink) 4%) 0%,
+      color-mix(in srgb, var(--panel) 70%, var(--ink) 12%) 46%,
+      color-mix(in srgb, var(--panel) 58%, var(--ink) 18%) 100%
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 5.6%,
+      color-mix(in srgb, var(--line) 42%, transparent) 5.6% 5.9%
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 7.2%,
+      color-mix(in srgb, var(--line) 30%, transparent) 7.2% 7.5%
+    );
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
+  width: 100%;
+  z-index: 0;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-backdrop-authored {
   opacity: 0;
+  transition: opacity 180ms ease;
 }
 
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-machine:focus-visible,
-.factory-plant-scene:has(.factory-plant-renderer[data-webgl="ready"])
-  .factory-plant-machine[aria-pressed="true"] {
-  box-shadow: 0 0 0 0.26cqw var(--focus);
+/*
+ * Forced colours: the OS has already told us the author's palette is unusable.
+ * A canvas is exempt from the substitution, so the hall would keep painting a
+ * status system the operator cannot read. The renderer is never mounted; the
+ * DOM plant carries the whole meaning in system colours and shape.
+ */
+.factory-plant-renderer[data-forced-colors="true"] .factory-plant-backdrop-authored {
+  background: Canvas;
+  border: 1px solid CanvasText;
+}
+
+@media (forced-colors: active) {
+  .factory-plant-backdrop-authored {
+    background: Canvas;
+    border: 1px solid CanvasText;
+    forced-color-adjust: none;
+  }
+
+  /* Status is a shape and an outline here, never a fill colour. */
+  .factory-plant-machine .plant-face,
+  .factory-plant-dock .plant-face {
+    fill: Canvas;
+    stroke: CanvasText;
+    stroke-width: 1.5;
+  }
+
+  .factory-plant-machine[data-status="blocked"] .plant-face-top,
+  .factory-plant-machine[data-status="held"] .plant-face-top,
+  .factory-plant-machine[data-status="impeded"] .plant-face-top {
+    fill: Highlight;
+  }
+
+  .factory-plant-machine[data-status="unknown"] .plant-face-top {
+    fill: Canvas;
+    stroke-dasharray: 4 3;
+  }
+
+  .factory-plant-machine[data-source="observed"] .plant-face {
+    stroke-dasharray: 4 3;
+    opacity: 1;
+  }
+
+  .factory-plant-lamp,
+  .factory-plant-beacon-lamp {
+    fill: CanvasText;
+    opacity: 1;
+  }
+
+  .factory-plant-crate .plant-crate-face {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+
+  /* Nothing may hide its own meaning: the lens dimming is author colour. */
+  .factory-plant-classic[data-lens="risk"] .factory-plant-machine,
+  .factory-plant-classic[data-lens="risk"] .factory-plant-crate,
+  .factory-plant-classic[data-lens="risk"] .factory-plant-staff,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-machine,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-sign,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-staff {
+    opacity: 1;
+  }
+
+  .factory-plant-hud-top > span,
+  .factory-plant-hud-top > b,
+  .factory-plant-hud-bottom {
+    background: Canvas;
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .factory-plant-hud-bottom i {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
+}
+
+.factory-plant-overlay {
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+  z-index: 4;
+}
+
+/*
+ * Every overlay control is a zero-size box pinned to the projected point and
+ * counter-scaled, so its hit target keeps a real CSS size at any zoom and its
+ * measured centre is the projected anchor itself.
+ */
+.factory-plant-overlay-item {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  height: 0;
+  padding: 0;
+  pointer-events: none;
+  position: absolute;
+  transform-origin: 0 0;
+  width: 0;
+}
+
+.factory-plant-overlay-origin {
+  display: block;
+  height: 0;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 0;
+}
+
+.factory-plant-overlay-hit {
+  cursor: pointer;
+  display: block;
+  height: var(--plant-hit-height);
+  left: 0;
+  pointer-events: auto;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: var(--plant-hit-width);
+}
+
+.factory-plant-overlay-ring {
+  border: 2px solid var(--focus);
+  border-radius: 999px;
+  display: block;
+  height: calc(var(--plant-hit-height) + 8px);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: calc(var(--plant-hit-width) + 8px);
+}
+
+.factory-plant-overlay-item:focus-visible .factory-plant-overlay-hit {
+  box-shadow: 0 0 0 3px var(--focus);
+  outline: none;
+}
+
+.factory-plant-overlay-label,
+.factory-plant-overlay-chip {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  display: flex;
+  font-size: 11px;
+  justify-content: center;
+  left: 0;
+  line-height: 1;
+  overflow: hidden;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 0;
+  white-space: nowrap;
+}
+
+.factory-plant-overlay-label {
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.factory-plant-risk-badge {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 800;
+  gap: 4px;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.factory-plant-risk-badge > i,
+.factory-plant-risk-marker {
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-plant-risk-badge[data-shape="stop-octagon"] > i,
+.factory-plant-risk-marker[data-shape="stop-octagon"] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--danger) 0 2px,
+    color-mix(in srgb, var(--danger) 45%, var(--surface)) 2px 4px
+  );
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+}
+
+.factory-plant-risk-badge[data-shape="pause-bars"] > i,
+.factory-plant-risk-marker[data-shape="pause-bars"] {
+  background: linear-gradient(
+    90deg,
+    var(--warning) 0 32%,
+    transparent 32% 68%,
+    var(--warning) 68% 100%
+  );
+  border-block: 1px solid var(--ink);
+}
+
+.factory-plant-risk-badge[data-shape="warning-triangle"] > i,
+.factory-plant-risk-marker[data-shape="warning-triangle"] {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warning) 0 2px,
+    var(--ink) 2px 3px
+  );
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.factory-plant-risk-badge[data-shape="open-diamond"] > i,
+.factory-plant-risk-marker[data-shape="open-diamond"] {
+  background: var(--surface);
+  border: 2px solid var(--muted-strong);
+  transform: rotate(45deg) scale(0.72);
+}
+
+.factory-plant-risk-badge[data-risk="blocked"] {
+  color: var(--danger);
+}
+
+.factory-plant-risk-badge[data-risk="held"],
+.factory-plant-risk-badge[data-risk="impeded"] {
+  color: var(--warning-ink);
+}
+
+.factory-plant-risk-badge[data-risk="unknown"] {
+  color: var(--muted-strong);
+}
+
+.factory-plant-overlay-chip {
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 0;
+  pointer-events: auto;
+  transform-origin: 0 0;
+  z-index: 5;
+}
+
+.factory-plant-overlay-item[data-tier="selected"] .factory-plant-overlay-label,
+.factory-plant-overlay-item[data-tier="focused"] .factory-plant-overlay-label {
+  border-color: var(--focus);
+  font-weight: 600;
+}
+
+.factory-plant-overlay-item[data-tier="alarm"] .factory-plant-overlay-label {
+  border-color: var(--danger-border);
+  font-weight: 600;
+}
+
+.factory-plant-overlay-item[data-onscreen="false"] {
+  display: none;
 }
 
 .factory-plant-live-belts,
@@ -8176,9 +8749,15 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-classic .factory-plant-sign-gaggle,
-.factory-plant-classic .factory-plant-sign-readout {
+.factory-plant-classic .factory-plant-sign-readout,
+.factory-plant-classic .factory-plant-sign-summary {
   font-size: 0.56cqw;
   line-height: 1.1;
+}
+
+.factory-plant-classic .factory-plant-sign-summary {
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
 }
 
 .factory-plant-classic .factory-plant-sign-badge {
@@ -8240,9 +8819,13 @@ a.telemetry-error-row:hover {
   box-shadow: none;
 }
 
-.factory-plant-classic .factory-plant-machine[data-status="impeded"],
-.factory-plant-classic .factory-plant-machine[data-status="unknown"] {
+.factory-plant-classic .factory-plant-machine[data-status="impeded"] {
   --machine-tint: var(--warning);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="unknown"] {
+  --machine-tint: var(--muted-strong);
+  border-style: dashed;
 }
 
 .factory-plant-classic .factory-plant-machine[aria-pressed="true"] {
@@ -8319,6 +8902,44 @@ a.telemetry-error-row:hover {
   color: var(--ink);
 }
 
+.factory-plant-risk-label {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 0.3cqw;
+  color: var(--ink);
+  display: flex;
+  font-size: 0.54cqw;
+  font-weight: 850;
+  gap: 0.28cqw;
+  left: 50%;
+  letter-spacing: 0.04em;
+  padding: 0.16cqw 0.34cqw;
+  position: absolute;
+  top: -2.05cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 65;
+}
+
+.factory-plant-crate .factory-plant-risk-label {
+  top: -1.4cqw;
+}
+
+.factory-plant-risk-label[data-risk="blocked"] {
+  border-color: var(--danger);
+}
+
+.factory-plant-risk-label[data-risk="held"],
+.factory-plant-risk-label[data-risk="impeded"] {
+  border-color: var(--warning);
+}
+
+.factory-plant-risk-label[data-risk="unknown"] {
+  border-style: dashed;
+  border-color: var(--muted-strong);
+}
+
 .factory-plant-classic .factory-plant-placard-head,
 .factory-plant-classic .factory-plant-placard-foot {
   gap: 0.35cqw;
@@ -8338,74 +8959,6 @@ a.telemetry-error-row:hover {
 .factory-plant-classic .factory-plant-placard-gauge {
   height: 0.28cqw;
   min-width: 2.4cqw;
-}
-
-.factory-plant-zone-card {
-  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
-  border: 1px solid color-mix(in srgb, var(--line-strong) 76%, transparent);
-  border-left: 0.34cqw solid var(--success);
-  border-radius: 0.62cqw;
-  box-shadow: 0 0.5cqw 1.2cqw -0.85cqw rgb(0 0 0 / 75%);
-  display: grid;
-  grid-template-columns: 1fr auto;
-  min-height: 4.1cqw;
-  padding: 0.5cqw 0.68cqw;
-  pointer-events: none;
-  position: absolute;
-  width: 14.2cqw;
-  z-index: 16;
-}
-
-.factory-plant-zone-card[data-state="running"] {
-  border-left-color: var(--success);
-}
-
-.factory-plant-zone-card[data-state="held"],
-.factory-plant-zone-card[data-state="unknown"] {
-  border-left-color: var(--warning);
-}
-
-.factory-plant-zone-card[data-state="blocked"] {
-  border-color: var(--danger);
-  border-left-color: var(--danger);
-  box-shadow: 0 0 0 0.2cqw color-mix(in srgb, var(--danger) 38%, transparent);
-}
-
-.factory-plant-zone-title {
-  align-items: center;
-  display: flex;
-  font-size: 0.78cqw;
-  font-weight: 780;
-  gap: 0.32cqw;
-  line-height: 1;
-}
-
-.factory-plant-zone-title > i {
-  background: var(--success);
-  border-radius: 50%;
-  height: 0.48cqw;
-  width: 0.48cqw;
-}
-
-.factory-plant-zone-card[data-state="held"] .factory-plant-zone-title > i,
-.factory-plant-zone-card[data-state="unknown"] .factory-plant-zone-title > i {
-  background: var(--warning);
-}
-
-.factory-plant-zone-card[data-state="blocked"] .factory-plant-zone-title > i {
-  background: var(--danger);
-}
-
-.factory-plant-zone-card > strong {
-  color: var(--accent);
-  font-size: 1cqw;
-  font-variant-numeric: tabular-nums;
-}
-
-.factory-plant-zone-card > small {
-  color: var(--muted-strong);
-  font-size: 0.56cqw;
-  grid-column: 1 / -1;
 }
 
 .factory-plant-machine-pin {
@@ -8436,10 +8989,16 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-machine-pin[data-status="held"],
-.factory-plant-machine-pin[data-status="impeded"],
-.factory-plant-machine-pin[data-status="unknown"] {
+.factory-plant-machine-pin[data-status="impeded"] {
   background: var(--warning);
   box-shadow: 0 0 1.8cqw 0.55cqw color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.factory-plant-machine-pin[data-status="unknown"] {
+  background: var(--surface);
+  border-color: var(--muted-strong);
+  border-style: dashed;
+  box-shadow: none;
 }
 
 .factory-plant-machine-pin[data-status="blocked"] {
@@ -8627,19 +9186,73 @@ a.telemetry-error-row:hover {
   gap: 0.28cqw;
 }
 
+/*
+ * The scene vocabulary, in the HUD.
+ *
+ * Shape is the primary channel — an operator must be able to tell an agentic
+ * silo from a gate arch with no colour at all — so the swatches are shapes
+ * first and tinted second.
+ */
 .factory-plant-hud-bottom i {
-  background: var(--success);
-  border-radius: 50%;
-  height: 0.48cqw;
-  width: 0.48cqw;
+  background: var(--muted);
+  height: 0.52cqw;
+  width: 0.52cqw;
 }
 
-.factory-plant-hud-bottom i[data-tone="waiting"] {
+.factory-plant-hud-bottom i[data-shape] {
+  background: var(--ink);
+}
+
+.factory-plant-hud-bottom i[data-shape="agentic"] {
+  border-radius: 50%;
+}
+
+.factory-plant-hud-bottom i[data-shape="gate"] {
+  clip-path: polygon(0 100%, 0 34%, 50% 0, 100% 34%, 100% 100%, 72% 100%, 72% 52%, 28% 52%, 28% 100%);
+}
+
+.factory-plant-hud-bottom i[data-shape="evaluator"] {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.factory-plant-hud-bottom i[data-shape="deterministic"] {
+  border-radius: 0.1cqw;
+}
+
+.factory-plant-hud-bottom i[data-tone] {
+  border-radius: 50%;
+}
+
+.factory-plant-hud-bottom i[data-tone="running"] {
+  background: var(--success);
+}
+
+.factory-plant-hud-bottom i[data-tone="held"] {
   background: var(--warning);
 }
 
 .factory-plant-hud-bottom i[data-tone="blocked"] {
   background: var(--danger);
+}
+
+/* Unread is not a hazard, so it never borrows hold amber. */
+.factory-plant-hud-bottom i[data-tone="unknown"] {
+  background: transparent;
+  border: 0.14cqw dashed var(--muted);
+  border-radius: 0;
+}
+
+.factory-plant-hud-top > b[data-risk="blocked"] {
+  color: var(--danger);
+}
+
+.factory-plant-hud-top > b[data-risk="held"],
+.factory-plant-hud-top > b[data-risk="impeded"] {
+  color: var(--warning);
+}
+
+.factory-plant-hud-top > b[data-risk="unknown"] {
+  color: var(--muted);
 }
 
 .factory-plant-classic[data-lens="flow"] .factory-plant-machine,
@@ -8651,7 +9264,8 @@ a.telemetry-error-row:hover {
 .factory-plant-classic[data-lens="risk"] .factory-plant-machine:not([data-status="blocked"]):not([data-status="held"]):not([data-status="impeded"]),
 .factory-plant-classic[data-lens="risk"] .factory-plant-crate:not([data-state="blocked"]):not([data-state="paused"]),
 .factory-plant-classic[data-lens="risk"] .factory-plant-staff {
-  opacity: 0.38;
+  filter: saturate(0.32);
+  opacity: 0.82;
 }
 
 /* --- Responsive -------------------------------------------------------- */
