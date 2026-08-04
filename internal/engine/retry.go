@@ -112,8 +112,9 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		if !shouldRetry {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
 		}
-		if backoff > 0 {
-			if serr := workflow.Sleep(ctx, backoff); serr != nil {
+		retryDelay := infrastructureRetryDelay(err, backoff, workflow.Now(ctx))
+		if retryDelay > 0 {
+			if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
 				return apiv1.ResultEnvelope{}, serr
 			}
 		}
@@ -121,6 +122,22 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Type() != FailureTypeInfrastructure || !appErr.HasDetails() {
+		return backoff
+	}
+	var retryAt time.Time
+	if err := appErr.Details(&retryAt); err != nil {
+		return backoff
+	}
+	until := retryAt.Sub(now)
+	if until > backoff {
+		return until
+	}
+	return backoff
 }
 
 // attemptFailureClass maps one failed dispatch to the journal attempt class
