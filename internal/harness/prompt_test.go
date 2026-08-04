@@ -129,31 +129,37 @@ func TestRenderPromptOmitsInputsSectionWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestRenderPromptDirectsSandboxScratchFilesToTMPDIR(t *testing.T) {
-	req := RunRequest{
+// TestRenderPromptDirectsScratchFilesToTheWorkspace is a regression test for
+// #2419: a goober denied writing to a hardcoded /tmp path self-misdiagnosed
+// the cause as a GitHub permission gap. The fix must be unconditional — not
+// gated on req.Sandbox, which is nil for the overwhelming majority of real
+// invocations (sandbox enforcement is opt-in per instance) and was nil for
+// the exact run #2419 traced. Covers both the sandboxed and unsandboxed case
+// getting identical guidance, and both completion-contract prompt variants.
+func TestRenderPromptDirectsScratchFilesToTheWorkspace(t *testing.T) {
+	base := RunRequest{
 		Envelope:       apiv1.InvocationEnvelope{Goal: "process the data"},
 		CompletionPath: DefaultResultPath,
-		Sandbox:        &stubSandbox{},
 	}
 
-	for name, render := range map[string]func(RunRequest) string{
-		"file completion":     renderPrompt,
-		"response completion": renderResponseCompletionPrompt,
-	} {
-		t.Run(name, func(t *testing.T) {
-			prompt := render(req)
-			if !strings.Contains(prompt, "Use `$TMPDIR` for any scratch files") {
-				t.Fatalf("sandboxed prompt missing TMPDIR guidance: %q", prompt)
-			}
-			if !strings.Contains(prompt, "The literal `/tmp` path is not writable in this sandbox") {
-				t.Fatalf("sandboxed prompt missing /tmp restriction: %q", prompt)
-			}
-		})
-	}
-
-	req.Sandbox = nil
-	if prompt := renderPrompt(req); strings.Contains(prompt, "## Sandbox scratch files") {
-		t.Fatalf("unsandboxed prompt gained sandbox scratch-file guidance: %q", prompt)
+	for _, req := range []RunRequest{base, func() RunRequest { r := base; r.Sandbox = &stubSandbox{}; return r }()} {
+		for name, render := range map[string]func(RunRequest) string{
+			"file completion":     renderPrompt,
+			"response completion": renderResponseCompletionPrompt,
+		} {
+			t.Run(name, func(t *testing.T) {
+				prompt := render(req)
+				if !strings.Contains(prompt, "## Scratch files") {
+					t.Fatalf("prompt missing scratch-file guidance: %q", prompt)
+				}
+				if !strings.Contains(prompt, "write it as a relative path inside your current workspace") {
+					t.Fatalf("prompt missing relative-workspace-path guidance: %q", prompt)
+				}
+				if strings.Contains(prompt, "TMPDIR") {
+					t.Fatalf("prompt still references TMPDIR, a Goobers-internal confinement detail the model shouldn't need to know: %q", prompt)
+				}
+			})
+		}
 	}
 }
 
