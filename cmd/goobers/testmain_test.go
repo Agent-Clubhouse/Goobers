@@ -151,7 +151,7 @@ func installMakeExecutableFixture(t *testing.T, dir, name string) {
 	if err != nil {
 		t.Fatalf("open test executable for %s fixture: %v", name, err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	dst, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		t.Fatalf("create %s fixture: %v", name, err)
