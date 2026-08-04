@@ -32,31 +32,68 @@ type prCommentWatchProvider interface {
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 }
 
-// prCommentWatchDefaultExcludeLabels reuses the package's own lifecycle-label
-// constants: a PR carrying any of these is already routed, parked, or opted out
-// of the automation loop, so a fresh human comment on it must not re-route it.
+// prCommentWatchDefaultExcludeLabels are the lifecycle labels that HARD-exclude a
+// PR from the scan: a fresh human comment must neither re-route it nor clear the
+// label, because — unlike the human-decision parks below — a comment is not the
+// signal that changes any of these states. needs-remediation is the re-fire
+// guard (already routed); merge-ready is landing in progress (self-heals on
+// demotion, and remediation must not race the merge); blocked-on-sibling is an
+// ordering park, not a content decision; no-merge-review is an explicit operator
+// opt-out we must respect.
 func prCommentWatchDefaultExcludeLabels() string {
 	return strings.Join([]string{
-		needsRemediationLabel,     // already routed (re-fire guard)
-		mergeReadyLabel,           // landing in progress; self-heals on demotion
-		remediationEscalatedLabel, // remediation suppressed while escalated
-		blockedOnSiblingLabel,     // parked on ordering, not content
-		noMergeReviewLabel,        // operator opt-out
-		providers.LabelNeedsHuman, // already parked for a human
+		needsRemediationLabel,
+		mergeReadyLabel,
+		blockedOnSiblingLabel,
+		noMergeReviewLabel,
 	}, ",")
+}
+
+// prCommentWatchDefaultUnparkLabels are the "parked for a human" labels a fresh
+// human comment SHOULD clear. The whole point of these parks is to wait for a
+// human's judgement; once the human comments, they have weighed in, so the
+// watcher strips the park label and routes the PR back through remediation
+// (needs-remediation) in the same mutation — closing the loop that would
+// otherwise leave the PR deaf to follow-up comments. Deliberately only the two
+// human-decision parks: merge-escalated (remediation gave up and asked for a
+// human) and needs-human (a reviewer explicitly parked it). Ordering parks and
+// operator opt-outs stay in the hard-exclude set above and are never un-parked
+// by a comment.
+func prCommentWatchDefaultUnparkLabels() string {
+	return strings.Join([]string{
+		remediationEscalatedLabel,
+		providers.LabelNeedsHuman,
+	}, ",")
+}
+
+// carriedLabels returns the PR's own labels (original casing) whose lowercase is
+// in set, preserving the exact strings the forge needs for a label remove.
+func carriedLabels(prLabels []string, set map[string]bool) []string {
+	var out []string
+	for _, l := range prLabels {
+		if set[strings.ToLower(l)] {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"Scan open goober-authored PRs (head under the gaggle branch namespace)\n" +
 	"and label any whose newest human comment is newer than the bot's own\n" +
 	"newest comment with goobers:needs-remediation, so pr-remediation updates\n" +
-	"that PR in place. The bot identity is the token's own login\n" +
+	"that PR in place. A PR parked for a human (needs-human / merge-escalated)\n" +
+	"is un-parked when a fresh human comment lands: the park label is cleared\n" +
+	"and needs-remediation added in one mutation, since the human the PR was\n" +
+	"parked for has now weighed in. The bot identity is the token's own login\n" +
 	"(AuthenticatedLogin) — a dedicated bot account is required for signal;\n" +
 	"with a shared human identity the stage never fires. Comments landing\n" +
 	"mid-remediation after the brief snapshot can be masked by the bot's\n" +
 	"response comment until the human comments again (accepted v1 limit).\n\n" +
 	"Inputs: maxPullRequests (default 20), headPrefixes (default the branch\n" +
-	"namespace), base (default the gaggle base branch), excludeLabels,\n" +
+	"namespace), base (default the gaggle base branch), excludeLabels (labels\n" +
+	"that hard-exclude a PR from the scan), unparkLabels (park labels a fresh\n" +
+	"human comment clears while routing, default needs-human,merge-escalated),\n" +
 	"excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),\n" +
 	"resultFile (default " + prCommentWatchResultName + ").\n" +
 	"Exit codes: 0 = scanned (labeled zero or more), 1 = business error,\n" +
@@ -68,11 +105,16 @@ type prCommentWatchLabeled struct {
 	CommentAuthor    string `json:"commentAuthor"`
 	CommentURL       string `json:"commentUrl,omitempty"`
 	CommentCreatedAt string `json:"commentCreatedAt,omitempty"`
+	// Unparked is true when routing this PR also cleared a human-decision park
+	// label (needs-human / merge-escalated); ClearedLabels lists what was stripped.
+	Unparked      bool     `json:"unparked,omitempty"`
+	ClearedLabels []string `json:"clearedLabels,omitempty"`
 }
 
 type prCommentWatchResult struct {
 	Scanned   int                     `json:"scanned"`
 	Labeled   int                     `json:"labeled"`
+	Unparked  int                     `json:"unparked"`
 	Errors    int                     `json:"errors"`
 	Truncated bool                    `json:"truncated"`
 	BotLogin  string                  `json:"botLogin"`
@@ -141,6 +183,7 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 	}
 	prefixes := splitLabelList(providerInput("headPrefixes", providerBranchNamespace()))
 	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", prCommentWatchDefaultExcludeLabels())))
+	unpark := toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels())))
 	excludeAuthors := toLowerSet(splitLabelList(providerInput("excludeAuthors", "")))
 	resultFile := providerInput("resultFile", prCommentWatchResultName)
 
@@ -190,13 +233,18 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		// Add-only: AddLabels leaves every other label untouched, and re-adding an
-		// existing label is a provider no-op — but the exclude guard above means we
-		// normally never even reach a PR that already carries needs-remediation.
+		// Route to remediation, and if the PR was parked for a human who has now
+		// commented, clear that park in the same mutation so the lane can pick it
+		// up (un-park). AddLabels leaves every other label untouched and re-adding
+		// an existing label is a no-op; RemoveLabels only names park labels the PR
+		// actually carries, so an un-parked PR is atomically re-routed. A normal
+		// (non-parked) PR strips nothing and behaves exactly as before.
+		cleared := carriedLabels(pr.Labels, unpark)
 		if _, uerr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         strconv.Itoa(pr.Number), // PR number as issue id (applyverdict.go precedent)
-			AddLabels:  []string{needsRemediationLabel},
+			Repository:   repo,
+			ID:           strconv.Itoa(pr.Number), // PR number as issue id (applyverdict.go precedent)
+			AddLabels:    []string{needsRemediationLabel},
+			RemoveLabels: cleared,
 		}); uerr != nil {
 			pf(stderr, "warning: label PR #%d %s: %v\n", pr.Number, needsRemediationLabel, uerr)
 			result.Errors++
@@ -207,9 +255,16 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 		if triggering.CreatedAt != nil {
 			entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)
 		}
+		entry.Unparked = len(cleared) > 0
+		entry.ClearedLabels = cleared
 		result.PRs = append(result.PRs, entry)
 		result.Labeled++
-		pf(stdout, "labeled PR #%d %s: unaddressed comment by %s\n", pr.Number, needsRemediationLabel, triggering.Author)
+		if entry.Unparked {
+			result.Unparked++
+			pf(stdout, "un-parked PR #%d (cleared %s, added %s): unaddressed comment by %s\n", pr.Number, strings.Join(cleared, ","), needsRemediationLabel, triggering.Author)
+		} else {
+			pf(stdout, "labeled PR #%d %s: unaddressed comment by %s\n", pr.Number, needsRemediationLabel, triggering.Author)
+		}
 	}
 	// Every scanned PR erroring is a systemic failure (bad token, forge down),
 	// not per-PR noise — surface it as a stage failure so the retry policy sees it.
@@ -220,7 +275,7 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "scanned %d open PR(s): labeled %d, errors %d\n", result.Scanned, result.Labeled, result.Errors)
+	pf(stdout, "scanned %d open PR(s): labeled %d (un-parked %d), errors %d\n", result.Scanned, result.Labeled, result.Unparked, result.Errors)
 	return 0
 }
 

@@ -156,20 +156,20 @@ func TestPRCommentWatchIgnoresBotTypedAndExcludedAuthors(t *testing.T) {
 	})
 }
 
-// TestPRCommentWatchSkipsRoutedParkedAndOptedOutPRs confirms every exclude
+// TestPRCommentWatchSkipsRoutedParkedAndOptedOutPRs confirms every hard-exclude
 // label parks a PR out of the scan even with a fresh human comment. Because
 // exclusion happens before result.Scanned++, scanned == 0 also proves no
-// comment thread was fetched for them.
+// comment thread was fetched for them. The two human-decision parks
+// (needs-human, merge-escalated) are deliberately NOT here — a fresh comment
+// un-parks those (TestPRCommentWatchUnparksHumanDecisionParkOnComment).
 func TestPRCommentWatchSkipsRoutedParkedAndOptedOutPRs(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	excludeLabels := []string{
 		needsRemediationLabel,
 		mergeReadyLabel,
-		remediationEscalatedLabel,
 		blockedOnSiblingLabel,
 		noMergeReviewLabel,
-		providers.LabelNeedsHuman,
 	}
 	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i, label := range excludeLabels {
@@ -198,6 +198,76 @@ func TestPRCommentWatchSkipsRoutedParkedAndOptedOutPRs(t *testing.T) {
 		if server.issueHasLabel(i+1, needsRemediationLabel) {
 			t.Fatalf("parked issue %d must not gain %s", i+1, needsRemediationLabel)
 		}
+	}
+}
+
+// TestPRCommentWatchUnparksHumanDecisionParkOnComment is the un-park acceptance:
+// a PR parked for a human (needs-human or merge-escalated) that gets a fresh
+// human comment is routed back to remediation AND has the park label cleared in
+// the same run, so the lane can pick it up instead of leaving it deaf.
+func TestPRCommentWatchUnparksHumanDecisionParkOnComment(t *testing.T) {
+	for _, park := range []string{providers.LabelNeedsHuman, remediationEscalatedLabel} {
+		t.Run(park, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addOpenPR(1, "goobers/implementation/x", "main", "sha1", "base1", false, []string{park}, nil)
+			server.addIssue(1, "Parked for a human", park)
+			base := time.Now().UTC().Add(-2 * time.Hour)
+			server.addCommentAtAs(1, "goobers", "escalating for review", base)
+			server.addCommentAtAs(1, "gneitzke", "actually, just do X", base.Add(time.Hour)) // human weighs in
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+			dir := commentWatchWorkDir(t)
+
+			code, _, stderr := runArgs(t, "pr-comment-watch", root)
+			if code != 0 {
+				t.Fatalf("pr-comment-watch: code = %d, stderr = %q", code, stderr)
+			}
+			if !server.issueHasLabel(1, needsRemediationLabel) {
+				t.Fatalf("un-parked PR must gain %s: %v", needsRemediationLabel, server.issueLabels(1))
+			}
+			if server.issueHasLabel(1, park) {
+				t.Fatalf("un-parked PR must lose %s: %v", park, server.issueLabels(1))
+			}
+			result := readCommentWatchResult(t, dir)
+			if result.Scanned != 1 || result.Labeled != 1 || result.Unparked != 1 {
+				t.Fatalf("result = %+v, want scanned 1 labeled 1 unparked 1", result)
+			}
+			if len(result.PRs) != 1 || !result.PRs[0].Unparked || len(result.PRs[0].ClearedLabels) != 1 || result.PRs[0].ClearedLabels[0] != park {
+				t.Fatalf("result.PRs = %+v, want one un-parked entry clearing %s", result.PRs, park)
+			}
+		})
+	}
+}
+
+// TestPRCommentWatchLeavesParkedPRAloneWithoutFreshComment confirms un-parking is
+// gated on a genuine fresh human comment: a PR parked for a human whose newest
+// comment is the bot's own stays parked (label intact, not routed).
+func TestPRCommentWatchLeavesParkedPRAloneWithoutFreshComment(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addOpenPR(1, "goobers/implementation/x", "main", "sha1", "base1", false, []string{providers.LabelNeedsHuman}, nil)
+	server.addIssue(1, "Parked, no new human word", providers.LabelNeedsHuman)
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	server.addCommentAtAs(1, "gneitzke", "please look", base)                     // human, older
+	server.addCommentAtAs(1, "goobers", "parked for review", base.Add(time.Hour)) // bot, newest
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	dir := commentWatchWorkDir(t)
+
+	code, _, stderr := runArgs(t, "pr-comment-watch", root)
+	if code != 0 {
+		t.Fatalf("pr-comment-watch: code = %d, stderr = %q", code, stderr)
+	}
+	if server.issueHasLabel(1, needsRemediationLabel) {
+		t.Fatalf("PR without a fresh human comment must not be routed: %v", server.issueLabels(1))
+	}
+	if !server.issueHasLabel(1, providers.LabelNeedsHuman) {
+		t.Fatalf("PR must stay parked: %v", server.issueLabels(1))
+	}
+	result := readCommentWatchResult(t, dir)
+	if result.Scanned != 1 || result.Labeled != 0 || result.Unparked != 0 {
+		t.Fatalf("result = %+v, want scanned 1 labeled 0 unparked 0", result)
 	}
 }
 
