@@ -194,6 +194,43 @@ func TestGraphProjectsAgenticGateOwner(t *testing.T) {
 	t.Fatal("review node not projected")
 }
 
+func TestGraphProjectsParallelBranchExitsToJoin(t *testing.T) {
+	def := parallelDef()
+	def.Spec.Tasks[1].Next = "security-verdict"
+	def.Spec.Gates = append(def.Spec.Gates, apiv1.Gate{
+		Name:      "security-verdict",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches: map[string]string{
+			"pass": TargetJoin,
+			"fail": TargetJoin,
+		},
+	})
+
+	m, err := graphMachine(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []model.GraphEdge
+	for _, edge := range m.Graph().Edges {
+		if edge.Target == "collate" {
+			got = append(got, edge)
+		}
+		if edge.Target == TargetJoin {
+			t.Fatalf("graph retained dangling join target: %+v", edge)
+		}
+	}
+	want := []model.GraphEdge{
+		{Source: "review-perf", Target: "collate"},
+		{Source: "security-verdict", Target: "collate", Outcome: "pass"},
+		{Source: "security-verdict", Target: "collate", Outcome: "fail"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("join edges = %+v, want %+v", got, want)
+	}
+}
+
 func graphMachine(def Definition) (*Machine, error) {
 	return newMachine(def)
 }

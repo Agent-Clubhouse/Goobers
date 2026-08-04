@@ -326,7 +326,19 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
+	wantCompiled := []string{
+		"start: query",
+		"query[deterministic] -> analyze",
+		"security[deterministic] -> implement",
+		"performance[deterministic] -> implement",
+		"implement[agentic] -> review",
+		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
+		"analyze[parallel](branch security -> security, branch performance -> performance, branch-failed -> abort)",
+	}
+	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, wantCompiled) {
+		t.Errorf("compiled graph = %v, want %v", got, wantCompiled)
+	}
+	wantDocument := []string{
 		"start: query",
 		"query[deterministic] -> analyze",
 		"security[deterministic] -> @join",
@@ -335,11 +347,8 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
 		"analyze[parallel](branch security -> security, branch performance -> performance, join -> implement, branch-failed -> abort)",
 	}
-	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, want) {
-		t.Errorf("compiled graph = %v, want %v", got, want)
-	}
-	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, want) {
-		t.Errorf("document graph = %v, want %v", got, want)
+	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, wantDocument) {
+		t.Errorf("document graph = %v, want %v", got, wantDocument)
 	}
 }
 
