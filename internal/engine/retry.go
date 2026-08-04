@@ -43,7 +43,7 @@ const (
 // attempt's recorded failure type (attemptFailureClass). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context) (apiv1.ResultEnvelope, error)) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context) (stageActivityResult, error)) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -73,7 +73,8 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		}
 
 		startedAt := workflow.Now(ctx)
-		res, err := dispatch(ctx)
+		activityResult, err := dispatch(ctx)
+		res := activityResult.ResultEnvelope
 		if temporal.IsCanceledError(err) || ctx.Err() != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -85,9 +86,11 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
-		rec.recordDeferredRunBranch(ctx, err, res)
+		rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
 		if err == nil {
 			res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+			rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
+			rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
 			rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
 			return res, nil
 		}
