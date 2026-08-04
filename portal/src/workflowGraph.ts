@@ -72,31 +72,77 @@ export function layoutWorkflowGraph(graph: WorkflowGraph): WorkflowGraphLayout {
   }
 
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const outgoing = new Map<string, WorkflowGraphEdge[]>();
-  for (const edge of graph.edges) {
+  const outgoing = new Map<string, { edge: WorkflowGraphEdge; index: number }[]>();
+  graph.edges.forEach((edge, index) => {
     const edges = outgoing.get(edge.source) ?? [];
-    edges.push(edge);
+    edges.push({ edge, index });
     outgoing.set(edge.source, edges);
-  }
+  });
 
   const depths = new Map<string, number>();
   const discovery = new Map<string, number>();
+  const repassEdges = new Set<number>();
+  const visitState = new Map<string, "visiting" | "visited">();
   let discoveryIndex = 0;
 
   const visitFrom = (root: string, rootDepth: number) => {
-    const queue = [root];
-    depths.set(root, rootDepth);
-    discovery.set(root, discoveryIndex++);
+    const component: string[] = [];
+    const visit = (source: string) => {
+      visitState.set(source, "visiting");
+      discovery.set(source, discoveryIndex++);
+      component.push(source);
+      for (const { edge, index } of outgoing.get(source) ?? []) {
+        if (edge.terminal || !nodeById.has(edge.target)) {
+          continue;
+        }
+        if (visitState.get(edge.target) === "visiting") {
+          repassEdges.add(index);
+        } else if (!visitState.has(edge.target)) {
+          visit(edge.target);
+        }
+      }
+      visitState.set(source, "visited");
+    };
+    visit(root);
+
+    const componentSet = new Set(component);
+    const indegrees = new Map(component.map((id) => [id, 0]));
+    for (const source of component) {
+      for (const { edge, index } of outgoing.get(source) ?? []) {
+        if (
+          !repassEdges.has(index) &&
+          !edge.terminal &&
+          componentSet.has(edge.target)
+        ) {
+          indegrees.set(edge.target, (indegrees.get(edge.target) ?? 0) + 1);
+        }
+      }
+    }
+
+    const queue = component.filter((id) => indegrees.get(id) === 0);
+    for (const id of component) {
+      depths.set(id, rootDepth);
+    }
     for (let index = 0; index < queue.length; index += 1) {
       const source = queue[index];
       const sourceDepth = depths.get(source) ?? rootDepth;
-      for (const edge of outgoing.get(source) ?? []) {
-        if (edge.terminal || !nodeById.has(edge.target) || depths.has(edge.target)) {
+      for (const { edge, index: edgeIndex } of outgoing.get(source) ?? []) {
+        if (
+          repassEdges.has(edgeIndex) ||
+          edge.terminal ||
+          !componentSet.has(edge.target)
+        ) {
           continue;
         }
-        depths.set(edge.target, sourceDepth + 1);
-        discovery.set(edge.target, discoveryIndex++);
-        queue.push(edge.target);
+        depths.set(
+          edge.target,
+          Math.max(depths.get(edge.target) ?? rootDepth, sourceDepth + 1),
+        );
+        const indegree = (indegrees.get(edge.target) ?? 0) - 1;
+        indegrees.set(edge.target, indegree);
+        if (indegree === 0) {
+          queue.push(edge.target);
+        }
       }
     }
   };
@@ -146,10 +192,7 @@ export function layoutWorkflowGraph(graph: WorkflowGraph): WorkflowGraphLayout {
   const deepest = Math.max(...levels.keys());
   const maxRows = Math.max(...[...levels.values()].map((level) => level.length));
   const repassCount = graph.edges.filter(
-    (edge) =>
-      !edge.terminal &&
-      nodeById.has(edge.target) &&
-      (depths.get(edge.target) ?? 0) <= (depths.get(edge.source) ?? 0),
+    (_edge, index) => repassEdges.has(index),
   ).length;
   const contentHeight =
     PADDING * 2 + maxRows * NODE_HEIGHT + Math.max(0, maxRows - 1) * ROW_GAP;
@@ -193,7 +236,7 @@ export function layoutWorkflowGraph(graph: WorkflowGraph): WorkflowGraphLayout {
       return [];
     }
 
-    const repass = !edge.terminal && target.depth <= source.depth;
+    const repass = repassEdges.has(index);
     let path: string;
     let labelX: number;
     let labelY: number;
@@ -215,9 +258,9 @@ export function layoutWorkflowGraph(graph: WorkflowGraph): WorkflowGraphLayout {
       const midpoint = (sourceX + targetX) / 2;
       const parallelEdges = edge.terminal
         ? [edge]
-        : (outgoing.get(edge.source) ?? []).filter(
-            (candidate) => !candidate.terminal && candidate.target === edge.target,
-          );
+        : (outgoing.get(edge.source) ?? [])
+            .map((candidate) => candidate.edge)
+            .filter((candidate) => !candidate.terminal && candidate.target === edge.target);
       const parallelIndex = parallelEdges.indexOf(edge);
       const laneOffset =
         (parallelIndex - (parallelEdges.length - 1) / 2) * PARALLEL_EDGE_LANE_GAP;

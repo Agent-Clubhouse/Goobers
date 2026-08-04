@@ -562,6 +562,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
+	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
+	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
+	// credential/prep block all need to see the goobers-io server and tools
+	// as already present, not added after the fact. A task with no declared
+	// artifactFile and no upstream inputs is untouched.
+	req = withAutoGoobersIO(req, c.SelfBin)
 	resolution := ConfigResolution{
 		Model:          req.Model,
 		HarnessOptions: cloneHarnessOptions(req.HarnessOptions),
@@ -638,6 +644,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			"--silent",
 			"--output-format=text",
 		)
+	}
+	// goobers-io (#2406) is delivered independently of req.MCPServers/
+	// prepareCopilotMCP below — see copilot_mcp_io.go's goobersIORuntimeSubdir
+	// doc comment for why: it's a harness-owned server with no credentials of
+	// its own, and routing it through the same pipeline as genuinely external
+	// servers broke documented stored-CLI-login auth and rejected otherwise-
+	// valid credentialed-MCP stages (both confirmed live).
+	mcpArg, err := goobersIOAdditionalMCPConfigArg(req, c.SelfBin)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
+	}
+	if mcpArg != "" {
+		argv = append(argv, "--additional-mcp-config", mcpArg)
 	}
 
 	env, err := c.credentialEnv(ctx, req)

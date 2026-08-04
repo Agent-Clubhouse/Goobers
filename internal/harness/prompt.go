@@ -75,6 +75,28 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	// Unconditional for every agentic invocation, not gated on req.Sandbox
+	// (#2419): a goober invents ad-hoc scratch files mid-task for its own
+	// bookkeeping (extract data, then loop over it) far more often than it
+	// runs under Goobers' own confinement — req.Sandbox is nil for the
+	// overwhelming majority of real invocations (sandbox enforcement is
+	// opt-in per instance, not the default), and even where it is set,
+	// $TMPDIR is a Goobers-internal confinement detail, not something a
+	// model should need to know about. A prior version of this guidance
+	// told the model to use $TMPDIR when req.Sandbox != nil, which both
+	// missed the common case and pointed at the wrong mechanism — the
+	// denial this was written for traced to the harness's own bash
+	// invocation, not internal/harness/confine.go's sandbox at all. Every
+	// workspace (repo, repo-readonly, scratch) is already a real,
+	// already-writable directory; a relative path inside it always works,
+	// with no confinement-specific env var to know about.
+	b.WriteString("## Scratch files\n\n")
+	b.WriteString("If you need a scratch file for intermediate processing, write it as a relative path inside your current workspace — do not assume `/tmp` or any other absolute host path is writable.\n\n")
+
+	if autoGoobersIOEligible(req) {
+		b.WriteString(goobersIOPromptSection(req))
+	}
+
 	if completionInResponse {
 		b.WriteString(renderResponseCompletionContract(req))
 		return b.String()

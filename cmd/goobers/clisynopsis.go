@@ -97,4 +97,5 @@ var synopsisByID = map[string]string{
 	"remediation-checkpoint": "  goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)\n",
 	"push-remediated":        "  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)\n",
 	"respond-to-findings":    "  goobers respond-to-findings            post a validated per-finding remediation response to the claimed PR (a workflow stage)\n",
+	"mcp-io":                 "  goobers mcp-io --config <path>         run the generic goobers-io MCP server over stdio (harness-spawned, not run by hand)\n",
 }

@@ -129,6 +129,40 @@ func TestRenderPromptOmitsInputsSectionWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestRenderPromptDirectsScratchFilesToTheWorkspace is a regression test for
+// #2419: a goober denied writing to a hardcoded /tmp path self-misdiagnosed
+// the cause as a GitHub permission gap. The fix must be unconditional — not
+// gated on req.Sandbox, which is nil for the overwhelming majority of real
+// invocations (sandbox enforcement is opt-in per instance) and was nil for
+// the exact run #2419 traced. Covers both the sandboxed and unsandboxed case
+// getting identical guidance, and both completion-contract prompt variants.
+func TestRenderPromptDirectsScratchFilesToTheWorkspace(t *testing.T) {
+	base := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "process the data"},
+		CompletionPath: DefaultResultPath,
+	}
+
+	for _, req := range []RunRequest{base, func() RunRequest { r := base; r.Sandbox = &stubSandbox{}; return r }()} {
+		for name, render := range map[string]func(RunRequest) string{
+			"file completion":     renderPrompt,
+			"response completion": renderResponseCompletionPrompt,
+		} {
+			t.Run(name, func(t *testing.T) {
+				prompt := render(req)
+				if !strings.Contains(prompt, "## Scratch files") {
+					t.Fatalf("prompt missing scratch-file guidance: %q", prompt)
+				}
+				if !strings.Contains(prompt, "write it as a relative path inside your current workspace") {
+					t.Fatalf("prompt missing relative-workspace-path guidance: %q", prompt)
+				}
+				if strings.Contains(prompt, "TMPDIR") {
+					t.Fatalf("prompt still references TMPDIR, a Goobers-internal confinement detail the model shouldn't need to know: %q", prompt)
+				}
+			})
+		}
+	}
+}
+
 func TestRenderPromptSurfacesNonJSONInvocationInputs(t *testing.T) {
 	req := RunRequest{
 		Envelope: apiv1.InvocationEnvelope{

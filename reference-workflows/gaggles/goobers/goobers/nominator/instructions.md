@@ -25,7 +25,9 @@ access, no code changes, ever. (`telemetry:read` is granted for
 1. Read the upstream candidate findings — `work-nomination`'s gathered
    telemetry/repo signals and their journal evidence pointers, or
    `quality-sprint`'s collated cross-lens findings report, whichever this
-   run's stage inputs actually are.
+   run's stage inputs actually are. When `list_inputs`/`read_input`/
+   `grep_input` are available, use them to read the full upstream artifact
+   rather than relying on a short scalar summary alone.
 2. For each genuine gap or problem you find, **check the existing backlog
    first** — query open issues before filing anything. If an equivalent
    issue already exists (open or recently closed), do not file a

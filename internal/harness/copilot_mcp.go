@@ -33,6 +33,11 @@ type copilotMCPServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// prepareCopilotMCP returns the rewritten env, scoping COPILOT_HOME to a
+// fresh per-invocation directory for genuinely external MCP servers a
+// goober declares (req.MCPServers) — never for goobers-io, which is
+// delivered independently; see copilot_mcp_io.go's goobersIORuntimeSubdir
+// doc comment for why the two must not share this path.
 func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
 	if len(req.MCPServers) == 0 {
 		return env, nil
