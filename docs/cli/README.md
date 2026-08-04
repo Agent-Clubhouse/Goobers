@@ -1434,16 +1434,19 @@ $ goobers lint --check-harness --check-repos
 run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
 
 ~~~text
-Usage: goobers mcp-io
+Usage: goobers mcp-io --config <path>
 
 Run the goobers-io MCP server over stdio: publish_output, list_inputs,
-and read_input, the generic replacement for writing an agentic stage's
-declared output with a file-editing tool (#2406). Not meant to be run
-interactively — a harness spawns this as a local MCP server for a
-goober that declares mcpServers: [{name: goobers-io, command: goobers,
-args: [mcp-io]}]. Configuration (workspace, declared artifactFile,
-available inputs) is read from $COPILOT_HOME/goobers-io-config.json,
-written by the harness before invocation — there is no other input.
+read_input, and grep_input — the generic replacement for writing an
+agentic stage's declared output with a file-editing tool (#2406). Not
+meant to be run interactively — the harness spawns this automatically
+via --additional-mcp-config for any eligible stage (one with a declared
+artifactFile and/or upstream context); nothing in a goober's own YAML
+needs to name it. --config points at the workspace-relative runtime
+config (workspace, declared artifactFile, available inputs) the
+harness writes before invocation — deliberately not $COPILOT_HOME-
+relative, so this works whether or not the invocation has Copilot's
+stored-login auth or any other MCP server configured.
 Exit codes: 0 = the stdio session ended cleanly (stdin closed),
 1 = missing or invalid configuration, 2 = usage error.
 ~~~
@@ -1451,7 +1454,7 @@ Exit codes: 0 = the stdio session ended cleanly (stdin closed),
 **Examples**
 
 ~~~console
-$ goobers mcp-io
+$ goobers mcp-io --config .goobers/mcp-io/goobers-io-config.json
 ~~~
 
 ## `goobers merge-pr`

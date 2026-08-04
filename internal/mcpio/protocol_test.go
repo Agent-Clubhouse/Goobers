@@ -155,3 +155,60 @@ func TestResolveInWorkspaceRejectsEscape(t *testing.T) {
 		t.Fatal("expected escape to be rejected")
 	}
 }
+
+// TestPublishOutputRefusesToFollowAnExistingSymlinkLeaf is a direct
+// regression test for a review finding on #2406: resolveInWorkspace only
+// checked the workspace root and the target's parent directory for a
+// symlink pointing outside — never the leaf itself. An attacker-planted
+// symlink at the exact declared artifactFile path (e.g. via the model's own
+// bash tool, out.md -> /outside/file) passed containment lexically, and
+// os.WriteFile follows a symlink at open() time, truncating whatever it
+// actually points to. This proves both that the write is now rejected and,
+// just as importantly, that the outside file is never touched.
+func TestPublishOutputRefusesToFollowAnExistingSymlinkLeaf(t *testing.T) {
+	ws := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "sensitive")
+	if err := os.WriteFile(outsideFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leaf := filepath.Join(ws, "out.md")
+	if err := os.Symlink(outsideFile, leaf); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "out.md"})
+	if _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
+		t.Fatal("expected publish_output to refuse to write through an existing symlink")
+	}
+
+	data, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("outside file was modified through the symlink: %q", data)
+	}
+}
+
+// TestReadInputRefusesToFollowAnExistingSymlinkLeaf covers the same gap on
+// the read side — an input path that was replaced with a symlink between
+// materializeContext writing it and a later read_input call (or a
+// maliciously named input mapping) must not be followed either.
+func TestReadInputRefusesToFollowAnExistingSymlinkLeaf(t *testing.T) {
+	ws := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "secret")
+	if err := os.WriteFile(outsideFile, []byte("do not leak"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leaf := filepath.Join(ws, "in.txt")
+	if err := os.Symlink(outsideFile, leaf); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewToolset(Config{Workspace: ws, Inputs: map[string]string{"x": "in.txt"}})
+	if _, err := tool.ReadInput("x", 0, 0); err == nil {
+		t.Fatal("expected read_input to refuse to read through an existing symlink")
+	}
+}

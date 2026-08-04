@@ -1,83 +1,132 @@
 package harness
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/mcpio"
 )
 
-// goobersIOServerName is the reserved MCP server name a goober declares to
-// opt into the generic publish_output/list_inputs/read_input tools (#2406).
-// It carries a real command/args like any other declared server — see
-// docs/guides — this constant only marks when the harness should also write
-// mcpio.Config alongside the MCP registration itself.
+// goobersIOServerName is the fixed name Copilot sees for the goobers-io
+// server in a live run's --available-tools (goobers-io-publish_output etc).
 const goobersIOServerName = "goobers-io"
 
-// declaresGoobersIO reports whether req.MCPServers includes the reserved
-// goobers-io server name.
-func declaresGoobersIO(req RunRequest) bool {
-	for _, server := range req.MCPServers {
-		if server.Name == goobersIOServerName {
-			return true
-		}
+// goobersIORuntimeSubdir is the workspace-relative directory the harness
+// writes goobers-io's own runtime config into — deliberately not
+// COPILOT_HOME-relative, and deliberately never touching req.MCPServers or
+// internal/mcpconfig's validation (#2406 review): those exist to protect
+// against a genuinely external, possibly-untrusted MCP server, and both
+// their COPILOT_HOME-redirection (breaks documented stored-CLI-login auth)
+// and their local-server credential-isolation requirement (rejects a
+// credential-less local server declared alongside a credentialed one) are
+// correct behavior for that case — just aimed at the wrong target when
+// applied to a server the harness itself constructs, with no credentials of
+// its own, delivered via --additional-mcp-config instead of the shared
+// mcp-config.json those checks inspect.
+const goobersIORuntimeSubdir = ".goobers/mcp-io"
+
+// goobersIOTools are goobers-io's own tool names, as the server itself
+// reports them in its tools/list response — used for the per-server "tools"
+// field inside the --additional-mcp-config registration. They carry no
+// privileged capability or credential access, so auto-granting them needs no
+// per-goober tools: declaration — unlike shell/github, there is no SEC-030
+// reason to gate them behind explicit opt-in.
+var goobersIOTools = []string{"publish_output", "list_inputs", "read_input", "grep_input"}
+
+// goobersIOAvailableToolNames returns goobersIOTools prefixed the way
+// Copilot's own --available-tools allowlist expects an external server's
+// tools to be named (<serverName>-<toolName>) — the same convention
+// copilotToolGroups["github"] already uses for the built-in GitHub server
+// (github-mcp-server-issue_write, etc.). Confirmed live: the bare names
+// alone do not resolve against a restrictive --available-tools= for an
+// externally-registered server — Copilot silently drops them, leaving zero
+// goobers-io tools reachable, even though the same bare names are exactly
+// right for the per-server "tools" field in the MCP registration itself.
+// These are two different fields with two different naming conventions;
+// conflating them is what broke this the first time.
+func goobersIOAvailableToolNames() []string {
+	out := make([]string, len(goobersIOTools))
+	for i, name := range goobersIOTools {
+		out[i] = goobersIOServerName + "-" + name
 	}
-	return false
+	return out
 }
 
-// writeGoobersIOConfig writes mcpio.Config into mcpHome (the same scoped
-// COPILOT_HOME prepareCopilotMCP just created) so the spawned goobers-io
-// server process can find its own workspace, declared artifactFile target,
-// and already-materialized upstream inputs purely by reading
-// $COPILOT_HOME/goobers-io-config.json — no other coordination with the
-// harness needed. req.ContextPaths is exactly the name->path map
-// materializeContext already computed for this invocation's prompt; this is
-// a second consumer of the same data, not a new resolution step.
-func writeGoobersIOConfig(req RunRequest, mcpHome string) error {
+// autoGoobersIOEligible reports whether this invocation has anything for
+// goobers-io to handle: a declared artifactFile output, or any
+// already-materialized upstream input to read. A task with neither gets no
+// auto-wiring — nothing changes for it. This is now the single source of
+// truth for whether goobers-io is active this invocation — see
+// goobersIOAdditionalMCPConfigArg.
+func autoGoobersIOEligible(req RunRequest) bool {
+	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
+	return artifactFile != "" || len(req.ContextPaths) > 0
+}
+
+// withAutoGoobersIO grants req.Tools the goobers-io tool names when eligible
+// (autoGoobersIOEligible) and a self-binary path is known to launch it. It
+// no longer touches req.MCPServers at all — see goobersIORuntimeSubdir's
+// doc comment for why. req is passed and returned by value (RunRequest has
+// no pointer receiver callers rely on), so this never mutates a caller's
+// copy.
+func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
+	if selfBin == "" || !autoGoobersIOEligible(req) {
+		return req
+	}
+	req.Tools = appendMissing(req.Tools, goobersIOAvailableToolNames()...)
+	return req
+}
+
+// goobersIOAdditionalMCPConfigArg builds the --additional-mcp-config
+// argument that registers goobers-io for this invocation, and writes its
+// runtime config (workspace, declared artifactFile, materialized upstream
+// inputs) to a workspace-relative path passed to the spawned process via
+// --config, rather than through $COPILOT_HOME (goobers-io needs no
+// COPILOT_HOME redirection — it has no ambient credential to protect
+// against leaking, and redirecting it would be what breaks stored-login
+// auth for every other eligible stage). Returns ("", nil) when this
+// invocation isn't eligible or selfBin is unknown — the caller appends
+// nothing in that case.
+func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, error) {
+	if selfBin == "" || !autoGoobersIOEligible(req) {
+		return "", nil
+	}
+	runtimeDir := filepath.Join(req.Workspace, filepath.FromSlash(goobersIORuntimeSubdir))
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return "", fmt.Errorf("create goobers-io runtime dir: %w", err)
+	}
+	configPath := filepath.Join(runtimeDir, mcpio.ConfigFileName)
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
 	cfg := mcpio.Config{
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
 		Inputs:       req.ContextPaths,
 	}
-	return mcpio.WriteConfig(filepath.Join(mcpHome, mcpio.ConfigFileName), cfg)
-}
-
-// goobersIOTools are the tool names auto-granted whenever goobers-io
-// auto-activates. They carry no privileged capability or credential access —
-// unlike shell/github, there is no SEC-030 reason to gate them behind an
-// explicit per-goober tools: declaration.
-var goobersIOTools = []string{"publish_output", "list_inputs", "read_input", "grep_input"}
-
-// autoGoobersIOEligible reports whether this invocation has anything for
-// goobers-io to handle: a declared artifactFile output, or any
-// already-materialized upstream input to read. A task with neither gets no
-// auto-wiring — nothing changes for it.
-func autoGoobersIOEligible(req RunRequest) bool {
-	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
-	return artifactFile != "" || len(req.ContextPaths) > 0
-}
-
-// withAutoGoobersIO returns req with the goobers-io MCP server and its tools
-// added, when this invocation is eligible (autoGoobersIOEligible), a
-// self-binary path is known to launch it, and the goober hasn't already
-// declared its own goobers-io server (mcpServers: is additive — a goober may
-// still declare a genuinely different external server alongside this; this
-// only fills in what's missing, never overrides an explicit declaration).
-// req is passed and returned by value (RunRequest has no pointer receiver
-// callers rely on), so this never mutates a caller's copy.
-func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
-	if selfBin == "" || !autoGoobersIOEligible(req) || declaresGoobersIO(req) {
-		return req
+	if err := mcpio.WriteConfig(configPath, cfg); err != nil {
+		return "", fmt.Errorf("write goobers-io config: %w", err)
 	}
-	req.MCPServers = append(append([]apiv1.MCPServer(nil), req.MCPServers...), apiv1.MCPServer{
-		Name:    goobersIOServerName,
+
+	server := struct {
+		Type    string   `json:"type"`
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+		Tools   []string `json:"tools"`
+	}{
+		Type:    "local",
 		Command: selfBin,
-		Args:    []string{"mcp-io"},
+		Args:    []string{"mcp-io", "--config", configPath},
+		Tools:   append([]string(nil), goobersIOTools...),
+	}
+	data, err := json.Marshal(map[string]interface{}{
+		"mcpServers": map[string]interface{}{goobersIOServerName: server},
 	})
-	req.Tools = appendMissing(req.Tools, goobersIOTools...)
-	return req
+	if err != nil {
+		return "", fmt.Errorf("encode goobers-io MCP registration: %w", err)
+	}
+	return string(data), nil
 }
 
 // goobersIOPromptSection explains how to use whichever goobers-io tools this

@@ -1,90 +1,17 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/mcpio"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/mcpio"
 )
-
-func TestDeclaresGoobersIO(t *testing.T) {
-	if declaresGoobersIO(RunRequest{}) {
-		t.Fatal("empty MCPServers must not declare goobers-io")
-	}
-	if declaresGoobersIO(RunRequest{MCPServers: []apiv1.MCPServer{{Name: "other"}}}) {
-		t.Fatal("unrelated server name must not count as goobers-io")
-	}
-	if !declaresGoobersIO(RunRequest{MCPServers: []apiv1.MCPServer{{Name: "other"}, {Name: goobersIOServerName}}}) {
-		t.Fatal("goobers-io present but not detected")
-	}
-}
-
-func TestWriteGoobersIOConfig(t *testing.T) {
-	workspace := t.TempDir()
-	mcpHome := t.TempDir()
-
-	envelope := testEnvelope(workspace)
-	envelope.Inputs = map[string]interface{}{InputArtifactFile: "findings.md"}
-
-	req := RunRequest{
-		Envelope:  envelope,
-		Workspace: workspace,
-		ContextPaths: map[string]string{
-			"review-code-quality.artifact[0]": ".goobers/context/00-review-code-quality.artifact_0_",
-		},
-	}
-
-	if err := writeGoobersIOConfig(req, mcpHome); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := mcpio.LoadConfig(filepath.Join(mcpHome, mcpio.ConfigFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Workspace != workspace {
-		t.Errorf("Workspace = %q, want %q", cfg.Workspace, workspace)
-	}
-	if cfg.ArtifactFile != "findings.md" {
-		t.Errorf("ArtifactFile = %q, want findings.md", cfg.ArtifactFile)
-	}
-	if got := cfg.Inputs["review-code-quality.artifact[0]"]; got != ".goobers/context/00-review-code-quality.artifact_0_" {
-		t.Errorf("Inputs mapping = %q", got)
-	}
-
-	// The file itself must be private (0600) — mirrors mcp-config.json's own
-	// permissions, since it lives in the same scoped-per-invocation home.
-	raw, err := os.ReadFile(filepath.Join(mcpHome, mcpio.ConfigFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var roundTrip mcpio.Config
-	if err := json.Unmarshal(raw, &roundTrip); err != nil {
-		t.Fatalf("config is not valid JSON: %v", err)
-	}
-}
-
-func TestWriteGoobersIOConfigWithoutArtifactFile(t *testing.T) {
-	workspace := t.TempDir()
-	mcpHome := t.TempDir()
-	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
-
-	if err := writeGoobersIOConfig(req, mcpHome); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := mcpio.LoadConfig(filepath.Join(mcpHome, mcpio.ConfigFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ArtifactFile != "" {
-		t.Errorf("ArtifactFile = %q, want empty when the task declares none", cfg.ArtifactFile)
-	}
-}
 
 func TestAutoGoobersIOEligible(t *testing.T) {
 	workspace := t.TempDir()
@@ -112,25 +39,22 @@ func TestWithAutoGoobersIONoOpsWithoutSelfBin(t *testing.T) {
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 
 	got := withAutoGoobersIO(req, "")
-	if declaresGoobersIO(got) {
-		t.Fatal("must not auto-wire without a known self-binary path")
+	if len(got.Tools) != 0 {
+		t.Fatalf("must not grant tools without a known self-binary path, got %v", got.Tools)
 	}
 }
 
 func TestWithAutoGoobersIONoOpsWhenIneligible(t *testing.T) {
 	workspace := t.TempDir()
-	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
+	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace, Tools: []string{"shell"}}
 
 	got := withAutoGoobersIO(req, "/usr/local/bin/goobers")
-	if declaresGoobersIO(got) {
-		t.Fatal("must not auto-wire a task with no artifactFile and no context")
-	}
-	if len(got.MCPServers) != 0 || len(got.Tools) != 0 {
-		t.Fatalf("ineligible task must be returned unchanged, got MCPServers=%v Tools=%v", got.MCPServers, got.Tools)
+	if len(got.Tools) != 1 || got.Tools[0] != "shell" {
+		t.Fatalf("an ineligible task must be returned unchanged, got Tools=%v", got.Tools)
 	}
 }
 
-func TestWithAutoGoobersIOWiresServerAndTools(t *testing.T) {
+func TestWithAutoGoobersIOGrantsToolsButNeverTouchesMCPServers(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{
 		Envelope:  testEnvelope(workspace),
@@ -140,19 +64,10 @@ func TestWithAutoGoobersIOWiresServerAndTools(t *testing.T) {
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 
 	got := withAutoGoobersIO(req, "/usr/local/bin/goobers")
-	if !declaresGoobersIO(got) {
-		t.Fatal("expected goobers-io to be auto-wired")
-	}
-	var server apiv1.MCPServer
-	for _, s := range got.MCPServers {
-		if s.Name == goobersIOServerName {
-			server = s
-		}
-	}
-	if server.Command != "/usr/local/bin/goobers" || len(server.Args) != 1 || server.Args[0] != "mcp-io" {
-		t.Fatalf("unexpected server config: %+v", server)
-	}
-	wantTools := []string{"shell", "publish_output", "list_inputs", "read_input", "grep_input"}
+	// req.Tools feeds --available-tools=, which needs the server-prefixed
+	// form for an externally-registered server to resolve at all (confirmed
+	// live) — not the bare names the server's own "tools" field uses.
+	wantTools := []string{"shell", "goobers-io-publish_output", "goobers-io-list_inputs", "goobers-io-read_input", "goobers-io-grep_input"}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("Tools = %v, want %v", got.Tools, wantTools)
 	}
@@ -161,21 +76,194 @@ func TestWithAutoGoobersIOWiresServerAndTools(t *testing.T) {
 			t.Errorf("Tools[%d] = %q, want %q", i, got.Tools[i], want)
 		}
 	}
+	// The whole point of the redesign (#2406 review): goobers-io must never
+	// appear in req.MCPServers, or it re-triggers internal/mcpconfig's
+	// credential-isolation check and requireMCPModelCredential against a
+	// server that has neither credentials nor any need for the model auth
+	// machinery those checks protect.
+	if len(got.MCPServers) != 0 {
+		t.Fatalf("withAutoGoobersIO must never populate MCPServers, got %v", got.MCPServers)
+	}
 }
 
-func TestWithAutoGoobersIODoesNotDuplicateExplicitDeclaration(t *testing.T) {
+func TestGoobersIOAdditionalMCPConfigArgEmptyWhenIneligible(t *testing.T) {
 	workspace := t.TempDir()
-	explicit := apiv1.MCPServer{Name: goobersIOServerName, Command: "custom-command", Args: []string{"--flag"}}
+	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
+
+	arg, err := goobersIOAdditionalMCPConfigArg(req, "/usr/local/bin/goobers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arg != "" {
+		t.Fatalf("expected no arg for an ineligible task, got %q", arg)
+	}
+}
+
+func TestGoobersIOAdditionalMCPConfigArgEmptyWithoutSelfBin(t *testing.T) {
+	workspace := t.TempDir()
+	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
+	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
+
+	arg, err := goobersIOAdditionalMCPConfigArg(req, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arg != "" {
+		t.Fatalf("expected no arg without a known self-binary path, got %q", arg)
+	}
+}
+
+func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T) {
+	workspace := t.TempDir()
 	req := RunRequest{
-		Envelope:   testEnvelope(workspace),
-		Workspace:  workspace,
-		MCPServers: []apiv1.MCPServer{explicit},
+		Envelope:  testEnvelope(workspace),
+		Workspace: workspace,
+		ContextPaths: map[string]string{
+			"review-code-quality.artifact[0]": ".goobers/context/00-review-code-quality.artifact_0_",
+		},
+	}
+	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "findings.md"}
+
+	arg, err := goobersIOAdditionalMCPConfigArg(req, "/usr/local/bin/goobers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arg == "" {
+		t.Fatal("expected a non-empty --additional-mcp-config argument")
+	}
+
+	var parsed struct {
+		MCPServers map[string]struct {
+			Type    string   `json:"type"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+			Tools   []string `json:"tools"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(arg), &parsed); err != nil {
+		t.Fatalf("--additional-mcp-config argument is not valid JSON: %v", err)
+	}
+	server, ok := parsed.MCPServers[goobersIOServerName]
+	if !ok {
+		t.Fatalf("registration missing %q server: %s", goobersIOServerName, arg)
+	}
+	if server.Type != "local" || server.Command != "/usr/local/bin/goobers" {
+		t.Fatalf("unexpected server registration: %+v", server)
+	}
+	if len(server.Args) != 3 || server.Args[0] != "mcp-io" || server.Args[1] != "--config" {
+		t.Fatalf("unexpected server args: %v", server.Args)
+	}
+	configPath := server.Args[2]
+	// Must be workspace-relative, never $COPILOT_HOME-relative — that's the
+	// whole point of the redesign (stored-login auth must not require
+	// COPILOT_HOME redirection for goobers-io to work).
+	if rel, err := filepath.Rel(workspace, configPath); err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("config path %q is not inside the workspace", configPath)
+	}
+
+	wantTools := []string{"publish_output", "list_inputs", "read_input", "grep_input"}
+	if len(server.Tools) != len(wantTools) {
+		t.Fatalf("server.Tools = %v, want %v", server.Tools, wantTools)
+	}
+
+	cfg, err := mcpio.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("config file not written correctly: %v", err)
+	}
+	if cfg.Workspace != workspace {
+		t.Errorf("Workspace = %q, want %q", cfg.Workspace, workspace)
+	}
+	if cfg.ArtifactFile != "findings.md" {
+		t.Errorf("ArtifactFile = %q, want findings.md", cfg.ArtifactFile)
+	}
+	if got := cfg.Inputs["review-code-quality.artifact[0]"]; got != ".goobers/context/00-review-code-quality.artifact_0_" {
+		t.Errorf("Inputs mapping = %q", got)
+	}
+
+	// The file must be private (0600).
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("config file mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+// TestAutoWiringDoesNotTriggerModelCredentialRequirement is a direct
+// regression test for review finding #1: before this redesign, a
+// goobers-io-eligible stage with no other declared MCP server would gain
+// one via auto-wiring, tripping requireMCPModelCredential's
+// `len(req.MCPServers) > 0` gate and rejecting runs that rely on Copilot's
+// documented stored-CLI-login auth (no explicit agent:model credential
+// configured at all). Confirmed live during #2406 development. Since
+// withAutoGoobersIO no longer touches MCPServers, that gate now stays
+// closed for exactly this case.
+func TestAutoWiringDoesNotTriggerModelCredentialRequirement(t *testing.T) {
+	workspace := t.TempDir()
+	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
+	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
+
+	got := withAutoGoobersIO(req, "/usr/local/bin/goobers")
+	if len(got.MCPServers) != 0 {
+		t.Fatalf("requireMCPModelCredential's len(req.MCPServers) > 0 gate would now fire; MCPServers = %v", got.MCPServers)
+	}
+}
+
+// TestAutoWiringDoesNotBreakCredentialedLocalMCPServer is a direct
+// regression test for review finding #2: before this redesign, auto-wiring
+// added goobers-io (a local stdio server with no CredentialRefs) to
+// req.MCPServers unconditionally. internal/mcpconfig's
+// validateCopilotCredentialIsolation requires every local server to declare
+// every credential any other local server in the same invocation has,
+// because Copilot's local servers share one process environment — so a
+// goober that separately declared its own real, credentialed local MCP
+// server would fail configuration validation the moment it also became
+// goobers-io-eligible, even though that server was valid on its own.
+func TestAutoWiringDoesNotBreakCredentialedLocalMCPServer(t *testing.T) {
+	workspace := t.TempDir()
+	credentialedServer := apiv1.MCPServer{
+		Name:    "vendor-tool",
+		Command: "vendor-mcp-server",
+		CredentialRefs: []apiv1.MCPCredentialRef{{
+			Kind: apiv1.MCPCredentialKindBYO,
+			Ref:  "vendor-api",
+			Env:  "VENDOR_TOKEN",
+		}},
+	}
+	req := RunRequest{
+		Envelope:    testEnvelope(workspace),
+		Workspace:   workspace,
+		MCPServers:  []apiv1.MCPServer{credentialedServer},
+		Credentials: mcpTestCredentials(t, mcpconfig.BYOCredentialKey("vendor-api"), "vendor-secret"),
 	}
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 
 	got := withAutoGoobersIO(req, "/usr/local/bin/goobers")
-	if len(got.MCPServers) != 1 || got.MCPServers[0].Command != "custom-command" {
-		t.Fatalf("an explicit goobers-io declaration must be left alone, got %+v", got.MCPServers)
+	if len(got.MCPServers) != 1 || got.MCPServers[0].Name != "vendor-tool" {
+		t.Fatalf("expected only the genuinely declared server, got %+v", got.MCPServers)
+	}
+	// This is exactly what internal/mcpconfig.ValidateForHarness (called
+	// from prepareCopilotMCP) runs during a real invocation — proving it
+	// passes is the actual regression check, not just inspecting the slice.
+	if err := mcpconfig.ValidateForHarness(apiv1.HarnessCopilot, got.MCPServers, nil, got.Tools); err != nil {
+		t.Fatalf("credentialed local MCP server config no longer validates: %v", err)
+	}
+
+	// And goobers-io itself is still fully available, delivered
+	// independently — the fix isn't "goobers-io silently stops working when
+	// another local server is declared," it's "the two no longer interfere."
+	env, err := prepareCopilotMCP(context.Background(), got, nil)
+	if err != nil {
+		t.Fatalf("prepareCopilotMCP for the genuine server: %v", err)
+	}
+	_ = env
+	arg, err := goobersIOAdditionalMCPConfigArg(got, "/usr/local/bin/goobers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if arg == "" {
+		t.Fatal("expected goobers-io to still be registered via --additional-mcp-config")
 	}
 }
 
@@ -216,7 +304,7 @@ func TestGoobersIOPromptSection(t *testing.T) {
 	}
 }
 
-func TestRenderPromptIncludesGoobersIOSectionOnlyWhenWired(t *testing.T) {
+func TestRenderPromptIncludesGoobersIOSectionOnlyWhenEligible(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
@@ -224,13 +312,12 @@ func TestRenderPromptIncludesGoobersIOSectionOnlyWhenWired(t *testing.T) {
 		CompletionPath: "result.json",
 	}
 	if strings.Contains(renderPrompt(req), "## goobers-io tools") {
-		t.Fatal("must not mention goobers-io tools when they were never wired")
+		t.Fatal("must not mention goobers-io tools when ineligible")
 	}
 
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
-	wired := withAutoGoobersIO(req, "/usr/local/bin/goobers")
-	rendered := renderPrompt(wired)
+	rendered := renderPrompt(req)
 	if !strings.Contains(rendered, "## goobers-io tools") || !strings.Contains(rendered, "publish_output") {
-		t.Fatalf("expected the goobers-io section once wired, got:\n%s", rendered)
+		t.Fatalf("expected the goobers-io section once eligible, got:\n%s", rendered)
 	}
 }

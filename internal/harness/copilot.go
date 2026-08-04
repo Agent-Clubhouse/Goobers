@@ -645,6 +645,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			"--output-format=text",
 		)
 	}
+	// goobers-io (#2406) is delivered independently of req.MCPServers/
+	// prepareCopilotMCP below — see copilot_mcp_io.go's goobersIORuntimeSubdir
+	// doc comment for why: it's a harness-owned server with no credentials of
+	// its own, and routing it through the same pipeline as genuinely external
+	// servers broke documented stored-CLI-login auth and rejected otherwise-
+	// valid credentialed-MCP stages (both confirmed live).
+	mcpArg, err := goobersIOAdditionalMCPConfigArg(req, c.SelfBin)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
+	}
+	if mcpArg != "" {
+		argv = append(argv, "--additional-mcp-config", mcpArg)
+	}
 
 	env, err := c.credentialEnv(ctx, req)
 	if err != nil {
@@ -667,15 +680,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		argv = append(argv, "--log-dir", confinement.logDir)
 	}
 	if len(req.MCPServers) > 0 {
-		var mcpHome string
-		env, mcpHome, err = prepareCopilotMCP(ctx, req, env)
+		env, err = prepareCopilotMCP(ctx, req, env)
 		if err != nil {
 			return Outcome{}, err
-		}
-		if declaresGoobersIO(req) {
-			if err := writeGoobersIOConfig(req, mcpHome); err != nil {
-				return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
-			}
 		}
 		if !copilotDeclaresTool(req.Tools, "github") {
 			argv = append(argv, "--disable-builtin-mcps")

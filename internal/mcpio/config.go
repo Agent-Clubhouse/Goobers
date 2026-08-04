@@ -1,11 +1,15 @@
-// Package mcpio implements the "goobers-io" MCP server: a generic, workflow-
-// agnostic replacement for the file-write step of an agentic stage's
-// completion contract. A goober declares it via mcpServers (api/v1alpha1's
-// MCPServer) and calls publish_output instead of writing a file with a
-// generic editing tool — see #2406. The harness writes this server's Config
-// into $COPILOT_HOME/goobers-io-config.json before invocation (see
-// internal/harness's copilot_mcp_io.go); this package only ever reads that
-// file, it never talks to the journal or the runner directly.
+// Package mcpio implements the "goobers-io" MCP server: a generic,
+// workflow-agnostic replacement for the file-write step of an agentic
+// stage's completion contract. A goober calls publish_output instead of
+// writing a file with a generic editing tool — see #2406. The harness
+// (internal/harness's copilot_mcp_io.go) writes this server's Config to a
+// workspace-relative path before invocation, then registers it via
+// Copilot's --additional-mcp-config with that path passed to the spawned
+// process as --config — deliberately not $COPILOT_HOME-relative, so this
+// works whether or not the invocation has Copilot's stored-login auth or
+// any other MCP server configured (a prior COPILOT_HOME-relative design
+// broke both). This package only ever reads the config file it's told
+// about; it never talks to the journal or the runner directly.
 package mcpio
 
 import (
@@ -15,10 +19,8 @@ import (
 	"path/filepath"
 )
 
-// ConfigFileName is the fixed filename this server's config lives at, always
-// relative to COPILOT_HOME — the same directory prepareCopilotMCP already
-// scopes fresh per invocation, so no other coordination between the harness
-// and this process is needed.
+// ConfigFileName is the fixed filename the harness writes this server's
+// config to, inside its own workspace-relative runtime directory.
 const ConfigFileName = "goobers-io-config.json"
 
 // Config is what the harness writes before invocation. Workspace is the
@@ -30,17 +32,6 @@ type Config struct {
 	Workspace    string            `json:"workspace"`
 	ArtifactFile string            `json:"artifactFile,omitempty"`
 	Inputs       map[string]string `json:"inputs,omitempty"`
-}
-
-// LoadConfigFromEnv resolves COPILOT_HOME from the process environment and
-// reads ConfigFileName from it. A missing COPILOT_HOME or config file is a
-// startup error — this process has no other way to know its workspace.
-func LoadConfigFromEnv() (Config, error) {
-	home := os.Getenv("COPILOT_HOME")
-	if home == "" {
-		return Config{}, fmt.Errorf("mcpio: COPILOT_HOME is not set")
-	}
-	return LoadConfig(filepath.Join(home, ConfigFileName))
 }
 
 // LoadConfig reads and validates a config file at path.
@@ -59,9 +50,9 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-// WriteConfig writes cfg to path (COPILOT_HOME/goobers-io-config.json),
-// creating parent directories as needed. Called from the harness side
-// (internal/harness), not by this server itself.
+// WriteConfig writes cfg to path, creating parent directories as needed.
+// Called from the harness side (internal/harness), not by this server
+// itself.
 func WriteConfig(path string, cfg Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {

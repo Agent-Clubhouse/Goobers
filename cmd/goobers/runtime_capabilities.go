@@ -627,7 +627,7 @@ func init() {
 		stageCommand("mcp-io", apicontract.ActionWorkflowExecution, runMCPIO).
 			withSynopsis(synopsisByID["mcp-io"]).
 			withHelp("run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)", mcpIOHelp).
-			withExamples("goobers mcp-io"),
+			withExamples("goobers mcp-io --config .goobers/mcp-io/goobers-io-config.json"),
 		coreAliasCommand(
 			"help",
 			[]string{"-h", "--help", "help"},

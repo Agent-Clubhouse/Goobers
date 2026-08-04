@@ -64,6 +64,18 @@ func (t *Toolset) resolveInWorkspace(rel string) (string, error) {
 			return "", fmt.Errorf("path %q's directory escapes the workspace", rel)
 		}
 	}
+	// The leaf itself may already exist as a symlink to somewhere outside
+	// the workspace — lexically "full" is still inside root, so the checks
+	// above pass, but os.WriteFile/os.ReadFile follow a symlink at open()
+	// time and would write or read through it to wherever it actually
+	// points. Lstat (not Stat) so this inspects the link itself, not its
+	// target; any existing symlink at this exact path is rejected outright
+	// rather than resolved-and-rechecked — no legitimate caller of this
+	// package ever needs to write or read through a pre-existing symlink at
+	// the leaf position.
+	if info, err := os.Lstat(full); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("path %q is a symlink; refusing to read or write through it", rel)
+	}
 	return full, nil
 }
 
