@@ -129,6 +129,34 @@ func TestRenderPromptOmitsInputsSectionWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderPromptDirectsSandboxScratchFilesToTMPDIR(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "process the data"},
+		CompletionPath: DefaultResultPath,
+		Sandbox:        &stubSandbox{},
+	}
+
+	for name, render := range map[string]func(RunRequest) string{
+		"file completion":     renderPrompt,
+		"response completion": renderResponseCompletionPrompt,
+	} {
+		t.Run(name, func(t *testing.T) {
+			prompt := render(req)
+			if !strings.Contains(prompt, "Use `$TMPDIR` for any scratch files") {
+				t.Fatalf("sandboxed prompt missing TMPDIR guidance: %q", prompt)
+			}
+			if !strings.Contains(prompt, "The literal `/tmp` path is not writable in this sandbox") {
+				t.Fatalf("sandboxed prompt missing /tmp restriction: %q", prompt)
+			}
+		})
+	}
+
+	req.Sandbox = nil
+	if prompt := renderPrompt(req); strings.Contains(prompt, "## Sandbox scratch files") {
+		t.Fatalf("unsandboxed prompt gained sandbox scratch-file guidance: %q", prompt)
+	}
+}
+
 func TestRenderPromptSurfacesNonJSONInvocationInputs(t *testing.T) {
 	req := RunRequest{
 		Envelope: apiv1.InvocationEnvelope{

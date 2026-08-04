@@ -75,6 +75,11 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	if req.Sandbox != nil {
+		b.WriteString("## Sandbox scratch files\n\n")
+		b.WriteString("Use `$TMPDIR` for any scratch files. The literal `/tmp` path is not writable in this sandbox.\n\n")
+	}
+
 	if autoGoobersIOEligible(req) {
 		b.WriteString(goobersIOPromptSection(req))
 	}
