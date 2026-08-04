@@ -298,8 +298,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
 		_ = readStore.Close()
 	} else {
-		readModelEpoch = state.Epoch
-		readModel = readStore
 		// Measurement flags (#1782). The four population filters are derived
 		// from the telemetry rollup, which no journal event carries, so the
 		// read model needs a source for them or `population=` can only ever
@@ -314,27 +312,24 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
 		}
 		// §6.6 step 2: build it by rebuild-from-journals on first start.
-		// Only when EMPTY — a populated store is kept and updated
-		// incrementally by the writer seam, because rebuilding on every start
-		// would make daemon startup pay ~51 s at 1x for data it already has.
-		if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
+		// A completed store is kept and updated incrementally by the writer
+		// seam; an unready store is rebuilt synchronously before attachment.
+		if err := buildReadModelIfNeeded(ctx, readStore, state, l); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
-		}
-
-		// The projector (#1923). Opening intake and starting the commit loop
-		// is what inverts the coupling: from here the writer records a
-		// watermark and forgets, and this owns discovery and application.
-		//
-		// Like the read model itself, a failure here must not fail daemon
-		// start. Without a projector the read model simply stops advancing,
-		// and the journal-derived paths still answer every request — a
-		// degraded read model is not an outage, but refusing to start would
-		// be.
-		if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+			_ = readStore.Close()
 		} else {
-			watermarks = intakeStore
-			stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+			readModelEpoch = state.Epoch
+			readModel = readStore
+
+			// The projector (#1923). Opening intake and starting the commit loop
+			// is what inverts the coupling: from here the writer records a
+			// watermark and forgets, and this owns discovery and application.
+			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+			} else {
+				watermarks = intakeStore
+				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+			}
 		}
 	}
 
@@ -1164,30 +1159,24 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 	return resumed, warned, nil
 }
 
-// buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).
+// buildReadModelIfNeeded performs the first-start or migration-triggered build
+// (design §6.6 step 2).
 //
-// Emptiness is the trigger rather than a marker file: the store either has run
-// rows or it does not, and deriving the decision from the data itself means a
-// half-finished build resumes rather than being skipped because a marker claimed
-// it was done. Only when empty, because rebuilding on every start would make
-// daemon startup pay ~51 s at 1x for data it already has.
+// Readiness is persisted in the store so an interrupted build cannot expose a
+// partial projection on the next startup merely because it wrote some rows.
 //
-// A failure is not fatal — nothing reads read.db yet, and refusing to start over
-// a store no request touches would be an outage caused by an optimization.
-func buildReadModelIfEmpty(ctx context.Context, store *readmodel.Store, l instance.Layout) error {
-	counts, err := store.CountByPhase(ctx)
-	if err != nil {
-		return err
-	}
-	for _, n := range counts {
-		if n > 0 {
-			return nil
-		}
+// A failure is not fatal: the store remains detached and requests fall back to
+// the journal-derived path.
+func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state readmodel.State, l instance.Layout) error {
+	if state.Ready {
+		return nil
 	}
 	roots, err := l.RunDirs()
 	if err != nil {
 		return err
 	}
-	_, err = store.BuildFromJournals(ctx, roots)
-	return err
+	if _, err := store.BuildFromJournals(ctx, roots); err != nil {
+		return err
+	}
+	return store.MarkReady(ctx)
 }

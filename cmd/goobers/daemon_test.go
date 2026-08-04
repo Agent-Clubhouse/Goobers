@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/testgit"
@@ -183,6 +184,40 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 	if _, err := setup.ReadModel.State(context.Background()); err != nil {
 		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) {
+	ctx := context.Background()
+	l := instance.NewLayout(t.TempDir())
+	createTerminalRun(t, l.ForGaggle("example"), "upgrade-run")
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	before, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Ready {
+		t.Fatal("fresh projection is ready before its journal build")
+	}
+	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Ready {
+		t.Fatal("projection remains unready after its journal build")
+	}
+	if _, ok, err := store.GetRun(ctx, "upgrade-run"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("projection was marked ready before the journal run was reconstructed")
 	}
 }
 
