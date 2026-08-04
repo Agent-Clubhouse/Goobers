@@ -19,6 +19,13 @@ Gaggle memory gives the fleet a durable, shared, curated notion of "things we
 have learned" that a run can consult on the way in and contribute to on the way
 out — without letting any single run silently rewrite what the fleet believes.
 
+This document describes the store and the four patterns as shipped — a flat,
+permanent memory. For the *lifecycle* framing on top of it — treating a fresh
+gaggle standing up from an experienced practitioner as a residency, with settled
+knowledge graduating from recall into the goober's standing curriculum and
+supervision retargeting to the frontier — see
+[`agent-memory-residency.md`](./agent-memory-residency.md).
+
 ## Design goals
 
 1. **Durable across runs.** A learning captured in one run is available to
