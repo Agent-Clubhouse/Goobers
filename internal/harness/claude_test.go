@@ -427,6 +427,13 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Neutralize the other sandbox-profile vars so the assertion below is not
+	// at the mercy of the ambient CI environment: GitHub-hosted Linux runners
+	// set XDG_CONFIG_HOME=/home/runner/.config, which would otherwise leak
+	// into privateRoots as an extra, host-dependent entry.
+	for _, name := range []string{"USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		t.Setenv(name, "")
+	}
 	credentialDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
 		t.Fatal(err)

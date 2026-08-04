@@ -12,5 +12,6 @@ func newNative() (Sandbox, error) {
 	// though no native wrapper can apply it here.
 	_ = validate
 	_ = resolveDirectory
+	_ = privateCommandPaths
 	return nil, fmt.Errorf("%w: %s", ErrUnsupported, runtime.GOOS)
 }
