@@ -170,7 +170,8 @@ type remediationState struct {
 	RemediationAttempted bool                         `json:"remediationAttempted"`
 	AttemptedCauses      []remediationCause           `json:"attemptedCauses,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
-	// moment of escalation — the self-heal comparison snapshot (#716).
+	// moment of escalation, or the latest repeat fail — the self-heal
+	// comparison snapshot (#716/#2378).
 	EscalatedHeadSHA           string `json:"escalatedHeadSha,omitempty"`
 	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
 	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
@@ -385,6 +386,28 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 		return false, nil
 	}
 	return true, nil
+}
+
+// refreshEscalationSnapshotAfterRepeatFail closes the one-shot self-heal
+// window after merge-review re-evaluates an already-escalated PR. Without this,
+// a base advance stays different from the original snapshot forever, making an
+// unchanged PR eligible on every subsequent poll (#2378).
+func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment) error {
+	state, commentID, found := latestRemediationState(comments)
+	if !found || commentID == "" {
+		return nil
+	}
+	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
+	if err != nil {
+		return err
+	}
+	if state.Escalated && state.EscalatedHeadSHA == pr.HeadSHA && state.EscalatedBaseSHA == liveBaseTip {
+		return nil
+	}
+	state.Escalated = true
+	state.EscalatedHeadSHA = pr.HeadSHA
+	state.EscalatedBaseSHA = liveBaseTip
+	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
 }
 
 // latestRemediationState scans comments (oldest first, ListComments' own

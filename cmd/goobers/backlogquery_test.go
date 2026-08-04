@@ -175,6 +175,9 @@ func providerCmdEnv(t *testing.T, server *fakeGitHubServer, credCapability, runI
 	t.Setenv(executor.RepoNameEnvVar, server.repo)
 	if credCapability != "" {
 		t.Setenv(credCapability, "test-token")
+		if credCapability == executor.CredentialEnvVar(string(capability.GitHubPRWrite)) {
+			t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "test-token")
+		}
 	}
 }
 

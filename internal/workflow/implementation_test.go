@@ -233,9 +233,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #2028: park-escalated now declares status=needs-remediation instead of
 	// needs-human — every route into it (repass exhaustion, infra failure, an
 	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
-	// policy decision. park-needs-human (the reviewer's explicit "fail"
-	// verdict) is unchanged.
-	const wantDigest = "sha256:5bcb7005bb428e9602a6f78c908152e55224076bf6a8bd6bc6b9e338b8c45b88"
+	// policy decision. #2333 restricts park-needs-human to an explicit reviewer
+	// fail that states the exact policy or product question a human must answer.
+	const wantDigest = "sha256:2d9f19c4f6bd0acf0ab39ee0085c0860434c9b7d46de43d1331b1e500324f35f"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

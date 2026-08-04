@@ -114,7 +114,8 @@ The runner hands the stage an `InvocationEnvelope`:
 - `instructionAddendum` — an optional operator-supplied instruction appended to
   the agent's configured instructions for one explicit rerun invocation. It is
   journaled with the intervention and never written to the workflow definition.
-- `inputs` — the stage's own static config from its definition.
+- `inputs` — the stage's own static config from its definition. Agentic harnesses
+  render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and

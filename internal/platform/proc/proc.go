@@ -45,9 +45,8 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 }
 
 // Kill hard-terminates every process in the tree — on unix SIGKILL to the
-// process group, on windows TerminateJobObject. It is best-effort: a descendant
-// that escaped the tree (e.g. via its own setsid) may survive, exactly as
-// before this abstraction existed.
+// process group and any descendants that escaped it, on windows
+// TerminateJobObject.
 func (t *Tree) Kill() error {
 	return t.kill()
 }

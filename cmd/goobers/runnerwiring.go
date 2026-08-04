@@ -218,6 +218,17 @@ func recordRunIntake(watermarks *intake.Store, l instance.Layout, runID string, 
 	}
 }
 
+func runIntakeObserver(watermarks *intake.Store, log *journal.InstanceLog) func(string, uint64) {
+	if watermarks == nil {
+		return nil
+	}
+	return func(runID string, seq uint64) {
+		if err := watermarks.Observed(context.Background(), runID, seq); err != nil {
+			logIngestFailure(log, runID, "read_model_intake_failed", err)
+		}
+	}
+}
+
 // lastJournalSeq reports the highest sequence in a run's journal.
 //
 // Takes the maximum rather than the last record's sequence: the live instance's

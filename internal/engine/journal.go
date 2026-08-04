@@ -205,12 +205,34 @@ func (r *runJournal) recordRunBranch(ctx workflow.Context) {
 // recordDeferredRunBranch applies the local runner's lazy branch-provenance
 // rule after one stage dispatch (runTask: "a branchless no-work result with no
 // provider mutations touched no external ref").
-func (r *runJournal) recordDeferredRunBranch(ctx workflow.Context, dispatchErr error, result apiv1.ResultEnvelope) {
+func (r *runJournal) recordDeferredRunBranch(ctx workflow.Context, dispatchErr error, result apiv1.ResultEnvelope, mutated bool) {
 	if r.branchRecorded || !r.usesRepo {
 		return
 	}
-	if dispatchErr != nil || result.Status != apiv1.ResultNoWork {
+	if dispatchErr != nil || result.Status != apiv1.ResultNoWork || mutated {
 		r.recordRunBranch(ctx)
+	}
+}
+
+func (r *runJournal) mutationIssues(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, issues []string) {
+	if len(issues) == 0 {
+		return
+	}
+	r.append(ctx, journal.Event{
+		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
+		Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
+	})
+}
+
+func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact) {
+	for _, mutation := range mutations {
+		r.append(ctx, journal.Event{
+			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
+			ExternalRef: &journal.ExternalRef{
+				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: mutation.URL,
+			},
+			Runner: map[string]any{"operation": mutation.Operation},
+		})
 	}
 }
 

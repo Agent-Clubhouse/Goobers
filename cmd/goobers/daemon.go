@@ -386,7 +386,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
+		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
@@ -605,7 +605,7 @@ func buildSchedulerDefinitions(
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
+			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
@@ -766,6 +766,7 @@ func buildRetainedLegacyRunner(
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
@@ -782,7 +783,7 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
@@ -818,6 +819,7 @@ func buildRuntimeRunner(
 	sharedReg *journal.RegistryScrubber,
 	manager *worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
@@ -836,6 +838,7 @@ func buildRuntimeRunner(
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
+	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
@@ -967,7 +970,7 @@ type trackedStarter struct {
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	untrack := s.runners.Track(req.RunID, s.r)
+	untrack := s.runners.Track(req.RunID, s.machine.Def.Name, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:                req.RunID,
@@ -1123,7 +1126,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 			resumed = append(resumed, id.RunID)
 			wg.Add(1)
-			untrack := runnerRegistry.Track(id.RunID, rn)
+			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
@@ -1159,38 +1162,6 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 		}
 	}
 	return resumed, warned, nil
-}
-
-// waitDrained waits for wg to finish, returning false if timeout elapses
-// first. The background goroutine it starts is not leaked: wg.Wait()
-// returning always lets it close done and exit, whether or not the select
-// below already gave up waiting.
-func waitDrained(wg *sync.WaitGroup, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
-func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		scheduler.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
 }
 
 // buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).

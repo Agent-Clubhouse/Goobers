@@ -74,30 +74,41 @@ func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 				t.Errorf("park-escalated inputs = %v, want status=needs-remediation — this is the bookkeeping the branch is routed here for", park.Inputs)
 			}
 
-			// Every branch of ci-gate that ends the run in escalation must go
-			// through park-escalated first. `timeout` is the one #929 missed;
-			// `escalate` is asserted alongside it so the pair cannot diverge
-			// again in the other direction.
-			ciGate, ok := m.Gate("ci-gate")
-			if !ok {
-				t.Fatal("ci-gate not found")
+			mechanicalRoutes := map[string][]string{
+				// review's escalation branch receives empty diffs, repass
+				// exhaustion, identical diffs, and non-retryable failures.
+				"review":     {BranchEscalate},
+				"local-gate": {"infra", BranchEscalate},
+				"ci-gate":    {"timeout", BranchEscalate},
 			}
-			for _, outcome := range []string{"timeout", BranchEscalate} {
-				target, ok := BranchTarget(ciGate, outcome)
+			for gateName, outcomes := range mechanicalRoutes {
+				g, ok := m.Gate(gateName)
 				if !ok {
-					t.Errorf("ci-gate has no %q branch", outcome)
+					t.Errorf("%s not found", gateName)
 					continue
 				}
-				if IsReservedTarget(target) {
-					t.Errorf("ci-gate %s branch = %q: routes straight at a reserved terminal, skipping park-escalated. "+
-						"The run phase is right but the driving issue is orphaned — still goobers:ready, still "+
-						"goobers:claimed, never parked (#929). Route it through park-escalated, whose "+
-						"own next is already %q.", outcome, target, TargetEscalate)
-					continue
+				for _, outcome := range outcomes {
+					target, ok := BranchTarget(g, outcome)
+					if !ok {
+						t.Errorf("%s has no %q branch", gateName, outcome)
+						continue
+					}
+					if target != "park-escalated" {
+						t.Errorf("%s %s branch = %q, want park-escalated; execution stalls must not route to needs-human", gateName, outcome, target)
+					}
 				}
-				if target != "park-escalated" {
-					t.Errorf("ci-gate %s branch = %q, want park-escalated", outcome, target)
-				}
+			}
+
+			human, ok := m.Task("park-needs-human")
+			if !ok {
+				t.Fatal("park-needs-human task not found")
+			}
+			if human.Inputs["status"] != "needs-human" {
+				t.Errorf("park-needs-human inputs = %v, want status=needs-human", human.Inputs)
+			}
+			review, _ := m.Gate("review")
+			if target, ok := BranchTarget(review, "fail"); !ok || target != "park-needs-human" {
+				t.Errorf("review fail branch = %q,%v, want park-needs-human,true", target, ok)
 			}
 		})
 	}

@@ -32,11 +32,13 @@ a verdict.
      `rationale` MUST be specific enough that the implementer can act on it
      without re-reading your mind — name the file/behavior, not just "needs
      more tests."
-   - **`fail`** — the approach is fundamentally wrong for the issue (wrong
-     problem solved, or a change that shouldn't proceed at all). Reserve
-     this for genuine rejections; `fail` ends the run rather than looping
-     back for a fix, so don't use it for anything an implementer could
-     reasonably address.
+   - **`fail`** — when invoked by the implementation workflow, implementation
+     surfaced a policy or product decision that cannot be made during
+     implementation. Reserve this for genuine human decisions; `fail` ends
+     the implementation run and applies `goobers:needs-human`, so do not use
+     it for an execution stall or anything an implementer could reasonably
+     address. End the `rationale` with the exact question the human must
+     answer.
 5. Cite the specific evidence (file, line, or artifact) backing your
    decision — your `evidence` and `findings` fields exist so a human
    skimming the run later can see exactly what you looked at.

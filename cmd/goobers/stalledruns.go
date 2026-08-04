@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,13 +22,20 @@ type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, err
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu      sync.RWMutex
-	current map[string]*runner.Runner
-	owners  map[string]*runner.Runner
+	mu           sync.RWMutex
+	current      map[string]*runner.Runner
+	owners       map[string]trackedRun
+	hardStopping bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
-	return &daemonRunnerRegistry{owners: make(map[string]*runner.Runner)}
+	return &daemonRunnerRegistry{owners: make(map[string]trackedRun)}
+}
+
+type trackedRun struct {
+	RunID    string
+	Workflow string
+	owner    *runner.Runner
 }
 
 func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
@@ -43,23 +51,27 @@ func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
 	r.mu.Unlock()
 }
 
-func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() {
+func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runner) func() {
 	if r == nil || owner == nil {
 		return func() {}
 	}
 	r.mu.Lock()
 	if r.owners == nil {
-		r.owners = make(map[string]*runner.Runner)
+		r.owners = make(map[string]trackedRun)
 	}
 	if _, exists := r.owners[runID]; exists {
 		r.mu.Unlock()
 		return func() {}
 	}
-	r.owners[runID] = owner
+	r.owners[runID] = trackedRun{RunID: runID, Workflow: workflow, owner: owner}
+	hardStopping := r.hardStopping
 	r.mu.Unlock()
+	if hardStopping {
+		owner.HardStopRunWhenStarted(runID)
+	}
 	return func() {
 		r.mu.Lock()
-		if r.owners[runID] == owner {
+		if tracked, ok := r.owners[runID]; ok && tracked.owner == owner {
 			delete(r.owners, runID)
 		}
 		r.mu.Unlock()
@@ -79,10 +91,50 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ids := make([]string, 0, len(r.owners))
-	for runID := range r.owners {
-		ids = append(ids, runID)
+	for _, run := range r.owners {
+		ids = append(ids, run.RunID)
 	}
+	sort.Strings(ids)
 	return ids
+}
+
+func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	runs := make([]trackedRun, 0, len(r.owners))
+	for _, run := range r.owners {
+		runs = append(runs, run)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].RunID < runs[j].RunID })
+	return runs
+}
+
+// HardStopAll invokes report while registration is blocked, immediately before
+// stopping the runs counted for that report. report must not call the registry.
+func (r *daemonRunnerRegistry) HardStopAll(report func(int)) int {
+	if r == nil {
+		if report != nil {
+			report(0)
+		}
+		return 0
+	}
+	r.mu.Lock()
+	r.hardStopping = true
+	runs := make([]trackedRun, 0, len(r.owners))
+	for _, run := range r.owners {
+		runs = append(runs, run)
+	}
+	if report != nil {
+		report(len(runs))
+	}
+	r.mu.Unlock()
+	for _, run := range runs {
+		run.owner.HardStopRunWhenStarted(run.RunID)
+	}
+	return len(runs)
 }
 
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
@@ -91,8 +143,8 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if owner := r.owners[runID]; owner != nil {
-		return owner, true
+	if tracked, ok := r.owners[runID]; ok && tracked.owner != nil {
+		return tracked.owner, true
 	}
 	if gaggle != "" {
 		return r.current[gaggle], false
