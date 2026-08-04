@@ -177,7 +177,13 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     [cache, cacheKey, filters.gaggle, filters.workflow],
   );
 
-  const refresh = useCallback(() => {
+  // Reset pagination and load the first bounded page. Used on mount, filter
+  // change, and retry — NOT on live invalidation. A live event calls
+  // refreshWindow below instead, which merges. Resetting here on every event
+  // is #1713's failure mode (runsHistory.ts): the operator loads several
+  // pages of errors, any matching run/instance event fires, and the list
+  // truncates back to page one with the scroll position lost.
+  const reload = useCallback(() => {
     request.current?.abort();
     const dependencies = errorHistoryDependencies(filters);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
@@ -228,6 +234,70 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     filters.workflow,
     isFresh,
     publish,
+  ]);
+
+  // Fetch the freshest first page and merge newly-seen errors ahead of the
+  // loaded window instead of discarding it. A background refresh must not
+  // undo "Load more errors" clicks (#2308, mirroring runsHistory.ts's
+  // refreshWindow for #1713).
+  const refreshWindow = useCallback(() => {
+    if (loadingMore.current) {
+      return Promise.resolve(true);
+    }
+    if (items.current.length === 0) {
+      return reload();
+    }
+    const dependencies = errorHistoryDependencies(filters);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
+    const controller = new AbortController();
+
+    return client.listTelemetryErrors(errorRequest(filters), { signal: controller.signal }).then(
+      (page) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        items.current = mergeErrors(items.current, page.items);
+        publish(isFresh(), cacheRevision);
+        return true;
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted) {
+          setState((current) =>
+            current.status === "ready" || current.status === "stale"
+              ? {
+                  status: "stale",
+                  data: current.data,
+                  error:
+                    error instanceof Error
+                      ? error
+                      : new Error("Unable to refresh matching errors."),
+                }
+              : {
+                  status: "error",
+                  error:
+                    error instanceof Error
+                      ? error
+                      : new Error("Unable to refresh matching errors."),
+                },
+          );
+        }
+        return false;
+      },
+    );
+  }, [
+    cache,
+    cacheKey,
+    client,
+    filters.code,
+    filters.errorClass,
+    filters.gaggle,
+    filters.since,
+    filters.stage,
+    filters.until,
+    filters.workflow,
+    isFresh,
+    publish,
+    reload,
   ]);
 
   const loadMore = useCallback(() => {
@@ -287,25 +357,31 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
   ]);
 
   useEffect(() => {
-    const unsubscribe = subscribe(["instance", "run"], (_models, reason) => {
-      const cached = reason === "initial" ? cache.get<ErrorHistory>(cacheKey) : undefined;
-      if (cached) {
-        items.current = cached.items;
-        nextCursor.current = cached.nextCursor;
-        loadingMore.current = false;
-        const data = { ...cached, loadingMore: false };
-        setState(
-          isFresh() ? { status: "ready", data } : { status: "stale", data },
-        );
-        return true;
-      }
-      return refresh();
-    });
+    const unsubscribe = subscribe(
+      ["instance", "run"],
+      (_models, reason) => {
+        const cached = reason === "initial" ? cache.get<ErrorHistory>(cacheKey) : undefined;
+        if (cached) {
+          items.current = cached.items;
+          nextCursor.current = cached.nextCursor;
+          loadingMore.current = false;
+          const data = { ...cached, loadingMore: false };
+          setState(
+            isFresh() ? { status: "ready", data } : { status: "stale", data },
+          );
+          return true;
+        }
+        // reason === "initial" with no cache is a genuine first load; anything
+        // else is a live invalidation, which must not discard the window.
+        return reason === "initial" ? reload() : refreshWindow();
+      },
+      { gaggle: filters.gaggle, workflow: filters.workflow },
+    );
     return () => {
       unsubscribe();
       request.current?.abort();
     };
-  }, [cache, cacheKey, isFresh, refresh, subscribe]);
+  }, [cache, cacheKey, filters.gaggle, filters.workflow, isFresh, reload, refreshWindow, subscribe]);
 
   useEffect(() => {
     setState((current) => {
@@ -321,9 +397,25 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
 
   const retry = useCallback(() => {
     cache.remove(cacheKey);
-    void refresh();
-  }, [cache, cacheKey, refresh]);
+    void reload();
+  }, [cache, cacheKey, reload]);
   return { loadMore, retry, state };
+}
+
+// Errors have no stable id (a runId can recur across occurrences), so
+// identity is the composite key the row list already uses for its React
+// key. Fresh items not already in the loaded window are prepended — the
+// server returns each page newest-first, so a refreshed first page's novel
+// entries stay newest-first ahead of the preserved window.
+function mergeErrors(
+  existing: TelemetryError[],
+  incoming: TelemetryError[],
+): TelemetryError[] {
+  const errorKey = (item: TelemetryError) =>
+    `${item.runId}:${item.occurredAt}:${item.code}:${item.attempt}`;
+  const seen = new Set(existing.map(errorKey));
+  const fresh = incoming.filter((item) => !seen.has(errorKey(item)));
+  return [...fresh, ...existing];
 }
 
 function errorHistoryCacheKey(filters: ErrorRouteFilters): string {

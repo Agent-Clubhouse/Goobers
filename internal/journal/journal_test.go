@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +258,7 @@ func TestStateCheckpoint(t *testing.T) {
 	if err := run.Append(Event{Type: EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
+
 	_ = run.Close()
 
 	rd, _ := OpenRead(filepath.Join(root, testIdentity().RunID))
@@ -273,6 +275,28 @@ func TestStateCheckpoint(t *testing.T) {
 	// LastSeq covers run.started + the stage event.
 	if st.LastSeq != 2 {
 		t.Errorf("lastSeq=%d want 2", st.LastSeq)
+	}
+}
+
+func TestAppendObserverReceivesEveryDurableSequence(t *testing.T) {
+	var observed []uint64
+	run, err := Create(t.TempDir(), testIdentity(), nil, WithAppendObserver(
+		func(_ string, seq uint64) {
+			observed = append(observed, seq)
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	run.SetMachineState("implement")
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.Equal(observed, []uint64{1, 2}) {
+		t.Fatalf("observed sequences = %v, want [1 2]", observed)
 	}
 }
 

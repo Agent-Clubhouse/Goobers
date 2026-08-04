@@ -57,11 +57,20 @@
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
         "sandbox": {
-          "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
+          "description": "Per-gaggle isolation posture for agentic stages (#1305). Omitted inherits the instance posture or the enforced default. A gaggle may strengthen a trusted-local instance opt-out but cannot weaken enforcement.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
+            "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture or the enforced default; disabled is effective only when the operator also opts out in instance.yaml." }
+          }
+        },
+        "workcopies": {
+          "description": "Per-gaggle override for managed working-copy placement. The gaggle name and repository key are appended beneath this base path.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root"],
+          "properties": {
+            "root": { "type": "string", "minLength": 1, "description": "Absolute base path for this gaggle's managed mirrors and worktrees. Overrides instance.yaml workcopies.root." }
           }
         },
         "requireLabels": {
@@ -145,7 +154,8 @@
       "additionalProperties": false,
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
-        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
     },
     "backlogRef": {

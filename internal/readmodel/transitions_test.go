@@ -9,7 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// implementationGraph mirrors selfhost/gaggles/goobers/workflows/implementation.yaml's
+// implementationGraph mirrors reference-workflows/gaggles/goobers/workflows/implementation.yaml's
 // cyclic shape closely enough to exercise it: implement -> review, review
 // pass -> local-ci, review needs-changes -> implement (a repass/back-edge),
 // local-ci -> local-gate, local-gate pass -> open-pr, local-gate fail ->

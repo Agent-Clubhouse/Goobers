@@ -15,29 +15,10 @@ import (
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
-	readmeSourceInstall = "No tagged release exists yet, so build from source with the Go toolchain\n" +
-		"declared in [`go.mod`](go.mod). The fastest first run is the hermetic demo:\n\n" +
-		"```sh\n" +
-		"make build   # or: go build -o bin/goobers ./cmd/goobers\n\n" +
-		"bin/goobers init --demo ./demo-instance\n" +
-		"bin/goobers run demo ./demo-instance\n" +
-		"bin/goobers trace <run-id> ./demo-instance\n" +
-		"```\n\n" +
-		"The demo runs the full curate -> implement -> review -> merge-preview loop on\n" +
-		"Linux or macOS with mock providers, no credentials, and no network writes. It\n" +
-		"also shows how a run pauses at a gate before completing.\n\n" +
-		"From there, graduate in this order:\n\n" +
-		"1. Seed the disposable, token-bearing `quickstart@v1` path with\n" +
-		"   `bin/goobers init --template=quickstart ./tutorial-instance`.\n" +
-		"2. Scaffold a regular instance with `bin/goobers init ./my-instance` and run\n" +
-		"   its starter workflow with\n" +
-		"   `bin/goobers run default-implement ./my-instance`.\n" +
-		"3. Adapt the production-oriented definitions under [`config-examples/`](config-examples/),\n" +
-		"   which add review, CI, remediation, escalation, and merge-policy patterns.\n\n" +
-		"The [full quickstart](docs/guides/quickstart.md) walks through that progression\n" +
-		"and the remaining CLI surfaces.\n\n" +
-		"For a regular instance, the core inspection and operator commands are:\n\n" +
-		"```sh\n"
+	readmeSourceInstall = "Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered\n" +
+		"first-run path: a credential-free local demo, a disposable GitHub-backed run,\n" +
+		"and then a regular instance using the\n" +
+		"[production-oriented configuration examples](config-examples/README.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
 	quickstartSourceInit = "## 3. `init` — scaffold a regular instance root\n\n" +
@@ -79,17 +60,17 @@ const (
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
 		"sample without network access. It never creates or pushes a remote.\n\n"
-	quickstartSourceGraduationWorkflow = "3. Scaffold a regular instance and run its starter `default-implement`\n" +
-		"   workflow."
-	quickstartInstalledGraduationWorkflow = "3. Use a regular guided instance and run its `implementation` workflow."
-	quickstartSourceRun                   = "bin/goobers run default-implement ./my-instance"
-	quickstartSourceStatusWorkflow        = "default-implement         example"
-	quickstartInstalledStatusWorkflow     = "implementation            example"
-	linuxQuickstartSourceIntro            = "Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,\n" +
-		"build, configure credentials, and drive a first run. This is the Linux-specific\n" +
-		"companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI\n" +
-		"surface is identical; this page calls out the few things that are Linux-specific\n" +
-		"and records the exact environment Goobers is validated on.\n\n"
+	quickstartSourceGraduationWorkflow = "Continue with section 3 to scaffold a regular instance and run its starter\n" +
+		"`default-implement` workflow."
+	quickstartInstalledGraduationWorkflow = "Continue with section 3 to use a regular guided instance and run its\n" +
+		"`implementation` workflow."
+	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
+	quickstartSourceStatusWorkflow    = "default-implement         example"
+	quickstartInstalledStatusWorkflow = "implementation            example"
+	linuxQuickstartSourceIntro        = "Use this page for Linux host prerequisites, isolation, credentials, and\n" +
+		"supervision differences only. Follow the platform-neutral\n" +
+		"[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI\n" +
+		"walkthrough.\n\n"
 	linuxQuickstartSourceCIJob      = "CI job (`.github/workflows/ci.yml`), which runs the shipped binary end to end —\n"
 	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |\n"
 	linuxQuickstartSourceValidation = "> **Linux delta — deterministic `network: none` stages use user namespaces.** On\n" +
@@ -106,13 +87,22 @@ const (
 		"cat ./linux-validation-evidence/summary.md\n" +
 		"```\n\n"
 	linuxQuickstartSourcePrerequisites = "## 1. Install prerequisites\n\n" +
+		"Agentic stages are sandboxed by default. Linux nodes require Bubblewrap\n" +
+		"(`bwrap`); startup of an agentic stage fails closed when it is missing or\n" +
+		"cannot create the required namespaces. On hardened distributions,\n" +
+		"`kernel.apparmor_restrict_unprivileged_userns=1` or\n" +
+		"`kernel.unprivileged_userns_clone=0` can make an installed Bubblewrap\n" +
+		"unavailable. Enable unprivileged user namespaces for the daemon user, use a\n" +
+		"correctly installed setuid Bubblewrap, or explicitly select the trusted-local\n" +
+		"opt-out with `sandbox.agentic: disabled` in operator-owned `instance.yaml`.\n" +
+		"Every opted-out attempt is recorded in the run journal.\n\n" +
 		"```sh\n" +
 		"# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;\n" +
 		"# prefer the official tarball:\n" +
 		"curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
 		"export PATH=\"/usr/local/go/bin:$(go env GOPATH)/bin:$PATH\"\n\n" +
 		"# Git (>= 2.17 — any supported Ubuntu/Debian is newer):\n" +
-		"sudo apt-get update && sudo apt-get install --yes git\n\n" +
+		"sudo apt-get update && sudo apt-get install --yes git bubblewrap\n\n" +
 		"# golangci-lint — REQUIRED on the daemon's PATH (see the note in step 5):\n" +
 		"curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \\\n" +
 		"  | sh -s -- -b \"$(go env GOPATH)/bin\" v2.12.2\n" +
@@ -246,7 +236,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"the token-bearing `quickstart@v1` template with\n"+
 							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
 							"instance and the\n"+
-							"production-oriented definitions under [`config-examples/`](config-examples/).\n\n"+
+							"production-oriented definitions under\n"+
+							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
 							"The release installer already ran guided setup at the requested instance path\n"+
 							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
@@ -254,7 +245,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"quoting it if needed.\n\n"+
 							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
 							"below with `./goobers` and create the guided instance now:\n\n"+
-							"```sh\n%s init --guided ./my-instance\n\n",
+							"```sh\n"+
+							"%s init --guided ./my-instance\n"+
+							"%s run %s ./my-instance\n"+
+							"```\n",
 						version,
 						releaseCommand,
 						releaseCommand,
@@ -263,18 +257,9 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 						releaseCommand,
 						releaseCommand,
 						releaseCommand,
+						releaseCommand,
+						instance.GuidedWorkflowImplementation,
 					),
-				},
-				{
-					// The source (plain `init`) reader only ever has
-					// default-implement scaffolded; the installed (guided
-					// `init --guided`) reader has the richer implementation
-					// workflow guided setup creates instead — these are
-					// genuinely different workflows, not just a renamed
-					// command, so this needs its own section rewrite rather
-					// than riding the blanket command-prefix rename below.
-					source:    "bin/goobers run default-implement ./my-instance",
-					installed: releaseCommand + " run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 				},
 			},
 			sourceCommandPrefix:  "bin/goobers",
@@ -305,6 +290,14 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				{
 					source:    quickstartSourceGraduationWorkflow,
 					installed: quickstartInstalledGraduationWorkflow,
+				},
+				{
+					source:    "../../config-examples/README.md",
+					installed: "../../onboarding/templates/canonical/README.md",
+				},
+				{
+					source:    "../../config-examples/gaggles/acme-web/workflows/implementation.yaml",
+					installed: "../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml",
 				},
 				{
 					source: quickstartSourceInit,
@@ -363,8 +356,13 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					source: linuxQuickstartSourcePrerequisites,
 					installed: "## 1. Install runtime prerequisites\n\n" +
 						"The packaged `goobers` binary is self-contained; Go, Node.js, and build tools are\n" +
-						"not required to run it. Install Git (version 2.17 or newer):\n\n" +
-						"```sh\nsudo apt-get update && sudo apt-get install --yes git\n```\n\n" +
+						"not required to run it. Install Git (version 2.17 or newer) and Bubblewrap, which\n" +
+						"enforces the default sandbox for agentic stages:\n\n" +
+						"```sh\nsudo apt-get update && sudo apt-get install --yes git bubblewrap\n```\n\n" +
+						"On hardened distributions, disabled unprivileged user namespaces can make\n" +
+						"Bubblewrap unavailable and agentic stages fail closed. Enable them for the daemon\n" +
+						"user, use a correctly installed setuid Bubblewrap, or explicitly select the\n" +
+						"journaled trusted-local opt-out with `sandbox.agentic: disabled`.\n\n" +
 						"Workflow stages may require additional tools from the repositories they operate on.\n\n",
 				},
 				{

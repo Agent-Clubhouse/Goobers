@@ -420,6 +420,12 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  maxRunDuration:
+                    description: |-
+                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      disables the total-duration limit. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                   stalledRunTimeout:
                     description: |-
                       StalledRunTimeout is the maximum period a running journal may remain

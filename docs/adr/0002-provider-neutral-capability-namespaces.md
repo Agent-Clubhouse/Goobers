@@ -71,3 +71,18 @@ the configured provider.
 - A command's namespace is evidence about its real abstraction boundary;
   describing a provider-specific implementation as provider-neutral is a
   contract bug.
+
+## Provider-query field semantics
+
+Pull-request identity query fields follow the same rule: each independently
+portable field has its own capability. `pr.query.author`,
+`pr.query.assignee`, and `pr.query.requestedReviewer` are separate because
+Azure DevOps has no pull-request assignee concept. Its reviewers are the
+closest analog, but are not exposed as assignees.
+
+GitHub maps the fields to `user`, `assignees[]`, and
+`requested_reviewers[]`. Azure DevOps maps author to `createdBy` and requested
+reviewers to entries in `reviewers[]` whose `vote` is zero; a nonzero vote is a
+completed review, not a pending review request. First-pass list filtering is
+client-side over provider list results rather than a promise of provider-side
+query support.

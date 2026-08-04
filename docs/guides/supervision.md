@@ -11,6 +11,8 @@ Use the native CLI on an initialized instance:
 ```sh
 goobers service install /absolute/path/to/instance
 goobers service status  /absolute/path/to/instance
+goobers service stop    /absolute/path/to/instance
+goobers service start   /absolute/path/to/instance
 goobers service uninstall /absolute/path/to/instance
 ```
 
@@ -19,8 +21,15 @@ backoff configured. `uninstall` drives the graceful shutdown contract before
 removing the registration. `status --json` exposes the same state for scripts.
 An existing registration is not overwritten; uninstall it first when changing
 the stable host binary or instance path. Product updates keep the registration.
-The platform sections below document the generated
-registration and its native supervisor commands for troubleshooting.
+
+`stop`/`start` (#2073) halt and resume the daemon without touching that
+registration — the goobers-native equivalent of the platform sections'
+`systemctl stop`/`launchctl stop`/`sc.exe stop` (and their `start` pairs)
+below, useful for a maintenance window that shouldn't require reinstalling.
+Both are idempotent: stopping an already-stopped (or starting an
+already-running) daemon succeeds as a no-op. The platform sections below
+document the generated registration and its native supervisor commands for
+troubleshooting.
 
 **One shutdown contract, three triggers.** The daemon has a single
 graceful-shutdown path: cancel the root context, stop admitting work, drain
@@ -73,8 +82,8 @@ loginctl enable-linger "$USER"        # keep running after logout / across reboo
 **Operate:**
 
 ```sh
-systemctl --user start   goobers      # start
-systemctl --user stop    goobers      # graceful stop (SIGTERM → drain)
+systemctl --user start   goobers      # start (goobers service start)
+systemctl --user stop    goobers      # graceful stop, unit stays enabled (goobers service stop)
 systemctl --user status  goobers      # status
 journalctl --user -u goobers -f       # logs (follow)
 ```
@@ -110,8 +119,9 @@ launchctl kickstart -k gui/$(id -u)/com.agent-clubhouse.goobers
 
 ```sh
 launchctl print gui/$(id -u)/com.agent-clubhouse.goobers   # status
-launchctl kickstart -k gui/$(id -u)/com.agent-clubhouse.goobers   # (re)start
-launchctl bootout gui/$(id -u)/com.agent-clubhouse.goobers        # graceful stop (SIGTERM)
+launchctl kickstart gui/$(id -u)/com.agent-clubhouse.goobers      # (re)start (goobers service start)
+launchctl stop gui/$(id -u)/com.agent-clubhouse.goobers           # graceful stop, stays loaded (goobers service stop)
+launchctl bootout gui/$(id -u)/com.agent-clubhouse.goobers        # graceful stop + unload (goobers service uninstall)
 tail -f "$LOG_DIR"/goobers.err.log                                # logs
 ```
 
@@ -149,9 +159,9 @@ sc.exe start goobers
 
 ```powershell
 sc.exe query   goobers      # status
-sc.exe stop    goobers      # graceful stop (SERVICE_CONTROL_STOP → drain)
-sc.exe start   goobers      # start
-sc.exe delete  goobers      # uninstall (stop first)
+sc.exe stop    goobers      # graceful stop, registration kept (goobers service stop)
+sc.exe start   goobers      # start (goobers service start)
+sc.exe delete  goobers      # uninstall (stop first) (goobers service uninstall)
 ```
 
 Logs go to the console the SCM captures; use the daemon's own journal

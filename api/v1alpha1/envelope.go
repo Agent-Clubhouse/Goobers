@@ -20,8 +20,8 @@ package v1alpha1
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
-// pointers, and artifacts.
-const StageContractVersion = "v1alpha7"
+// pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
+const StageContractVersion = "v1alpha8"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -85,6 +85,19 @@ type InvocationEnvelope struct {
 	// AdditionalRepos. Each is surfaced to the stage subprocess as
 	// GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<absolute path>.
 	AdditionalWorkspaces []AdditionalWorkspace `json:"additionalWorkspaces,omitempty"`
+	// CheckoutCones declares, for each workspace whose checkout is a sparse
+	// cone-mode checkout (project.checkout.sparse, #649), the repo-relative
+	// path cones it materializes — keyed by workspace identity: "" for the
+	// primary Workspace, else the matching AdditionalWorkspaces[i].Name. A
+	// workspace absent from this map (the common case) has a full checkout.
+	// Deliberately separate from RepoRef.Checkout, which stays off the wire
+	// (RepoRef.EnvelopeRef) so the closed repoRef schema never changes — this
+	// is an additive envelope-level field instead, so a partial checkout is
+	// declared to the stage without depending on a stage ever reading
+	// RepoRef.Checkout. Populated so an agentic stage knows the tree is
+	// partial and does not "fix" apparently-missing files or misread a
+	// pruned path as deleted.
+	CheckoutCones map[string][]string `json:"checkoutCones,omitempty"`
 	// Item is the backlog item / trigger payload that started the run. Nil for
 	// schedule/signal-triggered runs with no originating item. It is a bounded
 	// provider-neutral descriptor, not another stage's state; the authoritative,

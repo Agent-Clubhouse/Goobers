@@ -56,23 +56,21 @@ type blockedCycleResult struct {
 	MorePaths bool
 }
 
-// findBlockedCycle identifies the strongly connected component containing the
-// newly recorded item. Forward/reverse reachability is linear in graph size;
-// representative shortest paths are capped so dense graphs cannot trigger the
-// factorial path enumeration the blocked handler previously performed.
-func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycleResult {
-	record, ok := recs[itemKey]
-	if !ok || blockedRepositoryEmpty(record.Repository) {
-		return blockedCycleResult{}
-	}
-
+// buildBlockedCycleGraph turns the recorded blocks into a forward graph (item
+// -> its blockers) and the corresponding reverse graph, shared by
+// findBlockedCycle (one node's SCC) and findAllBlockedCycles (every SCC in the
+// current state). Graph keys are only items that carry their own record; a
+// node referenced solely as someone else's blocker (never itself recorded,
+// e.g. an external one-way dependency) has no outgoing edges and so can never
+// itself seed or complete a cycle.
+func buildBlockedCycleGraph(recs map[string]blockedRecord) (graph, reverseGraph map[blockedCycleNode][]blockedCycleNode) {
 	keys := make([]string, 0, len(recs))
 	for key := range recs {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
-	graph := make(map[blockedCycleNode][]blockedCycleNode, len(recs))
+	graph = make(map[blockedCycleNode][]blockedCycleNode, len(recs))
 	edgeSeen := make(map[blockedCycleNode]map[blockedCycleNode]bool, len(recs))
 	for _, key := range keys {
 		rec := recs[key]
@@ -101,12 +99,7 @@ func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycl
 		}
 	}
 
-	item := blockedCycleNode{
-		Repository: record.Repository,
-		ItemID:     blockedLookupID(blockedRecordItemID(itemKey, record)),
-	}
-	forward := reachableBlockedNodes(graph, item)
-	reverseGraph := make(map[blockedCycleNode][]blockedCycleNode, len(graph))
+	reverseGraph = make(map[blockedCycleNode][]blockedCycleNode, len(graph))
 	for from, edges := range graph {
 		if _, ok := reverseGraph[from]; !ok {
 			reverseGraph[from] = nil
@@ -115,6 +108,82 @@ func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycl
 			reverseGraph[to] = append(reverseGraph[to], from)
 		}
 	}
+	return graph, reverseGraph
+}
+
+// findBlockedCycle identifies the strongly connected component containing the
+// newly recorded item. Forward/reverse reachability is linear in graph size;
+// representative shortest paths are capped so dense graphs cannot trigger the
+// factorial path enumeration the blocked handler previously performed.
+func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycleResult {
+	record, ok := recs[itemKey]
+	if !ok || blockedRepositoryEmpty(record.Repository) {
+		return blockedCycleResult{}
+	}
+	graph, reverseGraph := buildBlockedCycleGraph(recs)
+	item := blockedCycleNode{
+		Repository: record.Repository,
+		ItemID:     blockedLookupID(blockedRecordItemID(itemKey, record)),
+	}
+	return blockedCycleResultForNode(graph, reverseGraph, item)
+}
+
+// findAllBlockedCycles enumerates every strongly connected component of size
+// >1 (or self-loop) currently present in recs — every active cycle, not just
+// the one touching a single just-written key.
+//
+// Why this exists (#1405): findBlockedCycle answers "is THIS item's write
+// part of a cycle right now", which is correct at the instant it runs but
+// only runs when that item's own blocked-handler fires — and a fully
+// skip-parked cycle member is never reclaimed again by design (#552), so its
+// handler never re-fires to notice a cycle sibling whose escalation later
+// drifted (a human override, a stale re-curation pass, anything that reset
+// one member's labels without any new blocked-record write). Reconciliation
+// against DRIFT has to be driven from something that runs on every tick
+// regardless of claim state — the backlog-query eligibility scan already is
+// that — so it needs the full current cycle set, not one node's.
+func findAllBlockedCycles(recs map[string]blockedRecord) []blockedCycleResult {
+	graph, reverseGraph := buildBlockedCycleGraph(recs)
+
+	nodes := make([]blockedCycleNode, 0, len(graph))
+	for node := range graph {
+		nodes = append(nodes, node)
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if left, right := blockedRepositoryIdentity(nodes[i].Repository), blockedRepositoryIdentity(nodes[j].Repository); left != right {
+			return left < right
+		}
+		return nodes[i].ItemID < nodes[j].ItemID
+	})
+
+	seen := make(map[blockedCycleNode]bool, len(nodes))
+	var cycles []blockedCycleResult
+	for _, node := range nodes {
+		if seen[node] {
+			continue
+		}
+		result := blockedCycleResultForNode(graph, reverseGraph, node)
+		if len(result.Affected) == 0 {
+			seen[node] = true
+			continue
+		}
+		for _, member := range result.Affected {
+			seen[member] = true
+		}
+		cycles = append(cycles, result)
+	}
+	return cycles
+}
+
+// blockedCycleResultForNode computes item's strongly connected component
+// (forward reachability ∩ backward reachability) and, when that component is
+// a real cycle (size >1, or a direct self-loop), the affected member list and
+// representative paths blockedCycleComments reports.
+func blockedCycleResultForNode(
+	graph, reverseGraph map[blockedCycleNode][]blockedCycleNode,
+	item blockedCycleNode,
+) blockedCycleResult {
+	forward := reachableBlockedNodes(graph, item)
 	backward := reachableBlockedNodes(reverseGraph, item)
 
 	component := make(map[blockedCycleNode]bool)
@@ -200,6 +269,76 @@ func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycl
 		}
 	}
 	return blockedCycleResult{Affected: affected, Paths: paths, MorePaths: morePaths}
+}
+
+// reconcileBlockedCycleLabels is the ongoing, tick-driven half of the
+// blocked-cycle escalation guarantee (#1405).
+//
+// buildBlockedHandler already escalates every member of a cycle correctly at
+// the instant a new record closes it (verified for 2- and 3-member cycles in
+// every write order — see TestFindBlockedCycle/TestBuildBlockedHandler in
+// this package). The gap is afterward: once a cycle member is fully
+// skip-parked, backlog-query's own eligibility filter (#552) never selects it
+// again, so its blocked-handler never re-fires — nothing re-checks whether
+// its escalation still holds. If anything later resets its labels (a human
+// override, a stale re-curation pass) without ever touching blocked.json,
+// the item can silently look claimable again while its cycle sibling still
+// carries needs-human, exactly the asymmetry #1405 reports.
+//
+// This closes that gap from the one place that already runs on every
+// backlog-query tick regardless of claim state: right after
+// filterBlockedEligibility. For every currently active cycle, any member
+// whose live labels have drifted off needs-human gets the same escalation
+// buildBlockedHandler applies (needs-human added, ready/claimed removed, the
+// cycle comment posted) — but only members that need it, so an
+// already-escalated cycle is a single read per member and no writes.
+//
+// Best-effort per member, like filterBlockedEligibility: one item's provider
+// read/write failure is reported as a warning and does not stop reconciling
+// the rest of the cycle or the next one.
+func reconcileBlockedCycleLabels(
+	ctx context.Context,
+	provider backlogIssueProvider,
+	recs map[string]blockedRecord,
+	needsHumanAssignee string,
+) []string {
+	cycles := findAllBlockedCycles(recs)
+	if len(cycles) == 0 {
+		return nil
+	}
+	var warnings []string
+	for _, cycle := range cycles {
+		var comments []string
+		for _, member := range cycle.Affected {
+			item, err := provider.GetWorkItem(ctx, member.Repository, blockedLookupID(member.ItemID))
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("check cycle member %s#%s: %v", member.Repository.Name, member.ItemID, err))
+				continue
+			}
+			if slices.Contains(item.Labels, providers.LabelNeedsHuman) {
+				continue
+			}
+			// Computed lazily and once per cycle: most ticks find every member
+			// already escalated and never need it.
+			if comments == nil {
+				comments = blockedCycleComments(cycle)
+			}
+			for _, comment := range comments {
+				req := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
+					Repository:   member.Repository,
+					ID:           member.ItemID,
+					Comment:      comment,
+					AddLabels:    []string{providers.LabelNeedsHuman},
+					RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
+				}, needsHumanAssignee)
+				if _, err := provider.UpdateWorkItem(ctx, req); err != nil {
+					warnings = append(warnings, fmt.Sprintf(
+						"re-escalate circular dependency on %s#%s: %v", member.Repository.Name, member.ItemID, err))
+				}
+			}
+		}
+	}
+	return warnings
 }
 
 func reachableBlockedNodes(graph map[blockedCycleNode][]blockedCycleNode, start blockedCycleNode) map[blockedCycleNode]bool {
@@ -341,6 +480,18 @@ func blockedLookupID(key string) string {
 
 // loadBlockedRecords reads the records map; a missing file is an empty map
 // (the overwhelmingly common steady state), never an error.
+// needsHumanAssigneeFor reads the configured needs-human routing assignee
+// (mirrors issuecloseout.go's own load) for reconcileBlockedCycleLabels,
+// which runs from a provider-stage CLI command with no instance.Config
+// already in scope.
+func needsHumanAssigneeFor(l instance.Layout) (string, error) {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return "", fmt.Errorf("load needs-human routing config: %w", err)
+	}
+	return cfg.NeedsHumanAssignee, nil
+}
+
 func loadBlockedRecords(path string) (map[string]blockedRecord, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

@@ -1,10 +1,15 @@
 {
-  "digestsSha256": "730b9dc16d18e89b801897e653cd203f9c5ece6d96cf94c99fcee7f66ab86044",
+  "digestsSha256": "82d907251ffaa1ef915eb5020c9c38398853562fd14fe9c14d906a6d0b0feab5",
   "patches": [
     {
       "version": 1,
       "binaryVersion": "unreleased",
       "description": "Initial freeze: digests.json as committed when v_current became frozen (DVL-5, #1353) — no runtime patches applied yet."
+    },
+    {
+      "version": 2,
+      "binaryVersion": "unreleased",
+      "description": "Correct ci-poll capability admission to the canonical provider-neutral grant required by ADR 0002 without changing stage output semantics (#2213)."
     }
   ]
 }

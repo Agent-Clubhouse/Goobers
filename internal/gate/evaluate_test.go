@@ -497,6 +497,63 @@ func TestEvaluatorEscalatesOnDuplicateDiffWithoutReReview(t *testing.T) {
 	}
 }
 
+func TestEvaluatorDuplicateDiffNamesUpstreamRepassCause(t *testing.T) {
+	g := apiv1.Gate{
+		Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+		Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass): wf.TerminalComplete, string(apiv1.VerdictNeedsChanges): "implement",
+		},
+	}
+	tests := []struct {
+		name  string
+		cause RepassCause
+		want  []string
+	}{
+		{
+			name: "CI failure",
+			cause: RepassCause{
+				Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci",
+				ErrorCode: "deadline_exceeded", ErrorMessage: "exceeded its 10m timeout",
+			},
+			want: []string{"local-gate", "local-ci", "deadline_exceeded", "10m timeout", "produced no change"},
+		},
+		{
+			name:  "reviewer needs changes",
+			cause: RepassCause{Kind: "reviewer", Gate: "review", Outcome: "needs-changes", Rationale: "the parser still accepts empty input"},
+			want:  []string{"review", "needs-changes", "parser still accepts empty input", "produced no change"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newTestJournal(t)
+			ev := &Evaluator{
+				Reviewer:       &ReviewerEvaluator{Goober: &fakeGoober{}},
+				Journal:        run,
+				LastDiffDigest: map[string]string{"review": "sha256:same"},
+				RepassCause:    &tc.cause,
+			}
+			result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:same", false)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if result.RepassCause == nil || result.Verdict == nil {
+				t.Fatalf("result = %+v, want machine-readable cause and synthesized verdict", result)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(result.Verdict.Rationale, want) {
+					t.Fatalf("rationale = %q, want %q", result.Verdict.Rationale, want)
+				}
+			}
+			events := readGateEvents(t, run)
+			cause, ok := events[0].Runner["repassCause"].(map[string]any)
+			if !ok || cause["kind"] != tc.cause.Kind || cause["gate"] != tc.cause.Gate {
+				t.Fatalf("journal repassCause = %#v, want kind=%q gate=%q", events[0].Runner["repassCause"], tc.cause.Kind, tc.cause.Gate)
+			}
+		})
+	}
+}
+
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall is issue #523's core
 // mechanism test: when the caller (merge-review's gather-sibling-context, in
 // production; the test itself here) has already found a digest-matched
@@ -570,11 +627,11 @@ func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
 
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
 // when the implement stage commits nothing (an empty diff — e.g. it produced
-// no change on an over-scope probe), the reviewer gate must fast-`fail` on the
-// FIRST review — resolving the gate's own `fail` branch, not escalating — and
-// must never invoke the (real, costly) reviewer for a diff that offers nothing
-// to evaluate. Without it, an empty diff draws two needs-changes repasses
-// before the #316 identical-diff guard finally escalates.
+// no change on an over-scope probe), the reviewer gate must synthesize `fail`
+// evidence on the FIRST review while routing through the mechanical escalation
+// branch, and must never invoke the (real, costly) reviewer for a diff that
+// offers nothing to evaluate. Without it, an empty diff can be mistaken for a
+// genuine reviewer rejection requiring a human decision.
 func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "reviewgate",
@@ -583,7 +640,8 @@ func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 		Branches: map[string]string{
 			string(apiv1.VerdictPass):         wf.TerminalComplete,
 			string(apiv1.VerdictNeedsChanges): "implement",
-			string(apiv1.VerdictFail):         wf.TargetAbort,
+			string(apiv1.VerdictFail):         "park-needs-human",
+			wf.BranchEscalate:                 "park-escalated",
 		},
 	}
 	// The fake would PASS if consulted — so a `fail` outcome can only come from
@@ -597,11 +655,11 @@ func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if r.Target != wf.TargetAbort || r.Outcome != string(apiv1.VerdictFail) {
-		t.Fatalf("r = %+v, want outcome=fail target=%s (the gate's own fail branch, review-1)", r, wf.TargetAbort)
+	if r.Target != "park-escalated" || r.Outcome != string(apiv1.VerdictFail) {
+		t.Fatalf("r = %+v, want outcome=fail target=park-escalated (the mechanical escalation branch)", r)
 	}
-	if r.Escalated || r.DuplicateDiff {
-		t.Fatalf("r = %+v, want escalated=false duplicateDiff=false — an empty diff fails on review-1, it does not escalate", r)
+	if !r.Escalated || r.DuplicateDiff {
+		t.Fatalf("r = %+v, want escalated=true duplicateDiff=false — an empty diff is a distinct first-review execution stall", r)
 	}
 	if r.Attempt != 1 {
 		t.Fatalf("r.Attempt = %d, want 1 (fails on the first review, no repass loop)", r.Attempt)

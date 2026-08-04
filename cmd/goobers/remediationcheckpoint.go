@@ -41,6 +41,7 @@ const (
 	remediationOutcomeDidNotConverge  remediationEscalationOutcome = "did-not-converge"
 	remediationOutcomeBudgetExhausted remediationEscalationOutcome = "budget-exhausted"
 	remediationOutcomePolicyExcluded  remediationEscalationOutcome = "policy-excluded"
+	remediationOutcomeInfrastructure  remediationEscalationOutcome = "infrastructure-failure"
 )
 
 var remediationCauseOrder = []remediationCause{
@@ -121,7 +122,9 @@ type siblingOverlapFinding struct {
 // PR comment the same way, and for the same reason: gather-pr-context
 // already established that a PR comment is the only durable cross-run
 // channel available at this altitude (neither workflow shares a journal/
-// runID with the other's runs, or across its own runs).
+// runID with the other's runs, or across its own runs). Implementation's
+// initial escalation marker lives in the PR body so parking still posts only
+// one human-facing comment; remediation then adopts it into this sticky state.
 //
 // It is ALSO the escalation-livelock breaker's (#716) self-heal snapshot: on
 // an escalation, EscalatedHeadSHA/EscalatedBaseSHA record the PR's head/base
@@ -167,7 +170,8 @@ type remediationState struct {
 	RemediationAttempted bool                         `json:"remediationAttempted"`
 	AttemptedCauses      []remediationCause           `json:"attemptedCauses,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
-	// moment of escalation — the self-heal comparison snapshot (#716).
+	// moment of escalation, or the latest repeat fail — the self-heal
+	// comparison snapshot (#716/#2378).
 	EscalatedHeadSHA           string `json:"escalatedHeadSha,omitempty"`
 	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
 	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
@@ -177,6 +181,33 @@ type remediationState struct {
 // remediationStatePattern matches the machine-readable payload
 // remediationStateComment appends to its posted comment.
 var remediationStatePattern = regexp.MustCompile(`(?s)<!-- remediation-state: (.*?) -->`)
+var implementationEscalationPattern = regexp.MustCompile(`(?s)<!-- implementation-escalation: (.*?) -->`)
+
+type implementationEscalationState struct {
+	DiffDigest string         `json:"diffDigest"`
+	Reason     string         `json:"reason"`
+	Cause      map[string]any `json:"cause,omitempty"`
+}
+
+func implementationEscalationMarker(state implementationEscalationState) (string, error) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return "", fmt.Errorf("marshal implementation escalation: %w", err)
+	}
+	return fmt.Sprintf("<!-- implementation-escalation: %s -->", data), nil
+}
+
+func withImplementationEscalationMarker(body string, state implementationEscalationState) (string, error) {
+	marker, err := implementationEscalationMarker(state)
+	if err != nil {
+		return "", err
+	}
+	body = strings.TrimSpace(implementationEscalationPattern.ReplaceAllString(body, ""))
+	if body == "" {
+		return marker, nil
+	}
+	return body + "\n\n" + marker, nil
+}
 
 // remediationStateComment marshals s into the HTML-comment payload a
 // checkpoint run posts as a PR comment.
@@ -194,14 +225,29 @@ func remediationStateComment(s remediationState) (string, error) {
 // PR's first pr-remediation cycle, not a parse error.
 func parseRemediationStateComment(body string) (remediationState, bool) {
 	m := remediationStatePattern.FindStringSubmatch(body)
+	if m != nil {
+		var s remediationState
+		if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
+			return remediationState{}, false
+		}
+		return s, true
+	}
+	m = implementationEscalationPattern.FindStringSubmatch(body)
 	if m == nil {
 		return remediationState{}, false
 	}
-	var s remediationState
-	if err := json.Unmarshal([]byte(m[1]), &s); err != nil {
+	var state implementationEscalationState
+	if err := json.Unmarshal([]byte(m[1]), &state); err != nil || state.DiffDigest == "" {
 		return remediationState{}, false
 	}
-	return s, true
+	// Seed the existing pre-agent same-diff guard. BaseSHA intentionally stays
+	// empty because implementation records the content digest, not PR metadata;
+	// remediationStalled's compatibility path compares the exact digest alone.
+	return remediationState{
+		LastDiffDigest:  state.DiffDigest,
+		Escalated:       true,
+		EscalatedReason: state.Reason,
+	}, true
 }
 
 // renderRemediationComment builds the full sticky-comment body for state: a
@@ -342,6 +388,28 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	return true, nil
 }
 
+// refreshEscalationSnapshotAfterRepeatFail closes the one-shot self-heal
+// window after merge-review re-evaluates an already-escalated PR. Without this,
+// a base advance stays different from the original snapshot forever, making an
+// unchanged PR eligible on every subsequent poll (#2378).
+func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment) error {
+	state, commentID, found := latestRemediationState(comments)
+	if !found || commentID == "" {
+		return nil
+	}
+	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
+	if err != nil {
+		return err
+	}
+	if state.Escalated && state.EscalatedHeadSHA == pr.HeadSHA && state.EscalatedBaseSHA == liveBaseTip {
+		return nil
+	}
+	state.Escalated = true
+	state.EscalatedHeadSHA = pr.HeadSHA
+	state.EscalatedBaseSHA = liveBaseTip
+	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
+}
+
 // latestRemediationState scans comments (oldest first, ListComments' own
 // order) for the LAST one carrying an embedded remediation-state payload —
 // only the most recently recorded cycle/escalation is still actionable —
@@ -356,6 +424,16 @@ func latestRemediationState(comments []providers.Comment) (state remediationStat
 		}
 	}
 	return remediationState{}, "", false
+}
+
+func latestRemediationStateForPR(body string, comments []providers.Comment) (state remediationState, commentID string, found bool) {
+	if s, ok := parseRemediationStateComment(body); ok {
+		state, found = s, true
+	}
+	if s, id, ok := latestRemediationState(comments); ok {
+		return s, id, true
+	}
+	return state, "", found
 }
 
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
@@ -384,9 +462,9 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
 	"four per-cause budget inputs. --budget overrides every declared cause\n" +
 	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
-	"--escalate as did-not-converge (the default) or budget-exhausted.\n" +
+	"--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.\n" +
 	"Escalations persist a machine-readable `escalationOutcome`\n" +
-	"(`did-not-converge`, `budget-exhausted`, or `policy-excluded`), whether\n" +
+	"(`did-not-converge`, `budget-exhausted`, `policy-excluded`, or `infrastructure-failure`), whether\n" +
 	"repair was attempted, and the attempted causes in both the sticky comment\n" +
 	"and stage result. Exit codes: 0 = checkpoint\n" +
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
@@ -405,7 +483,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	escalationOutcome := fs.String(
 		"escalation-outcome",
 		string(remediationOutcomeDidNotConverge),
-		"machine-readable outcome for --escalate (did-not-converge or budget-exhausted)",
+		"machine-readable outcome for --escalate (did-not-converge, budget-exhausted, or infrastructure-failure)",
 	)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -420,9 +498,9 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	forcedOutcome := remediationEscalationOutcome(*escalationOutcome)
 	switch forcedOutcome {
-	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted:
+	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure:
 	default:
-		pf(stderr, "error: --escalation-outcome must be %q or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted)
+		pf(stderr, "error: --escalation-outcome must be %q, %q, or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure)
 		return 2
 	}
 	if *escalateReason == "" && forcedOutcome != remediationOutcomeDidNotConverge {
@@ -715,7 +793,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// checkpoint state is still actionable. Its comment ID (if any) is the
 	// sticky comment this cycle edits in place (#716 AC3), rather than
 	// posting a new one.
-	prior, priorCommentID, _ := latestRemediationState(rawComments)
+	prior, priorCommentID, _ := latestRemediationStateForPR(current.Body, rawComments)
 
 	// #1808: the escalation comment advertises three unpark paths, one of which
 	// is "a human removes goobers:merge-escalated". That path did not work. The

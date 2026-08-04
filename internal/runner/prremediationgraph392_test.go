@@ -101,7 +101,7 @@ func (g *remediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (a
 // synthetic re-statement of it that could drift away from the YAML silently.
 func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -128,7 +128,7 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 	m, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"output-equals", "status-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {
@@ -740,7 +740,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 
 func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
 	if err != nil {
 		t.Fatalf("read implementation.yaml: %v", err)
@@ -764,7 +764,7 @@ func loadShippedImplementation(t *testing.T) *workflow.Machine {
 	machine, err := workflow.Compile(
 		workflow.Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		workflow.WithGoobers(goobers),
-		workflow.WithKnownChecks([]string{"status-equals", "ci-status", "output-equals"}),
+		workflow.WithKnownChecks([]string{"failure-class", "status-equals", "ci-status", "output-equals"}),
 		workflow.WithPreviewFeatures(true),
 	)
 	if err != nil {

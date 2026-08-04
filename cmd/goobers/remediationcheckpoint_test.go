@@ -67,6 +67,7 @@ type remediationCheckpointServerState struct {
 	listedHeadSHA       string
 	liveBaseSHA         string
 	state               string
+	body                string
 	merged              bool
 	terminalOnComments  bool
 	mergeOnComments     bool
@@ -160,6 +161,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		writeFakeJSON(w, map[string]interface{}{
 			"number": st.number, "draft": false, "state": state, "merged": st.merged,
+			"body":     st.body,
 			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
 			"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
 			"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
@@ -650,6 +652,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{needsRemediationLabel},
 	}
+
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")

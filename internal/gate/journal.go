@@ -100,6 +100,9 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	if diffDigest != "" {
 		runner["diffDigest"] = diffDigest
 	}
+	if r.RepassCause != nil {
+		runner["repassCause"] = r.RepassCause
+	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,
 		Actor:     r.Actor,

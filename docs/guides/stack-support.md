@@ -41,7 +41,8 @@ history.
   declares no `ciCommand` falls back to whatever its own workflow's `local-ci` task declares
   directly — typically the Go-stack default, `["make", "ci"]`, left over in a copied reference
   workflow. Every shipped non-Go reference gaggle overrides it (`["npm", "run", "ci"]` for
-  Node, `["dotnet", "test"]` for .NET).
+  Node, `["dotnet", "test"]` for .NET, and `["mvn", "-B", "-q", "verify"]`
+  for Java).
 - **`requiredCapabilities`** — the toolchain tokens the gaggle or task needs (`node@20`,
   `dotnet@9`, `python@3.12`, `java@21`, `os=windows`, …), matched at schedule time and,
   where a prober exists for that family, re-verified against the actual host before the run's
@@ -60,10 +61,10 @@ stage-launch.
 
 | Stack | Tier | Reference | Status |
 |---|---|---|---|
-| Go | First-class — shipped reference + green test | Goobers self-hosting (`selfhost/gaggles/goobers/`) | Shipped, green |
+| Go | First-class — shipped reference + green test | Goobers canonical reference (`reference-workflows/gaggles/goobers/`) | Shipped, green |
 | .NET/C# | First-class — shipped reference + green test | `config-examples/gaggles/dotnet-service/` | Shipped, green |
 | Node/TypeScript | First-class — shipped reference + green test | `config-examples/gaggles/acme-web/` | Shipped, green |
-| Java | Planned | `config-examples/gaggles/java-service/` | Toolchain capability (prober + env allowlist) landed (#2168); reference gaggle open (#2169) |
+| Java | First-class — shipped reference + green test | `config-examples/gaggles/java-service/` | Shipped, green |
 | Python | Planned | `config-examples/gaggles/python-service/` | Reference gaggle open (#2170) |
 | Apple/iOS | Laddered — one validated target | simulator automation stage flavor | Landed (#740) |
 | Android | Laddered — one validated target, stretch | emulator automation stage flavor | Open, stretch (#742) |

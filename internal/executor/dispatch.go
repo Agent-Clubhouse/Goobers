@@ -128,7 +128,7 @@ func NewCIPollKindExecutor(executor *CIPollExecutor) KindExecutor {
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	required := string(capability.GitHubPRWrite)
+	required := string(capability.ProviderPRWrite)
 	if !containsString(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindCIPoll, required)
 	}

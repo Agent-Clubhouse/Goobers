@@ -1,10 +1,9 @@
 # Linux quickstart (tier 1, local)
 
-Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,
-build, configure credentials, and drive a first run. This is the Linux-specific
-companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI
-surface is identical; this page calls out the few things that are Linux-specific
-and records the exact environment Goobers is validated on.
+Use this page for Linux host prerequisites, isolation, credentials, and
+supervision differences only. Follow the platform-neutral
+[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
+walkthrough.
 
 Linux is a first-class node platform: the control plane has **no macOS coupling**
 (no launchd/keychain/fsevents/hardcoded paths in Go source), and the daemon plus
@@ -52,6 +51,16 @@ cat ./linux-validation-evidence/summary.md
 
 ## 1. Install prerequisites
 
+Agentic stages are sandboxed by default. Linux nodes require Bubblewrap
+(`bwrap`); startup of an agentic stage fails closed when it is missing or
+cannot create the required namespaces. On hardened distributions,
+`kernel.apparmor_restrict_unprivileged_userns=1` or
+`kernel.unprivileged_userns_clone=0` can make an installed Bubblewrap
+unavailable. Enable unprivileged user namespaces for the daemon user, use a
+correctly installed setuid Bubblewrap, or explicitly select the trusted-local
+opt-out with `sandbox.agentic: disabled` in operator-owned `instance.yaml`.
+Every opted-out attempt is recorded in the run journal.
+
 ```sh
 # Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;
 # prefer the official tarball:
@@ -59,7 +68,7 @@ curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/loca
 export PATH="/usr/local/go/bin:$(go env GOPATH)/bin:$PATH"
 
 # Git (>= 2.17 — any supported Ubuntu/Debian is newer):
-sudo apt-get update && sudo apt-get install --yes git
+sudo apt-get update && sudo apt-get install --yes git bubblewrap
 
 # golangci-lint — REQUIRED on the daemon's PATH (see the note in step 5):
 curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \
@@ -77,21 +86,17 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on PATH
 ```
 
-## 3. Scaffold and configure an instance
+## 3. Linux instance and credential deltas
 
 Keep the instance root outside the target repository. For reviewed, versioned
 definitions, use an in-repo subtree or separate config repository; reserve
 instance-local config for private, single-operator use. Compare the options in
 the [instance and config placement guide](instance-placement.md).
 
-```sh
-goobers init ./my-instance
-```
-
-Edit `my-instance/instance.yaml` to point at your repo and reference a provider
-token. **Never inline the secret** — reference an env var or a file (CFG-009 /
-SEC-010). If you use a token file, lock its permissions down; Goobers fail-closes
-on a world- or group-readable token file:
+Use the initialization and configuration steps in the
+[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root).
+On Linux, if you use a token file, lock its permissions down; Goobers
+fail-closes on a world- or group-readable token file:
 
 ```sh
 mkdir -p ~/.config/goobers
@@ -99,34 +104,11 @@ printf '%s' "$GITHUB_TOKEN" > ~/.config/goobers/github.token
 chmod 600 ~/.config/goobers/github.token      # 0600 required — Goobers rejects looser modes
 ```
 
-Then in `instance.yaml`, set the repo's token ref to `env: GOOBERS_GITHUB_TOKEN`
-(and export it before `up`) or `file: ~/.config/goobers/github.token`. Validate:
+Then set the token reference described by the canonical quickstart to either
+`env: GOOBERS_GITHUB_TOKEN` or
+`file: ~/.config/goobers/github.token`.
 
-```sh
-goobers validate ./my-instance
-```
-
-## 4. First run
-
-Trigger one workflow manually (no daemon required):
-
-```sh
-goobers run <workflow-name> ./my-instance
-goobers status ./my-instance                    # list runs + phase
-goobers trace <run-id> ./my-instance            # inspect the run journal
-```
-
-To watch the whole loop with **no repo, provider credentials, model tokens, or
-network writes**, use the hermetic mock-provider demo — the same fixture the
-Linux validation drives:
-
-```sh
-goobers init --demo ./demo-instance
-goobers run demo ./demo-instance                # curate -> implement -> review -> merge preview
-goobers trace <run-id> ./demo-instance
-```
-
-## 5. Operator-run Linux live-smoke (real Copilot CLI)
+## 4. Operator-run Linux live-smoke (real Copilot CLI)
 
 This optional, manual check exercises the boundary that the hermetic Linux CI
 job cannot: a real Copilot CLI process authenticating and running the agentic
@@ -305,7 +287,7 @@ keyring/profile access, token scope, model reachability, or live
 authentication. This operator run supplements that CI boundary; it does not
 replace it.
 
-## 6. Run the daemon
+## 5. Run the daemon
 
 ```sh
 goobers up ./my-instance        # foreground; Ctrl-C (SIGINT) or SIGTERM to stop
@@ -323,7 +305,7 @@ blocks until interrupted, draining in-flight runs gracefully on SIGINT/SIGTERM
 > daemon sees. Under a systemd unit this is the unit's `Environment=PATH=…`
 > (see supervision, below); when launched from a shell it is that shell's PATH.
 
-## 7. Supervise it (systemd)
+## 6. Supervise it (systemd)
 
 For an unattended node, run the daemon under **systemd** instead of a foreground
 shell. A ready-to-edit user-service template and full install/start/stop/status/

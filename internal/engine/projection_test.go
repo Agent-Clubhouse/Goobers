@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -420,5 +421,145 @@ func TestProjectionOpTimesAreWorkflowClock(t *testing.T) {
 		if op.Time.Equal(zero) {
 			t.Errorf("op %d has a zero time", i)
 		}
+	}
+}
+
+type mutationSidecarDeterministic struct {
+	line   string
+	status apiv1.ResultStatus
+}
+
+func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if err := os.WriteFile(filepath.Join(env.Workspace, mutationsSidecarFile), []byte(d.line+"\n"), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	status := d.status
+	if status == "" {
+		status = apiv1.ResultSuccess
+	}
+	return apiv1.ResultEnvelope{Status: status}, nil
+}
+
+func TestProjectionCarriesProviderMutationProvenance(t *testing.T) {
+	spec := crSpec("mutate", []apiv1.Task{crTask("mutate", "")}, nil)
+	spec.Tasks[0].Run.Workspace = apiv1.WorkspaceRepo
+	proj := executeForProjection(t, projectionInput("mutation-provenance", spec), &Activities{
+		Det: mutationSidecarDeterministic{
+			line:   `{"provider":"github","kind":"issue","id":"629","url":"https://github.com/Agent-Clubhouse/Goobers/issues/629","operation":"update"}`,
+			status: apiv1.ResultNoWork,
+		},
+		Workspaces: testWorkspaces(t),
+	}, false)
+
+	var branch, mutation *journal.Event
+	for _, op := range proj.Ops {
+		if op.Event == nil || op.Event.Type != journal.EventRefTouched {
+			continue
+		}
+		if op.Event.Stage == "mutate" {
+			mutation = op.Event
+		} else if op.Event.ExternalRef != nil && op.Event.ExternalRef.Kind == "branch" {
+			branch = op.Event
+		}
+	}
+	if branch == nil {
+		t.Fatal("mutating no-work result did not record run-branch provenance")
+	}
+	if mutation == nil || mutation.ExternalRef == nil {
+		t.Fatalf("projected ops carry no stage mutation: %+v", proj.Ops)
+	}
+	if got := *mutation.ExternalRef; got.Provider != "github" || got.Kind != "issue" || got.ID != "629" {
+		t.Fatalf("mutation ref = %+v", got)
+	}
+	if mutation.Runner["operation"] != "update" {
+		t.Fatalf("mutation runner annotation = %+v", mutation.Runner)
+	}
+}
+
+func TestProjectionMalformedMutationProvenanceIsNonFatal(t *testing.T) {
+	spec := crSpec("mutate", []apiv1.Task{crTask("mutate", "")}, nil)
+	proj := executeForProjection(t, projectionInput("invalid-mutation", spec), &Activities{
+		Det:        mutationSidecarDeterministic{line: `{"provider":"github","kind":"issue"}`},
+		Workspaces: testWorkspaces(t),
+	}, false)
+
+	var issue *journal.Event
+	for _, op := range proj.Ops {
+		if op.Event == nil {
+			continue
+		}
+		if op.Event.Type == journal.EventRefTouched && op.Event.Stage == "mutate" {
+			t.Fatalf("malformed mutation fabricated provenance: %+v", op.Event)
+		}
+		if op.Event.Type == journal.EventError && op.Event.Error != nil &&
+			op.Event.Error.Code == "mutation_sidecar_read_failed" {
+			issue = op.Event
+		}
+	}
+	if issue == nil || issue.Stage != "mutate" {
+		t.Fatalf("malformed mutation issue was not surfaced: %+v", proj.Ops)
+	}
+	last := proj.Ops[len(proj.Ops)-1].Event
+	if last == nil || last.Type != journal.EventRunFinished || last.Status != string(journal.PhaseCompleted) {
+		t.Fatalf("malformed provenance changed the run outcome: %+v", last)
+	}
+}
+
+func TestProjectionScrubsVerdictBeforeHistoryAndPointerAddressing(t *testing.T) {
+	const secret = "history-secret-value"
+	registry := journal.NewRegistryScrubber()
+	registry.Register([]byte(secret))
+
+	var mu sync.Mutex
+	var implementEnvs []apiv1.InvocationEnvelope
+	reviews := 0
+	inv := &fakeInvoker{
+		invoke: func(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			mu.Lock()
+			implementEnvs = append(implementEnvs, env)
+			mu.Unlock()
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		},
+		review: func(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reviews++
+			if reviews == 1 {
+				return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "remove " + secret}, nil
+			}
+			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+		},
+	}
+	proj := executeForProjection(t, projectionInput("scrubbed-verdict", gatedSpec()), &Activities{
+		Goober: inv, Workspaces: testWorkspaces(t), Scrubber: registry,
+	}, false)
+	history, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("marshal projection: %v", err)
+	}
+	if strings.Contains(string(history), secret) {
+		t.Fatalf("secret survived in Temporal-derived projection history: %s", history)
+	}
+
+	mu.Lock()
+	repass := append([]apiv1.InvocationEnvelope(nil), implementEnvs...)
+	mu.Unlock()
+	if len(repass) != 2 {
+		t.Fatalf("implement dispatches = %d, want one repass", len(repass))
+	}
+	pointer := findContextPointer(repass[1].ContextPointers, "review.verdict")
+	if pointer == nil || pointer.Artifact == nil {
+		t.Fatalf("repass context = %+v, want verdict artifact", repass[1].ContextPointers)
+	}
+	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("ProjectRun: %v", err)
+	}
+	data, err := pointer.Artifact.Resolve(dir)
+	if err != nil {
+		t.Fatalf("resolve scrubbed verdict pointer: %v", err)
+	}
+	if strings.Contains(string(data), secret) || !strings.Contains(string(data), journal.Redacted) {
+		t.Fatalf("projected verdict was not scrubbed: %s", data)
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
@@ -57,7 +58,9 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"Select at most one open, non-draft, green-CI PR for merge-review to\n" +
 	"evaluate this cycle (a workflow stage). authorScope defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
-	"labeled goobers:no-merge-review are always excluded. Before selection,\n" +
+	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
+	"PRs labeled goobers:no-merge-review or goobers:run-aborted are always\n" +
+	"excluded. Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
@@ -101,18 +104,28 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	excludeLabels = append(excludeLabels, noMergeReviewLabel)
+	// abortedRunLabel is always excluded, never operator-overridable via the
+	// excludeLabels input, same as noMergeReviewLabel: a cancelled run's PR
+	// must stay ineligible for auto-merge until a human removes the label
+	// directly (#2238).
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	identityFilters := providers.ListPullRequestsRequest{
+		Author:            providerInput("author", ""),
+		Assignee:          providerInput("assignee", ""),
+		RequestedReviewer: providerInput("requestedReviewer", ""),
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	now := time.Now().UTC()
+	expectedAuthorLogin := daemonIdentityAuthorLogin(ctx, root, provider)
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, triggerRef, completeness)
+	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, identityFilters, triggerRef, completeness, expectedAuthorLogin)
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
@@ -135,7 +148,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	var couplingDependents []providers.PullRequestSummary
 	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && hasAnyHeadPrefix(pr.Head, headPrefixes) &&
+		if pr.State == "open" && pr.Base == base && isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
 			!hasAnyLabel(pr.Labels, []string{noMergeReviewLabel}) {
 			couplingDependents = append(couplingDependents, pr)
 		}
@@ -169,7 +182,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	var eligible []providers.PullRequestSummary
 	for _, pr := range prs {
 		if pr.State != "open" || pr.Base != base ||
-			(authorScope != authorScopeAny && !hasAnyHeadPrefix(pr.Head, headPrefixes)) {
+			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
 			continue
 		}
 		if pr.Draft {
@@ -258,7 +271,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
-	advisoryMode := authorScope == authorScopeAny && !hasAnyHeadPrefix(selected.Head, headPrefixes)
+	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
 	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
 		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
 		return 1
@@ -307,8 +320,10 @@ func pullRequestsForSelection(
 	base string,
 	headPrefixes []string,
 	authorScope string,
+	identityFilters providers.ListPullRequestsRequest,
 	triggerRef string,
 	completeness prSelectSnapshotCompleteness,
+	expectedAuthorLogin string,
 ) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
 	openPRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, SkipCheckState: true,
@@ -322,6 +337,9 @@ func pullRequestsForSelection(
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+			return nil, openPRs, nil
+		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
@@ -331,7 +349,10 @@ func pullRequestsForSelection(
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
-		if authorScope != authorScopeAny && !hasAnyHeadPrefix(pr.Head, headPrefixes) {
+		if authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) {
+			continue
+		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
 			continue
 		}
 		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
@@ -350,6 +371,62 @@ func hasAnyHeadPrefix(head string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// isOwnPullRequest reports whether a PR (identified by its author login and
+// head branch) is attributable to this daemon's own identity for
+// merge-review's "is this ours" gate (#1780/#1295). When expectedAuthorLogin
+// is set — a DaemonIdentity is configured and its login resolved — it
+// compares author directly, the distinct-identity signal a real bot login
+// gives for free, with zero reliance on branch naming. An empty
+// expectedAuthorLogin falls back completely unchanged to the branch-prefix
+// heuristic: today's only signal on a single-token instance, where every
+// daemon-authored PR's author is indistinguishable from the operator's own
+// account. Takes plain strings, not a providers.PullRequestSummary, so a
+// caller that has only assembled the selected PR's fields piecemeal (see
+// gather-sibling-context's consistency check) doesn't need to construct one.
+func isOwnPullRequest(author, head string, headPrefixes []string, expectedAuthorLogin string) bool {
+	if expectedAuthorLogin != "" {
+		return strings.EqualFold(author, expectedAuthorLogin)
+	}
+	return hasAnyHeadPrefix(head, headPrefixes)
+}
+
+// daemonIdentityAuthorLogin resolves the login merge-review's "is this ours"
+// check should compare pr.Author against, or "" to fall back to the
+// branch-prefix heuristic unchanged (#1780). Loads instance.yaml directly
+// (the same fallback path providerRepo already uses) rather than requiring a
+// new runner-injected env var — root is already available to every
+// provider-chain stage.
+//
+// PAT: github:pr:write already resolves to the DaemonIdentity's own token
+// once configured (buildCredentials, runnerwiring.go), so provider — built
+// from that exact token — reports the daemon identity's own login for free.
+// GitHub App: an installation token cannot self-report a login (no
+// equivalent of GET /user), so this requires Slug to be explicitly declared;
+// unset (the default until #1779 lands) returns "" like no DaemonIdentity at
+// all, not an error.
+//
+// A resolution failure (e.g. a transient network error on the live
+// AuthenticatedLogin call) fails OPEN to the branch-prefix heuristic rather
+// than failing the whole stage — a momentary identity-lookup hiccup must
+// never block a merge-review cycle outright.
+func daemonIdentityAuthorLogin(ctx context.Context, root string, provider *providers.GitHubProvider) string {
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil || cfg.DaemonIdentity == nil {
+		return ""
+	}
+	if cfg.DaemonIdentity.GitHubApp() {
+		if cfg.DaemonIdentity.Slug == "" {
+			return ""
+		}
+		return cfg.DaemonIdentity.Slug + "[bot]"
+	}
+	login, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return ""
+	}
+	return login
 }
 
 func splitLabelList(value string) []string {

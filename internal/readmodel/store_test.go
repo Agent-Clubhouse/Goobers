@@ -193,7 +193,7 @@ func TestOrderingIndexesServeTheListShapes(t *testing.T) {
 
 func explain(t *testing.T, store *Store, query string) string {
 	t.Helper()
-	rows, err := store.readDB().Query("EXPLAIN QUERY PLAN " + query)
+	rows, err := store.reader.Query("EXPLAIN QUERY PLAN " + query)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}

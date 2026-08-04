@@ -190,6 +190,52 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	}
 }
 
+func TestFailedRunPreservesPinnedWorkspaceResetSuggestion(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-reset-suggested",
+		machine.Def.Name,
+		machine.Def.Spec.Gaggle,
+		time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		true,
+	)
+	suggestion := "Run `goobers workspace reset <repo>` before retrying."
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":          "workspace_reset_suggested",
+			"workspaceMode": "pinned",
+			"failureStreak": 3,
+			"suggestion":    suggestion,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishFixtureRun(t, run, clock, journal.PhaseFailed)
+
+	want := "Workspace reset suggested: " + suggestion
+	detail, err := service.GetRun(context.Background(), "run-reset-suggested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Phase != journal.PhaseFailed || detail.CurrentStage != want {
+		t.Fatalf("failed run detail = %+v, want visible reset suggestion %q", detail.RunSummary, want)
+	}
+
+	list, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Runs) != 1 || list.Runs[0].CurrentStage != want {
+		t.Fatalf("failed run list = %+v, want visible reset suggestion %q", list.Runs, want)
+	}
+}
+
 // TestListRunsHidesNoWorkByDefault is the regression test for #2188: the
 // portal run list needs to hide routine no-work schedule ticks (a run that
 // touched exactly one stage and that stage's terminal status was no-work) by
@@ -1819,6 +1865,10 @@ func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
 		{
 			name: "repass budget exhaustion after gate", stage: "park-invalid-finding-responses",
 			outcome: "budget-exhausted", reason: "finding response repass budget exhausted", attempted: true,
+		},
+		{
+			name: "infrastructure failure after gate", stage: "park-infrastructure-failure",
+			outcome: "infrastructure-failure", reason: "local CI timed out",
 		},
 	}
 	for _, tc := range tests {

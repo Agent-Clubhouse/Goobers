@@ -14,12 +14,12 @@ import (
 
 // loadPRRemediation reads and compiles the REAL shipped pr-remediation
 // definition against the REAL implementer/reviewer goobers, the same
-// divergence-guard approach TestSelfhostWorkflowsCompile takes (#124): a
+// divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
 // synthetic fixture would happily keep passing while the definition the
 // dogfood instance actually runs drifted.
 func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -56,10 +56,10 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	m, err := compileAcknowledged(
 		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		WithGoobers(goobers),
-		WithKnownChecks([]string{"output-equals", "status-equals"}))
+		WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}))
 
 	if err != nil {
-		t.Fatalf("compile pr-remediation against selfhost's real goobers: %v", err)
+		t.Fatalf("compile pr-remediation against the real reference workflows' goobers: %v", err)
 	}
 	return w, m
 }
@@ -72,6 +72,20 @@ func TestPRRemediationDeclaresWorkDrivenPolling(t *testing.T) {
 		}
 	}
 	t.Fatal("pr-remediation has no high-priority schedule trigger for eligibility-driven fan-out")
+}
+
+func TestPRRemediationThreadsUpdateSelectionIntoFullRemediation(t *testing.T) {
+	w, _ := loadPRRemediation(t)
+	for _, task := range w.Spec.Tasks {
+		if task.Name != "gather-pr-context" {
+			continue
+		}
+		if got := task.InputsFrom["selectedNumber"]; got != "selectedNumber" {
+			t.Fatalf("gather-pr-context selectedNumber input = %q, want update-behind-pr selectedNumber", got)
+		}
+		return
+	}
+	t.Fatal("gather-pr-context task not found")
 }
 
 // TestPRRemediationWiresTheAgenticChain is issue #392's regression guard. The
@@ -338,12 +352,25 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Fatal("local-gate not found")
 	}
 	for branch, want := range map[string]string{
-		"pass": "guard-before-push",
-		"fail": "guard-before-implement",
+		"pass":  "guard-before-push",
+		"fail":  "guard-before-implement",
+		"infra": "park-infrastructure-failure",
 	} {
 		if got := localGate.Branches[branch]; got != want {
 			t.Errorf("local-gate %s -> %q, want %q", branch, got, want)
 		}
+	}
+	if localGate.Automated == nil || localGate.Automated.Check != "failure-class" {
+		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
+	}
+	infraPark, ok := m.Task("park-infrastructure-failure")
+	if !ok {
+		t.Fatal("park-infrastructure-failure not found")
+	}
+	if infraPark.Next != "release-escalated-claim" ||
+		infraPark.Run == nil ||
+		!containsString(infraPark.Run.Command, "infrastructure-failure") {
+		t.Errorf("park-infrastructure-failure = %+v, want explicit infrastructure disposition before claim release", infraPark)
 	}
 
 	// A reviewer "fail" verdict must terminate ESCALATED, not merely abort
@@ -521,7 +548,7 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 
 func TestPRRemediationImplementerRequiresCompleteFindingAccount(t *testing.T) {
 	path := filepath.Join(
-		"..", "..", "selfhost", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
+		"..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
 	)
 	raw, err := os.ReadFile(path)
 	if err != nil {

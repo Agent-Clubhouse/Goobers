@@ -384,6 +384,89 @@ func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
 	}
 }
 
+func TestRunAbortRecoversRunFromRemovedGaggle(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	removed := l.ForGaggle("removed")
+	const runID = "abort-removed-gaggle"
+
+	jr, err := journal.Create(removed.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "removed",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("local-ci")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runArgs(t, "run", "abort", runID, root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	reader, err := journal.OpenRead(filepath.Join(removed.RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want %q", phase, journal.PhaseAborted)
+	}
+}
+
+func TestRunAbortRecoversRunWithInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name       string
+		invalidate func(t *testing.T, l instance.Layout)
+		warning    string
+	}{
+		{
+			name: "instance config",
+			invalidate: func(t *testing.T, l instance.Layout) {
+				t.Helper()
+				writeFixture(t, l.ConfigFile(), "not: [valid")
+			},
+			warning: "warning: load instance config for workcopies placement:",
+		},
+		{
+			name: "config directory resource",
+			invalidate: func(t *testing.T, l instance.Layout) {
+				t.Helper()
+				writeFixture(t, filepath.Join(l.ConfigDir(), "gaggles", "example", "gaggle.yaml"), "not: [valid")
+			},
+			warning: "warning: load config directory for workcopies placement:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			l := instance.NewLayout(root)
+			runLayout := l.ForGaggle("example")
+			runID := "abort-invalid-" + strings.ReplaceAll(tt.name, " ", "-")
+			newStuckRun(t, runLayout, runID, "default-implement")
+			tt.invalidate(t, l)
+
+			code, _, stderr := runArgs(t, "run", "abort", runID, root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stderr, tt.warning) {
+				t.Fatalf("stderr = %q, want %q warning", stderr, tt.warning)
+			}
+			assertRunFinishedLast(t, runLayout.RunsDir(), runID, journal.PhaseAborted)
+		})
+	}
+}
+
 func TestResumeRetainedFlatRunUsesLegacyRuntime(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)

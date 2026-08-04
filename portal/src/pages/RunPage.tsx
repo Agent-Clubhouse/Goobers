@@ -37,15 +37,18 @@ import { routeHash, type Navigate } from "../routing";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
+import { useCobrand } from "../cobrand";
 
 export function RunPage({
   client,
   navigate,
+  revealRun,
   runId,
   standalone,
 }: {
   client: DaemonClient;
   navigate: Navigate;
+  revealRun: (runId: string) => Promise<void>;
   runId: string;
   standalone: boolean;
 }) {
@@ -107,6 +110,7 @@ export function RunPage({
         events={query.state.data.events}
         key={query.state.data.run.id}
         navigate={navigate}
+        revealRun={revealRun}
         run={query.state.data.run}
         runId={runId}
       />
@@ -118,26 +122,31 @@ function RunDetailWorkspace({
   client,
   events,
   navigate,
+  revealRun,
   run,
   runId,
 }: {
   client: DaemonClient;
   events: RunEvent[];
   navigate: Navigate;
+  revealRun: (runId: string) => Promise<void>;
   run: RunDetail;
   runId: string;
 }) {
   const latestEvent = events.at(-1);
   const initialSeq = latestEvent?.seq ?? 0;
-  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(
+  const latestNodeId =
     eventNodeAtSequence(events, initialSeq, {
       branch: latestEvent?.branch,
       runId,
-    }) ?? run.currentStage,
-  );
+    }) ?? run.currentStage;
+  const [selectedSeq, setSelectedSeq] = useState(initialSeq);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(latestNodeId);
   const [followingLatest, setFollowingLatest] = useState(true);
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
+  const [revealPending, setRevealPending] = useState(false);
+  const [revealError, setRevealError] = useState<string>();
+  const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [fullscreenMode, setFullscreenMode] =
@@ -167,20 +176,16 @@ function RunDetailWorkspace({
       return;
     }
     setSelectedSeq(initialSeq);
-    setSelectedNodeId(
-      eventNodeAtSequence(events, initialSeq, {
-        branch: latestEvent?.branch,
-        runId,
-      }) ?? run.currentStage,
-    );
+    setSelectedNodeId(latestNodeId);
     setSelectedEvidenceSeq(
       latestEvent && isInspectableEvidenceEvent(latestEvent) ? latestEvent.seq : undefined,
     );
-  }, [events, followingLatest, initialSeq, latestEvent, run.currentStage, runId]);
+  }, [events, followingLatest, initialSeq, latestEvent, latestNodeId, runId]);
 
   const selectNode = (nodeId: string, shouldRevealInspector = false) => {
     setSelectedNodeId(nodeId);
     setSelectedEvidenceSeq(undefined);
+    setFollowingLatest(nodeId === latestNodeId);
     if (shouldRevealInspector) {
       revealInspector();
     }
@@ -227,6 +232,18 @@ function RunDetailWorkspace({
       ? undefined
       : events.find((event) => event.seq === failure.causalEventSeq);
 
+  const revealFiles = async () => {
+    setRevealPending(true);
+    setRevealError(undefined);
+    try {
+      await revealRun(runId);
+    } catch (error) {
+      setRevealError(error instanceof Error ? error.message : "The run directory could not be opened.");
+    } finally {
+      setRevealPending(false);
+    }
+  };
+
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -238,7 +255,7 @@ function RunDetailWorkspace({
       </nav>
 
       <header className="run-heading">
-        <div>
+        <div className="run-heading-main">
           <div className="run-title-line">
             <StatusBadge status={run.phase} />
             <span className="mono run-id">{run.id}</span>
@@ -247,6 +264,14 @@ function RunDetailWorkspace({
           <p>
             {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
           </p>
+          {!portalConfigLoading && portalConfig.capabilities.revealRun && (
+            <div className="run-file-actions">
+              <button disabled={revealPending} onClick={() => void revealFiles()} type="button">
+                {revealPending ? "Opening…" : "Reveal run files"}
+              </button>
+              {revealError && <span role="alert">{revealError}</span>}
+            </div>
+          )}
         </div>
         <dl className="run-meta">
           <div>

@@ -58,6 +58,61 @@ func TestRunDirsAndFindRunDirIncludeScopedAndLegacyRoots(t *testing.T) {
 	}
 }
 
+func TestWorkcopiesDirsIncludesScopedAndLegacyRoots(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	for _, dir := range []string{
+		layout.WorkcopiesDir(),
+		layout.ForGaggle("alpha").WorkcopiesDir(),
+		layout.ForGaggle("beta").WorkcopiesDir(),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := layout.WorkcopiesDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		layout.ForGaggle("alpha").WorkcopiesDir(),
+		layout.ForGaggle("beta").WorkcopiesDir(),
+		layout.WorkcopiesDir(),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("WorkcopiesDirs = %v, want %v", got, want)
+	}
+
+	// A scoped layout returns only its own root.
+	scopedGot, err := layout.ForGaggle("alpha").WorkcopiesDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{layout.ForGaggle("alpha").WorkcopiesDir()}; !reflect.DeepEqual(scopedGot, want) {
+		t.Fatalf("scoped WorkcopiesDirs = %v, want %v", scopedGot, want)
+	}
+}
+
+func TestWorkcopiesDirsSkipsLegacySymlinkAlias(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	scoped := layout.ForGaggle("alpha")
+	if err := os.MkdirAll(scoped.WorkcopiesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(scoped.WorkcopiesDir(), layout.WorkcopiesDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := layout.WorkcopiesDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{scoped.WorkcopiesDir()}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("WorkcopiesDirs with legacy symlink alias = %v, want %v (no double-scan)", got, want)
+	}
+}
+
 func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	legacyRun := filepath.Join(layout.RunsDir(), "run-1", "run.yaml")

@@ -24,6 +24,7 @@ type Run struct {
 	id       RunIdentity
 	scrubber Scrubber
 	now      func() time.Time
+	observer func(runID string, seq uint64)
 
 	mu           sync.Mutex
 	events       *os.File
@@ -71,6 +72,7 @@ type config struct {
 	scrubber       Scrubber
 	now            func() time.Time
 	inputIntegrity map[string]apiv1.Integrity
+	appendObserver func(runID string, seq uint64)
 }
 
 // Option configures a Run at creation/open.
@@ -87,6 +89,12 @@ func WithScrubber(s Scrubber) Option {
 // WithClock overrides the time source (for deterministic tests).
 func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
+}
+
+// WithAppendObserver reports each event after its checkpoint is durable.
+// Observers maintain derived state and must handle their own failures.
+func WithAppendObserver(observer func(runID string, seq uint64)) Option {
+	return func(c *config) { c.appendObserver = observer }
 }
 
 // WithInputIntegrity labels immutable snapshots by logical input name. Inputs
@@ -121,6 +129,13 @@ func newConfig(opts ...Option) config {
 
 // Dir returns the run directory.
 func (r *Run) Dir() string { return r.dir }
+
+// Seq returns the highest event sequence durably appended to the run.
+func (r *Run) Seq() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seq
+}
 
 // RunCreationStagingDir returns the hidden sibling directory where Create
 // assembles unpublished runs before their atomic rename into runsDir.
@@ -220,6 +235,7 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		id:       id,
 		scrubber: cfg.scrubber,
 		now:      cfg.now,
+		observer: cfg.appendObserver,
 		events:   events,
 		lock:     lock,
 		phase:    PhaseRunning,
@@ -252,6 +268,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	published, _, err := recover(finalDir, true, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("journal: open published run: %w", err)
+	}
+	if published.observer != nil {
+		published.observer(published.id.RunID, published.seq)
 	}
 	return published, nil
 }
@@ -288,7 +307,13 @@ func (r *Run) Append(ev Event) error {
 		r.machineState = ev.Stage
 		r.reason = ""
 	}
-	return r.checkpoint()
+	if err := r.checkpoint(); err != nil {
+		return err
+	}
+	if r.observer != nil {
+		r.observer(r.id.RunID, r.seq)
+	}
+	return nil
 }
 
 // append is the lock-held core: assign seq, scrub the serialized line, write, fsync.

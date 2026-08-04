@@ -132,7 +132,8 @@
       "additionalProperties": false,
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
-        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." }
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
     },
     "trigger": {
@@ -241,9 +242,11 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",
+              "provider:pr:write",
               "github:pr:write",
               "github:pr:review",
               "github:branch:delete",
@@ -311,6 +314,7 @@
               "respond-to-findings",
               "rework-pr",
               "route-queue-outcome",
+              "route-provider-verdict",
               "route-verdict",
               "unpark-resolved-siblings",
               "update-issue",
@@ -381,7 +385,7 @@
             "check": {
               "type": "string",
               "minLength": 1,
-              "description": "Registered automated check name. Built-in names are status-equals, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, and queue-outcome."
+              "description": "Registered automated check name. Built-in names are status-equals, failure-class, output-equals, output-not-equals, output-numeric-gte, output-numeric-lte, output-numeric-lt, output-matches, ci-status, land-outcome, and queue-outcome."
             },
             "params": {
               "type": "object",

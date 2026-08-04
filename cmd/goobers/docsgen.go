@@ -64,11 +64,23 @@ func collectDocCommands(commands []cliCommand, prefix []string) []clidocs.Comman
 				Short:    c.short,
 				Long:     c.long,
 				Examples: c.examples,
+				Group:    docCommandGroup(c.tier),
 			})
 		}
 		out = append(out, collectDocCommands(c.subcommands, path)...)
 	}
 	return out
+}
+
+func docCommandGroup(tier cliCommandTier) clidocs.Group {
+	switch tier {
+	case cliTierCore:
+		return clidocs.GroupCore
+	case cliTierStage:
+		return clidocs.GroupStage
+	default:
+		return clidocs.GroupAdvanced
+	}
 }
 
 // docDisplayName is the command's canonical, user-facing name: the first

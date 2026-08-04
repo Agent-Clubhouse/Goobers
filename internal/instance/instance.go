@@ -35,7 +35,8 @@ type Layout struct {
 	// Root is the instance root directory.
 	Root string
 
-	gaggle string
+	gaggle         string
+	workcopiesRoot string
 }
 
 // NewLayout returns the Layout rooted at root.
@@ -47,6 +48,14 @@ func NewLayout(root string) Layout {
 // such as config, scheduler, and telemetry remain rooted at the instance.
 func (l Layout) ForGaggle(gaggle string) Layout {
 	l.gaggle = gaggle
+	return l
+}
+
+// WithWorkcopiesRoot redirects managed working copies to root. The configured
+// root is a base: gaggle-scoped layouts append their gaggle name so separate
+// workforces cannot accidentally share mutable worktrees.
+func (l Layout) WithWorkcopiesRoot(root string) Layout {
+	l.workcopiesRoot = root
 	return l
 }
 
@@ -79,7 +88,23 @@ func (l Layout) SchedulerDir() string { return filepath.Join(l.Root, SchedulerDi
 
 // WorkcopiesDir is the path to this layout's managed working copies.
 func (l Layout) WorkcopiesDir() string {
+	if l.workcopiesRoot != "" {
+		if l.gaggle == "" {
+			return l.workcopiesRoot
+		}
+		return filepath.Join(l.workcopiesRoot, l.gaggle)
+	}
 	return filepath.Join(l.runtimeRoot(), WorkcopiesDirName)
+}
+
+// WorkcopiesBaseDir is the base used by pinned workspaces. The legacy default
+// remains instance-scoped; an alternate root retains its gaggle segment so a
+// configured short path cannot make two gaggles share mutable state.
+func (l Layout) WorkcopiesBaseDir() string {
+	if l.workcopiesRoot != "" {
+		return l.WorkcopiesDir()
+	}
+	return filepath.Join(l.Root, WorkcopiesDirName)
 }
 
 // TelemetryDB is the path to the local telemetry rollup store (§8).

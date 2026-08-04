@@ -4,6 +4,11 @@ This deliberately imperfect TypeScript service is the disposable target for
 Goobers onboarding. It is small enough for a first autonomous change: Node's
 built-in HTTP server, in-memory data, and two development dependencies.
 
+Use it only through the disposable GitHub-backed stage of the
+[canonical quickstart](../../docs/guides/quickstart.md#2-graduate-to-the-token-bearing-quickstart-template).
+That guide owns the ordered setup and run commands; this page documents the
+fixture itself.
+
 ## Version contract
 
 [`sample.json`](sample.json) is the machine-readable contract. Its `version`

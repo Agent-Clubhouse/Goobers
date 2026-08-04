@@ -83,6 +83,18 @@ export function RunsPage({
         </label>
       </div>
 
+      {query.state.status === "stale" && query.state.error && (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Run history may be stale</strong>
+            <small>{query.state.error.message}</small>
+          </span>
+          <button className="text-button" onClick={query.retry} type="button">
+            Try again
+          </button>
+        </div>
+      )}
+
       <section className="content-section">
         {history.runs.length === 0 ? (
           <p className="inline-empty">No runs match this filter.</p>

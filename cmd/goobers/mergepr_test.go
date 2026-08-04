@@ -448,13 +448,13 @@ func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *tes
 	compareFiles := make([]fakePRFile, 300)
 	for i := range compareFiles {
 		compareFiles[i] = fakePRFile{
-			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
+			path:   fmt.Sprintf("reference-workflows/gaggles/goobers/goobers/persona-%03d/instructions.md", i),
 			status: "modified",
 		}
 	}
 	pullFiles := append([]fakePRFile(nil), compareFiles...)
 	pullFiles = append(pullFiles, fakePRFile{
-		path: "selfhost/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
+		path: "reference-workflows/gaggles/goobers/skills/reviewer/instructions.md", status: "modified",
 	})
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
@@ -1246,6 +1246,43 @@ func TestMergePROptOutAddedAfterVerdictNeverMerges(t *testing.T) {
 	}
 	if reason, _ := result["reason"].(string); !strings.Contains(reason, noMergeReviewLabel) {
 		t.Fatalf("reason = %q, want it to mention %s", reason, noMergeReviewLabel)
+	}
+}
+
+// TestMergePRRefusesAbortedRunLabelEvenWithGreenVerdict is #2238's defense-
+// in-depth acceptance criterion for the final merge primitive: a PR labeled
+// goobers:run-aborted must never merge, even with verdict=pass and green CI,
+// so a bypass of pr-select's own exclusion of the same label (a stale
+// selection, a targeted re-trigger) still cannot land the PR.
+func TestMergePRRefusesAbortedRunLabelEvenWithGreenVerdict(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		labels: []string{abortedRunLabel},
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if st.mergeCalls != 0 || st.enqueueCalls != 0 {
+		t.Fatalf("landing calls = merge:%d enqueue:%d, want none for a run-aborted PR", st.mergeCalls, st.enqueueCalls)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false for a run-aborted PR", result)
+	}
+	if result["landOutcome"] != mergeReviewOptOutOutcome {
+		t.Fatalf("result = %+v, want landOutcome=%s so routing terminates before refusal recording", result, mergeReviewOptOutOutcome)
+	}
+	if optedOut, _ := result["optedOut"].(bool); !optedOut {
+		t.Fatalf("result = %+v, want optedOut=true for the terminal routing gate", result)
+	}
+	if reason, _ := result["reason"].(string); !strings.Contains(reason, abortedRunLabel) {
+		t.Fatalf("reason = %q, want it to mention %s", reason, abortedRunLabel)
 	}
 }
 

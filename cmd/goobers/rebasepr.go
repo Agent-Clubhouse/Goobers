@@ -496,7 +496,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 	}
 	rebaseBaseSHA = strings.TrimSpace(string(baseOut))
 
-	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
+	rebase := exec.Command("git", rebaseFetchHeadArgs(dir)...)
 	rebase.Dir = dir
 	out, rerr := rebase.CombinedOutput()
 	if rerr == nil {
@@ -548,6 +548,16 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 		}
 		out, rerr = continueOut, continueErr
 	}
+}
+
+func rebaseFetchHeadArgs(dir string) []string {
+	help := exec.Command("git", "rebase", "-h")
+	help.Dir = dir
+	out, _ := help.CombinedOutput()
+	if strings.Contains(string(out), "reapply-cherry-picks") {
+		return []string{"rebase", "--no-reapply-cherry-picks", "FETCH_HEAD"}
+	}
+	return []string{"rebase", "FETCH_HEAD"}
 }
 
 type rebaseConflictStatus uint8

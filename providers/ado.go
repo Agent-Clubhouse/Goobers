@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type ADOProvider struct {
 	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar
 	rateObserver     RateLimitObserver
+	quotaObserver    QuotaObserver
 	maxRetries       int
 	maxRateLimitWait time.Duration
 	now              func() time.Time
@@ -102,6 +104,11 @@ func WithADORateLimitObserver(observer RateLimitObserver) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.rateObserver = observer }
 }
 
+// WithADOQuotaObserver receives quota-window observations from ADO responses.
+func WithADOQuotaObserver(observer QuotaObserver) func(*ADOProvider) {
+	return func(p *ADOProvider) { p.quotaObserver = observer }
+}
+
 // WithADOMaxRateLimitRetries overrides the retry count for rate-limited requests.
 func WithADOMaxRateLimitRetries(n int) func(*ADOProvider) {
 	return func(p *ADOProvider) { p.maxRetries = n }
@@ -125,6 +132,7 @@ func (p *ADOProvider) Kind() ProviderKind {
 // for this capability instead of the deleted fail-open stub.
 func (p *ADOProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
+		CapPRQueryAuthor, CapPRQueryRequestedReviewer,
 		CapPRStatusPublish,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRCompare, CapBranchDelete,
@@ -506,6 +514,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		p.observeQuota(ctx, resp)
 		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
 			_ = resp.Body.Close()
 			authRetried = true
@@ -595,6 +604,31 @@ func (p *ADOProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent) {
 	if p.rateObserver != nil {
 		p.rateObserver.ObserveRateLimit(ctx, ev)
 	}
+}
+
+func (p *ADOProvider) observeQuota(ctx context.Context, resp *http.Response) {
+	if p.quotaObserver == nil {
+		return
+	}
+	observation := QuotaObservation{Provider: ProviderADO}
+	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")))
+	resetSeconds, resetErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if remainingErr == nil && resetErr == nil && remaining >= 0 && resetSeconds > 0 {
+		observation.Remaining = remaining
+		// X-RateLimit-Reset is Unix epoch time (Microsoft's rate-limits docs:
+		// "Time when, if all resource consumption stops immediately, tracked
+		// usage returns to 0 TSTUs. Expressed in Unix epoch time."), not a
+		// duration in seconds from now — unlike Retry-After.
+		observation.Reset = time.Unix(resetSeconds, 0).UTC()
+		observation.Known = true
+	} else if resp.StatusCode == http.StatusTooManyRequests {
+		now := p.now()
+		if delay, directed := retryAfterDelay(strings.TrimSpace(resp.Header.Get("Retry-After")), now); directed && delay > 0 {
+			observation.Reset = now.Add(delay)
+			observation.Known = true
+		}
+	}
+	p.quotaObserver.ObserveQuota(ctx, observation)
 }
 
 type adoPatchOperation struct {

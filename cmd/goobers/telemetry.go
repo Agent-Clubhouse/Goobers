@@ -276,6 +276,9 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 	if err != nil {
 		return err
 	}
+	if err := store.MarkReady(ctx); err != nil {
+		return err
+	}
 	// Report what was built. On the live instance 27% of run directories are
 	// unpublished and can never be ingested, so "scanned 40,665, projected
 	// 29,759" is the difference between a healthy rebuild and a broken one — and
@@ -481,6 +484,12 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.ReadyPool.AverageClaimAgeSeconds != nil {
 			pf(stdout, ", claimed after %s average", formatStatsDuration(*result.ReadyPool.AverageClaimAgeSeconds*1000))
+		}
+		if result.ReadyPool.InFlightClaimSamples > 0 {
+			pf(stdout, ", %d in flight now (avg %s, oldest %s)",
+				result.ReadyPool.InFlightClaimSamples,
+				formatStatsDuration(result.ReadyPool.AverageInFlightClaimAgeSeconds*1000),
+				formatStatsDuration(result.ReadyPool.OldestInFlightClaimAgeSeconds*1000))
 		}
 		pln(stdout, "")
 	}

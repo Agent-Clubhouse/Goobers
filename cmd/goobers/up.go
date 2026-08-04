@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,12 +31,9 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// drainGrace bounds how long runUpContext waits, after its context is
-// cancelled, for in-flight Start/Resume goroutines to checkpoint and return
-// before exiting anyway (issue #23 AC: graceful drain, not an indefinite
-// hang if a stage is wedged). Var, not const, so tests can shrink it rather
-// than waiting out a real 30s.
-var drainGrace = 30 * time.Second
+// drainProgressInterval controls shutdown progress reporting. It is a variable
+// so tests can exercise cadence without waiting for the production interval.
+var drainProgressInterval = 10 * time.Second
 
 // claimRecoverInterval bounds how often runUpContext sweeps the claim ledger
 // for expired leases while running, catching a live run that overran its
@@ -154,9 +152,9 @@ func runUp(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
-	ctx, stop := signals.SetupSignalContext()
+	ctx, force, stop := signals.SetupSignalContextWithForce()
 	defer stop()
-	return runUpContext(ctx, args, stdout, stderr)
+	return runUpContextWithForce(ctx, force, args, stdout, stderr)
 }
 
 func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer) error {
@@ -195,11 +193,14 @@ func handleSpansOnlyRunCleanup(l instance.Layout, remove bool, stdout io.Writer)
 	return nil
 }
 
-const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
+const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]\n\n" +
 	"Run the daemon: the embedded scheduler (cron triggers + run conditions)\n" +
 	"plus the local runner, loopback HTTP API, and configured GitHub webhook\n" +
 	"listener (default path \".\"). Blocks\n" +
-	"until interrupted (SIGINT/SIGTERM), then drains in-flight runs before\n" +
+	"until interrupted (SIGINT/SIGTERM), then drains in-flight runs indefinitely\n" +
+	"by default. --drain-timeout forces shutdown after a deadline; a repeated\n" +
+	"signal always forces shutdown without prompting. Interrupted runs resume\n" +
+	"from their last durable checkpoints on the next startup before\n" +
 	"exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,\n" +
 	"2 = usage/IO error.\n\n" +
 	"Legacy spans-only run directories are reported as cleanup candidates\n" +
@@ -228,6 +229,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
 // instead of sending real signals.
 func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runUpContextWithForce(parentCtx, nil, args, stdout, stderr)
+}
+
+func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
 	webhookGate, err := webhookhttp.NewDispatchGate(parentCtx)
 	if err != nil {
 		pf(stderr, "error: initialize daemon lifecycle: %v\n", err)
@@ -259,12 +264,17 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
 	watchConfig := fs.Bool("watch-config", false, "hot-reload edits to the materialized config directory (Git workflow sources reconcile automatically)")
+	drainTimeout := fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *drainTimeout < 0 {
+		pf(stderr, "error: --drain-timeout must not be negative\n")
 		return 2
 	}
 	diagnosticsMode = *diagnostics
@@ -289,6 +299,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
 		return 1
+	}
+	if warning := windowsLargeRepoEnvironmentWarning(startupConfig, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
 	}
 	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
 	if err != nil {
@@ -420,6 +433,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	var apiHandlerOpts []httpapi.HandlerOption
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
+	}
+	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
@@ -593,6 +609,11 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	maxRunDuration, err := setup.RunConditions.MaxRunDurationDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
@@ -607,6 +628,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 			sched.ReleaseRun,
 			now,
 			stalledRunTimeout,
+			maxRunDuration,
 		)
 	}
 	// Reap stale journals before crash-resume can refresh them with a new
@@ -1115,24 +1137,90 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
-	pln(stdout, "shutting down: draining in-flight runs...")
-	runsDrained := waitDrained(&wg, drainGrace)
-	schedulerDrained := runsDrained && waitSchedulerDrained(sched, drainGrace)
-	if runsDrained && schedulerDrained {
+	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout)
+	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
-		pf(stdout, "shutdown timed out after %s: some runs may still be checkpointing\n", drainGrace)
+		pf(stdout, "hard shutdown complete: %d run(s) stopped; they will resume from their last checkpoints on the next `goobers up`\n", drainResult.terminated)
 	}
 	if apiFailed || webhookFailed || configFailed || schedulerFailed {
 		return 1
 	}
-	if runsDrained && schedulerDrained {
+	if !drainResult.forced {
 		if err := journalDaemonCleanShutdown(setup.InstanceLog, currentDaemon); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 	}
 	return 0
+}
+
+type daemonDrainResult struct {
+	forced     bool
+	terminated int
+}
+
+func drainDaemonRuns(
+	wg *sync.WaitGroup,
+	waitScheduler func(),
+	runners *daemonRunnerRegistry,
+	timeout time.Duration,
+	force <-chan struct{},
+	stdout io.Writer,
+) daemonDrainResult {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		waitScheduler()
+		close(done)
+	}()
+
+	printProgress := func(prefix string) {
+		active := runners.ActiveRuns()
+		ids := make([]string, len(active))
+		for i, run := range active {
+			ids[i] = run.Workflow + "/" + run.RunID
+		}
+		if len(ids) == 0 {
+			pf(stdout, "%s: no in-flight runs remain; waiting for scheduler shutdown\n", prefix)
+			return
+		}
+		pf(stdout, "%s: %d run(s) remaining [%s]; send SIGINT/SIGTERM again to force shutdown\n",
+			prefix, len(ids), strings.Join(ids, ", "))
+	}
+	printProgress("shutting down: draining")
+
+	progress := time.NewTicker(drainProgressInterval)
+	defer progress.Stop()
+	var timeoutC <-chan time.Time
+	var timer *time.Timer
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		timeoutC = timer.C
+		defer timer.Stop()
+	}
+
+	for {
+		select {
+		case <-done:
+			return daemonDrainResult{}
+		case <-progress.C:
+			printProgress("still draining")
+		case <-timeoutC:
+			return forceDaemonRuns(done, runners, stdout, fmt.Sprintf("drain timeout %s expired", timeout))
+		case <-force:
+			return forceDaemonRuns(done, runners, stdout, "repeated shutdown signal received")
+		}
+	}
+}
+
+func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout io.Writer, reason string) daemonDrainResult {
+	terminated := runners.HardStopAll(func(count int) {
+		pf(stdout, "hard shutdown: %s; terminating %d run(s) mid-stage; they will resume from their last checkpoints on the next `goobers up`\n",
+			reason, count)
+	})
+	<-done
+	return daemonDrainResult{forced: true, terminated: terminated}
 }
 
 func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localscheduler.Option) *localscheduler.Scheduler {

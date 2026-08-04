@@ -3,18 +3,139 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogQueryTokenUsesLeastPrivilegeCredential(t *testing.T) {
+	readEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesRead))
+	writeEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesWrite))
+	t.Setenv(readEnv, "read-token")
+	t.Setenv(writeEnv, "write-token")
+
+	if token, err := backlogQueryToken(true); err != nil || token != "read-token" {
+		t.Fatalf("read-only token = %q, %v; want read-token", token, err)
+	}
+	if token, err := backlogQueryToken(false); err != nil || token != "write-token" {
+		t.Fatalf("legacy token = %q, %v; want write-token", token, err)
+	}
+
+	t.Setenv(readEnv, "")
+	if token, err := backlogQueryToken(true); err == nil || token != "" {
+		t.Fatalf("read-only token without read authority = %q, %v; want credential error", token, err)
+	}
+
+	t.Setenv(writeEnv, "")
+	if token, err := backlogQueryToken(false); err == nil || token != "" {
+		t.Fatalf("legacy token without write authority = %q, %v; want credential error", token, err)
+	}
+}
+
+func TestBacklogQueryReadOnlyDoesNotMutateProviderOrScheduler(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Visible backlog item", "goobers:ready")
+
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-only-run")
+	schedulerDir := layoutFor(root).SchedulerDir()
+	blockedPath := blockedRecordsPath(layoutFor(root))
+	if err := os.WriteFile(blockedPath, []byte("{\"sentinel\":true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDirectoryFiles(t, schedulerDir)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--read-only", root)
+	if code != 0 {
+		t.Fatalf("backlog-query --read-only: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "7\tVisible backlog item") {
+		t.Fatalf("stdout = %q, want visible backlog item", stdout)
+	}
+	if after := snapshotDirectoryFiles(t, schedulerDir); !reflect.DeepEqual(after, before) {
+		t.Fatalf("scheduler state changed: before = %#v, after = %#v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, mutationsSidecarFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mutation sidecar exists after read-only query: %v", err)
+	}
+}
+
+func TestBacklogQueryReadOnlyReportsProviderFailure(t *testing.T) {
+	root := initDemo(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	previousProvider := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
+			provider.BaseURL = server.URL
+		})...)
+	}
+	t.Cleanup(func() { newGitHubProvider = previousProvider })
+
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--read-only", root)
+	if code != 1 || !strings.Contains(stderr, "list work items") {
+		t.Fatalf("backlog-query --read-only provider failure: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read provider failure result: %v", err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal provider failure result: %v", err)
+	}
+	if message, _ := result[executor.OutputErrorMessage].(string); !strings.Contains(message, "list work items") {
+		t.Fatalf("provider failure result = %#v, want list work items error", result)
+	}
+}
+
+func snapshotDirectoryFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			files[relative+"/"] = ""
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[relative] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
 
 type failNthBacklogClaimLedger struct {
 	backlogClaimLedger
@@ -54,6 +175,9 @@ func providerCmdEnv(t *testing.T, server *fakeGitHubServer, credCapability, runI
 	t.Setenv(executor.RepoNameEnvVar, server.repo)
 	if credCapability != "" {
 		t.Setenv(credCapability, "test-token")
+		if credCapability == executor.CredentialEnvVar(string(capability.GitHubPRWrite)) {
+			t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "test-token")
+		}
 	}
 }
 

@@ -1,7 +1,8 @@
 # Quickstart (tier 1, local)
 
-Start with a credential-free local demo, then graduate to a disposable
-GitHub-backed run and the production-oriented configuration examples. See
+This is the canonical first-run path. Follow the sections in order: start with
+a credential-free local demo, graduate to a disposable GitHub-backed run, then
+create a regular instance and adopt production-oriented configuration. See
 `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 If declarative systems are new to you, read
@@ -20,6 +21,10 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 The hermetic demo uses mock providers and requires no repository, provider
 credentials, model tokens, or network writes. It is supported on Linux and
 macOS, where Goobers enforces network isolation.
+
+For host setup differences, see the [Linux](quickstart-linux.md) or
+[Windows](quickstart-windows.md) guide. Native Windows cannot enforce the
+demo's network isolation; use its documented WSL 2 path instead.
 
 ```sh
 bin/goobers init --demo ./demo-instance
@@ -75,17 +80,14 @@ is **not for production**: it intentionally omits CI gates, remediation loops,
 bounded escalation, merge policy, and issue close-out so the onboarding happy
 path has no stall points.
 
-The complete graduation path is:
-
-1. Run the hermetic `demo` workflow above.
-2. Run the disposable, token-bearing `quickstart@v1` template.
-3. Scaffold a regular instance and run its starter `default-implement`
-   workflow.
-4. Adapt
-   [`config-examples/gaggles/acme-web/workflows/implementation.yaml`](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
-   for production-oriented review, local CI with bounded implementation
-   repasses, explicit escalation paths, and PR CI polling. Add the separate
-   `merge-review` workflow only after those safeguards are configured.
+Continue with section 3 to scaffold a regular instance and run its starter
+`default-implement` workflow. Once that works, read the
+[`config-examples` reference layout](../../config-examples/README.md) and adapt
+its
+[`implementation` workflow](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
+for production-oriented review, local CI with bounded implementation repasses,
+explicit escalation paths, and PR CI polling. Add the separate `merge-review`
+workflow only after those safeguards are configured.
 
 ## 3. `init` — scaffold a regular instance root
 
@@ -144,7 +146,21 @@ Checks `instance.yaml` and every document under `config/` against the
 canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
 error (e.g. not an instance root yet).
 
-## 6. `up` — run the daemon
+## 6. `run` — trigger one manually
+
+```sh
+bin/goobers run default-implement ./my-instance
+```
+
+Triggers a run of the named `config/` workflow manually, still honoring run
+conditions (max-parallel, budgets). Pins the workflow's compiled digest,
+creates its run journal (ARCHITECTURE.md §4), and advances it through the
+real local runner — deterministic tasks execute in a fresh worktree, agentic
+tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
+until the run reaches a terminal state or pauses (e.g. a human gate). Prints
+the run id up front and the final phase/state once it returns.
+
+## 7. `up` — run the daemon
 
 ```sh
 bin/goobers up ./my-instance
@@ -168,20 +184,6 @@ the new definitions swap in atomically, and an invalid edit leaves the
 last-known-good definitions active. Without the flag, `config/` is also read once
 at startup. (Live watch is experimental and will be superseded by the Workflow CD
 config source, #453.)
-
-## 7. `run` — trigger one manually
-
-```sh
-bin/goobers run default-implement ./my-instance
-```
-
-Triggers a run of the named `config/` workflow manually, still honoring run
-conditions (max-parallel, budgets). Pins the workflow's compiled digest,
-creates its run journal (ARCHITECTURE.md §4), and advances it through the
-real local runner — deterministic tasks execute in a fresh worktree, agentic
-tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
-until the run reaches a terminal state or pauses (e.g. a human gate). Prints
-the run id up front and the final phase/state once it returns.
 
 ## 8. `status` — list runs
 

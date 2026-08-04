@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -216,6 +218,17 @@ func recordRunIntake(watermarks *intake.Store, l instance.Layout, runID string, 
 	}
 }
 
+func runIntakeObserver(watermarks *intake.Store, log *journal.InstanceLog) func(string, uint64) {
+	if watermarks == nil {
+		return nil
+	}
+	return func(runID string, seq uint64) {
+		if err := watermarks.Observed(context.Background(), runID, seq); err != nil {
+			logIngestFailure(log, runID, "read_model_intake_failed", err)
+		}
+	}
+}
+
 // lastJournalSeq reports the highest sequence in a run's journal.
 //
 // Takes the maximum rather than the last record's sequence: the live instance's
@@ -319,7 +332,26 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+}
+
+// daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
+// credential (static token or App-minted) is registered under (#1780),
+// namespaced away from repo refs ("owner/name") and explicit credentials:
+// refs ("credential:<key>") the same way those two are namespaced from each
+// other.
+const daemonIdentityRefName = "daemon-identity"
+
+// daemonIdentityCapabilities are the standard daemon-mutation capabilities a
+// configured DaemonIdentity backs by default (#1780) — deliberately a subset
+// of credentialedCapabilities: GitHubMilestonesWrite (roadmap mutation) and
+// GitHubIssuesApprove (the goobers:approved trust decision) are excluded
+// because both are explicitly documented (internal/capability) as separate,
+// deliberate decisions that must not silently follow whichever identity
+// authors ordinary PRs/issues — an instance that wants those on the daemon
+// identity too can still say so explicitly via credentials:.
+var daemonIdentityCapabilities = []capability.Capability{
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
@@ -454,6 +486,32 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: r.Name, TokenRef: tokenRef})
 	}
+	// Daemon identity (#1780/#1295): when configured, sources a single named
+	// ref backing the standard daemon-mutation capability set — one place
+	// instead of one credentials: entry per capability. Built before the
+	// explicit credentials: loop below so those entries, appended after,
+	// still win per RunnerGrants' last-wins-per-capability semantics
+	// (matches every explicit CredentialGrant's existing precedence over a
+	// repo-default grant).
+	var daemonIdentityOverrides []credentials.Grant
+	if cfg.DaemonIdentity != nil {
+		if cfg.DaemonIdentity.GitHubApp() {
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleName, registrar, stores)
+			if err != nil {
+				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
+			}
+			if sources == nil {
+				sources = make(map[string]credentials.ResolveFunc)
+			}
+			sources[daemonIdentityRefName] = mint
+		} else {
+			refs = append(refs, cfg.DaemonIdentity.Token.CredentialTokenRef(daemonIdentityRefName))
+		}
+		daemonIdentityOverrides = make([]credentials.Grant, len(daemonIdentityCapabilities))
+		for i, c := range daemonIdentityCapabilities {
+			daemonIdentityOverrides[i] = credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName}
+		}
+	}
 	// Explicit credential refs: each sources one capability or named BYO MCP
 	// credential from its own token, namespaced away from repo refs.
 	for _, cg := range cfg.Credentials {
@@ -472,7 +530,8 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	for i, c := range credentialedCapabilities {
 		caps[i] = string(c)
 	}
-	overrides := make([]credentials.Grant, 0, len(cfg.Credentials))
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityOverrides)+len(cfg.Credentials))
+	overrides = append(overrides, daemonIdentityOverrides...)
 	for _, cg := range cfg.Credentials {
 		key, err := credentialGrantKey(cg)
 		if err != nil {
@@ -568,6 +627,33 @@ func credentialRefName(key string) string { return "credential:" + key }
 // production source caches until near expiry and single-flights refreshes.
 var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return source.Token, nil
+}
+
+// newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
+// source for a github-app-kind DaemonIdentity (#1780/#1779), scoped down to
+// this one gaggle's repo exactly like a repo's own github-app auth already
+// is (MGV-5 #1012) — a shared App installation must not hand one gaggle's
+// stages a token that reaches a sibling gaggle's repo. A package var, like
+// newGitHubAppTokenSource, so CLI tests substitute an httptest-backed source.
+var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	const keyRefName = "daemon-identity-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{d.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure daemon identity App key source: %w", err)
+	}
+	source, err := githubapp.New(githubapp.Config{
+		AppID:          string(d.AppID),
+		InstallationID: string(d.InstallationID),
+		Repositories:   []string{gaggleRepoName},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -691,13 +777,18 @@ type ciPollKindExecutor struct {
 	// of defaulting to GitHub.
 	giteaRepo *instance.RepoRef
 	registrar providers.SecretRegistrar
+	quota     providers.QuotaObserver
 }
 
 func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	required := string(capability.ProviderPRWrite)
+	if !slices.Contains(env.Capabilities, required) {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q: %w", executor.KindCIPoll, required, credentials.ErrUndeclaredCapability)
+	}
 	var poller executor.PRPoller
 	switch {
 	case e.adoRepo != nil:
-		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, nil)
+		provider, err := adoauth.Provider(*e.adoRepo, nil, e.registrar, nil, e.quota, nil)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("build ADO ci-poll provider: %w", err)
 		}
@@ -707,7 +798,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}
@@ -717,7 +808,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
 		}
-		token, err := set.Token(ctx, string(capability.GitHubPRWrite))
+		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}
@@ -743,7 +834,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // When adoRepo is non-nil the gaggle's repo is Azure DevOps, and ci-poll
 // resolves its poller from instance config (adoauth.Provider shells out to
 // `az` for the token) instead of a GitHub capability token.
-func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar) (executor.KindExecutor, error) {
+func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, recorder executor.ArtifactRecorder, adoRepo *instance.RepoRef, giteaRepo *instance.RepoRef, registrar providers.SecretRegistrar, quota *localscheduler.ProviderQuotaState) (executor.KindExecutor, error) {
 	if len(cfg.Repos) == 0 {
 		return executor.NewCIPollKindExecutor(nil), nil
 	}
@@ -753,7 +844,11 @@ func buildCIPollExecutor(cfg *instance.Config, injector *credentials.Injector, r
 	if recorder == nil {
 		return nil, fmt.Errorf("build ci-poll executor: artifact recorder is nil")
 	}
-	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar}, nil
+	var quotaObserver providers.QuotaObserver
+	if quota != nil {
+		quotaObserver = &providerQuotaAccounting{state: quota}
+	}
+	return &ciPollKindExecutor{injector: injector, recorder: recorder, adoRepo: adoRepo, giteaRepo: giteaRepo, registrar: registrar, quota: quotaObserver}, nil
 }
 
 // buildExternalTelemetryExecutor validates every registered plugin
@@ -868,6 +963,31 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 
+func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	itemID = blockedLookupID(itemID)
+	if repository.Provider == providers.ProviderADO {
+		provider, err := newADOProviderForStage(c.layout.Root, repository)
+		if err != nil {
+			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		}
+		return provider.ListComments(ctx, backlogRepoRefForGaggle(c.layout, repository), itemID)
+	}
+	ref := repository.Owner + "/" + repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+	}
+	c.reg.Register([]byte(token))
+	if repository.Provider == providers.ProviderGitea {
+		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+		if err != nil {
+			return nil, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.ListComments(ctx, repository, itemID)
+	}
+	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
+}
+
 // adoParkRemovalLabels rewrites a park/close removal set for an Azure DevOps
 // board. GitHub mirrors a claim with the plain LabelClaimed ("goobers:claimed")
 // tag, but ADO's ClaimWorkItem writes the status-label form
@@ -916,17 +1036,25 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 // buildBlockedHandler wires runner.Config.Blocked (#544/#545/#552): the
 // instance-level consequences of a stage reporting status "blocked". Returns
 // nil when no repo is configured, mirroring buildEscalationNotifier.
-// Every blocked driving issue is parked goobers:needs-human (swap off
-// goobers:ready and the provider-visible claim marker) per the #544 ruling /
-// #539 convention. This prevents the released claim from making the same item
-// immediately eligible again.
+// Every blocked driving issue is parked (swap off goobers:ready and the
+// provider-visible claim marker) per the #544 ruling / #539 convention. This
+// prevents the released claim from making the same item immediately eligible
+// again.
+//
+// The park label depends on whether the stage named a blocker (#2028): a
+// named, non-cyclic blocker is goobers:blocked-on-sibling — a self-healing
+// dependency park, not a decision only a human can make; the record below is
+// what actually self-heals it (filterBlockedEligibility, blockedrecords.go),
+// the label just needs to say so. An unattributed block (no blocker named) or
+// a detected circular dependency is goobers:needs-human — the runner can't
+// resolve either on its own, so it genuinely is a human decision.
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
 // issue if a human re-promotes it before every dependency closes. If a new
-// record closes a cycle, every issue in that cycle is parked and receives a
-// cycle-specific comment for human resolution. The runner's shared
-// EscalationNotifier owns the normal explanatory provider comment.
+// record closes a cycle, every issue in that cycle is parked goobers:needs-human
+// and receives a cycle-specific comment for human resolution. The runner's
+// shared EscalationNotifier owns the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -980,10 +1108,18 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		// escalationCommenter before the work-item call.
 		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
+			// #2028: a named blocker is a self-healing dependency park
+			// (blocked-on-sibling), not a human decision; only an
+			// unattributed block stays needs-human. A detected cycle
+			// overrides this below with its own needs-human cycleReq.
+			label := providers.LabelNeedsHuman
+			if len(o.Blockers) > 0 {
+				label = blockedOnSiblingLabel
+			}
 			req := providers.UpdateWorkItemRequest{
 				Repository:   repoRef,
 				ID:           itemID,
-				AddLabels:    []string{providers.LabelNeedsHuman},
+				AddLabels:    []string{label},
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
 			if len(o.Blockers) > 0 {
@@ -1034,14 +1170,11 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 // buildFailedHandler wires runner.Config.Failed (#1054): the instance-level
 // consequence of a run reaching terminal PhaseFailed. Returns nil when no repo
 // is configured, mirroring buildBlockedHandler. Leaves a human-visible trace on
-// the driving item — a comment recording the terminal failure cause and the run
-// id — so repeated terminal failures on the same item accumulate a countable
-// signal instead of the item silently returning to goobers:ready with no
-// record. The motivating case (#1054) is a recurring copilot-cli harness
-// session timeout in the implement stage: it retries once, times out again, and
-// ends the run `failed` (not `escalated`), so today the driving issue returns to
-// ready indistinguishable from one never attempted and is re-claimed and
-// re-failed forever with nothing accumulating anywhere a human can see.
+// the driving item — a comment recording a stable failure code and the run id —
+// so repeated terminal failures on the same item accumulate a countable signal
+// instead of the item silently returning to goobers:ready with no record.
+// Detailed causes remain in the local run trace because execution errors can
+// contain harness argv, prompts, credentials, environment values, or context.
 //
 // Deliberately does NOT apply goobers:needs-human: that label is reserved for
 // the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
@@ -1078,10 +1211,6 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 			// run_failed cause and the failed phase are the whole story.
 			return nil
 		}
-		cause := strings.TrimSpace(o.Cause)
-		if cause == "" {
-			cause = "no cause recorded"
-		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
@@ -1090,12 +1219,10 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		var errs []error
 		for _, itemID := range itemIDs {
 			comment := fmt.Sprintf(
-				"Goobers run %s terminated `failed`: %s. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
-				o.RunID, cause, providers.LabelNeedsHuman,
+				"Goobers run %s terminated `failed` (`RUN_FAILED`). Failure details are available only in the local run trace. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
+				o.RunID, providers.LabelNeedsHuman,
 			)
-			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository: repoRef, ID: itemID, Comment: comment,
-			}); err != nil {
+			if err := gate.PostRunComment(ctx, poster, repoRef, itemID, o.RunID, o.Seq, comment); err != nil {
 				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 		}
@@ -1746,7 +1873,7 @@ func (a *providerQuotaAccounting) RefundUnused() {
 // definition directory" (api/v1alpha1.GooberSpec), which config-as-code
 // objects don't retain after instance.LoadConfigDir flattens them into a
 // ConfigSet — but every shipped config (internal/instance/starter,
-// config-examples/, selfhost/) lays goobers out at the same fixed path, so
+// config-examples/, reference-workflows/) lays goobers out at the same fixed path, so
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
@@ -1755,6 +1882,27 @@ func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName str
 
 func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string) string {
 	return filepath.Join(gooberDefinitionDir(configDir, spec, gooberName), spec.Instructions)
+}
+
+func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(context.Context, string) error {
+	if state == nil {
+		return nil
+	}
+	return func(_ context.Context, repoURL string) error {
+		if !isADORemote(repoURL) {
+			return nil
+		}
+		decision := state.ReservePolls(apiv1.ProviderADO, time.Now(), 1)
+		if decision.Allowed != 0 {
+			return nil
+		}
+		return &localscheduler.ProviderPollBudgetError{
+			Provider:  decision.Provider,
+			Remaining: decision.RemainingBefore,
+			Requested: 1,
+			ResetAt:   decision.ResetAt,
+		}
+	}
 }
 
 // buildRunnerConfig assembles the runner.Config the daemon (`goobers up`) and
@@ -1776,7 +1924,7 @@ func instructionsPath(configDir string, spec apiv1.GooberSpec, gooberName string
 // would incorrectly evaluate false and panic on first use — Go's classic
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
-func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture) (runner.Config, *worktree.Manager, error) {
+func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[string]apiv1.GooberSpec, instructionsByGoober map[string]string, tel *telemetry.Client, sharedReg *journal.RegistryScrubber, wtMgr *worktree.Manager, branchNamespaces map[string]string, gaggleProject apiv1.RepoRef, additionalRepos []apiv1.RepoRef, harnessInfo harnessPreflightInfo, stores credentials.StoreResolver, sandboxPosture instance.SandboxPosture, providerQuota *localscheduler.ProviderQuotaState) (runner.Config, *worktree.Manager, error) {
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -1800,6 +1948,28 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if cloneURLFn == nil {
 		cloneURLFn = runner.DefaultRepoCloneURL
 	}
+	pathLimits, pathLimitsErr := pathLengthManagerLimits(cfg, cloneURLFn, runtime.GOOS)
+	if pathLimitsErr != nil {
+		return runner.Config{}, nil, pathLimitsErr
+	}
+	configuredProject, projectConfigured := configuredRepoForProject(cfg, gaggleProject)
+	pinned := projectConfigured && configuredProject.Pinned()
+	if pinned && len(additionalRepos) > 0 {
+		return runner.Config{}, nil, fmt.Errorf("VER: pinned workspace for %s/%s cannot be combined with additional repository worktrees", gaggleProject.Owner, gaggleProject.Name)
+	}
+	workcopiesRoot := l.WorkcopiesDir()
+	if pinned {
+		workcopiesRoot = l.WorkcopiesBaseDir()
+	}
+	absoluteWorkcopiesRoot, err := filepath.Abs(workcopiesRoot)
+	if err != nil {
+		return runner.Config{}, nil, fmt.Errorf("resolve workcopies root: %w", err)
+	}
+	if wtMgr != nil && wtMgr.Root != absoluteWorkcopiesRoot {
+		// A config reload may switch this repo into or out of pinned mode; do
+		// not retain a manager rooted in the opposite lifecycle namespace.
+		wtMgr = nil
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -1809,11 +1979,21 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
+			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
+		}
+		for repoURL, limit := range pathLimits {
+			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
+		}
+		if gitQuotaGate := adoRemoteGitQuotaGate(providerQuota); gitQuotaGate != nil {
+			managerOptions = append(managerOptions, worktree.WithRemoteGitGate(gitQuotaGate))
 		}
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
-		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
+		if cfg.ObjectCacheEnabled() {
+			managerOptions = append(managerOptions, worktree.WithObjectCache())
+		}
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, workcopiesRoot, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr
 		}
@@ -1823,7 +2003,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
 		}
-		wtMgr, err = worktree.NewManager(l.WorkcopiesDir(), managerOptions...)
+		wtMgr, err = worktree.NewManager(workcopiesRoot, managerOptions...)
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
@@ -1907,10 +2087,17 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// allowlist (#736) — the executor twin of the harness adapter's
 			// ExtraEnvAllowlist, from the same cfg value so the two never drift.
 			shell.ExtraEnvAllowlist = cfg.Runner.EnvPassthrough
+			if projectConfigured && configuredProject.LargeRepo {
+				shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
+			}
 			// Baseline deadline for a stage that declares no timeoutSeconds
 			// (#1969). Zero leaves executor.DefaultTimeout in force, so an
 			// instance that configures nothing is unchanged.
-			defaultStageTimeout, err := cfg.Runner.DefaultStageTimeoutDuration()
+			defaultStageTimeoutSetting := cfg.Runner.DefaultStageTimeout
+			if projectConfigured {
+				defaultStageTimeoutSetting = configuredProject.EffectiveDefaultStageTimeout(defaultStageTimeoutSetting)
+			}
+			defaultStageTimeout, err := (instance.RunnerConfig{DefaultStageTimeout: defaultStageTimeoutSetting}).DefaultStageTimeoutDuration()
 			if err != nil {
 				return nil, err
 			}
@@ -1939,7 +2126,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if r, ok := giteaRepoForGaggle(cfg, gaggleProject); ok {
 				giteaRepo = &r
 			}
-			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg)
+			ciPoll, err := buildCIPollExecutor(cfg, injector, rec, adoRepo, giteaRepo, reg, providerQuota)
 			if err != nil {
 				return nil, err
 			}
@@ -2028,13 +2215,12 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if spec.TimeoutSeconds > 0 {
 				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
 			}
-			// Opt-in agentic sandbox enforcement (S3/#166, #1305): this
-			// gaggle's effective posture, resolved once at the composition
-			// root (instance.EffectiveAgenticSandbox). The default posture,
-			// disabled, adds no option — the executor and adapter behave
-			// byte-identically to an instance with no sandbox config at all.
+			// Agentic sandbox posture (S3/#166, #1305), resolved once at
+			// the composition root (instance.EffectiveAgenticSandbox).
 			if sandboxPosture == instance.SandboxEnforced {
 				opts = append(opts, harness.WithSandboxEnforcement())
+			} else {
+				opts = append(opts, harness.WithSandboxOptOut())
 			}
 			return harness.NewExecutor(
 				adapter,
@@ -2047,8 +2233,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 				opts...,
 			)
 		},
-		Automated: gate.NewAutomatedEvaluator(),
-		Worktrees: wtMgr,
+		Automated:         gate.NewAutomatedEvaluator(),
+		Worktrees:         wtMgr,
+		PinnedWorkspace:   pinned,
+		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
 		// Resolve each run's branch namespace from its gaggle (StartInput.Gaggle),
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
@@ -2088,7 +2276,60 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	if tel != nil {
 		rc.Telemetry = tel
 	}
+	wtMgr.SetPathLengthLimits(pathLimits)
 	return rc, wtMgr, nil
+}
+
+func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {
+	limits := make(map[string]worktree.PathLengthLimit)
+	for i, repo := range cfg.Repos {
+		if repo.PathLength != nil && repo.PathLength.Disabled {
+			continue
+		}
+		if repo.PathLength == nil && goos != "windows" {
+			continue
+		}
+		url, err := cloneURL(apiv1.RepoRef{
+			Provider: apiv1.Provider(repo.Provider),
+			BaseURL:  repo.BaseURL,
+			Owner:    repo.Owner,
+			Project:  repo.Project,
+			Name:     repo.Name,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("repos[%d] (%s/%s): resolve clone URL for path-length preflight: %w", i, repo.Owner, repo.Name, err)
+		}
+		limit := worktree.PathLengthLimit{MaxPathLength: worktree.DefaultMaxPathLength}
+		if repo.PathLength != nil {
+			if repo.PathLength.MaxPathLength != 0 {
+				limit.MaxPathLength = repo.PathLength.MaxPathLength
+			}
+			limit.BuildOutputAllowance = repo.PathLength.BuildOutputAllowance
+		}
+		limits[url] = limit
+	}
+	return limits, nil
+}
+
+func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	if cfg == nil {
+		return instance.RepoRef{}, false
+	}
+	if project.Provider == apiv1.ProviderADO {
+		if repo, ok := adoRepoForGaggle(cfg, project); ok {
+			return repo, true
+		}
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Provider == string(project.Provider) && repo.Owner == project.Owner &&
+			repo.Project == project.Project && repo.Name == project.Name {
+			return repo, true
+		}
+	}
+	if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+		return cfg.Repos[0], true
+	}
+	return instance.RepoRef{}, false
 }
 
 func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
@@ -2415,11 +2656,11 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 }
 
 // sandboxPosturesByGaggle resolves each configured gaggle's effective agentic
-// isolation posture (#1305): the gaggle's own sandbox override when declared,
-// else the instance-wide sandbox.agentic posture, else disabled. Resolved once
-// here, at the composition root, so the per-gaggle runner wiring and anything
-// else that needs the posture agree on one resolution (the same shape as
-// branchNamespacesByGaggle above).
+// isolation posture (#1305): enforced by default, with an operator-owned
+// trusted-local opt-out that a gaggle may strengthen but not weaken. Resolved
+// once here, at the composition root, so the per-gaggle runner wiring and
+// anything else that needs the posture agree on one resolution (the same
+// shape as branchNamespacesByGaggle above).
 func sandboxPosturesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]instance.SandboxPosture {
 	out := make(map[string]instance.SandboxPosture, len(set.Gaggles))
 	for i := range set.Gaggles {

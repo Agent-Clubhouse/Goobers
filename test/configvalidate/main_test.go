@@ -219,8 +219,10 @@ func TestValidatorHelperProcess(t *testing.T) {
 	}
 	if warning := os.Getenv("GO_CONFIGVALIDATE_WARNING"); warning != "" {
 		_, _ = fmt.Fprintln(os.Stdout, warning)
-	} else if filepath.Base(target) == "selfhost" {
-		_, _ = fmt.Fprintln(os.Stdout, docsUpdaterInertWarning)
+	} else if filepath.Base(target) == "reference-workflows" {
+		for _, warning := range checkedInTrees[0].allowedWarnings {
+			_, _ = fmt.Fprintln(os.Stdout, warning)
+		}
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)

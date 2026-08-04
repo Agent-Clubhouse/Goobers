@@ -318,6 +318,11 @@ type RunControls struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// disables the total-duration limit. It uses Go duration syntax.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	MaxRunDuration string `json:"maxRunDuration,omitempty" yaml:"maxRunDuration,omitempty"`
 }
 
 // DeterministicRun describes the code a deterministic task runs.

@@ -8,8 +8,8 @@
 > References: `cmd/goobers/prsiblingcontext.go`, `cmd/goobers/applyverdict.go`,
 > `cmd/goobers/electlander.go`, `cmd/goobers/postmerge.go`,
 > `cmd/goobers/remediationcheckpoint.go`, `cmd/goobers/blockedonsibling.go`,
-> `cmd/goobers/rebasepr.go`, `selfhost/gaggles/goobers/workflows/merge-review.yaml`,
-> `selfhost/gaggles/goobers/goobers/reviewer/instructions.md`,
+> `cmd/goobers/rebasepr.go`, `reference-workflows/gaggles/goobers/workflows/merge-review.yaml`,
+> `reference-workflows/gaggles/goobers/goobers/reviewer/instructions.md`,
 > `api/v1alpha1/envelope.go`. Related issues: #837, #836, #952, #950, #843,
 > #716, #715, #747, #941, #980, #986.
 
@@ -196,7 +196,7 @@ meaningful as a pair), then S4.
 - **Reviewer-instruction change is behavioral and hard to unit-test.** Pair it
   with the deterministic backstop (§4.2) so correctness does not depend solely on
   model wording, and add a fixture verdict test for the backstop.
-- **Workflow YAML edits** (`merge-review.yaml`) must sync the `selfhost` and
+- **Workflow YAML edits** (`merge-review.yaml`) must sync the `reference-workflows` and
   `acme-web` copies and update `internal/workflow` tests in the same PR.
 - **Wrong-order merges.** `fifo` is deterministic and conservative; the merge
   queue re-tests each land, so a bad order fails a required check rather than

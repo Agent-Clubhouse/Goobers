@@ -38,14 +38,17 @@ type Result struct {
 	// including this one when Outcome != OutcomePass (0 when Outcome ==
 	// OutcomePass, since a pass resets the budget).
 	Attempt int
-	// Escalated is true when Target was overridden by the repass budget
-	// rather than resolved from the gate's own Branches.
+	// Escalated is true when Target was overridden by the runner because the
+	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
 	// DuplicateDiff is true when Escalated fired because this attempt's diff
 	// digest matched the immediately prior attempt's (issue #316), rather
 	// than because the repass budget was exhausted. The reviewer was never
 	// called for this attempt — Verdict is synthesized, not agent-produced.
 	DuplicateDiff bool
+	// RepassCause identifies the gate or stage failure that sent the run back
+	// to the subject stage before DuplicateDiff detected no resulting change.
+	RepassCause *RepassCause
 	// CacheHit is true when Evaluator.CachedVerdict was set for this
 	// evaluation (issue #523's cross-run verdict cache): the reviewer was
 	// never called, and Verdict is the caller-supplied cached verdict,
@@ -74,6 +77,39 @@ type Result struct {
 	// persisted — instead of re-inferring "something needs to change" from
 	// git alone.
 	VerdictArtifact *apiv1.ArtifactPointer
+}
+
+// RepassCause is the machine-readable upstream reason for a repass.
+type RepassCause struct {
+	Kind         string `json:"kind"`
+	Gate         string `json:"gate,omitempty"`
+	Outcome      string `json:"outcome,omitempty"`
+	Stage        string `json:"stage,omitempty"`
+	ErrorCode    string `json:"errorCode,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	Rationale    string `json:"rationale,omitempty"`
+}
+
+func (c RepassCause) String() string {
+	switch c.Kind {
+	case "stage-failure":
+		detail := ""
+		if c.ErrorCode != "" {
+			detail = fmt.Sprintf(" (code %q)", c.ErrorCode)
+		}
+		if c.ErrorMessage != "" {
+			detail += ": " + c.ErrorMessage
+		}
+		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q after stage %q failed%s", c.Gate, c.Outcome, c.Stage, detail)
+	case "reviewer":
+		detail := ""
+		if c.Rationale != "" {
+			detail = ": " + c.Rationale
+		}
+		return fmt.Sprintf("the prior repass was triggered by reviewer gate %q returning %q%s", c.Gate, c.Outcome, detail)
+	default:
+		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q", c.Gate, c.Outcome)
+	}
 }
 
 // Evaluator dispatches automated and agentic gates and resolves explicit human
@@ -128,6 +164,10 @@ type Evaluator struct {
 	// internal/runner/resume.go's gateDiffSeed), and Evaluate mutates it in
 	// place as the live checkpoint source.
 	LastDiffDigest map[string]string
+
+	// RepassCause describes the transition that dispatched the subject stage
+	// most recently. The runner rebinds it before each evaluation.
+	RepassCause *RepassCause
 
 	// CachedVerdict, when non-nil, short-circuits the NEXT agentic gate
 	// Evaluate call: the reviewer is never invoked, and this Verdict is
@@ -259,9 +299,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
 			outcome = string(apiv1.VerdictNeedsChanges)
+			rationale := fmt.Sprintf("runner: this repass produced no change (digest %s)", diffDigest)
+			if e.RepassCause != nil {
+				rationale = e.RepassCause.String() + "; the implementer produced no change in response"
+			}
 			verdict = &apiv1.Verdict{
 				Decision:  apiv1.VerdictNeedsChanges,
-				Rationale: fmt.Sprintf("runner: this repass produced a diff identical to the immediately prior attempt (digest %s) — escalating without re-review, since an unchanged diff cannot yield a different verdict", diffDigest),
+				Rationale: rationale,
 			}
 		} else {
 			var v apiv1.Verdict
@@ -278,7 +322,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -341,10 +385,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false)
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false)
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, cacheHit bool) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -358,12 +402,16 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	attempt, exceeded := e.trackRepass(g, outcome)
-	escalated := exceeded || duplicateDiff
+	escalated := exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
 	}
 
-	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, CacheHit: cacheHit, Verdict: verdict}
+	var repassCause *RepassCause
+	if duplicateDiff {
+		repassCause = e.RepassCause
+	}
+	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, RepassCause: repassCause, CacheHit: cacheHit, Verdict: verdict}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)

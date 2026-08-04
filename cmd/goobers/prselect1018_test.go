@@ -14,14 +14,21 @@ func TestPRSelectSupportsMultipleHeadPrefixes(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addOpenPR(11, "goobers/docs-updater/run-11", "main", "docs-head", "base",
 		false, nil, []fakePRFile{{path: "docs/guide.md", status: "modified"}})
+	server.setPRIdentities(11, "octocat", []string{"maintainer"}, []string{"reviewer"})
+	server.addOpenPR(9, "goobers/docs-updater/run-9", "main", "other-docs-head", "base",
+		false, nil, []fakePRFile{{path: "docs/other.md", status: "modified"}})
+	server.setPRIdentities(9, "someone-else", []string{"maintainer"}, []string{"reviewer"})
 	server.addOpenPR(10, "goobers/tutor/run-10", "main", "tutor-head", "base",
-		false, nil, []fakePRFile{{path: "selfhost/gaggle.yaml", status: "modified"}})
+		false, nil, []fakePRFile{{path: "reference-workflows/gaggle.yaml", status: "modified"}})
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv(executor.RepoProviderEnvVar, "github")
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv(executor.InputEnvVar("headPrefixes"), "goobers/implementation/, goobers/docs-updater/")
+	t.Setenv(executor.InputEnvVar("author"), "octocat")
+	t.Setenv(executor.InputEnvVar("assignee"), "maintainer")
+	t.Setenv(executor.InputEnvVar("requestedReviewer"), "reviewer")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 

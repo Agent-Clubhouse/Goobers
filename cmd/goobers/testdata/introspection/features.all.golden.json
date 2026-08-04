@@ -6,7 +6,7 @@
   "features": [
     {
       "name": "gaggle.spec.project.checkout.sparse",
-      "stability": "preview",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
@@ -71,6 +71,11 @@
     },
     {
       "name": "gate.evaluator.automated.check.ci-status",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.automated.check.failure-class",
       "stability": "ga",
       "sinceVersion": "dev"
     },

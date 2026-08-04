@@ -7,9 +7,9 @@ package main
 
 const gatherContextID = "gather-implement-context"
 
-// synopsisByID holds each command's verbatim entry in the top-level usage()
-// list, keyed by invocation-path id. usage() assembles these via the command
-// registry so the top-level surface cannot drift from per-command help (#1095).
+// synopsisByID holds each command's verbatim entry in the tiered usage lists,
+// keyed by invocation-path id. The help renderers assemble these via the command
+// registry so command discovery cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
@@ -29,7 +29,7 @@ var synopsisByID = map[string]string{
 	"down":                   "  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal\n",
 	"apply":                  "  goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now\n",
 	"self-update":            "  goobers self-update [--policy manual|on-release|on-main] [path]\n                                stage and request a supervised binary update\n",
-	"service":                "  goobers service install|uninstall|status [path]\n                                install and manage the platform-supervised daemon\n",
+	"service":                "  goobers service install|uninstall|stop|start|status [path]\n                                install and manage the platform-supervised daemon\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
@@ -48,6 +48,7 @@ var synopsisByID = map[string]string{
 	"schema":                 "  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build\n",
 	"explain":                "  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema\n",
 	"reset-rate-limit":       "  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/\n",
+	"workspace":              "  goobers workspace reset <repo> [path]  explicitly re-materialize a pinned workspace\n",
 	"blocked list":           "  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)\n",
 	"blocked clear":          "  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock\n",
 	"claims list":            "  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n                                print current claim leases, optionally only expired leases\n",
@@ -81,6 +82,7 @@ var synopsisByID = map[string]string{
 	"docs-churn":             "  goobers docs-churn [--repo <dir>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]\n                                emit the docs-drift churn digest since the watermark (a connector stage)\n",
 	"ios-simulator-test":     "  goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [flags]\n                                run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)\n",
 	"pr-select":              "  goobers pr-select                      select one managed or advisory open PR for merge-review (a workflow stage)\n",
+	"check-issue-staleness":  "  goobers check-issue-staleness          route a PR to remediation if its linked issue changed since implementation began (a workflow stage)\n",
 	"gather-sibling-context": "  goobers gather-sibling-context         load other open PRs' files/state as review evidence (a workflow stage)\n",
 	gatherContextID:          "  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)\n",
 	"apply-verdict":          "  goobers apply-verdict                  publish a managed or advisory merge-review verdict (a workflow stage)\n",

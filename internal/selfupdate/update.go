@@ -380,7 +380,7 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 		return info, fmt.Errorf("staged validate smoke check: %w", err)
 	}
 	canonical := opts.Root
-	candidate := filepath.Join(opts.WorkDir, "selfhost")
+	candidate := filepath.Join(opts.WorkDir, "reference-workflows")
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		canonical = candidate
 	}

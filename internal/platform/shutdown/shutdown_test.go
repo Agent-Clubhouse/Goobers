@@ -81,3 +81,26 @@ func TestNotify_SignalCancels(t *testing.T) {
 		t.Fatalf("Reason() = %q after signal, want %q", got, ReasonSignal)
 	}
 }
+
+func TestNotifyWithHardHandler_SecondSignalUsesCallerPath(t *testing.T) {
+	hard := make(chan struct{}, 1)
+	n := NotifyWithHardHandler(func() { hard <- struct{}{} })
+	defer n.Stop()
+
+	if !raiseTerm(t) {
+		return
+	}
+	select {
+	case <-n.Context().Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first signal did not begin graceful shutdown")
+	}
+	if !raiseTerm(t) {
+		return
+	}
+	select {
+	case <-hard:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second signal did not invoke caller-owned hard-shutdown path")
+	}
+}

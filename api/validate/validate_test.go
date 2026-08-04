@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,7 +82,7 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the three
+	// The compatibility warnings are the manual-only advisories on the four
 	// example workflows that carry no schedule trigger. Preview warnings are
 	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
@@ -90,10 +91,10 @@ func TestExampleConfigPasses(t *testing.T) {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 3 {
-		t.Fatalf("expected three actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 5 {
+		t.Fatalf("expected five actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation bool
+	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation, sawPythonImplementation bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -107,9 +108,15 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
 			sawDotnetImplementation = true
 		}
+		if strings.Contains(w.Explanation, "goobers run java-implementation") {
+			sawJavaImplementation = true
+		}
+		if strings.Contains(w.Explanation, "goobers run python-implementation") {
+			sawPythonImplementation = true
+		}
 	}
-	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation {
-		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service implementation, got %+v", warnings)
+	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation || !sawJavaImplementation || !sawPythonImplementation {
+		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service, java-service, and python-service implementations, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
@@ -890,6 +897,164 @@ func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	}
 }
 
+func TestGooberSkillPackageWarnings(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: instructions.md
+  skills:
+    - present-shared
+    - present-scoped
+    - missing
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "skills", "present-shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "gaggles", "example", "skills", "present-scoped"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			warnings = append(warnings, warning)
+		}
+	}
+	want := CodedWarning{
+		Code:        WarningMissingSkillPackage,
+		Severity:    Warning,
+		Scope:       "config.yaml Goober/coder",
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+	}
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
+	}
+	if report.HasErrors() {
+		t.Fatalf("missing skill package must remain non-fatal: %+v", report.Issues)
+	}
+}
+
+func TestGooberSkillPackageWarningsIncludeInvalidConfigsAndNames(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: missing.md
+  skills:
+    - missing
+    - nested/name
+    - ..
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected unrelated missing-instructions error")
+	}
+	var explanations []string
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			explanations = append(explanations, warning.Explanation)
+		}
+	}
+	for _, want := range []string{
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
+		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
+	} {
+		if !slices.Contains(explanations, want) {
+			t.Errorf("missing skill warnings = %q, want explanation %q", explanations, want)
+		}
+	}
+	if len(explanations) != 3 {
+		t.Errorf("missing skill warning count = %d, want 3: %q", len(explanations), explanations)
+	}
+}
+
 // TestCompilerChecksSurfaceInValidate proves `goobers validate` inherits the
 // workflow compiler's deeper analysis (issue #9): a bad schedule expression, an
 // unreachable state, and a stage using a capability its goober does not grant
@@ -1286,8 +1451,9 @@ func TestWarningCodesAreStable(t *testing.T) {
 		WarningCompatibility,
 		ErrorRemovedFeature,
 		WarningModelFallback,
+		WarningSkillPackageCollision,
 	}
-	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002"}
+	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002", "SKILL001"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("warning code %d = %q, want %q", i, got[i], want[i])
@@ -1519,6 +1685,24 @@ func TestGaggleSchemaAcceptsSelfIdentity(t *testing.T) {
 	}
 }
 
+func TestGaggleSchemaAcceptsWorkcopiesRoot(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"},
+			"workcopies": {"root": "/g"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle workcopies root rejected: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 	v := newV(t)
 	workflow := `{
@@ -1569,7 +1753,7 @@ func TestRunControlSchemas(t *testing.T) {
 			"project": {"provider": "github", "owner": "acme", "name": "web"},
 			"backlog": {"provider": "github", "project": "acme/web"},
 			"isolation": {"namespace": "gaggle-web"},
-			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h"}
+			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h", "maxRunDuration": "8h"}
 		}
 	}`
 	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
@@ -1583,7 +1767,7 @@ func TestRunControlSchemas(t *testing.T) {
 		"spec": {
 			"gaggle": "web",
 			"triggers": [{"type": "manual"}],
-			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m"},
+			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m", "maxRunDuration": "6h"},
 			"start": "review",
 			"gates": [{
 				"name": "review",
@@ -1672,11 +1856,11 @@ func TestGaggleSchemaSandboxAndCheckout(t *testing.T) {
 	}
 }
 
-// TestGaggleCheckoutSparseIsInertWarning pins the accepted-but-inert contract
-// for checkout.sparse (#649): declaring it must validate without errors and
-// surface a VER003 compatibility notice on both the project repo and any
-// additionalRepos entry.
-func TestGaggleCheckoutSparseIsInertWarning(t *testing.T) {
+// TestGaggleCheckoutSparseValidatesCleanly pins that the local runner now
+// honors project.checkout.sparse (#649): a well-formed declaration on both
+// the project repo and an additionalRepos entry validates without any
+// error or warning naming "checkout".
+func TestGaggleCheckoutSparseValidatesCleanly(t *testing.T) {
 	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
 metadata:
@@ -1687,7 +1871,7 @@ spec:
     owner: acme
     name: web
     checkout:
-      sparse: [services/web]
+      sparse: [services/web, docs]
   additionalRepos:
     - provider: github
       owner: acme
@@ -1708,24 +1892,69 @@ spec:
 	if err != nil {
 		t.Fatalf("ValidateDir: %v", err)
 	}
-	var got []string
-	for _, warning := range report.Warnings() {
-		if warning.Code == WarningCompatibility && strings.Contains(warning.Explanation, "not honored by the local runner") {
-			got = append(got, warning.Scope+": "+warning.Explanation)
-		}
-	}
-	if len(got) != 2 {
-		t.Fatalf("checkout VER003 warnings = %v, want project + additionalRepos entries", got)
-	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"spec.project.checkout.sparse", "spec.additionalRepos[0].checkout.sparse"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("warnings missing %q:\n%s", want, joined)
-		}
-	}
 	for _, issue := range report.Issues {
-		if issue.Severity == Error && strings.Contains(issue.Message, "checkout") {
-			t.Errorf("checkout declaration must not be an error: %v", issue)
+		if strings.Contains(issue.Message, "checkout") || strings.Contains(issue.Message, "sparse") {
+			t.Errorf("well-formed checkout.sparse must validate cleanly, got: %v", issue)
 		}
+	}
+}
+
+// TestGaggleCheckoutSparseRejectsInvalidCones covers every malformed-cone
+// case (#649): an absolute path, an empty list, a glob pattern, a ".."
+// traversal segment, and a duplicate entry are all validation errors with
+// actionable messages, on both spec.project.checkout and an additionalRepos
+// entry.
+func TestGaggleCheckoutSparseRejectsInvalidCones(t *testing.T) {
+	cases := []struct {
+		name       string
+		sparseYAML string
+		wantSubstr string
+	}{
+		{"empty list", "checkout:\n      sparse: []", "must declare at least one cone"},
+		{"absolute path", "checkout:\n      sparse: [/services/web]", "repo-relative, not absolute"},
+		{"glob pattern", "checkout:\n      sparse: [\"services/*\"]", "does not support glob patterns"},
+		{"parent traversal", "checkout:\n      sparse: [../escape]", `must not contain ".." segments`},
+		{"empty cone string", "checkout:\n      sparse: [\"\"]", "must not be empty"},
+		{"duplicate cone", "checkout:\n      sparse: [services/web, services/web]", "duplicates cone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gaggleYAML := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    ` + tc.sparseYAML + `
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-example
+`
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var found bool
+			for _, issue := range report.Issues {
+				if issue.Severity != Error {
+					continue
+				}
+				if issue.Code == errorGaggleCheckoutSparse && strings.Contains(issue.Message, tc.wantSubstr) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected an error containing %q, got: %v", tc.wantSubstr, report.Issues)
+			}
+		})
 	}
 }

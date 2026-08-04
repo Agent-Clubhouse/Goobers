@@ -20,6 +20,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -299,6 +300,9 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
+		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
+			return filepath.SkipDir
+		}
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -391,6 +395,7 @@ type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
 		Instructions string   `json:"instructions"`
+		Gaggle       string   `json:"gaggle"`
 		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
@@ -416,7 +421,7 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) (
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
 			if err != nil {
 				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
 			}

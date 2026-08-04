@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up down apply self-update service worker dashboard run signal workflow runs status stats features schema explain reset-rate-limit blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-assignment backlog-health backlog-query select-source validate-plan reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr pr-claim gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help --version -h --help"
+        candidates="version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -57,7 +57,7 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs --disable-read-model-reads"
+            flags+=" --quiet --diagnostics --notify --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
         dashboard)
             flags+=" --port --no-open --dev-assets"
@@ -187,7 +187,7 @@ _goobers_completion()
             ;;
         service)
             if (( COMP_CWORD == 2 )); then
-                candidates="install uninstall status"
+                candidates="install uninstall stop start status"
             fi
             ;;
         run)
@@ -210,6 +210,11 @@ _goobers_completion()
         runs)
             if (( COMP_CWORD == 2 )); then
                 candidates="list du"
+            fi
+            ;;
+        workspace)
+            if (( COMP_CWORD == 2 )); then
+                candidates="reset"
             fi
             ;;
         blocked)
@@ -249,6 +254,11 @@ _goobers_completion()
         journal)
             if (( COMP_CWORD == 2 )); then
                 candidates="redact"
+            fi
+            ;;
+        help)
+            if (( COMP_CWORD == 2 )); then
+                candidates="all stages"
             fi
             ;;
     esac

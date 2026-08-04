@@ -1530,6 +1530,13 @@ func summarizeRunForStage(
 			seenStages[event.Gate] = struct{}{}
 		}
 		switch event.Type {
+		case journal.EventRunnerAnnotation:
+			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+				currentStage = queue
+			}
+			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+				currentStage = suggestion
+			}
 		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil
@@ -1558,7 +1565,9 @@ func summarizeRunForStage(
 			phase = journal.RunPhase(event.Status)
 			finished := event.Time
 			finishedAt = &finished
-			currentStage = ""
+			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+				currentStage = ""
+			}
 		}
 	}
 
@@ -1956,7 +1965,7 @@ func remediationEscalationReason(records []journal.EventRecord) string {
 
 func isRemediationCheckpointStage(stage string) bool {
 	switch stage {
-	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses":
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses", "park-infrastructure-failure":
 		return true
 	default:
 		return false

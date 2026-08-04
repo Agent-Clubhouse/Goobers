@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -241,6 +242,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		)
 	}
 	printValidationWarnings(stdout, codedWarnings)
+	skillWarnings, err := appendSkillPackageCollisionWarnings(configDir, report, goobers)
+	if err != nil {
+		pf(stderr, "error: inspect skill package collisions: %v\n", err)
+		return 2
+	}
+	for _, warning := range skillWarnings {
+		diagnostics.add(
+			diagnosticFile(root, filepath.Join(configDir, "gaggles", strings.TrimPrefix(warning.Scope, "Gaggle/"), "skills")),
+			"/",
+			string(warning.Code),
+			string(warning.Severity),
+			warning.Explanation,
+		)
+	}
+	printValidationWarnings(stdout, skillWarnings)
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
@@ -304,9 +320,35 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
 		return 1
 	}
+	printResolvedLargeRepoPresets(stdout, cfg.Repos)
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {
+	for _, repo := range repos {
+		if !repo.LargeRepo {
+			continue
+		}
+		workspace := "worktrees"
+		mirrorRefspec := "all"
+		if repo.Pinned() {
+			workspace = "pinned"
+			mirrorRefspec = "heads+tags"
+		}
+		pathLength := "disabled"
+		if repo.PathLength != nil && !repo.PathLength.Disabled {
+			maximum := repo.PathLength.MaxPathLength
+			if maximum == 0 {
+				maximum = worktree.DefaultMaxPathLength
+			}
+			pathLength = fmt.Sprintf("enabled (max %d)", maximum)
+		}
+		pf(out, "Resolved large-repo preset for %s/%s: workspace=%s, cleanPolicy=%s, serial=%t, defaultStageTimeout=%s, stalledRunTimeout=%s, maxRunDuration=%s, pathLength=%s, mirrorRefspec=%s\n",
+			repo.Owner, repo.Name, workspace, repo.WorkspaceCleanPolicy(), repo.Pinned(),
+			repo.DefaultStageTimeout, repo.RunControls.StalledRunTimeout, repo.RunControls.MaxRunDuration, pathLength, mirrorRefspec)
+	}
 }
 
 func configSourceDiagnosticFile(root, configDir, source string) string {
@@ -482,7 +524,7 @@ const (
 // field, in KB) above which `--check-repos` warns at validate time (#1547).
 // 1 GiB is large enough that a full clone/checkout of the repo measurably
 // slows down provisioning; sparse/partial checkout (AdditionalRepos, or
-// project.checkout.sparse once #649 ships) is the recommended remediation.
+// project.checkout.sparse, #649) is the recommended remediation.
 const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
@@ -633,7 +675,7 @@ func repoUsesToken(repo instance.RepoRef) bool {
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
-		provider, err := adoauth.Provider(repo, nil, nil, nil, stores)
+		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err
 		}

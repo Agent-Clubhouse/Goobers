@@ -26,7 +26,17 @@ func initDemo(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
+	createDeclaredSkillPackages(t, root, "implement", "run-tests")
 	return root
+}
+
+func createDeclaredSkillPackages(t *testing.T, root string, skills ...string) {
+	t.Helper()
+	for _, skill := range skills {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func initScheduledDemo(t *testing.T) string {
@@ -281,7 +291,7 @@ func TestTraceShowsSpansWithoutPriorTelemetryCommand(t *testing.T) {
 
 // TestRunWithTelemetryDisabledSkipsSpansAndRollup is issue #129's
 // telemetry.enabled defect: the config field was documented (and set in the
-// real self-hosting config, selfhost/instance.yaml.example) but had zero
+// real self-hosting config, reference-workflows/instance.yaml.example) but had zero
 // callers — setting it to false did nothing. It's wired now, and the
 // regression that would have shipped along with a naive wire-up is a
 // typed-nil-in-interface panic (a nil *telemetry.Client assigned to

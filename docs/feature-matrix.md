@@ -8,7 +8,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 
 | Feature | DSL version | Feature support | Version support | Since app version |
 | --- | --- | --- | --- | --- |
-| `gaggle.spec.project.checkout.sparse` | 1.4 | preview | supported | dev |
+| `gaggle.spec.project.checkout.sparse` | 1.4 | ga | supported | dev |
 | `gaggle.spec.sandbox` | 1.4 | preview | supported | dev |
 | `gate.branch.escalate` | 1.4 | ga | supported | dev |
 | `gate.branches` | 1.4 | ga | supported | dev |
@@ -21,6 +21,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `gate.evaluator.automated` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 1.4 | ga | supported | dev |
+| `gate.evaluator.automated.check.failure-class` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.land-outcome` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-equals` | 1.4 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-matches` | 1.4 | ga | supported | dev |
@@ -110,7 +111,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `workflow.terminal.abort` | 1.4 | ga | supported | dev |
 | `workflow.terminal.complete` | 1.4 | ga | supported | dev |
 | `workflow.terminal.escalate` | 1.4 | ga | supported | dev |
-| `gaggle.spec.project.checkout.sparse` | 2.0 | preview | supported | dev |
+| `gaggle.spec.project.checkout.sparse` | 2.0 | ga | supported | dev |
 | `gaggle.spec.sandbox` | 2.0 | preview | supported | dev |
 | `gate.branch.escalate` | 2.0 | ga | supported | dev |
 | `gate.branches` | 2.0 | ga | supported | dev |
@@ -124,6 +125,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `gate.evaluator.automated` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.ci-status` | 2.0 | ga | supported | dev |
+| `gate.evaluator.automated.check.failure-class` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.land-outcome` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-equals` | 2.0 | ga | supported | dev |
 | `gate.evaluator.automated.check.output-matches` | 2.0 | ga | supported | dev |

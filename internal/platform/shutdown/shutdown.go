@@ -76,7 +76,16 @@ type Notifier struct {
 // On unix the observed signals are SIGINT and SIGTERM; on windows, os.Interrupt
 // (Ctrl+C / Ctrl+Break) — see the platform notify functions.
 func Notify() *Notifier {
+	return NotifyWithHardHandler(nil)
+}
+
+// NotifyWithHardHandler is Notify with a caller-owned repeated-signal path.
+// A nil handler preserves Notify's immediate non-zero exit behavior.
+func NotifyWithHardHandler(onHard func()) *Notifier {
 	n := newNotifier()
+	if onHard != nil {
+		n.onHard = onHard
+	}
 	ch := make(chan os.Signal, 2)
 	n.ch = ch
 	notify(ch)
