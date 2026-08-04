@@ -90,7 +90,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "GOOBERS_GITHUB_ISSUES_TOKEN",
-		string(capability.GitHubPRWrite):     "GOOBERS_GITHUB_PR_TOKEN",
+		string(capability.ProviderPRWrite):   "GOOBERS_GITHUB_PR_TOKEN",
 		string(capability.RepoPush):          "GOOBERS_GITHUB_PUSH_TOKEN",
 	}
 	if len(cfg.Credentials) != len(wantCredentials) {
@@ -100,6 +100,17 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		if want := wantCredentials[credential.Capability]; credential.Token.Env != want {
 			t.Errorf("credential %q token env = %q, want %q", credential.Capability, credential.Token.Env, want)
 		}
+	}
+	t.Setenv("GOOBERS_GITHUB_REPO_TOKEN", "repo-read-token")
+	t.Setenv("GOOBERS_GITHUB_ISSUES_TOKEN", "issues-write-token")
+	t.Setenv("GOOBERS_GITHUB_PR_TOKEN", "pr-write-token")
+	t.Setenv("GOOBERS_GITHUB_PUSH_TOKEN", "push-token")
+	resolver, grants, err := buildCredentials(cfg, nil, "acme", "Widget.Service", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if got := resolveGrants(t, resolver, grants)[string(capability.ProviderPRWrite)]; got != "pr-write-token" {
+		t.Fatalf("guided provider PR credential = %q, want pull-request token", got)
 	}
 	for _, name := range instance.GuidedWorkflowNames() {
 		path := filepath.Join(root, "config", "gaggles", "widget-service", "workflows", name+".yaml")

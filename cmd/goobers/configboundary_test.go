@@ -55,7 +55,7 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
@@ -85,7 +85,7 @@ func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
@@ -117,7 +117,7 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs,README.md")
 
@@ -147,7 +147,7 @@ func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs\nREADME.md")
 
@@ -178,7 +178,7 @@ func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	// no docsRoots input
 
@@ -207,7 +207,7 @@ func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
 	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
@@ -239,7 +239,7 @@ func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
 	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
@@ -270,7 +270,7 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 func TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
 	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 	t.Chdir(t.TempDir()) // not a git repo

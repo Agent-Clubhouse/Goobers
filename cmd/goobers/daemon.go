@@ -298,8 +298,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
 		_ = readStore.Close()
 	} else {
-		readModelEpoch = state.Epoch
-		readModel = readStore
 		// Measurement flags (#1782). The four population filters are derived
 		// from the telemetry rollup, which no journal event carries, so the
 		// read model needs a source for them or `population=` can only ever
@@ -314,27 +312,24 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
 		}
 		// §6.6 step 2: build it by rebuild-from-journals on first start.
-		// Only when EMPTY — a populated store is kept and updated
-		// incrementally by the writer seam, because rebuilding on every start
-		// would make daemon startup pay ~51 s at 1x for data it already has.
-		if err := buildReadModelIfEmpty(ctx, readStore, l); err != nil {
+		// A completed store is kept and updated incrementally by the writer
+		// seam; an unready store is rebuilt synchronously before attachment.
+		if err := buildReadModelIfNeeded(ctx, readStore, state, l); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
-		}
-
-		// The projector (#1923). Opening intake and starting the commit loop
-		// is what inverts the coupling: from here the writer records a
-		// watermark and forgets, and this owns discovery and application.
-		//
-		// Like the read model itself, a failure here must not fail daemon
-		// start. Without a projector the read model simply stops advancing,
-		// and the journal-derived paths still answer every request — a
-		// degraded read model is not an outage, but refusing to start would
-		// be.
-		if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+			_ = readStore.Close()
 		} else {
-			watermarks = intakeStore
-			stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+			readModelEpoch = state.Epoch
+			readModel = readStore
+
+			// The projector (#1923). Opening intake and starting the commit loop
+			// is what inverts the coupling: from here the writer records a
+			// watermark and forgets, and this owns discovery and application.
+			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
+			} else {
+				watermarks = intakeStore
+				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+			}
 		}
 	}
 
@@ -386,7 +381,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 	runnerRegistry.Replace(definitions.Runners)
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, terminalNotifier, definitions.HarnessPreflight, secretStores,
+		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
@@ -605,7 +600,7 @@ func buildSchedulerDefinitions(
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
+			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
@@ -766,6 +761,7 @@ func buildRetainedLegacyRunner(
 	instanceLog *journal.InstanceLog,
 	sharedReg *journal.RegistryScrubber,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
@@ -782,7 +778,7 @@ func buildRetainedLegacyRunner(
 	}
 	return buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
@@ -818,6 +814,7 @@ func buildRuntimeRunner(
 	sharedReg *journal.RegistryScrubber,
 	manager *worktree.Manager,
 	providerQuota *localscheduler.ProviderQuotaState,
+	watermarks *intake.Store,
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
@@ -836,6 +833,7 @@ func buildRuntimeRunner(
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
+	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
 	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
@@ -967,7 +965,7 @@ type trackedStarter struct {
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	untrack := s.runners.Track(req.RunID, s.r)
+	untrack := s.runners.Track(req.RunID, s.machine.Def.Name, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
 		RunID:                req.RunID,
@@ -1123,7 +1121,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 
 			resumed = append(resumed, id.RunID)
 			wg.Add(1)
-			untrack := runnerRegistry.Track(id.RunID, rn)
+			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
@@ -1161,62 +1159,24 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 	return resumed, warned, nil
 }
 
-// waitDrained waits for wg to finish, returning false if timeout elapses
-// first. The background goroutine it starts is not leaked: wg.Wait()
-// returning always lets it close done and exit, whether or not the select
-// below already gave up waiting.
-func waitDrained(wg *sync.WaitGroup, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
-func waitSchedulerDrained(scheduler *localscheduler.Scheduler, timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		scheduler.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
-}
-
-// buildReadModelIfEmpty performs the first-start build (design §6.6 step 2).
+// buildReadModelIfNeeded performs the first-start or migration-triggered build
+// (design §6.6 step 2).
 //
-// Emptiness is the trigger rather than a marker file: the store either has run
-// rows or it does not, and deriving the decision from the data itself means a
-// half-finished build resumes rather than being skipped because a marker claimed
-// it was done. Only when empty, because rebuilding on every start would make
-// daemon startup pay ~51 s at 1x for data it already has.
+// Readiness is persisted in the store so an interrupted build cannot expose a
+// partial projection on the next startup merely because it wrote some rows.
 //
-// A failure is not fatal — nothing reads read.db yet, and refusing to start over
-// a store no request touches would be an outage caused by an optimization.
-func buildReadModelIfEmpty(ctx context.Context, store *readmodel.Store, l instance.Layout) error {
-	counts, err := store.CountByPhase(ctx)
-	if err != nil {
-		return err
-	}
-	for _, n := range counts {
-		if n > 0 {
-			return nil
-		}
+// A failure is not fatal: the store remains detached and requests fall back to
+// the journal-derived path.
+func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state readmodel.State, l instance.Layout) error {
+	if state.Ready {
+		return nil
 	}
 	roots, err := l.RunDirs()
 	if err != nil {
 		return err
 	}
-	_, err = store.BuildFromJournals(ctx, roots)
-	return err
+	if _, err := store.BuildFromJournals(ctx, roots); err != nil {
+		return err
+	}
+	return store.MarkReady(ctx)
 }

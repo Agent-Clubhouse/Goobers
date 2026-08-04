@@ -529,9 +529,9 @@ route a PR to remediation if its linked issue changed since implementation began
 ~~~text
 Usage: goobers check-issue-staleness [path]
 
-Re-fetch the PR's pinned linked issue and compare its live updatedAt
-against the snapshot taken when the PR was opened. If the issue changed
-materially since implementation began, label the PR goobers:needs-
+Re-fetch the PR's pinned linked issue and compare its title and body
+against the snapshot taken when the PR was opened. If the issue spec
+changed since implementation began, label the PR goobers:needs-
 remediation and post an explanatory comment instead of letting review
 proceed against stale copied criteria. A PR with no pin (predates this
 feature, or its linked issue never resolved an updatedAt) is never
@@ -1761,10 +1761,13 @@ selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
 outputs) and hasSubstantiveFindings/hasFailingCI.
 
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
-sibling-overlap") is a comma-separated policy naming which detected
-causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base is accepted vocabulary but cannot fire yet (no
-detection reaches this stage's decision today).
+sibling-overlap,human-comment") is a comma-separated policy naming which
+detected causes are allowed to trigger remediation; the shipped default is
+fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today). human-comment fires when a
+genuinely new human comment postdates the watermark recorded in the sticky
+remediation-state comment; detection runs only when the declared policy
+names human-comment, so an old pinned policy is unaffected.
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -1860,7 +1863,8 @@ the active cause exhausts its DSL-declared budget or on a byte-identical
 repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
 gather-pr-context's selectedNumber output), remediationCauses, and the
-four per-cause budget inputs. --budget overrides every declared cause
+five per-cause budget inputs (humanCommentBudget defaults to 2 when
+undeclared). --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
 --escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`
@@ -2778,12 +2782,15 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
 listener (default path "."). Blocks
-until interrupted (SIGINT/SIGTERM), then drains in-flight runs before
+until interrupted (SIGINT/SIGTERM), then drains in-flight runs indefinitely
+by default. --drain-timeout forces shutdown after a deadline; a repeated
+signal always forces shutdown without prompting. Interrupted runs resume
+from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 

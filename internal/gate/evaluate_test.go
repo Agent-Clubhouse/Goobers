@@ -627,11 +627,11 @@ func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
 
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
 // when the implement stage commits nothing (an empty diff — e.g. it produced
-// no change on an over-scope probe), the reviewer gate must fast-`fail` on the
-// FIRST review — resolving the gate's own `fail` branch, not escalating — and
-// must never invoke the (real, costly) reviewer for a diff that offers nothing
-// to evaluate. Without it, an empty diff draws two needs-changes repasses
-// before the #316 identical-diff guard finally escalates.
+// no change on an over-scope probe), the reviewer gate must synthesize `fail`
+// evidence on the FIRST review while routing through the mechanical escalation
+// branch, and must never invoke the (real, costly) reviewer for a diff that
+// offers nothing to evaluate. Without it, an empty diff can be mistaken for a
+// genuine reviewer rejection requiring a human decision.
 func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "reviewgate",
@@ -640,7 +640,8 @@ func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 		Branches: map[string]string{
 			string(apiv1.VerdictPass):         wf.TerminalComplete,
 			string(apiv1.VerdictNeedsChanges): "implement",
-			string(apiv1.VerdictFail):         wf.TargetAbort,
+			string(apiv1.VerdictFail):         "park-needs-human",
+			wf.BranchEscalate:                 "park-escalated",
 		},
 	}
 	// The fake would PASS if consulted — so a `fail` outcome can only come from
@@ -654,11 +655,11 @@ func TestEvaluatorFastFailsEmptyDiffOnReviewOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if r.Target != wf.TargetAbort || r.Outcome != string(apiv1.VerdictFail) {
-		t.Fatalf("r = %+v, want outcome=fail target=%s (the gate's own fail branch, review-1)", r, wf.TargetAbort)
+	if r.Target != "park-escalated" || r.Outcome != string(apiv1.VerdictFail) {
+		t.Fatalf("r = %+v, want outcome=fail target=park-escalated (the mechanical escalation branch)", r)
 	}
-	if r.Escalated || r.DuplicateDiff {
-		t.Fatalf("r = %+v, want escalated=false duplicateDiff=false — an empty diff fails on review-1, it does not escalate", r)
+	if !r.Escalated || r.DuplicateDiff {
+		t.Fatalf("r = %+v, want escalated=true duplicateDiff=false — an empty diff is a distinct first-review execution stall", r)
 	}
 	if r.Attempt != 1 {
 		t.Fatalf("r.Attempt = %d, want 1 (fails on the first review, no repass loop)", r.Attempt)

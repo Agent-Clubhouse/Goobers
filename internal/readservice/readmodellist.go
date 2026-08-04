@@ -55,6 +55,7 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		Until:    options.Until,
 		Limit:    limit,
 		Stage:    options.Stage,
+		Outcome:  readmodel.Outcome(options.Outcome),
 		// Population is validated by canonicalStagePopulation upstream, and the
 		// read model refuses any value its own switch does not recognise, so a
 		// bad value cannot reach the query as a column name.
@@ -160,11 +161,8 @@ func (s *Local) readModelEligible(options RunListOptions) bool {
 // serving them there cost ~143 MB read, ~1M unmarshals and ~19,852 journal opens
 // in a single request.
 //
-// Outcome -- in EITHER sense -- and trigger are still outside the set and still
-// resolve to a refusal here. Stage-scoped outcome looks servable from
-// run_stage.last_status and is not: the reference matches on ANY attempt's
-// status and last_status is only the final one, so an equality test silently
-// under-matches. queryset.go carries the full argument.
+// Run-scoped outcome and trigger are still outside the set and resolve to a
+// refusal. Stage-scoped outcome is supported by cumulative per-attempt flags.
 func readModelDims(options RunListOptions) []readmodel.Dim {
 	var dims []readmodel.Dim
 	if options.Gaggle != "" {

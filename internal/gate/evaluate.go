@@ -38,8 +38,8 @@ type Result struct {
 	// including this one when Outcome != OutcomePass (0 when Outcome ==
 	// OutcomePass, since a pass resets the budget).
 	Attempt int
-	// Escalated is true when Target was overridden by the repass budget
-	// rather than resolved from the gate's own Branches.
+	// Escalated is true when Target was overridden by the runner because the
+	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
 	// DuplicateDiff is true when Escalated fired because this attempt's diff
 	// digest matched the immediately prior attempt's (issue #316), rather
@@ -322,7 +322,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, cacheHit)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -385,10 +385,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false)
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false)
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, cacheHit bool) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -402,7 +402,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	attempt, exceeded := e.trackRepass(g, outcome)
-	escalated := exceeded || duplicateDiff
+	escalated := exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
 	}

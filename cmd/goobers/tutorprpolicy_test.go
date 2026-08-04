@@ -396,7 +396,7 @@ func TestOpenPRStampsTutorReviewPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := initDemo(t)
 			server := newFakeGitHubServer(t, "your-org", "your-repo")
-			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+			providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 			t.Setenv("GOOBERS_WORKFLOW", "tutor")
 			t.Setenv(executor.RepoProviderEnvVar, "github")
 			t.Setenv(executor.RepoOwnerEnvVar, "your-org")

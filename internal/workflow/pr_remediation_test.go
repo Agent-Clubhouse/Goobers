@@ -674,11 +674,15 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 		"substantiveBudget":    "2",
 		"failingCIBudget":      "2",
 		"siblingOverlapBudget": "2",
+		"humanCommentBudget":   "2",
 	}
 	for input, want := range wantBudgets {
 		if got := checkpoint.Inputs[input]; got != want {
 			t.Errorf("remediation-checkpoint inputs[%q] = %q, want DSL-declared budget %q", input, got, want)
 		}
+	}
+	if remediate := rebase.Inputs["remediate"]; !strings.Contains(remediate, "human-comment") {
+		t.Errorf("rebase-pr remediate = %q, want it to include human-comment", remediate)
 	}
 	declared := map[string]bool{}
 	for _, out := range checkpoint.ExpectedOutputs {

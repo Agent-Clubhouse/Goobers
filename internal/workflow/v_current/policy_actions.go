@@ -23,7 +23,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"comment-on-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":                 {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
@@ -36,7 +36,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -48,6 +48,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"route-provider-verdict":        {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -56,7 +57,7 @@ var policyActionContracts = map[string]policyActionContract{
 }
 
 var commandPolicyActions = map[string][]string{
-	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
+	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
 	"check-issue-staleness":  {"route-verdict"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},

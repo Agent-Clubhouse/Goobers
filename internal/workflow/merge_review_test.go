@@ -206,7 +206,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("apply-verdict task not found")
 			}
-			wantApplyCapabilities := []string{"github:pr:write", "github:pr:review"}
+			wantApplyCapabilities := []string{"provider:pr:write", "github:pr:review"}
 			if !reflect.DeepEqual(applyVerdict.Capabilities, wantApplyCapabilities) {
 				t.Errorf("apply-verdict capabilities = %v, want %v", applyVerdict.Capabilities, wantApplyCapabilities)
 			}

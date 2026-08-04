@@ -226,11 +226,11 @@ spec:
         # A test pins that the two stages agree on identical inputs.
         electionPolicy: "fifo"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
         - github:pr:review
       policyActions:
         - publish-review
-        - route-verdict
+        - route-provider-verdict
         - close-pr
       expectedOutputs:
         - selectedNumber
@@ -314,7 +314,7 @@ spec:
         pullNumber: selectedNumber
         headSha: selectedHeadSha
         baseSha: selectedBaseSha
-        # apply-verdict resolves this with its github:pr:write credential, the
+        # apply-verdict resolves this with its provider:pr:write credential, the
         # identity that actually owns the sticky verdict. Keep merge-pr scoped
         # to github:pr:merge instead of injecting the broader posting token.
         verdictAuthor: verdictAuthor

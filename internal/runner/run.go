@@ -351,6 +351,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// JournalAdvanced reports each durable journal append to derived readers.
+	// Optional; the callback owns failure reporting and must not fail the run.
+	JournalAdvanced func(runID string, seq uint64)
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
@@ -614,7 +617,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:          in.Gaggle,
 		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
-	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
@@ -2703,7 +2706,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			}
 			span.FailWithCode(dispatchErr, "executor_error")
 			if shouldRetry {
-				if backoff > 0 {
+				retryDelay := infrastructureRetryDelay(dispatchErr, backoff, time.Now())
+				if retryDelay > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
 					// cancels — the drain contract for an in-flight
 					// dispatch), so a SIGTERM already in progress doesn't
@@ -2717,7 +2721,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 					// pauses BETWEEN stages, per resume.go's interruptedAttempt
 					// doc).
 					select {
-					case <-time.After(backoff):
+					case <-time.After(retryDelay):
 					case <-ctx.Done():
 					case <-attemptCtx.Done():
 					}
@@ -2779,6 +2783,18 @@ func dispatchRetryFailureClass(err error) journal.AttemptClass {
 		return journal.AttemptInfra
 	}
 	return journal.AttemptPolicy
+}
+
+func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
+	retryAt, ok := invoke.InfrastructureRetryAt(err)
+	if !ok {
+		return backoff
+	}
+	until := retryAt.Sub(now)
+	if until > backoff {
+		return until
+	}
+	return backoff
 }
 
 // retryFailureClass identifies command and sync-conflict failures whose

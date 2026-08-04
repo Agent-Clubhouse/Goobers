@@ -410,7 +410,8 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 
 	providerCmdEnv(t, implementationServer, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", implementationRunID)
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
-	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Setenv("GOOBERS_CRED_PROVIDER_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
 	t.Chdir(t.TempDir())
 	if code, stdout, stderr := runArgs(t, "issue-close-out", instanceRoot); code != 0 {
 		t.Fatalf("issue-close-out before PR publication: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)

@@ -3,8 +3,11 @@ package executor
 import (
 	"context"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestShellExecutor_TypedErrorCodeLiftedFromResultFile is #614's executor-side
@@ -38,6 +41,23 @@ func TestShellExecutor_TypedErrorCodeLiftedFromResultFile(t *testing.T) {
 	// The structured context (reset time) still reaches the journaled outputs.
 	if result.Outputs["rateLimitReset"] != "2026-07-16T16:59:10Z" {
 		t.Fatalf("outputs[rateLimitReset] = %v, want the reset timestamp", result.Outputs["rateLimitReset"])
+	}
+}
+
+func TestProviderStageInfrastructureFailureCarriesRateLimitReset(t *testing.T) {
+	resetAt := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
+	err := providerStageInfrastructureFailure("open-pr", providers.ErrorCodeRateLimited, "quota exhausted", map[string]interface{}{
+		"rateLimitReset": resetAt.Format(time.RFC3339),
+	})
+	got, ok := invoke.InfrastructureRetryAt(err)
+	want := resetAt.Add(providerRateLimitResetSlack)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("InfrastructureRetryAt = %v, %v; want %v, true", got, ok, want)
+	}
+
+	err = providerStageInfrastructureFailure("open-pr", providers.ErrorCodeRateLimited, "quota exhausted", nil)
+	if _, ok := invoke.InfrastructureRetryAt(err); ok {
+		t.Fatal("rate-limit failure without a reset unexpectedly carried a retry time")
 	}
 }
 

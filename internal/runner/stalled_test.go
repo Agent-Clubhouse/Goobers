@@ -305,6 +305,7 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 		result Result
 		err    error
 	}
+
 	done := make(chan startOutcome, 1)
 	go func() {
 		result, err := r.Start(context.Background(), StartInput{
@@ -356,6 +357,79 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseAborted) {
 		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)
+	}
+}
+
+func TestHardStopRunLeavesCheckpointResumable(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 1}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "hard-stop-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "hard-stop-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+	if !r.HardStopRun("hard-stop-live") {
+		t.Fatal("HardStopRun did not find live run")
+	}
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseRunning {
+		t.Fatalf("hard-stopped Start() = %+v, %v, want running checkpoint", outcome.result, outcome.err)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseRunning {
+		t.Fatalf("phase after hard stop = %s, %v", phase, err)
+	}
+
+	resumed, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "hard-stop-live",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || resumed.Phase != journal.PhaseCompleted {
+		t.Fatalf("Resume() = %+v, %v, want completed", resumed, err)
+	}
+}
+
+func TestHardStopRunWhenStartedStopsLateActiveRegistration(t *testing.T) {
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return &flakyDeterministic{}, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 1, time.Second)
+	r.HardStopRunWhenStarted("late-hard-stop")
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID:   "late-hard-stop",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || result.Phase != journal.PhaseRunning {
+		t.Fatalf("queued hard-stop Start() = %+v, %v, want running checkpoint", result, err)
 	}
 }
 

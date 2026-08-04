@@ -56,7 +56,7 @@ var commands = map[string]Command{
 	"apply-verdict": {
 		ResultFile: "verdict-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request routing fails at runtime"),
+			required(capability.ProviderPRWrite, "the capability-scoped credential is not injected, so pull-request routing fails at runtime"),
 			required(capability.GitHubPRReview, "the capability-scoped credential is not injected, so native review publication fails at runtime"),
 		},
 	},
@@ -174,7 +174,7 @@ var commands = map[string]Command{
 	"open-pr": {
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request creation fails at runtime"),
+			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
 		},
 	},
 	"post-merge": {

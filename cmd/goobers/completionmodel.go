@@ -130,6 +130,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "diagnostics", desc: "Capture deep per-stage diagnostics for hang debugging"},
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
+		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
 		{name: "disable-read-model-reads", desc: "Read-model rollback: force journal-derived list paths for this run"},
 	},

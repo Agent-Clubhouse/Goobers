@@ -223,7 +223,7 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	server.addIssue(8, "Next ready issue", "goobers:approved", "goobers:ready")
 
 	const runID = "run-rejected"
-	const reason = "The implementation weakens the fail-closed contract."
+	const reason = "Should this issue permit weakening the fail-closed contract?"
 	schedulerDir := filepath.Join(root, "scheduler")
 	if err := (func() error {
 		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
@@ -245,8 +245,9 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	}
 	defer func() { _ = run.Close() }()
 	verdictData, err := json.Marshal(apiv1.Verdict{
-		Decision: apiv1.VerdictFail,
-		Summary:  reason,
+		Decision:  apiv1.VerdictFail,
+		Rationale: reason,
+		Summary:   "The implementation needs a policy decision.",
 	})
 	if err != nil {
 		t.Fatalf("marshal verdict: %v", err)
@@ -338,7 +339,7 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
 	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
-	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for human review.")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Should this implementation proceed despite the rejected approach?")
 	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
@@ -354,6 +355,28 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	}
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
+	}
+}
+
+func TestValidateIssueCloseOutParkComment(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  providers.WorkItemStatus
+		comment string
+		wantErr bool
+	}{
+		{name: "human decision states question", status: issueCloseOutNeedsHuman, comment: "Which compatibility contract should this use?"},
+		{name: "human decision with context and question", status: issueCloseOutNeedsHuman, comment: "The requirements conflict. Which one takes precedence?  "},
+		{name: "human decision without question", status: issueCloseOutNeedsHuman, comment: "The approach was rejected.", wantErr: true},
+		{name: "remediation states failure", status: issueCloseOutNeedsRemediation, comment: "Repass budget exhausted."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIssueCloseOutParkComment(tt.status, tt.comment)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateIssueCloseOutParkComment(%q, %q) error = %v, wantErr %v", tt.status, tt.comment, err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -531,7 +554,7 @@ func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *tes
 	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
-	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
 	t.Chdir(t.TempDir())
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
 	if code != 0 {
@@ -548,6 +571,10 @@ func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *tes
 	}
 	if !strings.Contains(server.issues[7].comments[0], "local-ci") {
 		t.Fatalf("parking comment = %q, want upstream cause", server.issues[7].comments[0])
+	}
+	if !hasAnyLabel(server.issues[7].labels, []string{needsRemediationLabel}) ||
+		hasAnyLabel(server.issues[7].labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("driving issue labels = %v, want remediation without needs-human", server.issues[7].labels)
 	}
 	if !strings.Contains(server.prs[77].body, "Fixes #7") {
 		t.Fatalf("PR body = %q, want original description preserved", server.prs[77].body)
