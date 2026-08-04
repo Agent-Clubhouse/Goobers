@@ -114,10 +114,6 @@ func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data [
 	return journal.ArtifactRef(data)
 }
 
-func (r runnerWiringHarnessRecorder) Append(journal.Event) error {
-	return nil
-}
-
 func (r runnerWiringHarnessRecorder) Dir() string {
 	return r.dir
 }

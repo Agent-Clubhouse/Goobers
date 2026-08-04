@@ -46,8 +46,9 @@ sandbox:
 }
 
 // TestEffectiveAgenticSandbox pins the resolution the sandbox wiring consumes:
-// sandboxing defaults to enforced; only the operator-owned instance config may
-// opt out, and a gaggle may strengthen but never weaken that posture.
+// the most-restrictive of instance and gaggle posture, else disabled (#1305 —
+// DEFAULT OFF; an unconfigured instance must resolve disabled everywhere; a
+// gaggle may strengthen but never weaken an operator-enforced instance).
 func TestEffectiveAgenticSandbox(t *testing.T) {
 	gaggleWith := func(agentic string) *apiv1.Gaggle {
 		g := &apiv1.Gaggle{}
@@ -62,8 +63,8 @@ func TestEffectiveAgenticSandbox(t *testing.T) {
 		gaggle *apiv1.Gaggle
 		want   SandboxPosture
 	}{
-		{name: "nothing configured", want: SandboxEnforced},
-		{name: "nil gaggle, nil config", cfg: nil, gaggle: nil, want: SandboxEnforced},
+		{name: "nothing configured", want: SandboxDisabled},
+		{name: "nil gaggle, nil config", cfg: nil, gaggle: nil, want: SandboxDisabled},
 		{name: "instance disabled", cfg: &Config{Sandbox: &SandboxConfig{Agentic: "disabled"}}, want: SandboxDisabled},
 		{name: "instance enforced", cfg: &Config{Sandbox: &SandboxConfig{Agentic: "enforced"}}, want: SandboxEnforced},
 		{
@@ -90,11 +91,6 @@ func TestEffectiveAgenticSandbox(t *testing.T) {
 		{
 			name:   "gaggle enforced with no instance block",
 			gaggle: gaggleWith("enforced"),
-			want:   SandboxEnforced,
-		},
-		{
-			name:   "gaggle cannot opt out of default enforcement",
-			gaggle: gaggleWith("disabled"),
 			want:   SandboxEnforced,
 		},
 	}

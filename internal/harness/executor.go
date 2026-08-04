@@ -103,7 +103,6 @@ type Executor struct {
 	timeout         time.Duration
 	transcriptLimit int64
 	sandboxEnforced bool
-	sandboxOptOut   bool
 	newSandbox      func() (sandbox.Sandbox, error)
 }
 
@@ -154,18 +153,14 @@ func WithHarnessVersion(version string) Option {
 // WithSandboxEnforcement requires every harness session this Executor drives
 // to run confined by the platform filesystem sandbox (S3/#166, #1305). The
 // composition root sets it when the stage's gaggle resolves to an "enforced"
-// isolation posture (instance.EffectiveAgenticSandbox). Under enforcement each attempt
+// isolation posture (instance.EffectiveAgenticSandbox); the default —
+// posture "disabled" — leaves the Executor, adapter, and subprocess launch
+// byte-identical to the pre-sandbox behavior. Under enforcement each attempt
 // journals a runner.isolation.posture annotation, and a host without a usable
 // sandbox fails the stage closed with ErrSandboxUnavailable rather than
 // running the harness unconfined.
 func WithSandboxEnforcement() Option {
 	return func(e *Executor) { e.sandboxEnforced = true }
-}
-
-// WithSandboxOptOut marks an explicit trusted-local operator opt-out. Every
-// attempt is journaled before the harness can run unconfined.
-func WithSandboxOptOut() Option {
-	return func(e *Executor) { e.sandboxOptOut = true }
 }
 
 // WithAssetBundle supplies the goober's optional static assets.
@@ -368,33 +363,30 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		// downgrade to an unconfined run (S3/#166, ADR-0001).
 		sb, err := e.newSandbox()
 		if err != nil {
-			if journalErr := e.appendIsolationPosture(env, map[string]any{
-				"posture":   "unavailable",
-				"mechanism": "none",
-				"workspace": env.Workspace,
-			}); journalErr != nil {
-				return Outcome{}, nil, journalErr
-			}
 			return Outcome{}, nil, fmt.Errorf(
-				"%w: %w — the effective agentic sandbox posture for this gaggle is %q; install the platform sandbox (macOS: sandbox-exec, Linux: bubblewrap) or set sandbox.agentic to %q in operator-owned instance.yaml",
+				"%w: %w — the effective agentic sandbox posture for this gaggle is %q; install the platform sandbox (macOS: sandbox-exec, Linux: bubblewrap) or set sandbox.agentic to %q in instance.yaml / the gaggle's sandbox override",
 				ErrSandboxUnavailable, err, "enforced", "disabled")
 		}
 		req.Sandbox = sb
-		if err := e.appendIsolationPosture(env, map[string]any{
-			"posture":   "enforced",
-			"mechanism": sb.Mechanism(),
-			"workspace": env.Workspace,
-		}); err != nil {
-			return Outcome{}, nil, err
+		// Journal the posture for this attempt (#1305) — runner.* payload,
+		// conformance-excluded. Only enforced attempts emit; a disabled
+		// posture writes nothing new anywhere. The audit record is part of
+		// the enforcement contract, so a recorder that cannot append it
+		// fails the stage closed too.
+		appender, ok := e.recorder.(EventAppender)
+		if !ok {
+			return Outcome{}, nil, fmt.Errorf("harness: sandbox enforcement requires a journal-backed recorder to record the isolation posture; %T cannot append events", e.recorder)
 		}
-	} else if e.sandboxOptOut {
-		if err := e.appendIsolationPosture(env, map[string]any{
-			"posture":          "disabled",
-			"mechanism":        "none",
-			"workspace":        env.Workspace,
-			"trustedLocalOnly": true,
+		if err := appender.Append(journal.Event{
+			Type:  journal.EventRunnerIsolationPosture,
+			Stage: env.TaskID,
+			Runner: map[string]any{
+				"posture":   "enforced",
+				"mechanism": sb.Mechanism(),
+				"workspace": env.Workspace,
+			},
 		}); err != nil {
-			return Outcome{}, nil, err
+			return Outcome{}, nil, fmt.Errorf("harness: journal isolation posture for %q: %w", env.TaskID, err)
 		}
 	}
 
@@ -459,21 +451,6 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return out, transcript, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil
-}
-
-func (e *Executor) appendIsolationPosture(env apiv1.InvocationEnvelope, runner map[string]any) error {
-	appender, ok := e.recorder.(EventAppender)
-	if !ok {
-		return fmt.Errorf("harness: sandbox posture requires a journal-backed recorder to record the isolation posture; %T cannot append events", e.recorder)
-	}
-	if err := appender.Append(journal.Event{
-		Type:   journal.EventRunnerIsolationPosture,
-		Stage:  env.TaskID,
-		Runner: runner,
-	}); err != nil {
-		return fmt.Errorf("harness: journal isolation posture for %q: %w", env.TaskID, err)
-	}
-	return nil
 }
 
 func copyMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {

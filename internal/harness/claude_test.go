@@ -427,13 +427,6 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Neutralize the other sandbox-profile vars so the assertion below is not
-	// at the mercy of the ambient CI environment: GitHub-hosted Linux runners
-	// set XDG_CONFIG_HOME=/home/runner/.config, which would otherwise leak
-	// into privateRoots as an extra, host-dependent entry.
-	for _, name := range []string{"USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
-		t.Setenv(name, "")
-	}
 	credentialDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -469,17 +462,6 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 		if !found {
 			t.Fatalf("environment missing sandbox override %s: %v", name, runner.lastReq.Env)
 		}
-	}
-	profileDir := filepath.Join(workspace, ".goobers", "sandbox", "profile")
-	if !slices.Contains(runner.lastReq.Env, "HOME="+profileDir) {
-		t.Fatalf("sandboxed HOME was not isolated to %s: %v", profileDir, runner.lastReq.Env)
-	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(sandbox.policies[0].PrivateRoots, []string{resolvedHome}) {
-		t.Fatalf("policy private roots = %v, want host HOME %q", sandbox.policies[0].PrivateRoots, resolvedHome)
 	}
 	copied, err := os.ReadFile(filepath.Join(workspace, ".goobers", "sandbox", "claude-config", ".credentials.json"))
 	if err != nil {

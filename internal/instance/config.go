@@ -119,9 +119,9 @@ type Config struct {
 	// existed.
 	SecretStores []SecretStoreConfig `json:"secretStores,omitempty" yaml:"secretStores,omitempty"`
 	// Sandbox declares the instance-wide isolation posture (#1305). Absent or
-	// zero-valued it is "enforced". Setting agentic to "disabled" is the
-	// operator-owned trusted-local opt-out; a gaggle may strengthen but not
-	// weaken it through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
+	// zero-valued it is "disabled" — sandboxing is strictly opt-in, so an
+	// unconfigured instance runs exactly as before. A gaggle may override it
+	// through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
 	Sandbox *SandboxConfig `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 	// Workcopies tunes managed working-copy provisioning (docs/design/
 	// v2-cloud-scale.md §3). Nil keeps every default — a pointer, unlike the

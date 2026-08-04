@@ -2215,12 +2215,13 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			if spec.TimeoutSeconds > 0 {
 				opts = append(opts, harness.WithTimeout(time.Duration(spec.TimeoutSeconds)*time.Second))
 			}
-			// Agentic sandbox posture (S3/#166, #1305), resolved once at
-			// the composition root (instance.EffectiveAgenticSandbox).
+			// Opt-in agentic sandbox enforcement (S3/#166, #1305): this
+			// gaggle's effective posture, resolved once at the composition
+			// root (instance.EffectiveAgenticSandbox). The default posture,
+			// disabled, adds no option — the executor and adapter behave
+			// byte-identically to an instance with no sandbox config at all.
 			if sandboxPosture == instance.SandboxEnforced {
 				opts = append(opts, harness.WithSandboxEnforcement())
-			} else {
-				opts = append(opts, harness.WithSandboxOptOut())
 			}
 			return harness.NewExecutor(
 				adapter,
@@ -2656,11 +2657,11 @@ func repoRefsByWorkflow(set *instance.ConfigSet) (map[localscheduler.WorkflowIde
 }
 
 // sandboxPosturesByGaggle resolves each configured gaggle's effective agentic
-// isolation posture (#1305): enforced by default, with an operator-owned
-// trusted-local opt-out that a gaggle may strengthen but not weaken. Resolved
-// once here, at the composition root, so the per-gaggle runner wiring and
-// anything else that needs the posture agree on one resolution (the same
-// shape as branchNamespacesByGaggle above).
+// isolation posture (#1305): the gaggle's own sandbox override when declared,
+// else the instance-wide sandbox.agentic posture, else disabled. Resolved once
+// here, at the composition root, so the per-gaggle runner wiring and anything
+// else that needs the posture agree on one resolution (the same shape as
+// branchNamespacesByGaggle above).
 func sandboxPosturesByGaggle(cfg *instance.Config, set *instance.ConfigSet) map[string]instance.SandboxPosture {
 	out := make(map[string]instance.SandboxPosture, len(set.Gaggles))
 	for i := range set.Gaggles {

@@ -57,11 +57,11 @@
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
         "sandbox": {
-          "description": "Per-gaggle isolation posture for agentic stages (#1305). Omitted inherits the instance posture or the enforced default. A gaggle may strengthen a trusted-local instance opt-out but cannot weaken enforcement.",
+          "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture or the enforced default; disabled is effective only when the operator also opts out in instance.yaml." }
+            "agentic": { "type": "string", "enum": ["disabled", "enforced"], "description": "Isolation posture for agentic stages. Omitted inherits the instance posture." }
           }
         },
         "workcopies": {
