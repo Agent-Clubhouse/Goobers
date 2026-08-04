@@ -48,7 +48,9 @@ const (
 )
 
 // GraphEdge is one declared transition. Target retains the machine target,
-// including the empty successful-completion target and reserved targets.
+// including the empty successful-completion target and terminal reserved
+// targets. Parallel branch "@join" targets are resolved to the concrete join
+// node so converging edges describe the executable graph.
 //
 // Branch names the parallel branch on fan-out edges leaving a parallel state.
 // It is empty on ordinary sequential and converging join edges.

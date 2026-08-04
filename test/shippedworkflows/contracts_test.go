@@ -741,7 +741,6 @@ func TestTerminalScenariosDiscoverConsecutiveGateEscalation(t *testing.T) {
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
-	graph.Edges = resolvedJoinEdges(graph)
 	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
@@ -874,67 +873,6 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 		return path, true
 	}
 	return nil, false
-}
-
-// resolvedJoinEdges returns graph.Edges with each branch-internal edge whose
-// Target is the reserved "@join" marker rewritten to point at its owning
-// parallel's actual join stage instead. model.GraphEdge deliberately keeps
-// "@join" as a literal target ("Target retains the machine target,
-// including... reserved targets") since a portal-style consumer needs to
-// know structurally that an edge is a join edge — but this file's scenario
-// generator walks the graph to find a path to a terminal, and a run never
-// actually settles "at" the literal state "@join" (the runner resolves it
-// to the join stage immediately), so both the path walk and the generated
-// scenario need the real target, not the DSL-only placeholder.
-func resolvedJoinEdges(graph workflow.Graph) []workflow.GraphEdge {
-	bySource := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
-	for _, edge := range graph.Edges {
-		bySource[edge.Source] = append(bySource[edge.Source], edge)
-	}
-
-	branchJoin := map[string]string{} // branch-member state -> real join target
-	for _, node := range graph.Nodes {
-		if node.Kind != workflow.GraphNodeParallel {
-			continue
-		}
-		var joinTarget string
-		var branchStarts []string
-		for _, edge := range bySource[node.ID] {
-			switch {
-			case edge.Outcome == "join":
-				joinTarget = edge.Target
-			case edge.Branch != "":
-				branchStarts = append(branchStarts, edge.Target)
-			}
-		}
-		for _, start := range branchStarts {
-			seen := map[string]bool{}
-			queue := []string{start}
-			for len(queue) > 0 {
-				state := queue[0]
-				queue = queue[1:]
-				if state == "" || state == workflow.TargetJoin || seen[state] {
-					continue
-				}
-				seen[state] = true
-				branchJoin[state] = joinTarget
-				for _, edge := range bySource[state] {
-					queue = append(queue, edge.Target)
-				}
-			}
-		}
-	}
-
-	resolved := make([]workflow.GraphEdge, len(graph.Edges))
-	for i, edge := range graph.Edges {
-		if edge.Target == workflow.TargetJoin {
-			if target, ok := branchJoin[edge.Source]; ok {
-				edge.Target = target
-			}
-		}
-		resolved[i] = edge
-	}
-	return resolved
 }
 
 func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
