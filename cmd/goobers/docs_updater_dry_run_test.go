@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -20,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -168,9 +168,9 @@ func runDocsUpdaterDryRun(t *testing.T, runID string, agentStatus apiv1.ResultSt
 
 func loadShippedDocsUpdater(t *testing.T) apiv1.Workflow {
 	t.Helper()
-	set, report, err := instance.LoadConfigDir(filepath.Join("..", "..", "selfhost"))
+	set, report, err := instance.LoadConfigDir(filepath.Join("..", "..", "reference-workflows"))
 	if err != nil {
-		t.Fatalf("load selfhost config: %v\n%v", err, report)
+		t.Fatalf("load reference-workflows config: %v\n%v", err, report)
 	}
 	for _, definition := range set.Workflows {
 		if definition.Spec.Gaggle == "goobers" && definition.Name == "docs-updater" {
@@ -228,7 +228,7 @@ func newDocsDryRunRunner(
 	}
 	grants := []credentials.Grant{
 		{Capability: "repo:push", Ref: "docs-dry-run"},
-		{Capability: "github:pr:write", Ref: "docs-dry-run"},
+		{Capability: "provider:pr:write", Ref: "docs-dry-run"},
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -347,7 +347,7 @@ func runDocsDryRunMake() int {
 		fmt.Fprintf(os.Stderr, "make fixture: args = %q, want [ci]\n", os.Args[1:])
 		return 2
 	}
-	cmd := exec.Command("git", "cat-file", "-e", "HEAD:"+docsDryRunFile)
+	cmd := testgit.Command("cat-file", "-e", "HEAD:"+docsDryRunFile)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

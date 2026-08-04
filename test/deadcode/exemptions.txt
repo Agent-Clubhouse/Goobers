@@ -95,8 +95,21 @@ github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContextAndFactory # Tra
 github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transcript-boundary option retained for executor tests.
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
+github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-workspace process-termination injection seam retained for the lock-aware reset lifecycle test.
 
 # Quarantined, reserved, and extension seams required by the architecture.
+github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # DEC-3 shared target lease implementation ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
+github.com/goobers/goobers/internal/decomposition.MarkerConflictError.Error # DEC-3 conflict surface ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.CreateChild # DEC-3 idempotent child primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and concurrent-create tests (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.AppendMarkerComment # DEC-3 idempotent record primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and conflict tests (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.AttachChild # DEC-3 hierarchy primitive ships ahead of its DEC-4 publisher caller and is exercised by hierarchy and revision-guard tests (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.validate # DEC-3 primitive validation helper is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.guardedItem # DEC-3 revision-guard helper is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.findChild # DEC-3 exact child-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.Primitives.findComment # DEC-3 exact comment-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.markedBody # DEC-3 stable marker renderer is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.markerKeyLine # DEC-3 exact marker-key renderer is reachable through the reserved DEC-4 entrypoints (#2245).
+github.com/goobers/goobers/internal/decomposition.containsLine # DEC-3 exact marker matcher is reachable through the reserved DEC-4 entrypoints (#2245).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
 github.com/goobers/goobers/internal/engine.Registry.Register # Name+spec registration convenience wrapper over RegisterDefinition (#1251 moved production callers to RegisterDefinition for DSL-version plumbing), retained for tier 3 and exercised by registry package tests.
@@ -129,6 +142,7 @@ github.com/goobers/goobers/internal/journal.encodeOutputs # Cross-runner conform
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
+github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
@@ -143,6 +157,8 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
+github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
+github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 
 # Read-model conformance contract (#1921): a backend-neutral suite imported by
 # each backend's _test.go, so it is unreachable from any main by construction.
@@ -169,11 +185,6 @@ github.com/goobers/goobers/internal/readmodel/conformance.runID # Contract fixtu
 # markers, retention (#1932) records removal intent. These entries are expected to
 # go STALE and be deleted as each of those lands; a stale entry fails this gate.
 github.com/goobers/goobers/internal/readmodel/intake.PathFor # Resolves intake.db inside an instance directory for every opener.
-
-# Projector observability (#1923). Stats is read by the freshness surface
-# (#1927, Wave 4), which reports projector lag and degraded conditions to the
-# client. Expected to go stale when that lands.
-github.com/goobers/goobers/internal/readmodel/projector.Projector.Stats # Projector counters for the freshness envelope (#1927).
 
 # Repair sweep observability (#1924). Stats feeds the freshness envelope (#1927,
 # Wave 4), which reports sweep cycle time and degraded conditions. Expected to go

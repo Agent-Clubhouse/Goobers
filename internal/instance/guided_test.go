@@ -58,7 +58,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
-		string(capability.GitHubPRWrite):     "WIDGET_PR_TOKEN",
+		string(capability.ProviderPRWrite):   "WIDGET_PR_TOKEN",
 		string(capability.RepoPush):          "WIDGET_PUSH_TOKEN",
 		string(capability.AgentModel):        "WIDGET_COPILOT_TOKEN",
 	}
@@ -105,6 +105,14 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 			if task.Goober != "" && !slices.Contains(task.Capabilities, string(capability.AgentModel)) {
 				t.Errorf("workflow %q agentic task %q lacks agent:model: %v",
 					workflow.Name, task.Name, task.Capabilities)
+			}
+			// #2173: the generated implementation.yaml's local-ci stage must
+			// reflect the operator's answered CI command on disk, not the
+			// acme-web example's literal `make ci`.
+			if task.Name == LocalCIStageName {
+				if task.Run == nil || !slices.Equal(task.Run.Command, []string{"npm", "run", "ci"}) {
+					t.Errorf("workflow %q local-ci command = %+v, want [npm run ci]", workflow.Name, task.Run)
+				}
 			}
 		}
 	}
@@ -248,7 +256,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				string(capability.AgentModel):        "MODEL_TOKEN",
 			}
 			if workflow == GuidedWorkflowImplementation || workflow == GuidedWorkflowBacklogCuration {
-				wantCredentials[string(capability.GitHubPRWrite)] = "PR_TOKEN"
+				wantCredentials[string(capability.ProviderPRWrite)] = "PR_TOKEN"
 			}
 			if workflow == GuidedWorkflowImplementation {
 				wantCredentials[string(capability.RepoPush)] = "PUSH_TOKEN"
@@ -263,6 +271,98 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGuidedGaggleAndWorkflowDocumentCICommandLink is #2071's discoverability
+// half: the ciCommand<->local-ci relationship was previously documented only
+// in the CRD schema, CONTRIBUTING.md, and hand-written config-examples — none
+// of which a user looking at a freshly generated gaggle.yaml/implementation.yaml
+// is looking at. Both generated files must now carry an inline comment naming
+// the other side of the link, and a workflow with no local-ci stage (no
+// implementation workflow selected) must not carry a dangling comment about a
+// stage it doesn't have.
+func TestGuidedGaggleAndWorkflowDocumentCICommandLink(t *testing.T) {
+	t.Run("implementation workflow: both files document the link", func(t *testing.T) {
+		opts := GuidedOptions{
+			GaggleName:           "widget",
+			RepoOwner:            "acme",
+			RepoName:             "widget",
+			RepoTokenEnv:         "REPO_TOKEN",
+			WorkTrackingTokenEnv: "ISSUES_TOKEN",
+			PullRequestTokenEnv:  "PR_TOKEN",
+			RepoPushTokenEnv:     "PUSH_TOKEN",
+			CopilotTokenEnv:      "MODEL_TOKEN",
+			Workflows:            []string{GuidedWorkflowImplementation},
+			CICommand:            []string{"go", "test", "./..."},
+		}
+		sourceRoot := filepath.Join(t.TempDir(), "widget-config-source")
+		if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+			t.Fatalf("SeedGuidedConfigSource: %v", err)
+		}
+
+		gaggleData, err := os.ReadFile(filepath.Join(sourceRoot, "gaggles", "widget", "gaggle.yaml"))
+		if err != nil {
+			t.Fatalf("read gaggle.yaml: %v", err)
+		}
+		if !strings.Contains(string(gaggleData), "Overrides the `local-ci` stage's declared command") {
+			t.Errorf("gaggle.yaml lacks the ciCommand<->local-ci comment:\n%s", gaggleData)
+		}
+		if !strings.Contains(string(gaggleData), "MGV-1/#1009") {
+			t.Errorf("gaggle.yaml comment lacks the MGV-1/#1009 reference:\n%s", gaggleData)
+		}
+
+		workflowData, err := os.ReadFile(filepath.Join(sourceRoot, "gaggles", "widget", "workflows", GuidedWorkflowImplementation+".yaml"))
+		if err != nil {
+			t.Fatalf("read implementation.yaml: %v", err)
+		}
+		if !strings.Contains(string(workflowData), `The "local-ci" stage below runs this gaggle's ciCommand`) {
+			t.Errorf("implementation.yaml lacks the local-ci<->ciCommand comment:\n%s", workflowData)
+		}
+		// The comment must precede the tasks list, not follow it, so a reader
+		// scanning top-down sees the explanation before the stage itself.
+		commentIdx := strings.Index(string(workflowData), "The \"local-ci\" stage below")
+		tasksIdx := strings.Index(string(workflowData), "\n  tasks:\n")
+		if commentIdx < 0 || tasksIdx < 0 || commentIdx > tasksIdx {
+			t.Errorf("comment (idx %d) does not precede tasks: (idx %d):\n%s", commentIdx, tasksIdx, workflowData)
+		}
+		// The injected comment must not corrupt the YAML: the whole source
+		// tree, including this file, must still load cleanly.
+		if _, err := LoadGuidedSourceConfig(sourceRoot); err != nil {
+			t.Fatalf("config source with the injected comment failed to load: %v", err)
+		}
+	})
+
+	t.Run("work-nomination only: no local-ci stage, no dangling comment", func(t *testing.T) {
+		opts := GuidedOptions{
+			GaggleName:           "widget",
+			RepoOwner:            "acme",
+			RepoName:             "widget",
+			RepoTokenEnv:         "REPO_TOKEN",
+			WorkTrackingTokenEnv: "ISSUES_TOKEN",
+			CopilotTokenEnv:      "MODEL_TOKEN",
+			Workflows:            []string{GuidedWorkflowWorkNomination},
+		}
+		sourceRoot := filepath.Join(t.TempDir(), "widget-config-source")
+		if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+			t.Fatalf("SeedGuidedConfigSource: %v", err)
+		}
+
+		gaggleData, err := os.ReadFile(filepath.Join(sourceRoot, "gaggles", "widget", "gaggle.yaml"))
+		if err != nil {
+			t.Fatalf("read gaggle.yaml: %v", err)
+		}
+		if strings.Contains(string(gaggleData), "ciCommand") {
+			t.Errorf("gaggle.yaml unexpectedly mentions ciCommand with no implementation workflow selected:\n%s", gaggleData)
+		}
+
+		workflowData, err := os.ReadFile(filepath.Join(sourceRoot, "gaggles", "widget", "workflows", GuidedWorkflowWorkNomination+".yaml"))
+		if err != nil {
+			t.Fatalf("read work-nomination.yaml: %v", err)
+		}
+		if strings.Contains(string(workflowData), "local-ci") {
+			t.Errorf("work-nomination.yaml (no local-ci stage) unexpectedly mentions local-ci:\n%s", workflowData)
+		}
+	})
 }
 
 func TestValidGuidedTokenEnvNameRejectsTokenValues(t *testing.T) {

@@ -103,6 +103,9 @@ export const goWireFixtures = {
       "issuesUrl": null,
       "chatUrl": null,
       "links": []
+    },
+    "capabilities": {
+      "revealRun": false
     }
   },
   "gaggles": {
@@ -365,7 +368,16 @@ export const goWireFixtures = {
         "evaluator": "",
         "capabilities": [
           "repo:push"
-        ]
+        ],
+        "timeoutSeconds": 3600,
+        "retry": {
+          "maxAttempts": 2,
+          "backoffSeconds": 30
+        },
+        "policyActions": [
+          "pr:open"
+        ],
+        "rawYaml": "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n"
       },
       {
         "name": "review",
@@ -375,7 +387,12 @@ export const goWireFixtures = {
         "evaluator": "agentic",
         "capabilities": [
           "repo:read"
-        ]
+        ],
+        "branches": {
+          "needs-changes": "implement",
+          "pass": ""
+        },
+        "rawYaml": "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n"
       }
     ]
   },
@@ -402,7 +419,8 @@ export const goWireFixtures = {
         "repassCount": 2,
         "retryCount": 2,
         "policyRetryCount": 1,
-        "infraRetryCount": 1
+        "infraRetryCount": 1,
+        "noWork": false
       }
     ],
     "workflowActivity": [
@@ -436,6 +454,7 @@ export const goWireFixtures = {
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
+    "noWork": false,
     "graph": {
       "name": "implementation",
       "version": 7,
@@ -771,6 +790,7 @@ export const goWireFixtures = {
       }
     ],
     "curation": {
+      "everRecorded": false,
       "runs": 0,
       "reportedRuns": 0,
       "ready": 0,
@@ -784,9 +804,14 @@ export const goWireFixtures = {
       "bounced": 0
     },
     "readyPool": {
+      "sampleEverRecorded": false,
       "claimAgeSamples": 0,
+      "bounceEverRecorded": false,
       "forwardCurationThroughput": 0,
-      "implementationDemand": 0
+      "implementationDemand": 0,
+      "inFlightClaimSamples": 0,
+      "averageInFlightClaimAgeSeconds": 0,
+      "oldestInFlightClaimAgeSeconds": 0
     }
   },
   "telemetryErrorSignatures": {

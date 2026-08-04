@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,6 +25,122 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 			{"name": "Done", "category": "Completed"},
 		}})
 	})
+}
+
+func TestADOProviderOpenPullRequestCreatesThenUpdates(t *testing.T) {
+	type requestBody struct {
+		SourceRefName string `json:"sourceRefName"`
+		TargetRefName string `json:"targetRefName"`
+		Title         string `json:"title"`
+		Description   string `json:"description"`
+		IsDraft       *bool  `json:"isDraft"`
+	}
+	var posted, patched requestBody
+	created := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			value := []interface{}{}
+			if created {
+				value = append(value, map[string]interface{}{
+					"pullRequestId": 42,
+					"url":           "api-pr-url",
+					"sourceRefName": "refs/heads/goobers/implementation/run-1",
+					"targetRefName": "refs/heads/main",
+					"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+				})
+			}
+			writeJSON(t, w, map[string]interface{}{"value": value})
+		case http.MethodPost:
+			decodeJSON(t, r, &posted)
+			created = true
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+			})
+		default:
+			t.Fatalf("unexpected pullrequests method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		decodeJSON(t, r, &patched)
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId": 42,
+			"url":           "api-pr-url",
+			"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Implement ADO PR creation",
+		Body:       "Provider-neutral open",
+		Head:       "refs/heads/goobers/implementation/run-1",
+		Base:       "refs/heads/main",
+		Draft:      true,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
+		t.Fatalf("OpenPullRequest result = %#v", result)
+	}
+	if posted.SourceRefName != "refs/heads/goobers/implementation/run-1" ||
+		posted.TargetRefName != "refs/heads/main" ||
+		posted.Title != "Implement ADO PR creation" ||
+		posted.Description != "Provider-neutral open" ||
+		posted.IsDraft == nil || !*posted.IsDraft {
+		t.Fatalf("OpenPullRequest body = %#v", posted)
+	}
+
+	result, err = provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Updated title",
+		Body:       "Updated description",
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		Draft:      false,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest update returned error: %v", err)
+	}
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
+		t.Fatalf("OpenPullRequest update result = %#v", result)
+	}
+	if patched.Title != "Updated title" || patched.Description != "Updated description" ||
+		patched.IsDraft == nil || *patched.IsDraft {
+		t.Fatalf("OpenPullRequest update body = %#v", patched)
+	}
+}
+
+func TestADOProviderOpenPullRequestReturnsProviderFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		http.Error(w, `{"message":"source branch does not exist"}`, http.StatusBadRequest)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Broken",
+		Head:       "missing",
+		Base:       "main",
+	})
+	if err == nil || !strings.Contains(err.Error(), "source branch does not exist") {
+		t.Fatalf("OpenPullRequest error = %v, want provider failure", err)
+	}
 }
 
 func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
@@ -548,11 +665,15 @@ func TestADOProviderListPullRequests(t *testing.T) {
 		}
 		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
 			{
-				"pullRequestId":         12,
-				"url":                   "api-pr-url",
-				"status":                "active",
-				"title":                 "Implement ADO reads",
-				"createdBy":             map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
+				"pullRequestId": 12,
+				"url":           "api-pr-url",
+				"status":        "active",
+				"title":         "Implement ADO reads",
+				"createdBy":     map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
+				"reviewers": []map[string]interface{}{
+					{"displayName": "Pending Reviewer", "uniqueName": "reviewer@example.com", "vote": 0},
+					{"displayName": "Completed Reviewer", "uniqueName": "done@example.com", "vote": 10},
+				},
 				"creationDate":          "2026-07-15T20:30:00Z",
 				"sourceRefName":         "refs/heads/goobers/implementation/run-1",
 				"targetRefName":         "refs/heads/main",
@@ -564,8 +685,10 @@ func TestADOProviderListPullRequests(t *testing.T) {
 			},
 			{
 				"pullRequestId": 13,
-				"sourceRefName": "refs/heads/human/manual-fix",
+				"sourceRefName": "refs/heads/goobers/implementation/run-2",
 				"targetRefName": "refs/heads/main",
+				"createdBy":     map[string]string{"uniqueName": "other@example.com"},
+				"reviewers":     []map[string]interface{}{{"uniqueName": "reviewer@example.com", "vote": 0}},
 			},
 		}})
 	})
@@ -574,9 +697,11 @@ func TestADOProviderListPullRequests(t *testing.T) {
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
 	prs, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
-		Repository: RepositoryRef{Name: "repo", Project: "project"},
-		Base:       "main",
-		HeadPrefix: "goobers/",
+		Repository:        RepositoryRef{Name: "repo", Project: "project"},
+		Base:              "main",
+		HeadPrefix:        "goobers/",
+		Author:            "mona@example.com",
+		RequestedReviewer: "reviewer@example.com",
 	})
 	if err != nil {
 		t.Fatalf("ListPullRequests returned error: %v", err)
@@ -594,8 +719,24 @@ func TestADOProviderListPullRequests(t *testing.T) {
 	if !pr.Draft || pr.CheckState != CheckStatePending || len(pr.Labels) != 1 || pr.Labels[0] != "goobers:needs-remediation" {
 		t.Fatalf("unexpected pull request metadata: %#v", pr)
 	}
+	if pr.Author != "mona@example.com" || len(pr.Assignees) != 0 ||
+		len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0] != "reviewer@example.com" {
+		t.Fatalf("unexpected pull request identities: %#v", pr)
+	}
 	if got := pr.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-07-15T20:30:00Z" {
 		t.Fatalf("UpdatedAt = %q", got)
+	}
+}
+
+func TestADOProviderListPullRequestsRejectsAssigneeFilter(t *testing.T) {
+	provider := NewADOProvider("org", "project", "token")
+	_, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Assignee:   "mona@example.com",
+	})
+	var unsupported ErrUnsupported
+	if !errors.As(err, &unsupported) || unsupported.Capability != CapPRQueryAssignee {
+		t.Fatalf("ListPullRequests error = %v, want ErrUnsupported for %q", err, CapPRQueryAssignee)
 	}
 }
 

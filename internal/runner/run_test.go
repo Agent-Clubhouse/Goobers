@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -471,7 +471,7 @@ func TestRunnerToleratedFailureStopsHeartbeatBeforeJournalingOutcome(t *testing.
 		if time.Now().After(deadline) {
 			t.Fatal("heartbeat was not journaled while task was in flight")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval; heartbeat persistence is observable only in the journal.
 	}
 
 	releaseOnce.Do(func() { close(blocker.release) })
@@ -683,11 +683,11 @@ func TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts(t *testing.T) {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",
@@ -1443,6 +1443,110 @@ func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
 	}
 }
 
+// TestRunnerDeclaresCheckoutConesOnTheStageWire is #649's counterpart to
+// TestRunnerKeepsCheckoutOffTheStageWire: RepoRef.Checkout itself stays off
+// the wire, but the sparse cones it declared are surfaced through the
+// separate, additive CheckoutCones envelope field so a stage can tell its
+// checkout is partial. A workflow with no checkout override gets no field at
+// all — the key-absent, regression-identical case.
+func TestRunnerDeclaresCheckoutConesOnTheStageWire(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, &envelopeCapturingAutomated{})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"services/web"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskEnv, ok := det.received["run-cones:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	want := map[string][]string{"": {"services/web"}}
+	if !reflect.DeepEqual(taskEnv.CheckoutCones, want) {
+		t.Fatalf("task envelope CheckoutCones = %+v, want %+v", taskEnv.CheckoutCones, want)
+	}
+}
+
+// TestRunnerOmitsCheckoutConesForFullCheckout is the key-absent counterpart:
+// a workflow that never declares project.checkout gets no CheckoutCones
+// field at all, not an empty-but-present map.
+func TestRunnerOmitsCheckoutConesForFullCheckout(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-absent-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones-absent:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, nil)
+
+	if _, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones-absent",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	taskEnv, ok := det.received["run-cones-absent:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	if taskEnv.CheckoutCones != nil {
+		t.Fatalf("task envelope CheckoutCones = %+v, want nil (no checkout override declared)", taskEnv.CheckoutCones)
+	}
+}
+
 // TestRunnerSetsBaseBranchFromRepoRef is #2087's core: every invocation
 // envelope (task and automated gate) carries BaseBranch from the run's own
 // RepoRef.Branch — the branch the worktree was actually forked from — not a
@@ -1546,7 +1650,7 @@ func TestRunnerThreadsAutomatedGateCadenceToCIPollTask(t *testing.T) {
 			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
 			Run:          &apiv1.DeterministicRun{Command: []string{"true"}},
 			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
-			Capabilities: []string{"github:pr:write"},
+			Capabilities: []string{"provider:pr:write"},
 			Next:         "ci-gate",
 		}},
 		Gates: []apiv1.Gate{{
@@ -1637,7 +1741,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		Trigger:      journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef:      apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Item:         &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
-		RunControls:  apiv1.RunControls{MaxRepasses: 2, StalledRunTimeout: "2h"},
+		RunControls:  apiv1.RunControls{MaxRepasses: 2, StalledRunTimeout: "2h", MaxRunDuration: "6h"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1665,7 +1769,8 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	if id.GooberDigest != gooberDigest {
 		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
 	}
-	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 || id.RunControls.StalledRunTimeout != "2h0m0s" {
+	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 ||
+		id.RunControls.StalledRunTimeout != "2h0m0s" || id.RunControls.MaxRunDuration != "6h0m0s" {
 		t.Errorf("run.yaml runControls = %+v, want pinned effective controls", id.RunControls)
 	}
 	if len(id.Inputs) != 2 ||
@@ -4515,6 +4620,10 @@ type blockingCommenter struct {
 	ctxErr  error
 }
 
+func (*blockingCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return nil, nil
+}
+
 func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	close(c.called)
 	<-c.release
@@ -4523,12 +4632,26 @@ func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.Upda
 }
 
 type recordingCommenter struct {
-	requests []providers.UpdateWorkItemRequest
-	err      error
+	requests  []providers.UpdateWorkItemRequest
+	persisted []providers.UpdateWorkItemRequest
+	err       error
+}
+
+func (c *recordingCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	var comments []providers.Comment
+	for _, req := range c.persisted {
+		if req.ID == itemID {
+			comments = append(comments, providers.Comment{Body: req.Comment})
+		}
+	}
+	return comments, nil
 }
 
 func (c *recordingCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	c.requests = append(c.requests, req)
+	if c.err == nil {
+		c.persisted = append(c.persisted, req)
+	}
 	return providers.WorkItem{}, c.err
 }
 
@@ -4965,6 +5088,7 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated", res.Phase)
 	}
@@ -4974,6 +5098,90 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 	if !strings.Contains(commenter.requests[0].Comment, "repass budget exhausted") {
 		t.Fatalf("comment = %q, want automatic escalation reason", commenter.requests[0].Comment)
 	}
+}
+
+func TestTerminalGateNotificationDefersToParkingStage(t *testing.T) {
+	reason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "park-escalated",
+		Escalated: true, DuplicateDiff: true,
+	})
+	if notify || reason != "" {
+		t.Fatalf("terminalGateNotificationReason = %q,%t, want no runner comment when parking stage owns it", reason, notify)
+	}
+}
+
+func TestTerminalGateNotificationRetainedForArbitraryStage(t *testing.T) {
+	reason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
+		Escalated: true, DuplicateDiff: true,
+	})
+	if !notify || reason == "" {
+		t.Fatalf("terminalGateNotificationReason = %q,%t, want runner fallback for stage without comment ownership", reason, notify)
+	}
+}
+
+func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
+	t.Run("CI failure", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-ci")
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultFailure),
+			Error: &journal.ErrorDetail{Code: "deadline_exceeded", Message: "exceeded its 10m timeout"},
+		}); err != nil {
+			t.Fatalf("append stage failure: %v", err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement"}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		cause, err := priorRepassCause(run, "implement")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "stage-failure" || cause.Stage != "local-ci" ||
+			cause.ErrorCode != "deadline_exceeded" {
+			t.Fatalf("cause = %+v, want local-ci deadline failure", cause)
+		}
+	})
+
+	t.Run("reviewer", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-review")
+		data, err := json.Marshal(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges, Rationale: "parser still accepts empty input",
+		})
+		if err != nil {
+			t.Fatalf("marshal verdict: %v", err)
+		}
+		ref, err := run.RecordArtifact("verdict/review-1.json", data)
+		if err != nil {
+			t.Fatalf("record verdict: %v", err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+			Target: "implement", Ref: &ref,
+		}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		cause, err := priorRepassCause(run, "implement")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "reviewer" || cause.Gate != "review" ||
+			!strings.Contains(cause.Rationale, "empty input") {
+			t.Fatalf("cause = %+v, want reviewer needs-changes rationale", cause)
+		}
+	})
+}
+
+func newRunnerTestJournal(t *testing.T, runID string) *journal.Run {
+	t.Helper()
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	return run
 }
 
 // TestRunnerEmitsRunTaskAndGateSpans is issue #126's runner-level acceptance:
@@ -5758,7 +5966,7 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 // TestRunnerFastFailsEmptyDiffFromAgenticStage is #415's reviewer sibling,
 // driven end to end: an AGENTIC implement stage that returns success but
 // commits nothing (an empty diff) reaching an agentic review gate fast-`fail`s
-// on review-1 — terminal `aborted` via the gate's fail branch — without ever
+// on review-1 and routes through the mechanical escalation branch without ever
 // invoking the reviewer. Exercises the runner wiring the gate-package unit test
 // can't: evaluateGate detecting the empty diff from recordReviewerDiff's nil
 // pointer AND confirming the subject stage is agentic before passing
@@ -5799,8 +6007,8 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseAborted {
-		t.Fatalf("phase = %q, want aborted (an agentic stage's empty diff fast-fails to the gate's fail→@abort branch on review-1)", res.Phase)
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (an agentic stage's empty diff routes to remediation rather than the reviewer fail branch)", res.Phase)
 	}
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
@@ -5942,7 +6150,7 @@ func TestRunnerLiveReviewerEmitsHeartbeat(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("reviewer heartbeat was not journaled while the gate was in flight")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval; gate heartbeat persistence is observable only in the journal.
 	}
 
 heartbeatObserved:

@@ -239,22 +239,22 @@ func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
 
 type blockingBacklogCounter struct {
 	started chan struct{}
-	release chan struct{}
 }
 
-func (c *blockingBacklogCounter) EligibleCount(context.Context) (int, error) {
+func (c *blockingBacklogCounter) EligibleCount(ctx context.Context) (int, error) {
 	close(c.started)
-	<-c.release
-	return 0, nil
+	<-ctx.Done()
+	return 0, ctx.Err()
 }
 
-func TestReloadWaitsForActiveTick(t *testing.T) {
-	counter := &blockingBacklogCounter{started: make(chan struct{}), release: make(chan struct{})}
+func TestStalledDemandPollDoesNotIndefinitelyDelayReload(t *testing.T) {
+	counter := &blockingBacklogCounter{started: make(chan struct{})}
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:       "old",
 		BacklogCounter: counter,
 		Starter:        &fakeStarter{},
 	}})
+	sched.demandPollTimeout = 50 * time.Millisecond
 
 	tickDone := make(chan struct{})
 	go func() {
@@ -272,15 +272,13 @@ func TestReloadWaitsForActiveTick(t *testing.T) {
 	}()
 	select {
 	case err := <-reloadDone:
-		t.Fatalf("Reload returned during an active tick: %v", err)
-	case <-time.After(50 * time.Millisecond):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload remained blocked after the demand poll deadline")
 	}
-
-	close(counter.release)
 	<-tickDone
-	if err := <-reloadDone; err != nil {
-		t.Fatal(err)
-	}
 	if _, err := sched.Trigger(context.Background(), "new", time.Now()); err != nil {
 		t.Fatalf("new workflow unavailable after reload: %v", err)
 	}
@@ -570,7 +568,7 @@ func waitForRunFinished(t *testing.T, dir, workflow string) journal.Event {
 				return ev
 			}
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval; run completion is exposed only through the journal.
 	}
 	t.Fatalf("timed out waiting for run.finished for workflow %q", workflow)
 	return journal.Event{}
@@ -1078,6 +1076,58 @@ func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
 	}
 }
 
+func TestReconcileRestoresDailyBudgetAfterShortWindowCompaction(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+	eventTime := now.Add(-48 * time.Hour)
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "curate"}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = now.Add(-12 * time.Hour)
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := journal.CompactInstanceEvents(
+		dir,
+		now.Add(-time.Hour),
+		now.Add(-24*time.Hour),
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	sched := New([]WorkflowEntry{{
+		Workflow: "curate",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 100,
+			MaxRunsPerHour:    100,
+			MaxRunsPerDay:     1,
+		},
+		Starter: &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}},
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: daily budget history must survive compaction")
+	} else if !strings.Contains(err.Error(), ReasonDailyBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonDailyBudget)
+	}
+}
+
 // TestReconcileRateResetClearsBudgetWindow is #315's core: a rate-limit reset
 // marker (written by `goobers reset-rate-limit`) raises the budget window's
 // floor to the reset moment, so run.started history at or before it stops
@@ -1473,7 +1523,7 @@ func waitForCount(t *testing.T, count func() int, want int) {
 		if count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for synchronized scheduler counters.
 	}
 	t.Fatalf("timed out waiting for count >= %d, got %d", want, count())
 }

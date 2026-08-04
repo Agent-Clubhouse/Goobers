@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -230,6 +231,15 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 // IS a new generation, and any client cursor against the old one must
 // resnapshot (§4.2).
 func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) error {
+	// A live daemon owns the projector and the instance lock together. Taking
+	// that same lock makes this offline whole-file replacement mutually
+	// exclusive with every commit-loop write, including repair and retention.
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return fmt.Errorf("rebuild read model while projector is active: %w", err)
+	}
+	defer release()
+
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(l.ReadDB() + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove existing read model %s%s: %w", l.ReadDB(), suffix, err)
@@ -264,6 +274,9 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 
 	result, err := store.BuildFromJournals(ctx, runDirs)
 	if err != nil {
+		return err
+	}
+	if err := store.MarkReady(ctx); err != nil {
 		return err
 	}
 	// Report what was built. On the live instance 27% of run directories are
@@ -471,6 +484,12 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.ReadyPool.AverageClaimAgeSeconds != nil {
 			pf(stdout, ", claimed after %s average", formatStatsDuration(*result.ReadyPool.AverageClaimAgeSeconds*1000))
+		}
+		if result.ReadyPool.InFlightClaimSamples > 0 {
+			pf(stdout, ", %d in flight now (avg %s, oldest %s)",
+				result.ReadyPool.InFlightClaimSamples,
+				formatStatsDuration(result.ReadyPool.AverageInFlightClaimAgeSeconds*1000),
+				formatStatsDuration(result.ReadyPool.OldestInFlightClaimAgeSeconds*1000))
 		}
 		pln(stdout, "")
 	}

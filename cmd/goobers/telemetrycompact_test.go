@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // writeAgedSchedulerEvent writes one scheduler journal record stamped long
@@ -15,7 +17,7 @@ func writeAgedSchedulerEvent(t *testing.T, root string) string {
 	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	line := `{"schema":"goobers.dev/journal/event/v1","seq":1,"time":"2020-01-01T00:00:00Z","type":"trigger.fired","workflow":"a"}` + "\n"
+	line := `{"schema":"goobers.dev/journal/event/v1","seq":1,"time":"2020-01-01T00:00:00Z","type":"tick.skipped","workflow":"a"}` + "\n"
 	path := filepath.Join(schedulerDir, "events.jsonl")
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
@@ -58,7 +60,20 @@ func TestTelemetryCompactDropsAgedJournalRecords(t *testing.T) {
 	if !strings.Contains(stdout, "compacted scheduler journal: 1 record") {
 		t.Fatalf("stdout = %q, want a compaction report", stdout)
 	}
-	data, err := os.ReadFile(path)
+
+	// #2265: compaction advances to a new generation rather than rewriting
+	// path in place — path itself (generation 0) is now frozen forever and
+	// still contains the aged record; resolve the CURRENT generation the
+	// same way OpenInstanceLog/Append/ReadInstanceLog do.
+	schedulerDir := filepath.Dir(path)
+	currentPath, err := journal.InstanceEventsPath(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentPath == path {
+		t.Fatalf("compaction did not advance the instance log generation")
+	}
+	data, err := os.ReadFile(currentPath)
 	if err != nil {
 		t.Fatal(err)
 	}

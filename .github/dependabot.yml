@@ -7,10 +7,15 @@ updates:
   # 5-wide merge queue. Grouping also lets coordinated bumps land together --
   # @azure/msal-react 5 peer-requires @azure/msal-browser 5, which is
   # unmergeable as two separate PRs.
+  # Every ecosystem below carries the same 7-day cooldown: let routine
+  # releases age before adoption. Security updates bypass cooldown
+  # automatically (a dependabot behavior, not something set here).
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       gomod:
@@ -21,7 +26,6 @@ updates:
     directory: "/portal"
     schedule:
       interval: "weekly"
-    # Let routine releases age before adoption; security updates bypass cooldown.
     cooldown:
       default-days: 7
     open-pull-requests-limit: 10
@@ -34,8 +38,34 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/packaging/docker"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      docker:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/samples/getting-started-task-api"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      getting-started-task-api-npm:
         patterns:
           - "*"

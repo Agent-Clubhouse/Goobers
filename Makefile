@@ -217,7 +217,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
 	@echo "deploy/reference kustomize builds OK"
 
-## validate-configs: Build the validator, strictly check selfhost, and check other shipped config trees.
+## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs
 validate-configs:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers
@@ -318,6 +318,11 @@ ci: deadcode
 .PHONY: bench-workcopy
 bench-workcopy:
 	$(GO) run ./test/benchworkcopy $(BENCH_WORKCOPY_ARGS)
+
+## bench-large-repo: Run the >=10 GiB pinned-workspace acceptance benchmark.
+.PHONY: bench-large-repo
+bench-large-repo:
+	$(GO) run ./test/benchworkcopy -preset large-repo -mode pinned $(BENCH_LARGE_REPO_ARGS)
 
 ## stress: Repeat timing-sensitive packages under the race detector.
 .PHONY: stress

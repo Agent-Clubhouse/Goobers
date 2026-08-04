@@ -284,6 +284,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		id:       id,
 		scrubber: cfg.scrubber,
 		now:      cfg.now,
+		observer: cfg.appendObserver,
 		events:   f,
 		lock:     lock,
 		seq:      report.LastSeq,
@@ -377,7 +378,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventStageRerunRequested, EventRunResumed:
+		case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
 			return PhaseRunning
 		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
@@ -394,7 +395,7 @@ func reconstructPhase(events []Event) RunPhase {
 func reconstructReason(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventStageRerunRequested, EventRunResumed:
+		case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
 			return ""
 		case EventRunFinished:
 			if events[i].Error != nil {
@@ -409,7 +410,7 @@ func reconstructReason(events []Event) string {
 func latestActiveResume(events []Event) (Event, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EventRunResumed:
+		case EventRunResumed, EventGateOverridden:
 			return events[i], true
 		case EventRunFinished:
 			return Event{}, false

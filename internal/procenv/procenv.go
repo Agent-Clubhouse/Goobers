@@ -30,10 +30,11 @@ import (
 // behind a corporate proxy or private registry), GOTOOLCHAIN (toolchain
 // selection) — without which `local-ci`'s `make ci` re-downloads modules or
 // fails outright on any host with a customized Go env; and the common
-// non-Go toolchain families (#736, polyglot) — .NET/NuGet, Python, Node, and
-// Rust — so a stage running `dotnet build && dotnet test`, `pip`, `npm`, or
-// `cargo` against a relocated SDK root or cache finds it instead of silently
-// falling back to a HOME-derived default that does not exist on the host.
+// non-Go toolchain families (#736, polyglot) — .NET/NuGet, Python, Node, Rust,
+// and Java/Maven/Gradle — so a stage running `dotnet build && dotnet test`,
+// `pip`, `npm`, `cargo`, `mvn`, or `gradle` against a relocated SDK root or
+// cache finds it instead of silently falling back to a HOME-derived default
+// that does not exist on the host.
 // None of these carries secret material — the allowlist stays default-deny,
 // and toolchain vars that CAN carry secrets (e.g. npm's per-registry
 // `npm_config_//…/:_authToken`) are deliberately excluded, which is why the
@@ -63,6 +64,9 @@ var Vars = []string{
 	"NODE_PATH", "npm_config_cache",
 	// Rust: cargo + rustup homes (registry cache, toolchains).
 	"CARGO_HOME", "RUSTUP_HOME",
+	// Java: JDK roots, JVM options, and Maven + Gradle homes/caches.
+	"JAVA_HOME", "JDK_HOME", "MAVEN_OPTS", "MAVEN_CONFIG", "M2_HOME",
+	"GRADLE_OPTS", "GRADLE_USER_HOME",
 }
 
 // Prefixes are ambient env var name prefixes carried through as a family —

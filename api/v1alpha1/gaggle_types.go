@@ -70,11 +70,15 @@ type GaggleSpec struct {
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
 	// Sandbox overrides the instance-wide isolation posture for this gaggle's
-	// agentic stages (#1305). Effective posture is gaggle override, else the
-	// instance.yaml sandbox block, else disabled — sandboxing is strictly
-	// opt-in, so a gaggle that omits this behaves exactly as before.
+	// agentic stages (#1305). Agentic stages are sandboxed by default. A gaggle
+	// may strengthen an operator's trusted-local opt-out to enforced, but may
+	// not weaken the instance posture.
 	// +optional
 	Sandbox *GaggleSandbox `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
+	// Workcopies overrides the instance-level managed working-copy placement for
+	// this gaggle. Root is an absolute base path; the gaggle name is appended.
+	// +optional
+	Workcopies *GaggleWorkcopies `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
 	// RequireLabels is the default `requireLabels` value every workflow's
 	// `backlog-query` task in this gaggle inherits, mirroring
 	// BranchNamespace's gaggle-default/per-task-override shape (MIRC-2,
@@ -103,6 +107,13 @@ type GaggleSpec struct {
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
 }
 
+// GaggleWorkcopies configures managed working-copy placement for one gaggle.
+type GaggleWorkcopies struct {
+	// Root is an absolute base path for this gaggle's managed working copies.
+	// +kubebuilder:validation:MinLength=1
+	Root string `json:"root" yaml:"root"`
+}
+
 // GaggleSibling declares another gaggle/instance this gaggle knows is
 // independently working the same target repo, for MIRC-2's sibling-overlap
 // validation warning. This instance cannot read the sibling's live config, so
@@ -126,11 +137,12 @@ type GaggleSibling struct {
 	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
 }
 
-// GaggleSandbox mirrors instance.yaml's sandbox block as a per-gaggle
-// override: a posture declaration, never a mechanism selection.
+// GaggleSandbox is a per-gaggle posture declaration, never a mechanism
+// selection. It can strengthen an instance opt-out but cannot weaken
+// enforcement.
 type GaggleSandbox struct {
 	// Agentic is the posture for agentic stages: "disabled" or "enforced".
-	// Empty inherits the instance-wide posture.
+	// Empty inherits the instance-wide posture or the enforced default.
 	// +kubebuilder:validation:Enum=disabled;enforced
 	// +optional
 	Agentic string `json:"agentic,omitempty" yaml:"agentic,omitempty"`

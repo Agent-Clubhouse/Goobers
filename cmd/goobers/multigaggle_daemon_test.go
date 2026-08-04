@@ -166,7 +166,17 @@ func TestDaemonDispatchesAndDrainsAllManifestGaggles(t *testing.T) {
 
 	drained := make(chan bool, 1)
 	go func() {
-		drained <- waitSchedulerDrained(scheduler, 10*time.Second)
+		done := make(chan struct{})
+		go func() {
+			scheduler.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			drained <- true
+		case <-time.After(10 * time.Second):
+			drained <- false
+		}
 	}()
 	select {
 	case <-drained:
@@ -200,7 +210,7 @@ func waitForStarterCount(t *testing.T, starter *daemonGateStarter, want int) {
 		if starter.count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the test starter's synchronized call count.
 	}
 	t.Fatalf("starter calls = %d, want at least %d", starter.count(), want)
 }

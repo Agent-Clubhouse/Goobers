@@ -110,6 +110,10 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Name: "reference",
 			Path: "/workspace-reference",
 		}},
+		CheckoutCones: map[string][]string{
+			"":          {"services/web"},
+			"reference": {"docs"},
+		},
 		Item: &apiv1.BacklogItem{
 			ID:        "1704",
 			Provider:  apiv1.ProviderGitHub,
@@ -297,6 +301,7 @@ func completeJournalEvent() journal.Event {
 		AttemptClass:        journal.AttemptPolicy,
 		Actor:               "maintainer@example.com",
 		InstructionAddendum: "Reuse the existing parser.",
+		Rationale:           "The nondeterministic result was manually reviewed.",
 		Gate:                "review",
 		Verdict:             "needs-changes",
 		Target:              "implement",

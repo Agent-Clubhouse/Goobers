@@ -140,6 +140,7 @@ function run(
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
+    noWork: false,
   };
 }
 
@@ -176,6 +177,8 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: null,
         evaluator: "",
         capabilities: ["github:issues:write"],
+        timeoutSeconds: 120,
+        rawYaml: "name: query\ntype: deterministic\ngoal: Claim the next approved backlog item.\ncapabilities:\n- github:issues:write\ntimeoutSeconds: 120\n",
       },
       {
         name: "implement",
@@ -184,6 +187,11 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "",
         capabilities: ["repo:push"],
+        timeoutSeconds: 3600,
+        retry: { maxAttempts: 2, backoffSeconds: 30 },
+        policyActions: ["pr:open"],
+        rawYaml:
+          "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item in an isolated worktree.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n",
       },
       {
         name: "review",
@@ -192,6 +200,9 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "agentic",
         capabilities: ["repo:read"],
+        branches: { pass: "", "needs-changes": "implement" },
+        rawYaml:
+          "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n",
       },
     ],
   };
@@ -798,6 +809,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
       models: [],
       curation: {
+        everRecorded: true,
         runs: 3,
         reportedRuns: 3,
         ready: 8,
@@ -811,6 +823,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         bounced: 1,
       },
       readyPool: {
+        sampleEverRecorded: true,
         observedAt: "2026-07-15T10:00:00Z",
         depth: 5,
         averageAgeSeconds: 43_200,
@@ -818,7 +831,11 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         starved: false,
         claimAgeSamples: 4,
         averageClaimAgeSeconds: 64_800,
+        bounceEverRecorded: true,
         bounceRate: 1 / 9,
+        inFlightClaimSamples: 2,
+        averageInFlightClaimAgeSeconds: 5_400,
+        oldestInFlightClaimAgeSeconds: 10_800,
         forwardCurationThroughput: 8,
         implementationDemand: 6,
       },
@@ -961,6 +978,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
 
 function emptyCurationStats() {
   return {
+    everRecorded: false,
     runs: 0,
     reportedRuns: 0,
     ready: 0,
@@ -977,7 +995,12 @@ function emptyCurationStats() {
 
 function emptyReadyPool() {
   return {
+    sampleEverRecorded: false,
+    bounceEverRecorded: false,
     claimAgeSamples: 0,
+    inFlightClaimSamples: 0,
+    averageInFlightClaimAgeSeconds: 0,
+    oldestInFlightClaimAgeSeconds: 0,
     forwardCurationThroughput: 0,
     implementationDemand: 0,
   };

@@ -91,7 +91,7 @@ func TestSuperviseTriggerStopsWhenCancelledDuringBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ft := &fakeTrigger{behavior: func(int) error { return errors.New("fail") }}
 	go func() {
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Intentional delayed cancellation exercises the scheduler's error loop.
 		cancel()
 	}()
 	done := make(chan struct{})

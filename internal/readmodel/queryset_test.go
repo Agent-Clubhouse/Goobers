@@ -100,10 +100,12 @@ func TestRefusalNamesTheNearestNeighbours(t *testing.T) {
 // four populations are partial indexes at both grains. The old assertion is
 // inverted rather than deleted, so the property it protected -- that these are
 // never merely WALKED -- is still what the test is about.
-func TestStageAndPopulationAreServedNotWalked(t *testing.T) {
+func TestStageOutcomeAndPopulationAreServedNotWalked(t *testing.T) {
 	for _, dims := range [][]Dim{
 		{DimStage},
 		{DimGaggle, DimStage},
+		{DimStage, DimOutcome},
+		{DimGaggle, DimStage, DimOutcome, DimSince, DimUntil},
 		{DimStage, DimPopulation},
 		{DimPopulation},
 		{DimGaggle, DimPopulation},
@@ -124,10 +126,7 @@ func TestCombinationsWithoutCoveringSupportAreStillRefused(t *testing.T) {
 	}{
 		{[]Dim{DimOutcome}, "run-level outcome has no recency index of its own"},
 		{[]Dim{DimGaggle, DimWorkflow, DimOutcome}, "same, and workflow is not on run_stage"},
-		{[]Dim{DimStage, DimOutcome},
-			"run_stage keeps only the LAST attempt's status; the reference matches ANY attempt's"},
-		{[]Dim{DimGaggle, DimStage, DimOutcome}, "same"},
-		{[]Dim{DimStage, DimPopulation, DimOutcome}, "same, and no index leads with all three"},
+		{[]Dim{DimStage, DimPopulation, DimOutcome}, "no index leads with all three"},
 		{[]Dim{DimWorkflow, DimStage}, "workflow is not denormalised onto run_stage"},
 		{[]Dim{DimPhase, DimStage}, "phase is not on run_stage either"},
 	} {
@@ -162,7 +161,7 @@ func TestCanonicalKeyIgnoresOrder(t *testing.T) {
 // pass every other test while silently walking rows in production.
 func TestEverySupportedCombinationNamesARealIndex(t *testing.T) {
 	store := openTestStore(t)
-	rows, err := store.readDB().Query(
+	rows, err := store.reader.Query(
 		`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('run', 'run_stage')`)
 	if err != nil {
 		t.Fatalf("list indexes: %v", err)

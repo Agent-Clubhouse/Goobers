@@ -73,7 +73,7 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond) // Intentional age gap distinguishes stale and current lock timestamps.
 	if err := os.Chtimes(lockPath, now.Add(2*time.Second), now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func waitFor(t *testing.T, condition func() bool) {
 		if condition() {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for synchronized supervisor state.
 	}
 	t.Fatal("condition was not met")
 }

@@ -102,7 +102,7 @@ func waitForFile(t *testing.T, path string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("%s was not created within %s (fixture descendant never spawned)", path, waitForFileTimeout)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; the external fixture signals readiness with a file.
 	}
 }
 

@@ -153,17 +153,24 @@ no schema change, no new DSL concepts, per-workflow, and readable in the YAML:
 inputs:
   # Which causes this workflow will ATTEMPT. Most liberal = all of them.
   # Scope down by removing entries; an unlisted cause escalates untouched.
-  remediate: "conflict,substantive,failing-ci,behind-base,sibling-overlap"
+  # human-comment fires when a genuinely new human comment postdates the
+  # watermark the checkpoint records in the sticky remediation-state comment;
+  # detection runs only when this policy names it, so an old pinned policy that
+  # omits it is byte-for-byte unaffected (a clean green PR that merely received
+  # a comment is never parked).
+  remediate: "conflict,substantive,failing-ci,behind-base,sibling-overlap,human-comment"
   # Findings below this severity are reported to the agent as context but do
   # not by themselves justify a remediation cycle. Severity is carried on every
   # Finding today and routed on by nothing.
   minSeverity: "warning"
   # Independent attempt allowances. Exhausting one cause does not consume
-  # another cause's budget.
+  # another cause's budget. humanCommentBudget is optional and defaults to 2
+  # when undeclared, so a workflow that predates the cause keeps working.
   conflictBudget: "2"
   substantiveBudget: "2"
   failingCIBudget: "2"
   siblingOverlapBudget: "2"
+  humanCommentBudget: "2"
 ```
 
 The default shipped config is the liberal one. An author who wants only mechanical

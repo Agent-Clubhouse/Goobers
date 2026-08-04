@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 type sampleSeedCatalog struct {
@@ -392,7 +392,7 @@ func implementRequiredTaskTitle(worktree string) error {
 		{"add", "src/server.ts", "test/server.test.ts"},
 		{"-c", "user.email=quickstart@example.invalid", "-c", "user.name=Quickstart Agent", "commit", "-m", "fix: reject empty task titles"},
 	} {
-		command := exec.Command("git", args...)
+		command := testgit.Command(args...)
 		command.Dir = worktree
 		if output, err := command.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %w: %s", args, err, output)
@@ -403,7 +403,7 @@ func implementRequiredTaskTitle(worktree string) error {
 
 func sampleGitOutput(t *testing.T, directory string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", args...)
+	command := testgit.Command(args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {

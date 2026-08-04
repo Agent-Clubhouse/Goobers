@@ -20,6 +20,14 @@ workflows must not automatically retry a failed step or job.
    milestone; the publisher applies `ci:flake` and removes any `goobers:*` or
    `goobers/status:*` workflow labels before refreshing an issue so flakes cannot
    enter an automated implementation queue accidentally.
+   The hourly `Flake watch` workflow also scans failed checks on open pull
+   requests and recent default-branch runs. It prefers structured check
+   annotations and temporarily falls back to Actions job logs until structured
+   test artifacts are available. Exact or signature-equivalent ledger matches
+   dispatch a `flake-fixer` repository event immediately. Novel timing,
+   contention, ordering, timeout, and race candidates flow through the same
+   ledger publisher; PR failures whose annotation path is changed by that PR
+   remain ordinary regressions.
 4. **Quarantine when necessary:** use the only supported skip form:
 
    ```go

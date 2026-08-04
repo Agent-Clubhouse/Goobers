@@ -22,7 +22,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
-import { instanceWarnings } from "./prototypeData";
+import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
@@ -135,7 +135,7 @@ function Portal({
   // the daemon's stub routes, but each handler is itself a stub — no
   // intervention UI exists yet, and the underlying gate-resolution/rerun
   // wiring is #466/#468's scope, not this seam's.
-  const { navigate } = bindUIActions({
+  const { navigate, revealRun } = bindUIActions({
     navigate: (nextRoute: Route) => {
       const nextHash = routeHash(nextRoute);
       if (window.location.hash === nextHash) {
@@ -153,6 +153,7 @@ function Portal({
     rerun: () => {
       console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
     },
+    revealRun: (runId: string) => client.revealRun(runId),
   });
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
@@ -226,6 +227,7 @@ function Portal({
             client={client}
             key={route.id}
             navigate={navigate}
+            revealRun={revealRun}
             runId={route.id}
             standalone={standalone}
           />

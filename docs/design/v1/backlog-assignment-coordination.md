@@ -9,6 +9,8 @@
 > Origin: a mixed-mode coordination gap — a repo worked by multiple humans and/or multiple
 > Goober daemon instances has no way to divide backlog work; everyone sees the same eligible
 > pool and could pick up the same item.
+>
+> Operator guide: [Coordinate a shared backlog with assignees](../../guides/assignment-aware-backlogs.md).
 
 ## Terminology (do not conflate with mixed-mode / #804)
 

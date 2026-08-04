@@ -118,6 +118,9 @@ func TestGatherImplementContextWritesTaxonomyAndHotFileMap(t *testing.T) {
 		apiv1.FindingRebaseNeeded,
 		apiv1.FindingConflict,
 		apiv1.FindingSubstantive,
+		apiv1.FindingMissingTests,
+		apiv1.FindingScopeCreep,
+		apiv1.FindingContractChange,
 		apiv1.FindingCrossPRBlocked,
 	}
 	var gotClasses []apiv1.FindingClass

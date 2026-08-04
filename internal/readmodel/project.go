@@ -1,10 +1,30 @@
 package readmodel
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+)
+
+// Disposition values for RunRow.Disposition (§5.3).
+//
+// Only two of the three reserved enum values are ever written here.
+// DispositionProduced is deliberately absent: defining "did this run produce
+// something" for every workflow shape is #1429's contract, not this
+// projector's to guess at. DispositionUnknown is the safe default for
+// everything this projector cannot classify — including a real productive
+// run — until #1429 lands.
+const (
+	DispositionUnknown = "unknown"
+	// DispositionNoWork marks a run that touched exactly one stage and that
+	// stage's terminal status was apiv1.ResultNoWork (#2188). Expressed as a
+	// bare string rather than importing api/v1alpha1: event.Status is already
+	// a bare string by the time it reaches the projector, and this package
+	// has no other reason to depend on the API layer.
+	DispositionNoWork = "no-work"
 )
 
 // Projection: journal events to a run row.
@@ -60,6 +80,14 @@ type RunRow struct {
 	OutcomeVerdict string
 	OutcomeTarget  string
 
+	// Disposition is the reserved semantic-work-disposition column (§5.3):
+	// 'no-work' when this run touched exactly one stage and that stage's
+	// terminal status was no-work (#2188), 'unknown' otherwise. It never
+	// claims 'produced' — that half of the enum, and the rest of the
+	// contract, is #1429/#1439's to define; this only ever asserts the one
+	// classification the existing no-work signal already answers cleanly.
+	Disposition string
+
 	// Stages is every stage or gate the run has touched, sorted. It backs the
 	// stage filter without a join (§5.7's run-level rollup principle).
 	Stages []string
@@ -88,6 +116,10 @@ type StageRow struct {
 	LastAttemptClass string
 	StartedAt        *time.Time
 	FinishedAt       *time.Time
+	HadSuccess       bool
+	HadFailure       bool
+	HadOther         bool
+	openAttempts     int
 
 	// The four measurement flags (#1782, §5.7).
 	//
@@ -241,7 +273,14 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		}
 
 		switch event.Type {
-		case journal.EventRunResumed:
+		case journal.EventRunnerAnnotation:
+			if queue, ok := RunnerQueueStatus(event); ok {
+				row.CurrentStage = queue
+			}
+			if suggestion, ok := RunnerResetSuggestion(event); ok {
+				row.CurrentStage = suggestion
+			}
+		case journal.EventRunResumed, journal.EventGateOverridden:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
 			row.Phase = journal.PhaseRunning
@@ -252,17 +291,50 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.CurrentStage = event.Stage
 			s := stageRow(stages, row.RunID, event.Stage)
 			s.Attempts++
+			s.openAttempts++
 			if s.StartedAt == nil {
 				at := event.Time
 				s.StartedAt = &at
 			}
+
+		case journal.EventError:
+			if event.Stage == "" || event.Error == nil || event.Error.Code != "executor_error" {
+				continue
+			}
+			if row.CurrentStage == event.Stage {
+				row.CurrentStage = ""
+			}
+			s := stageRow(stages, row.RunID, event.Stage)
+			if s.openAttempts > 0 {
+				s.openAttempts--
+			} else {
+				// The journal reference synthesizes an attempt when dispatch
+				// fails before stage.started can be recorded.
+				s.Attempts++
+			}
+			s.LastStatus = "failure"
+			s.LastAttemptClass = string(event.AttemptClass)
+			s.HadFailure = true
+			at := event.Time
+			s.FinishedAt = &at
 		case journal.EventStageFinished:
 			if row.CurrentStage == event.Stage {
 				row.CurrentStage = ""
 			}
 			s := stageRow(stages, row.RunID, event.Stage)
+			if s.openAttempts > 0 {
+				s.openAttempts--
+			}
 			s.LastStatus = event.Status
 			s.LastAttemptClass = string(event.AttemptClass)
+			switch event.Status {
+			case "success":
+				s.HadSuccess = true
+			case "failure":
+				s.HadFailure = true
+			default:
+				s.HadOther = true
+			}
 			at := event.Time
 			s.FinishedAt = &at
 			countAttempt(&row, event)
@@ -279,6 +351,15 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.CurrentStage = event.Stage
 			row.RepassCount++
 		case journal.EventRunFinished:
+			// The journal-derived reference closes attempts still open at run
+			// termination as failures. Mirror that before projecting the run's
+			// terminal state so outcome=failure sees the same attempt set.
+			for _, stage := range stages {
+				if stage.openAttempts > 0 {
+					stage.HadFailure = true
+					stage.openAttempts = 0
+				}
+			}
 			phase := journal.RunPhase(event.Status)
 			// An unrecognised terminal status is NOT silently accepted: writing
 			// it would make phase — an indexed, filtered column — carry a value
@@ -291,7 +372,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.Phase = phase
 			finished := event.Time
 			row.FinishedAt = &finished
-			row.CurrentStage = ""
+			if !strings.HasPrefix(row.CurrentStage, workspaceResetSuggestionPrefix) {
+				row.CurrentStage = ""
+			}
 		}
 	}
 
@@ -306,7 +389,53 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// (§14.9); map iteration order would defeat that.
 	sort.Slice(out, func(i, j int) bool { return out[i].Stage < out[j].Stage })
 
+	// Recomputed from the full fold every time (not carried from prev), so
+	// incremental and whole-history projection agree (§14.9) exactly like
+	// row.Stages above.
+	row.Disposition = DispositionUnknown
+	if row.Phase == journal.PhaseCompleted && len(out) == 1 && out[0].LastStatus == DispositionNoWork {
+		row.Disposition = DispositionNoWork
+	}
+
 	return Projection{Run: row, Stages: out}
+}
+
+const workspaceResetSuggestionPrefix = "Workspace reset suggested:"
+
+// RunnerResetSuggestion projects pinned-workspace recovery guidance into the
+// run summary field rendered by portal run lists.
+func RunnerResetSuggestion(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation ||
+		event.Runner["kind"] != "workspace_reset_suggested" ||
+		event.Runner["workspaceMode"] != "pinned" {
+		return "", false
+	}
+	suggestion, ok := event.Runner["suggestion"].(string)
+	if !ok || suggestion == "" {
+		return "", false
+	}
+	return workspaceResetSuggestionPrefix + " " + suggestion, true
+}
+
+// RunnerQueueStatus projects pinned-workspace lease bookkeeping into the
+// operator-visible current-stage slot without changing the normative journal.
+func RunnerQueueStatus(event journal.Event) (string, bool) {
+	if event.Type != journal.EventRunnerAnnotation || event.Runner["workspaceMode"] != "pinned" {
+		return "", false
+	}
+	var position int
+	switch value := event.Runner["queuePosition"].(type) {
+	case int:
+		position = value
+	case float64:
+		position = int(value)
+	default:
+		return "", false
+	}
+	if position <= 0 {
+		return "", true
+	}
+	return fmt.Sprintf("Workspace queue (position %d)", position), true
 }
 
 // countAttempt folds a finished stage attempt into the run's retry counters.

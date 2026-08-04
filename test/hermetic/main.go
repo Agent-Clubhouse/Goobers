@@ -357,6 +357,14 @@ func platformToolSpecs(goos string) []toolSpec {
 		specs = append(specs,
 			toolSpec{name: "as", required: true},
 			toolSpec{name: "ld", required: true},
+			// bwrap (bubblewrap) backs the enforced agentic-stage sandbox
+			// (TBH-3/SEC-044). Not required: environments without it still
+			// run — the harness's own "sandbox unavailable" handling covers
+			// that — but where it IS installed (the CI unit-race job
+			// explicitly apt-installs it for this reason), the hermetic tool
+			// PATH must carry it through or every real-sandbox test fails
+			// with a false "not found" despite bwrap being on the host.
+			toolSpec{name: "bwrap"},
 		)
 	}
 	return specs
@@ -419,6 +427,10 @@ func executableName(name string) string {
 }
 
 func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
+	excluded := map[string]string{
+		"GOOBERS_OTLP_ENDPOINT": "",
+		"GOOBERS_OTLP_INSECURE": "",
+	}
 	overrides := map[string]string{
 		"CC":          compilerName,
 		"GO":          executableName("go"),
@@ -436,6 +448,9 @@ func hermeticEnvironment(base []string, toolPath, compilerName string) []string 
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, variable := range base {
 		name := environmentName(variable)
+		if _, excluded := environmentOverride(excluded, name); excluded {
+			continue
+		}
 		if _, overridden := environmentOverride(overrides, name); !overridden {
 			result = append(result, variable)
 		}

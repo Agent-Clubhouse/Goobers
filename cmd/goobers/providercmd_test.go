@@ -37,6 +37,7 @@ type fakeIssue struct {
 	children       []int
 	blockers       []int
 	createdAt      time.Time
+	updatedAt      time.Time
 }
 
 type fakeIssueEvent struct {
@@ -48,20 +49,23 @@ type fakeIssueEvent struct {
 }
 
 type fakePR struct {
-	number     int
-	title      string
-	body       string
-	head       string
-	base       string
-	headSHA    string
-	baseSHA    string
-	draft      bool
-	labels     []string
-	checkState string
-	files      []fakePRFile
-	reviews    []fakeReview
-	state      string
-	merged     bool
+	number             int
+	title              string
+	body               string
+	head               string
+	base               string
+	headSHA            string
+	baseSHA            string
+	draft              bool
+	labels             []string
+	checkState         string
+	files              []fakePRFile
+	reviews            []fakeReview
+	author             string
+	assignees          []string
+	requestedReviewers []string
+	state              string
+	merged             bool
 	// selfReview, when set, makes POST /pulls/{n}/reviews return GitHub's
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
@@ -339,10 +343,20 @@ func (s *fakeGitHubServer) addIssue(number int, title string, labels ...string) 
 	createdAt := time.Now().UTC()
 	s.issues[number] = &fakeIssue{
 		number: number, title: title, labels: append([]string{}, labels...), state: "open",
-		createdAt: createdAt,
+		createdAt: createdAt, updatedAt: createdAt,
 	}
 	for _, label := range labels {
 		s.appendLabelEventLocked(number, label, true, createdAt)
+	}
+}
+
+// setIssueUpdatedAt records an issue's live updatedAt (#2340's staleness
+// check compares this against a PR's pinned implementation-time snapshot).
+func (s *fakeGitHubServer) setIssueUpdatedAt(number int, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if issue := s.issues[number]; issue != nil {
+		issue.updatedAt = at
 	}
 }
 
@@ -588,10 +602,17 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		var body struct {
 			Labels    *[]string `json:"labels"`
 			Assignees *[]string `json:"assignees"`
+			Body      *string   `json:"body"`
 			State     string    `json:"state"`
 			Milestone *int      `json:"milestone"`
 		}
 		decodeFakeJSON(r, &body)
+		if body.Body != nil {
+			issue.body = *body.Body
+			if pr := s.prs[num]; pr != nil {
+				pr.body = *body.Body
+			}
+		}
 		if body.Labels != nil {
 			before := append([]string(nil), issue.labels...)
 			issue.labels = *body.Labels
@@ -968,6 +989,9 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	if !issue.createdAt.IsZero() {
 		out["created_at"] = issue.createdAt
 	}
+	if !issue.updatedAt.IsZero() {
+		out["updated_at"] = issue.updatedAt
+	}
 	if issue.assignee != "" {
 		out["assignees"] = []map[string]string{{"login": issue.assignee}}
 	}
@@ -995,14 +1019,34 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
 	}
+	assignees := make([]map[string]string, 0, len(pr.assignees))
+	for _, assignee := range pr.assignees {
+		assignees = append(assignees, map[string]string{"login": assignee})
+	}
+	requestedReviewers := make([]map[string]string, 0, len(pr.requestedReviewers))
+	for _, reviewer := range pr.requestedReviewers {
+		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
+	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
 		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
-		"head":   map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
-		"base":   map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
-		"labels": labels,
+		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
+		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
+		"user":                map[string]string{"login": pr.author},
+		"assignees":           assignees,
+		"requested_reviewers": requestedReviewers,
+		"labels":              labels,
 	}
+}
+
+func (s *fakeGitHubServer) setPRIdentities(number int, author string, assignees, requestedReviewers []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	pr.author = author
+	pr.assignees = assignees
+	pr.requestedReviewers = requestedReviewers
 }
 
 // setPRBody sets a fixture PR's body after addOpenPR — a separate setter

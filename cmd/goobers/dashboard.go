@@ -39,6 +39,7 @@ const (
 var (
 	dashboardAttachTimeout = 30 * time.Second
 	launchDashboardBrowser = openDashboardBrowser
+	launchRunDirectory     = openFilesystemPath
 )
 
 //go:embed portal-dist
@@ -456,6 +457,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if readStore != nil {
 		streamOpts = append(streamOpts, httpapi.WithChangeFeedStream(readStore))
 	}
+	streamOpts = append(streamOpts, httpapi.WithRunRevealer(runDirectoryRevealer(layout)))
 	handler, err := httpapi.NewHandler(reader, httpapi.AllowAll, errorLog, streamOpts...)
 	if err != nil {
 		return dashboardAPI{}, err
@@ -602,27 +604,45 @@ func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api d
 }
 
 func openDashboardBrowser(ctx context.Context, address string) error {
+	return openNativeTarget(ctx, address, "browser launcher")
+}
+
+func openFilesystemPath(ctx context.Context, path string) error {
+	return openNativeTarget(ctx, path, "file browser launcher")
+}
+
+func openNativeTarget(ctx context.Context, target, launcherName string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.CommandContext(ctx, "open", address)
+		command = exec.CommandContext(ctx, "open", target)
 	case "windows":
-		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", address)
+		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target)
 	default:
-		command = exec.CommandContext(ctx, "xdg-open", address)
+		command = exec.CommandContext(ctx, "xdg-open", target)
 	}
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {
 		switch {
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return errors.New("browser launcher timed out")
+			return fmt.Errorf("%s timed out", launcherName)
 		case errors.Is(ctx.Err(), context.Canceled):
 			return ctx.Err()
 		}
 		return err
 	}
 	return nil
+}
+
+func runDirectoryRevealer(layout instance.Layout) func(context.Context, string) error {
+	return func(ctx context.Context, runID string) error {
+		dir, err := layout.FindRunDir(runID)
+		if err != nil {
+			return err
+		}
+		return launchRunDirectory(ctx, dir)
+	}
 }

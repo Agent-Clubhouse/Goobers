@@ -17,6 +17,26 @@ func hardenedAPIConfig(listen string) APIConfig {
 	}
 }
 
+func TestIsLoopbackListenAddress(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		want    bool
+	}{
+		{address: "127.0.0.1:8080", want: true},
+		{address: "[::1]:8080", want: true},
+		{address: "localhost:8080", want: true},
+		{address: "0.0.0.0:8080", want: false},
+		{address: "example.com:8080", want: false},
+		{address: "invalid", want: false},
+	} {
+		t.Run(test.address, func(t *testing.T) {
+			if got := IsLoopbackListenAddress(test.address); got != test.want {
+				t.Fatalf("IsLoopbackListenAddress(%q) = %t, want %t", test.address, got, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAPIListenFailClosedOffLoopback(t *testing.T) {
 	tests := []struct {
 		name    string

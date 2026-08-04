@@ -61,3 +61,9 @@ spec:
     # connections + workflow machinery, differing only in its declared .NET CI
     # command and `dotnet@9` runtime requirement.
     - dotnet-service
+    # Java/Maven reference (TSN-2 / #2169), using the same polyglot seams with
+    # its declared Maven CI command and `java@21` runtime requirement.
+    - java-service
+    # Python reference (TSN-3 / #2170): exercises Python 3.12 admission, pytest
+    # as the gaggle CI command, and the allowlisted Python environment.
+    - python-service

@@ -15,7 +15,7 @@ import (
 // existence.
 func TestUnboundedLoopReturnsImmediately(t *testing.T) {
 	store := openTestStore(t)
-	loop := NewRetentionLoop(store, UnboundedRetention(), RetentionOptions{
+	loop := NewRetentionLoop(store, store, UnboundedRetention(), RetentionOptions{
 		Interval: time.Millisecond,
 	})
 
@@ -53,7 +53,7 @@ func TestBoundedLoopRunsAPassOnStart(t *testing.T) {
 	// first tick", which pass() demonstrates directly; the goroutine version
 	// was timing-dependent and failed under parallel load in the full suite
 	// while passing in isolation.
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{Interval: time.Hour})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{Interval: time.Hour})
 	loop.pass(context.Background())
 
 	if loop.Stats().Passes == 0 {
@@ -77,7 +77,7 @@ func TestPassFailureIsCountedNotFatal(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 	seedAged(t, store, 1, now.AddDate(0, 0, -200))
 
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
 	// Closing the store makes every query fail — the shutdown-overlap case.
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestCancelledPassIsNotCountedAsAFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
 	loop.pass(ctx)
 
 	if loop.Stats().Failures != 0 {

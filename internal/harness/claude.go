@@ -178,13 +178,19 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		if err := seedClaudeCredentials(env, configDir); err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
+		profileDir := filepath.Join(req.Workspace, filepath.FromSlash(sandboxRuntimeSubdir), "profile")
+		var privateRoots []string
+		env, privateRoots, err = isolateSandboxProfile(env, profileDir)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
+		}
 		writableRoots, err = gitWritableRoots(req.Workspace)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
 		env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
 		env = overrideEnv(env, "TMPDIR", tempDir)
-		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, writableRoots)
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, writableRoots, privateRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}

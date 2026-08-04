@@ -45,9 +45,8 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 }
 
 // Kill hard-terminates every process in the tree — on unix SIGKILL to the
-// process group, on windows TerminateJobObject. It is best-effort: a descendant
-// that escaped the tree (e.g. via its own setsid) may survive, exactly as
-// before this abstraction existed.
+// process group and any descendants that escaped it, on windows
+// TerminateJobObject.
 func (t *Tree) Kill() error {
 	return t.kill()
 }
@@ -70,4 +69,10 @@ func (t *Tree) RequestDump() (supported bool, err error) {
 // is the worktree reaper, for which a false "dead" is destructive.
 func Alive(pid int) bool {
 	return alive(pid)
+}
+
+// KillWorkspaceProcesses terminates lingering build servers that can retain
+// file locks beneath workspace after their invoking build has exited.
+func KillWorkspaceProcesses(workspace string) error {
+	return killWorkspaceProcesses(workspace)
 }

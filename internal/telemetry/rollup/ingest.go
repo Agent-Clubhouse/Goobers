@@ -645,6 +645,24 @@ func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, las
 	return nil
 }
 
+// ResetSchedulerIngestCursor makes the next scheduler ingest re-read the
+// journal from its head while preserving the sequence watermark.
+func (db *DB) ResetSchedulerIngestCursor(ctx context.Context) error {
+	db.schedulerMu.Lock()
+	defer db.schedulerMu.Unlock()
+	return db.resetSchedulerIngestCursor(ctx)
+}
+
+func (db *DB) resetSchedulerIngestCursor(ctx context.Context) error {
+	if _, err := db.sql.ExecContext(ctx, `
+		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
+		VALUES (1, 0, (SELECT COALESCE(MAX(seq), 0) FROM scheduler_events))
+		ON CONFLICT(id) DO UPDATE SET byte_offset = 0`); err != nil {
+		return fmt.Errorf("rollup: reset scheduler ingest cursor: %w", err)
+	}
+	return nil
+}
+
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
 // scheduler decisions, starvation and error signals) and its rolling scheduler
 // spans. It is incremental (#1411): a per-tick call reads only the journal tail
@@ -655,6 +673,12 @@ func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, las
 // historical duplicate seq (corruption), from ever duplicating a row (the first
 // occurrence wins, so one bad record can't block all rollup).
 func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error {
+	db.schedulerMu.Lock()
+	defer db.schedulerMu.Unlock()
+	return db.ingestSchedulerLog(ctx, schedulerDir)
+}
+
+func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error {
 	cursor, err := readSchedulerCursor(db.sql)
 	if err != nil {
 		return err
@@ -753,6 +777,30 @@ func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// as an ingest failure.
 	checkpointWAL(db.sql)
 	return nil
+}
+
+// MaintainSchedulerRetention serializes journal compaction and cursor reset
+// with incremental ingestion. The cursor is durably reset before compact runs,
+// so a crash after journal replacement cannot leave an old-file byte offset.
+func (db *DB) MaintainSchedulerRetention(
+	ctx context.Context,
+	schedulerDir string,
+	cutoff time.Time,
+	compact func() error,
+) error {
+	db.schedulerMu.Lock()
+	defer db.schedulerMu.Unlock()
+
+	if err := db.ingestSchedulerLog(ctx, schedulerDir); err != nil {
+		return fmt.Errorf("rollup: ingest scheduler journal before retention: %w", err)
+	}
+	if _, err := db.PruneSchedulerBefore(ctx, cutoff); err != nil {
+		return err
+	}
+	if err := db.resetSchedulerIngestCursor(ctx); err != nil {
+		return err
+	}
+	return compact()
 }
 
 func deleteSpan(ctx context.Context, tx *sql.Tx, runID, spanID string) error {

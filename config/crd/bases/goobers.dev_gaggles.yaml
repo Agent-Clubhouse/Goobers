@@ -75,14 +75,16 @@ spec:
                     checkout:
                       description: |-
                         Checkout narrows how much of the repository run workspaces materialize
-                        (B2, #649). Accepted but not honored by the local runner yet: declaring
-                        it is inert and surfaces a VER003 compatibility warning at validate time.
+                        (B2, #649): the local runner provisions a cone-mode sparse checkout
+                        (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                        default) is a full checkout.
                       properties:
                         sparse:
                           description: |-
                             Sparse lists repo-relative path cones a sparse checkout materializes;
-                            paths outside every cone are absent from run workspaces. Empty means a
-                            full checkout.
+                            paths outside every cone are absent from run workspaces, except
+                            root-level files (cone-mode semantics). Required non-empty when
+                            Checkout is declared at all.
                           items:
                             type: string
                           type: array
@@ -237,14 +239,16 @@ spec:
                   checkout:
                     description: |-
                       Checkout narrows how much of the repository run workspaces materialize
-                      (B2, #649). Accepted but not honored by the local runner yet: declaring
-                      it is inert and surfaces a VER003 compatibility warning at validate time.
+                      (B2, #649): the local runner provisions a cone-mode sparse checkout
+                      (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                      default) is a full checkout.
                     properties:
                       sparse:
                         description: |-
                           Sparse lists repo-relative path cones a sparse checkout materializes;
-                          paths outside every cone are absent from run workspaces. Empty means a
-                          full checkout.
+                          paths outside every cone are absent from run workspaces, except
+                          root-level files (cone-mode semantics). Required non-empty when
+                          Checkout is declared at all.
                         items:
                           type: string
                         type: array
@@ -321,6 +325,12 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  maxRunDuration:
+                    description: |-
+                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      disables the total-duration limit. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                   stalledRunTimeout:
                     description: |-
                       StalledRunTimeout is the maximum period a running journal may remain
@@ -331,14 +341,14 @@ spec:
               sandbox:
                 description: |-
                   Sandbox overrides the instance-wide isolation posture for this gaggle's
-                  agentic stages (#1305). Effective posture is gaggle override, else the
-                  instance.yaml sandbox block, else disabled — sandboxing is strictly
-                  opt-in, so a gaggle that omits this behaves exactly as before.
+                  agentic stages (#1305). Agentic stages are sandboxed by default. A gaggle
+                  may strengthen an operator's trusted-local opt-out to enforced, but may
+                  not weaken the instance posture.
                 properties:
                   agentic:
                     description: |-
                       Agentic is the posture for agentic stages: "disabled" or "enforced".
-                      Empty inherits the instance-wide posture.
+                      Empty inherits the instance-wide posture or the enforced default.
                     enum:
                     - disabled
                     - enforced
@@ -399,14 +409,16 @@ spec:
                         checkout:
                           description: |-
                             Checkout narrows how much of the repository run workspaces materialize
-                            (B2, #649). Accepted but not honored by the local runner yet: declaring
-                            it is inert and surfaces a VER003 compatibility warning at validate time.
+                            (B2, #649): the local runner provisions a cone-mode sparse checkout
+                            (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                            default) is a full checkout.
                           properties:
                             sparse:
                               description: |-
                                 Sparse lists repo-relative path cones a sparse checkout materializes;
-                                paths outside every cone are absent from run workspaces. Empty means a
-                                full checkout.
+                                paths outside every cone are absent from run workspaces, except
+                                root-level files (cone-mode semantics). Required non-empty when
+                                Checkout is declared at all.
                               items:
                                 type: string
                               type: array
@@ -453,6 +465,19 @@ spec:
                   - project
                   type: object
                 type: array
+              workcopies:
+                description: |-
+                  Workcopies overrides the instance-level managed working-copy placement for
+                  this gaggle. Root is an absolute base path; the gaggle name is appended.
+                properties:
+                  root:
+                    description: Root is an absolute base path for this gaggle's managed
+                      working copies.
+                    minLength: 1
+                    type: string
+                required:
+                - root
+                type: object
             required:
             - backlog
             - isolation

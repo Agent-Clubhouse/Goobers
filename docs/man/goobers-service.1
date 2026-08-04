@@ -17,9 +17,12 @@ and owns validated self-update handoff, health checks, and rollback.
 Subcommands:
   install     install, enable, and start the service
   uninstall   gracefully stop, disable, and remove the service
+  start       resume an installed-but-stopped service
+  stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
-Run `goobers service install -h`, `goobers service uninstall -h`, or
+Run `goobers service install -h`, `goobers service uninstall -h`,
+`goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
 .fi
 .SH EXAMPLES

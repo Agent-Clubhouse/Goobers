@@ -56,8 +56,8 @@ func TestManPageOmitsExamplesWhenNone(t *testing.T) {
 
 func TestReferenceMarkdown(t *testing.T) {
 	cmds := []Command{
-		{Path: []string{"beta"}, Short: "second | with pipe", Long: "beta body", Examples: []string{"goobers beta"}},
-		{Path: []string{"alpha"}, Short: "first", Long: "alpha body"},
+		{Path: []string{"beta"}, Short: "second | with pipe", Long: "beta body", Examples: []string{"goobers beta"}, Group: GroupStage},
+		{Path: []string{"alpha"}, Short: "first", Long: "alpha body", Group: GroupCore},
 	}
 	md := Reference(Command{Short: "test CLI"}, cmds)
 
@@ -80,6 +80,25 @@ func TestReferenceMarkdown(t *testing.T) {
 	// Examples rendered as a console block.
 	if !strings.Contains(md, "$ goobers beta") {
 		t.Errorf("example not rendered:\n%s", md)
+	}
+}
+
+func TestIndexesGroupCommands(t *testing.T) {
+	cmds := []Command{
+		{Path: []string{"init"}, Short: "core", Group: GroupCore},
+		{Path: []string{"doctor"}, Short: "advanced", Group: GroupAdvanced},
+		{Path: []string{"open-pr"}, Short: "stage", Group: GroupStage},
+	}
+	md := Reference(Command{Short: "test CLI"}, cmds)
+	man := ManIndex(Command{Short: "test CLI"}, cmds)
+
+	for _, heading := range []string{"Core commands", "Advanced operator commands", "Workflow-stage and connector commands"} {
+		if !strings.Contains(md, "## "+heading) {
+			t.Errorf("Markdown reference missing %q group", heading)
+		}
+		if !strings.Contains(man, ".SS "+heading) {
+			t.Errorf("man index missing %q group", heading)
+		}
 	}
 }
 

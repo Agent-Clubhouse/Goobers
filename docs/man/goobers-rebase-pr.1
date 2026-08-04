@@ -20,10 +20,13 @@ selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
 outputs) and hasSubstantiveFindings/hasFailingCI.
 
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
-sibling-overlap") is a comma-separated policy naming which detected
-causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base is accepted vocabulary but cannot fire yet (no
-detection reaches this stage's decision today).
+sibling-overlap,human-comment") is a comma-separated policy naming which
+detected causes are allowed to trigger remediation; the shipped default is
+fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today). human-comment fires when a
+genuinely new human comment postdates the watermark recorded in the sticky
+remediation-state comment; detection runs only when the declared policy
+names human-comment, so an old pinned policy is unaffected.
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 .fi

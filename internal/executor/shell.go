@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,6 +178,9 @@ type ShellExecutor struct {
 	// whose env var the built-in list does not cover. Empty by default: an
 	// unset caller gets the built-in allowlist unchanged.
 	ExtraEnvAllowlist []string
+	// DefaultEnv supplies runner-owned stage defaults. A stage's explicitly
+	// declared run.env values override matching keys.
+	DefaultEnv map[string]string
 }
 
 type builtinErrorReport struct {
@@ -296,7 +300,14 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
+	for key, value := range e.DefaultEnv {
+		declaredEnv[key] = value
+	}
+	for key, value := range run.Env {
+		declaredEnv[key] = value
+	}
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
@@ -386,9 +397,14 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if e.Diagnostics {
 		diagStop = make(chan struct{})
 		diagDone = make(chan struct{})
+		// filepath.Base(command[0]) (not name, which may be SelfBin's absolute
+		// path substituted in for a goobers-CLI stage above) so the diagnostic
+		// keyword matches the operator-declared command a hung stage actually
+		// runs, e.g. "npm"/"dotnet"/"pytest"/"mvn" (#2172).
+		stageCmd := filepath.Base(command[0])
 		go func() {
 			defer close(diagDone)
-			watchStageDiagnostics(cmd.Process.Pid, &diag, diagStop)
+			watchStageDiagnostics(cmd.Process.Pid, stageCmd, &diag, diagStop)
 		}()
 	}
 
@@ -1041,19 +1057,24 @@ var diagnosticsMaxSamples = 3
 // (macOS) — the OS-level stacks that show a wedged `go test -race` stage even
 // when the Go runtime can't stopTheWorld to dump goroutines. A var so tests can
 // stub it; the default is best-effort and skips any tool that isn't present.
+// The second argument is the stage's command basename (argv[0]) — see
+// watchStageDiagnostics.
 var diagnosticsCapture = defaultDiagnosticsCapture
 
 // watchStageDiagnostics takes up to diagnosticsMaxSamples snapshots of a
 // long-running stage into dst, starting after diagnosticsSampleAfter. It stops
-// immediately when stop is closed (the stage finished or was killed).
-func watchStageDiagnostics(pid int, dst *diagBuffer, stop <-chan struct{}) {
+// immediately when stop is closed (the stage finished or was killed). stageCmd
+// is the stage's compiled command basename (argv[0]), threaded through so the
+// unix capture's process-tree keyword filter always matches the actual hung
+// process regardless of stack (#2172).
+func watchStageDiagnostics(pid int, stageCmd string, dst *diagBuffer, stop <-chan struct{}) {
 	select {
 	case <-stop:
 		return
 	case <-time.After(diagnosticsSampleAfter):
 	}
 	for n := 1; n <= diagnosticsMaxSamples; n++ {
-		if snap := diagnosticsCapture(pid); len(snap) > 0 {
+		if snap := diagnosticsCapture(pid, stageCmd); len(snap) > 0 {
 			dst.WriteSnapshot(n, snap)
 		}
 		select {

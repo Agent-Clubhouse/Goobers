@@ -33,7 +33,8 @@
       "required": ["maxRepasses", "stalledRunTimeout"],
       "properties": {
         "maxRepasses": { "type": "integer", "minimum": 1 },
-        "stalledRunTimeout": { "type": "string", "minLength": 1 }
+        "stalledRunTimeout": { "type": "string", "minLength": 1 },
+        "maxRunDuration": { "type": "string", "minLength": 1, "description": "Resolved maximum total wall-clock age of the run; omitted when disabled." }
       }
     },
     "trigger": {

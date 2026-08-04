@@ -90,6 +90,9 @@ func TestRefreshRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{name: "repository", cfg: RefreshConfig{Issue: "7", Token: "token"}},
 		{name: "issue", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, Issue: "not-a-number", Token: "token"}},
+		{name: "target", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, Token: "token"}},
+		{name: "multiple targets", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, Issue: "7", PullRequest: "8", Token: "token"}},
+		{name: "pull request", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, PullRequest: "not-a-number", Token: "token"}},
 		{name: "token", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, Issue: "7"}},
 		{name: "base URL", cfg: RefreshConfig{Repository: Repository{Owner: "acme", Name: "repo"}, Issue: "7", Token: "token", BaseURL: "://bad"}},
 	}
@@ -99,6 +102,43 @@ func TestRefreshRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("Refresh() succeeded with invalid configuration")
 			}
 		})
+	}
+}
+
+func TestRefreshRecordsPullRequestContractSet(t *testing.T) {
+	t.Parallel()
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acme/live/pulls":
+			writeIssueJSON(t, w, []any{livePullRequest()})
+		case "/repos/acme/live/pulls/8":
+			writeIssueJSON(t, w, livePullRequest())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	fixture, err := Refresh(context.Background(), RefreshConfig{
+		Repository:  Repository{Owner: "acme", Name: "live"},
+		PullRequest: "8",
+		Token:       "dedicated-token",
+		BaseURL:     srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.PullRequest != "8" || fixture.Issue != "" {
+		t.Fatalf("fixture target = issue %q, pull request %q", fixture.Issue, fixture.PullRequest)
+	}
+	if got, want := strings.Join(paths, ","), "/repos/acme/live/pulls?per_page=100&state=open,/repos/acme/live/pulls/8"; got != want {
+		t.Fatalf("request paths = %q, want %q", got, want)
+	}
+	if err := CheckContract(context.Background(), fixture); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -176,15 +216,21 @@ func TestProviderFixtureWorkflowIsInertAndSeparatesOutcomes(t *testing.T) {
 	workflow := string(raw)
 	for _, want := range []string{
 		"workflow_dispatch:",
-		"PROVIDER_FIXTURE_TOKEN",
 		"Verify explicit provisioning",
-		"Provider contract assertions",
-		"Normalized fixture drift",
+		"Issue provider contract assertions",
+		"Pull request provider contract assertions",
+		"PROVIDER_FIXTURE_PR",
 		"actions/upload-artifact@v7",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("provider fixture workflow does not contain %q", want)
 		}
+	}
+	if got := strings.Count(workflow, "secrets.GH_READONLY_VALIDATION_PAT"); got != 3 {
+		t.Errorf("provider fixture workflow contains %d GH_READONLY_VALIDATION_PAT references, want 3", got)
+	}
+	if strings.Contains(workflow, "secrets.PROVIDER_FIXTURE_TOKEN") {
+		t.Fatal("provider fixture workflow references the obsolete PROVIDER_FIXTURE_TOKEN secret")
 	}
 	if strings.Contains(workflow, "pull_request:") {
 		t.Fatal("provider fixture workflow must not run in pull-request CI")
@@ -210,6 +256,28 @@ func liveIssue(round int) map[string]any {
 		"labels": []any{
 			map[string]any{"id": 2000 + round, "node_id": fmt.Sprintf("label-%d", round), "name": "goobers:ready"},
 		},
+	}
+}
+
+func livePullRequest() map[string]any {
+	return map[string]any{
+		"id":         3008,
+		"number":     8,
+		"title":      "Stable fixture pull request",
+		"body":       "Stable pull request body.",
+		"state":      "open",
+		"html_url":   "https://github.com/acme/live/pull/8",
+		"draft":      false,
+		"updated_at": "2026-07-01T04:05:06Z",
+		"user":       map[string]any{"id": 4001, "login": "fixture-author"},
+		"assignees": []any{
+			map[string]any{"id": 4002, "login": "fixture-assignee"},
+		},
+		"requested_reviewers": []any{
+			map[string]any{"id": 4003, "login": "fixture-reviewer"},
+		},
+		"head": map[string]any{"ref": "fixture-head", "sha": "head-sha"},
+		"base": map[string]any{"ref": "main", "sha": "base-sha"},
 	}
 }
 

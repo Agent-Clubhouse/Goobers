@@ -37,6 +37,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		return RunEventTransition, true
 
 	case journal.EventGateEvaluated,
+		journal.EventGateOverridden,
 		journal.EventTickSkipped:
 		return RunEventDecision, true
 

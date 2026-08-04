@@ -31,7 +31,7 @@ import (
 var ErrNoFrontMatter = errors.New("tutorguard: finding.md has no front matter block")
 
 // FindingMeta is the machine-readable header the analyst goober's finding.md
-// must carry (selfhost/gaggles/goobers/goobers/analyst/instructions.md) so a
+// must carry (reference-workflows/gaggles/goobers/goobers/analyst/instructions.md) so a
 // deterministic stage — not just a human reviewer — can check what kind of
 // finding prompted this run's proposed change, which gate (if any) it names,
 // and whether the analyst recorded independent proof that gate is dead.

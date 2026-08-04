@@ -40,7 +40,20 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if existing, found, err := p.FindPullRequestByBranch(ctx, req.Repository, head, base); err != nil {
 		return PullRequestResult{}, err
 	} else if found {
-		return existing, nil
+		endpoint, err := p.repoURL(req.Repository, "pullrequests", existing.ID)
+		if err != nil {
+			return PullRequestResult{}, err
+		}
+		body := map[string]interface{}{
+			"title":       req.Title,
+			"description": capDescriptionWithFooter(req.Body, req.RunID, adoMaxPRDescriptionChars),
+			"isDraft":     req.Draft,
+		}
+		var out adoPullRequest
+		if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
+			return PullRequestResult{}, err
+		}
+		return adoPullRequestResult(out), nil
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
@@ -57,7 +70,15 @@ func (p *ADOProvider) OpenPullRequest(ctx context.Context, req PullRequestReques
 	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
 		return PullRequestResult{}, err
 	}
-	return PullRequestResult{ID: strconv.Itoa(out.PullRequestID), Number: out.PullRequestID, URL: out.URL}, nil
+	return adoPullRequestResult(out), nil
+}
+
+func adoPullRequestResult(pr adoPullRequest) PullRequestResult {
+	prURL := pr.URL
+	if pr.Links.Web.Href != "" {
+		prURL = pr.Links.Web.Href
+	}
+	return PullRequestResult{ID: strconv.Itoa(pr.PullRequestID), Number: pr.PullRequestID, URL: prURL}
 }
 
 // FindPullRequestByBranch resolves the open Azure DevOps pull request whose
@@ -131,19 +152,21 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		prURL = pr.Links.Web.Href
 	}
 	result := PullRequestPollResult{
-		Number:         pr.PullRequestID,
-		Title:          pr.Title,
-		State:          adoPullRequestState(pr.Status),
-		Merged:         strings.EqualFold(pr.Status, "completed"),
-		Draft:          pr.IsDraft,
-		HeadBranch:     strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
-		BaseBranch:     strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
-		HeadSHA:        pr.LastMergeSourceCommit.CommitID,
-		BaseSHA:        pr.LastMergeTargetCommit.CommitID,
-		Body:           pr.Description,
-		ReviewDecision: adoReviewDecision(pr.Reviewers),
-		URL:            prURL,
-		Integrity:      apiintegrity.Unapproved,
+		Number:             pr.PullRequestID,
+		Title:              pr.Title,
+		Author:             adoIdentityName(pr.CreatedBy),
+		RequestedReviewers: adoRequestedReviewerNames(pr.Reviewers),
+		State:              adoPullRequestState(pr.Status),
+		Merged:             strings.EqualFold(pr.Status, "completed"),
+		Draft:              pr.IsDraft,
+		HeadBranch:         strings.TrimPrefix(pr.SourceRefName, "refs/heads/"),
+		BaseBranch:         strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+		HeadSHA:            pr.LastMergeSourceCommit.CommitID,
+		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
+		Body:               pr.Description,
+		ReviewDecision:     adoReviewDecision(pr.Reviewers),
+		URL:                prURL,
+		Integrity:          apiintegrity.Unapproved,
 	}
 	projectName := pr.Repository.Project.Name
 	if projectName == "" {
@@ -322,6 +345,9 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 	if err := requireRepo(req.Repository); err != nil {
 		return nil, err
 	}
+	if req.Assignee != "" {
+		return nil, ErrUnsupported{Provider: ProviderADO, Capability: CapPRQueryAssignee}
+	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests")
 	if err != nil {
 		return nil, err
@@ -359,6 +385,11 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		if headPrefix != "" && !strings.HasPrefix(head, headPrefix) {
 			continue
 		}
+		author := adoIdentityName(pr.CreatedBy)
+		requestedReviewers := adoRequestedReviewerNames(pr.Reviewers)
+		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
+			continue
+		}
 		labels := make([]string, 0, len(pr.Labels))
 		for _, label := range pr.Labels {
 			labels = append(labels, label.Name)
@@ -368,18 +399,20 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 			prURL = pr.Links.Web.Href
 		}
 		out = append(out, PullRequestSummary{
-			ID:         strconv.Itoa(pr.PullRequestID),
-			Number:     pr.PullRequestID,
-			URL:        prURL,
-			Head:       head,
-			Base:       strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
-			HeadSHA:    pr.LastMergeSourceCommit.CommitID,
-			BaseSHA:    pr.LastMergeTargetCommit.CommitID,
-			Draft:      pr.IsDraft,
-			Labels:     labels,
-			CheckState: CheckStatePending,
-			UpdatedAt:  pr.CreationDate,
-			Integrity:  apiintegrity.Unapproved,
+			ID:                 strconv.Itoa(pr.PullRequestID),
+			Number:             pr.PullRequestID,
+			URL:                prURL,
+			Author:             author,
+			RequestedReviewers: requestedReviewers,
+			Head:               head,
+			Base:               strings.TrimPrefix(pr.TargetRefName, "refs/heads/"),
+			HeadSHA:            pr.LastMergeSourceCommit.CommitID,
+			BaseSHA:            pr.LastMergeTargetCommit.CommitID,
+			Draft:              pr.IsDraft,
+			Labels:             labels,
+			CheckState:         CheckStatePending,
+			UpdatedAt:          pr.CreationDate,
+			Integrity:          apiintegrity.Unapproved,
 		})
 	}
 	return out, nil
@@ -455,19 +488,20 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 }
 
 type adoPullRequest struct {
-	PullRequestID         int          `json:"pullRequestId"`
-	URL                   string       `json:"url"`
-	Status                string       `json:"status"`
-	Title                 string       `json:"title"`
-	CreatedBy             adoIdentity  `json:"createdBy"`
-	CreationDate          time.Time    `json:"creationDate"`
-	SourceRefName         string       `json:"sourceRefName"`
-	TargetRefName         string       `json:"targetRefName"`
-	IsDraft               bool         `json:"isDraft"`
-	Labels                []adoLabel   `json:"labels"`
-	LastMergeSourceCommit adoCommitRef `json:"lastMergeSourceCommit"`
-	LastMergeTargetCommit adoCommitRef `json:"lastMergeTargetCommit"`
-	Links                 adoPRLinks   `json:"_links"`
+	PullRequestID         int           `json:"pullRequestId"`
+	URL                   string        `json:"url"`
+	Status                string        `json:"status"`
+	Title                 string        `json:"title"`
+	CreatedBy             adoIdentity   `json:"createdBy"`
+	Reviewers             []adoReviewer `json:"reviewers"`
+	CreationDate          time.Time     `json:"creationDate"`
+	SourceRefName         string        `json:"sourceRefName"`
+	TargetRefName         string        `json:"targetRefName"`
+	IsDraft               bool          `json:"isDraft"`
+	Labels                []adoLabel    `json:"labels"`
+	LastMergeSourceCommit adoCommitRef  `json:"lastMergeSourceCommit"`
+	LastMergeTargetCommit adoCommitRef  `json:"lastMergeTargetCommit"`
+	Links                 adoPRLinks    `json:"_links"`
 }
 
 type adoPullRequestsResponse struct {
@@ -481,7 +515,6 @@ type adoPullRequestsResponse struct {
 type adoPullRequestDetail struct {
 	adoPullRequest
 	Description string        `json:"description"`
-	Reviewers   []adoReviewer `json:"reviewers"`
 	Repository  adoRepository `json:"repository"`
 	// MergeStatus/MergeID/LastMergeCommit/CompletionOptions/
 	// AutoCompleteSetBy back the landing surfaces (CONF-3 #2076, design
@@ -502,6 +535,26 @@ type adoReviewer struct {
 	UniqueName  string `json:"uniqueName"`
 	DisplayName string `json:"displayName"`
 	IsRequired  bool   `json:"isRequired"`
+}
+
+func adoIdentityName(identity adoIdentity) string {
+	if identity.UniqueName != "" {
+		return identity.UniqueName
+	}
+	return identity.DisplayName
+}
+
+func adoRequestedReviewerNames(reviewers []adoReviewer) []string {
+	names := make([]string, 0, len(reviewers))
+	for _, reviewer := range reviewers {
+		if reviewer.Vote == 0 {
+			names = append(names, adoIdentityName(adoIdentity{
+				UniqueName:  reviewer.UniqueName,
+				DisplayName: reviewer.DisplayName,
+			}))
+		}
+	}
+	return names
 }
 
 type adoRepository struct {

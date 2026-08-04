@@ -647,6 +647,11 @@ func loadFixtureConfig(
 	if _, err := instance.Init(root); err != nil {
 		t.Fatal(err)
 	}
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
 	if err := os.Remove(filepath.Join(workflowDir, "default-implement.yaml")); err != nil {
 		t.Fatal(err)

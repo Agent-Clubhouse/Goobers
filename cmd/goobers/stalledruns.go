@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -22,13 +22,20 @@ type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, err
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu      sync.RWMutex
-	current map[string]*runner.Runner
-	owners  map[string]*runner.Runner
+	mu           sync.RWMutex
+	current      map[string]*runner.Runner
+	owners       map[string]trackedRun
+	hardStopping bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
-	return &daemonRunnerRegistry{owners: make(map[string]*runner.Runner)}
+	return &daemonRunnerRegistry{owners: make(map[string]trackedRun)}
+}
+
+type trackedRun struct {
+	RunID    string
+	Workflow string
+	owner    *runner.Runner
 }
 
 func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
@@ -44,23 +51,27 @@ func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
 	r.mu.Unlock()
 }
 
-func (r *daemonRunnerRegistry) Track(runID string, owner *runner.Runner) func() {
+func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runner) func() {
 	if r == nil || owner == nil {
 		return func() {}
 	}
 	r.mu.Lock()
 	if r.owners == nil {
-		r.owners = make(map[string]*runner.Runner)
+		r.owners = make(map[string]trackedRun)
 	}
 	if _, exists := r.owners[runID]; exists {
 		r.mu.Unlock()
 		return func() {}
 	}
-	r.owners[runID] = owner
+	r.owners[runID] = trackedRun{RunID: runID, Workflow: workflow, owner: owner}
+	hardStopping := r.hardStopping
 	r.mu.Unlock()
+	if hardStopping {
+		owner.HardStopRunWhenStarted(runID)
+	}
 	return func() {
 		r.mu.Lock()
-		if r.owners[runID] == owner {
+		if tracked, ok := r.owners[runID]; ok && tracked.owner == owner {
 			delete(r.owners, runID)
 		}
 		r.mu.Unlock()
@@ -80,10 +91,50 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ids := make([]string, 0, len(r.owners))
-	for runID := range r.owners {
-		ids = append(ids, runID)
+	for _, run := range r.owners {
+		ids = append(ids, run.RunID)
 	}
+	sort.Strings(ids)
 	return ids
+}
+
+func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	runs := make([]trackedRun, 0, len(r.owners))
+	for _, run := range r.owners {
+		runs = append(runs, run)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].RunID < runs[j].RunID })
+	return runs
+}
+
+// HardStopAll invokes report while registration is blocked, immediately before
+// stopping the runs counted for that report. report must not call the registry.
+func (r *daemonRunnerRegistry) HardStopAll(report func(int)) int {
+	if r == nil {
+		if report != nil {
+			report(0)
+		}
+		return 0
+	}
+	r.mu.Lock()
+	r.hardStopping = true
+	runs := make([]trackedRun, 0, len(r.owners))
+	for _, run := range r.owners {
+		runs = append(runs, run)
+	}
+	if report != nil {
+		report(len(runs))
+	}
+	r.mu.Unlock()
+	for _, run := range runs {
+		run.owner.HardStopRunWhenStarted(run.RunID)
+	}
+	return len(runs)
 }
 
 func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool) {
@@ -92,8 +143,8 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if owner := r.owners[runID]; owner != nil {
-		return owner, true
+	if tracked, ok := r.owners[runID]; ok && tracked.owner != nil {
+		return tracked.owner, true
 	}
 	if gaggle != "" {
 		return r.current[gaggle], false
@@ -111,6 +162,7 @@ func sweepStalledRuns(
 	release func(runID, workflow string),
 	now time.Time,
 	timeout time.Duration,
+	maxDuration time.Duration,
 ) error {
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -148,21 +200,17 @@ func sweepStalledRuns(
 				continue
 			}
 			runTimeout := timeout
+			runMaxDuration := maxDuration
 			if identity.RunControls != nil {
 				if controlsErr := runcontrol.ValidatePinned(identity.RunControls); controlsErr != nil {
 					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
 					continue
 				}
-				controls, controlsErr := runcontrol.Resolve(
-					apiv1.RunControls{StalledRunTimeout: timeout.String()},
-					nil,
-					identity.RunControls,
-				)
-				if controlsErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
-					continue
+				runTimeout, _ = time.ParseDuration(identity.RunControls.StalledRunTimeout)
+				runMaxDuration = 0
+				if identity.RunControls.MaxRunDuration != "" {
+					runMaxDuration, _ = time.ParseDuration(identity.RunControls.MaxRunDuration)
 				}
-				runTimeout = controls.StalledRunTimeout
 			}
 			phase, err := reader.Phase()
 			if err != nil {
@@ -172,20 +220,23 @@ func sweepStalledRuns(
 			if phase != journal.PhaseRunning {
 				continue
 			}
-			events, err := reader.Events()
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, err))
-				continue
-			}
-			if len(events) == 0 {
-				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
-				continue
-			}
-			if events[len(events)-1].Type == journal.EventGatePaused {
-				continue
-			}
-			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
-				continue
+			durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+			if !durationExceeded {
+				events, eventsErr := reader.Events()
+				if eventsErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
+					continue
+				}
+				if len(events) == 0 {
+					sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
+					continue
+				}
+				if events[len(events)-1].Type == journal.EventGatePaused {
+					continue
+				}
+				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
+					continue
+				}
 			}
 
 			runLayout := l
@@ -226,28 +277,42 @@ func sweepStalledRuns(
 					terminalizers[runsDir] = runRunner
 				}
 			}
-			result, escalated, err := runRunner.EscalateStalled(identity.RunID, now, runTimeout)
-			if escalated {
+			var result runner.Result
+			var terminated bool
+			if durationExceeded {
+				result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
+			} else {
+				result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
+			}
+			if terminated {
 				if release != nil {
 					release(identity.RunID, identity.Workflow)
 				}
 				if log != nil && !liveOwner {
+					terminalPhase := journal.PhaseEscalated
+					errorCode := runner.RunStalledErrorCode
+					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+					if durationExceeded {
+						terminalPhase = journal.PhaseAborted
+						errorCode = runner.RunDurationExceededErrorCode
+						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+					}
 					appendErr := log.Append(journal.Event{
 						Type:     journal.EventRunFinished,
 						Gaggle:   identity.Gaggle,
 						Workflow: identity.Workflow,
 						RunID:    identity.RunID,
-						Status:   string(journal.PhaseEscalated),
+						Status:   string(terminalPhase),
 						Error: &journal.ErrorDetail{
-							Code:    runner.RunStalledErrorCode,
-							Message: fmt.Sprintf("run exceeded %s without journal activity", runTimeout),
+							Code:    errorCode,
+							Message: message,
 						},
 					})
 					err = errors.Join(err, appendErr)
 				}
 			}
 			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("escalate stalled run %q (%s): %w", identity.RunID, result.Phase, err))
+				sweepErrs = append(sweepErrs, fmt.Errorf("terminate watchdog run %q (%s): %w", identity.RunID, result.Phase, err))
 			}
 		}
 	}

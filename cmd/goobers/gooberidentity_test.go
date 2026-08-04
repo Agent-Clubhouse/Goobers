@@ -141,6 +141,53 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	}
 }
 
+func TestLoadGooberSkillPackagesPrefersGagglePackageWithSharedFallback(t *testing.T) {
+	instanceRoot := t.TempDir()
+	configDir := filepath.Join(instanceRoot, "config")
+	sharedDir := filepath.Join(instanceRoot, "skills", "testing")
+	scopedDir := filepath.Join(configDir, "gaggles", "alpha", "skills", "testing")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedDir, "SKILL.md"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goobers := map[string]apiv1.GooberSpec{
+		"alpha-coder": {Gaggle: "alpha", Skills: []string{"testing"}},
+		"beta-coder":  {Gaggle: "beta", Skills: []string{"testing"}},
+	}
+
+	packages, err := loadGooberSkillPackages(configDir, "alpha", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("shared fallback package = %+v", got)
+	}
+
+	if err := os.MkdirAll(scopedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scopedDir, "SKILL.md"), []byte("scoped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packages, err = loadGooberSkillPackages(configDir, "alpha", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "scoped" {
+		t.Fatalf("gaggle package = %+v", got)
+	}
+
+	packages, err = loadGooberSkillPackages(configDir, "beta", goobers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packages["testing"]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("other gaggle fallback package = %+v", got)
+	}
+}
+
 func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 	configDir := t.TempDir()
 	instructionsDir := filepath.Join(configDir, "gaggles", "alpha", "goobers", "coder")

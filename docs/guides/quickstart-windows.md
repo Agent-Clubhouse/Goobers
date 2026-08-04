@@ -1,9 +1,9 @@
 # Windows quickstart (tier 1, local)
 
-Stand up a `goobers` node on Windows from scratch: install prerequisites,
-install or build the binary, configure credentials, drive a first run, and run
-the daemon in the foreground. This is the Windows-specific companion to the
-platform-neutral [`quickstart.md`](quickstart.md).
+Use this page for Windows installation, path, credential, isolation, and
+service differences only. Follow the platform-neutral
+[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
+walkthrough.
 
 Windows is **officially supported for deterministic workloads**. The required
 Windows CI gate runs the real foreground daemon and the complete shipped
@@ -17,6 +17,12 @@ Workflows that require the full Linux isolation posture can run through WSL 2
 instead of weakening `network: none` or agentic-stage confinement. Goobers
 provides an explicit readiness check and handoff for that route; see
 [Full isolation through WSL 2](#full-isolation-through-wsl-2).
+
+Agentic sandboxing is enforced by default. Native Windows currently has no
+agentic sandbox backend, so an agentic stage fails closed there. Use the WSL 2
+route for confinement, or set `sandbox.agentic: disabled` in operator-owned
+`instance.yaml` only for trusted-local use. Every such opt-out is recorded in
+the run journal before the harness starts.
 
 ## Validated environment and evidence
 
@@ -134,19 +140,17 @@ The committed portal assets are embedded, so Node/npm is not needed for the CLI
 build. Use `go run .\test\ci`, not `make ci`, for the repository's portable
 development gate on a shell-less Windows host.
 
-## 5. Scaffold and configure an instance
+## 5. Windows instance and credential deltas
 
 Keep the instance root outside the target repository and use a short path for
 worktree path-length headroom. Choose whether the config source is
 instance-local, an in-repo subtree, or a separate config repository using the
 [instance and config placement guide](instance-placement.md).
 
-```powershell
-goobers init C:\goobers\my-instance
-```
-
-Edit `instance.yaml` to point at your repository. Never inline a provider
-secret. For an interactive first run, reference an environment variable in the
+Follow the initialization and configuration steps in the
+[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root),
+using a short root such as `C:\goobers\my-instance`. Never inline a provider
+secret. For an interactive run, reference an environment variable in the
 config and set it before starting Goobers:
 
 ```powershell
@@ -189,19 +193,11 @@ Before any run executes, Goobers resolves `ciCommand`'s first token through
 be found, naming the missing executable — rather than retrying a command that
 was never going to work.
 
-## 6. Drive a first run
-
-Run one configured workflow manually:
-
-```powershell
-goobers run <workflow-name> C:\goobers\my-instance
-goobers status C:\goobers\my-instance
-goobers trace <run-id> C:\goobers\my-instance
-```
-
-The credential-free fake-harness path is the source-level validation command in
-[Validated environment and evidence](#validated-environment-and-evidence);
-`goobers init --demo` remains limited to hosts with native network isolation.
+The credential-free demo in the canonical quickstart requires native network
+isolation and is therefore unavailable to native Windows. Use the
+credential-free fake-harness command in
+[Validated environment and evidence](#validated-environment-and-evidence), or
+follow the canonical demo through WSL 2.
 
 ## Full isolation through WSL 2
 
@@ -266,7 +262,7 @@ route; Windows absolute paths stored inside configuration are not Linux paths.
 Credentials and tool installations must also be available to the distro user
 rather than relying on the native Windows process environment.
 
-## 7. Run the daemon in the foreground
+## 6. Run the daemon in the foreground
 
 ```powershell
 goobers up C:\goobers\my-instance
@@ -298,7 +294,7 @@ Service installation is a separate deployment concern.
 | Token files | Owner-only NTFS DACL checked with Windows APIs; do not use `chmod` |
 | Foreground shutdown | Ctrl+C/Ctrl+Break; Windows has no SIGTERM |
 | `network: none` | Fails closed because Windows has no native isolation backend; trusted-local operators may explicitly set `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1` |
-| Agentic stages | Live Copilot CLI support remains #647 Tier 2; deterministic-only support does not depend on it |
+| Agentic stages | Sandboxing defaults to enforced; native Windows fails closed without a backend. Use WSL 2, or the journaled `sandbox.agentic: disabled` trusted-local opt-out. Live Copilot CLI support remains #647 Tier 2 |
 | Service supervision | SCM setup is documented separately and is not part of the foreground validation |
 
 All other CLI and journal semantics are shared across platforms.

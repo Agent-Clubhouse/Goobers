@@ -70,6 +70,23 @@ func TestVerdictSchemaRejectsUnknownFindingClass(t *testing.T) {
 	}
 }
 
+func TestVerdictSchemaAcceptsActionableFindingClasses(t *testing.T) {
+	v, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, class := range []apiv1.FindingClass{
+		apiv1.FindingMissingTests,
+		apiv1.FindingScopeCreep,
+		apiv1.FindingContractChange,
+	} {
+		doc := []byte(`{"decision":"needs-changes","findings":[{"severity":"error","message":"x","class":"` + class + `"}]}`)
+		if err := v.ValidateJSON("verdict.schema.json", doc); err != nil {
+			t.Errorf("finding class %q should validate, got: %v", class, err)
+		}
+	}
+}
+
 // TestCrossPRBlockedVerdictWithBlockingPRsValidatesAgainstSchema is #747's
 // schema-side acceptance: a real Go-marshaled Verdict carrying a
 // cross-pr-blocked finding with BlockingPRs populated validates against

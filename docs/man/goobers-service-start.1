@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE START" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service start \- resume an installed-but-stopped daemon
+.SH SYNOPSIS
+\fBgoobers service start\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service start [path]
+
+Resume an installed-but-stopped goobers daemon (#2073) without
+re-registering it. Starting an already-running service is a successful
+no-op.
+
+Exit codes: 0 = running, 1 = not installed/start error,
+2 = usage error or not an instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers service start
+goobers service start ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

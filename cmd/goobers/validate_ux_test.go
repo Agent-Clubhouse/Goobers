@@ -14,6 +14,31 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg.ResolveLargeRepoPresets()
+	var out strings.Builder
+	printResolvedLargeRepoPresets(&out, cfg.Repos)
+	for _, want := range []string{
+		"workspace=pinned",
+		"serial=true",
+		"defaultStageTimeout=4h",
+		"stalledRunTimeout=6h",
+		"maxRunDuration=24h",
+		"pathLength=enabled (max 260)",
+		"mirrorRefspec=heads+tags",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("resolved preset output missing %q: %s", want, out.String())
+		}
+	}
+}
+
 func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	type mutation func(t *testing.T, root string)
 	tests := []struct {
@@ -224,6 +249,34 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
+	root := initDemo(t)
+	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `WARNING SKILL002 gaggles/example/goobers/coder/goober.yaml Goober/coder: spec.skills declares "implement"`) {
+		t.Fatalf("validate output omitted missing skill warning:\n%s", stdout)
+	}
+
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate with packages code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "SKILL002") {
+		t.Fatalf("validate warned for present skill packages:\n%s", stdout)
 	}
 }
 

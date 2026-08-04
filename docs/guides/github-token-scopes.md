@@ -37,7 +37,8 @@ to verify the two-token boundary against disposable repositories.
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:milestones:write` | Issues: Read and write | Assign an existing milestone to an issue. Keep roadmap mutation out of stages that only perform ordinary issue writes. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. The canonical implementation workflow also uses this capability for `ci-poll`, which requires Checks: Read-only and Commit statuses: Read-only. |
+| `provider:pr:write` | Pull requests: Read and write, Checks: Read-only, Commit statuses: Read-only | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. |
+| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
@@ -46,6 +47,42 @@ to verify the two-token boundary against disposable repositories.
 
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
+
+### `daemonIdentity`: one distinct bot identity for authored PRs/reviews/merges
+
+The `github:pr:review` row above already recommends sourcing that one
+capability from a second identity so GitHub's self-review refusal never
+degrades a native Review into a comment/label handoff (#870). `daemonIdentity`
+(UNOP-7/#1295, #1780) generalizes that: one `instance.yaml` block backs the
+*whole* daemon-mutation capability set — `repo:push`, `github:issues:write`,
+`github:pr:write`, `github:pr:review`, `github:branch:delete`,
+`github:pr:merge` — with one distinct machine-account identity, instead of
+repeating a `credentials:` entry per capability:
+
+```yaml
+daemonIdentity:
+  kind: pat
+  token:
+    env: DAEMON_GITHUB_TOKEN
+```
+
+Mint the machine account's fine-grained PAT with the union of the permissions
+those capabilities need (the rows above), never the operator's own token.
+Every daemon-authored PR, review, and merge then carries that account's
+login — GitHub's own attribution — instead of being indistinguishable from
+the operator's own manual activity. `merge-review`'s PR-selection stages
+(`pr-select`/`gather-sibling-context`) use this to recognize "our" PRs by
+login instead of the branch-name-prefix heuristic once configured; an
+instance that configures nothing here is completely unaffected (the
+heuristic remains exactly as before).
+
+`kind: github-app` reuses the same GitHub App installation-token minting a
+repo's own `auth.kind: github-app` uses (`appId`/`installationId`/
+`privateKey`), for consumers who provision a dedicated App instead of a
+machine-account PAT — see #1779. An explicit `credentials:` entry for any one
+of the six capabilities still overrides `daemonIdentity` for that capability
+alone, so a mixed setup (e.g. a distinct App for reviews, the daemon identity
+for everything else) is still possible.
 
 ### Agentic (Copilot-harness) stages: stored login or `agent:model` token
 

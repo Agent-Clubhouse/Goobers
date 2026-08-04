@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 const (
@@ -30,19 +31,20 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
 	}
-	if len(set.Gaggles) != 2 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] {
+	if len(set.Gaggles) != 4 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] || !gotGaggles["python-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships eight goobers (acme-web: coder, curator, docs,
+	// config-examples ships twelve goobers (acme-web: coder, curator, docs,
 	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and ten workflows (acme-web's nine + the
-	// dotnet-service reference's dotnet-implementation, #1093); check
-	// membership, not order.
+	// dotnet-reviewer; java-service: java-implementer, java-reviewer;
+	// python-service: python-implementer, python-reviewer) and twelve
+	// workflows (acme-web's nine + one implementation reference per service);
+	// check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer"}
+	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer", "python-implementer", "python-reviewer"}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -60,7 +62,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
 	if len(set.Workflows) != len(wantWorkflows) {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
@@ -75,6 +77,43 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(inlineWorkflow.Spec.Tasks) == 0 || inlineWorkflow.Spec.Tasks[0].Run == nil ||
 		inlineWorkflow.Spec.Tasks[0].Run.Script == "" {
 		t.Fatalf("inline workflow does not exercise run.script: %+v", inlineWorkflow.Spec.Tasks)
+	}
+}
+
+func TestLoadConfigDirReportsMissingSkillPackagesAsWarnings(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	if err := os.CopyFS(configDir, os.DirFS("starter")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, report, err := LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with missing skill packages: %v (report: %+v)", err, report)
+	}
+	var missing []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			missing = append(missing, warning)
+		}
+	}
+	if len(missing) != 2 {
+		t.Fatalf("missing skill warnings = %+v, want implement and run-tests", missing)
+	}
+
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, report, err = LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with present skill packages: %v (report: %+v)", err, report)
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("present skill package emitted warning: %+v", warning)
+		}
 	}
 }
 
@@ -139,8 +178,35 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 8 {
+	if len(set.Goobers) != 12 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
+	}
+}
+
+func TestLoadConfigDirIgnoresSkillPackageYAML(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportFile := filepath.Join(root, "gaggles", "acme-web", "skills", "implement", "references", "cases.yaml")
+	if err := os.MkdirAll(filepath.Dir(supportFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(supportFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) != 12 {
+		t.Fatalf("skill support file leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
 

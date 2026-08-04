@@ -37,6 +37,7 @@ type DB struct {
 	reader       *sql.DB
 	readerMu     sync.RWMutex
 	readerClosed bool
+	schedulerMu  sync.Mutex
 	// path is retained so the reader pool can be reopened after Compact.
 	path string
 }

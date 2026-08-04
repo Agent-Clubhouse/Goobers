@@ -339,7 +339,7 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
 			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
 			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
-			Capabilities: []string{"github:pr:write"},
+			Capabilities: []string{"provider:pr:write"},
 			Next:         "ci-gate",
 		}},
 		Gates: []apiv1.Gate{{

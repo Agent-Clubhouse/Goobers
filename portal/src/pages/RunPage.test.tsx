@@ -44,6 +44,45 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("reveals the run directory when the local capability is available", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const revealRun = vi.spyOn(client, "revealRun").mockResolvedValue();
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(revealRun).toHaveBeenCalledWith("01JZ441DAEMONAPI");
+  });
+
+  it("hides run reveal when the daemon is not local", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const config = await client.getPortalConfig();
+    vi.spyOn(client, "getPortalConfig").mockResolvedValue({
+      ...config,
+      capabilities: { revealRun: false },
+    });
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await screen.findByRole("heading", { name: "Run 01JZ441DAEMONAPI" });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Reveal run files" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("reports a failure to open the run directory", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "revealRun").mockRejectedValue(new Error("Unable to open run files."));
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(
+      await screen.findByText("Unable to open run files.", { selector: '[role="alert"]' }),
+    ).toBeInTheDocument();
+  });
+
   it("defaults an active run to the latest event and synchronizes click selection", async () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
@@ -671,7 +710,7 @@ describe("run detail", () => {
     detail.currentStage = "implement";
     client.invalidateRun("fixture:1");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(200);
     });
 
     expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
@@ -697,7 +736,7 @@ describe("run detail", () => {
     detail.lastSeq = 8;
     client.invalidateRun("fixture:2");
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(200);
     });
 
     expect(screen.getByRole("button", { name: /^Select sequence 4:/ })).toHaveAttribute(
@@ -707,6 +746,90 @@ describe("run detail", () => {
     expect(screen.getByRole("button", { name: /^Select sequence 8:/ })).not.toHaveAttribute(
       "aria-current",
     );
+    client.close();
+  });
+
+  it("pins the view when a non-latest graph stage is selected, and resumes latest for the latest stage (#2307)", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const events = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!events || !detail) {
+      throw new Error("Expected active run fixtures.");
+    }
+    const client = new LiveFixtureClient(fixtures);
+    renderRun(runId, client);
+    await screen.findByRole("heading", { name: `Run ${runId}` });
+
+    expect(
+      screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "query, deterministic, Completed at sequence 6" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "query, deterministic, Completed at sequence 6" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    events.events.push({
+      schema: "v1",
+      seq: 7,
+      type: "gate.evaluated",
+      branch: 0,
+      time: "2026-07-18T06:00:07Z",
+      knownSchema: true,
+      gate: "review",
+      attempt: 1,
+      attemptClass: "initial",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    detail.lastSeq = 7;
+    detail.currentStage = "implement";
+    act(() => client.invalidateRun("fixture:1"));
+
+    // The graph selection must survive the background refresh instead of
+    // snapping back to the new latest stage (unlike the timeline-event and
+    // replay-seek paths, this previously left followingLatest untouched).
+    await screen.findByRole("button", { name: /^Select sequence 7:/ });
+    expect(
+      screen.getByRole("button", { name: "query, deterministic, Completed at sequence 6" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute(
+      "aria-current",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^review, gate,/ }));
+
+    // Selecting the latest stage resumes follow-latest immediately.
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    events.events.push({
+      schema: "v1",
+      seq: 8,
+      type: "stage.started",
+      branch: 0,
+      time: "2026-07-18T06:00:08Z",
+      knownSchema: true,
+      stage: "implement",
+      attempt: 2,
+      attemptClass: "policy",
+    });
+    detail.lastSeq = 8;
+    act(() => client.invalidateRun("fixture:2"));
+
+    // Follow-latest continues to track subsequent live events.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Select sequence 8:/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+    client.close();
   });
 
   it("keeps run detail visible while a refresh is pending or fails", async () => {
@@ -906,6 +1029,14 @@ class LiveFixtureClient extends FixtureDaemonClient {
 
   override connectEvents(): Promise<DaemonEventStream> {
     return Promise.resolve(this.stream);
+  }
+
+  // Closes the push stream so a `for await` consumer left mid-iteration by
+  // this test unblocks immediately instead of staying suspended on the next
+  // read across the test boundary, where it otherwise outlives the
+  // unmounted component.
+  close(): void {
+    this.stream.close();
   }
 
   override async getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {

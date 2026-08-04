@@ -125,6 +125,33 @@ func TestTelemetryStatsAfterRun(t *testing.T) {
 	}
 }
 
+func TestRebuildReadModelRefusesToBypassActiveProjector(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	const sentinel = "existing read model"
+	if err := os.WriteFile(l.ReadDB(), []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatalf("hold projector lock: %v", err)
+	}
+	defer release()
+
+	err = rebuildReadModel(context.Background(), l, nil)
+	if err == nil || !strings.Contains(err.Error(), "projector is active") {
+		t.Fatalf("rebuild error = %v, want active-projector refusal", err)
+	}
+	got, err := os.ReadFile(l.ReadDB())
+	if err != nil {
+		t.Fatalf("read original model: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("read model changed while projector lock was held: %q", got)
+	}
+}
+
 func TestTelemetryErrorsAfterRun(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
@@ -315,7 +342,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"curation":{"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"claimAgeSamples":0,"forwardCurationThroughput":0,"implementationDemand":0}}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"curation":{"everRecorded":false,"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"sampleEverRecorded":false,"claimAgeSamples":0,"bounceEverRecorded":false,"forwardCurationThroughput":0,"implementationDemand":0,"inFlightClaimSamples":0,"averageInFlightClaimAgeSeconds":0,"oldestInFlightClaimAgeSeconds":0}}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

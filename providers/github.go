@@ -157,6 +157,7 @@ func (p *GitHubProvider) Kind() ProviderKind {
 func (p *GitHubProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapPRReviewSubmit, CapPRReviewThreads,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
@@ -837,30 +838,35 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 	for _, label := range pr.Labels {
 		labels = append(labels, label.Name)
 	}
+	assignees := githubUserLogins(pr.Assignees)
+	requestedReviewers := githubUserLogins(pr.RequestedReviewers)
 
 	return PullRequestPollResult{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		State:            pr.State,
-		Merged:           pr.Merged,
-		MergedAt:         pr.MergedAt,
-		Mergeable:        pr.Mergeable,
-		MergeableState:   pr.MergeableState,
-		Draft:            pr.Draft,
-		Labels:           labels,
-		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   githubRepositoryRef(pr.Head.Repo),
-		HeadSHA:          pr.Head.SHA,
-		BaseSHA:          pr.Base.SHA,
-		BaseBranch:       pr.Base.Ref,
-		Body:             pr.Body,
-		ReviewDecision:   decision,
-		RequestedChanges: requestedChanges,
-		CheckState:       checkState,
-		Checks:           checks,
-		CommentsSince:    comments,
-		URL:              pr.HTMLURL,
-		Integrity:        apiintegrity.Unapproved,
+		Number:             pr.Number,
+		Title:              pr.Title,
+		Author:             pr.User.Login,
+		Assignees:          assignees,
+		RequestedReviewers: requestedReviewers,
+		State:              pr.State,
+		Merged:             pr.Merged,
+		MergedAt:           pr.MergedAt,
+		Mergeable:          pr.Mergeable,
+		MergeableState:     pr.MergeableState,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		HeadBranch:         pr.Head.Ref,
+		HeadRepository:     githubRepositoryRef(pr.Head.Repo),
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		BaseBranch:         pr.Base.Ref,
+		Body:               pr.Body,
+		ReviewDecision:     decision,
+		RequestedChanges:   requestedChanges,
+		CheckState:         checkState,
+		Checks:             checks,
+		CommentsSince:      comments,
+		URL:                pr.HTMLURL,
+		Integrity:          apiintegrity.Unapproved,
 	}, nil
 }
 
@@ -1560,6 +1566,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		if req.HeadPrefix != "" && !strings.HasPrefix(pr.Head.Ref, req.HeadPrefix) {
 			continue
 		}
+		if !req.MatchesIdentityFields(pr.User.Login, githubUserLogins(pr.Assignees), githubUserLogins(pr.RequestedReviewers)) {
+			continue
+		}
 		var checkState CheckState
 		if !req.SkipCheckState {
 			checkState, _, err = p.combinedCheckState(ctx, req.Repository, pr.Head.SHA)
@@ -1575,22 +1584,25 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 func summarizePullRequest(pr githubPullRequestDetail, checkState CheckState) PullRequestSummary {
 	labels := githubLabelNames(pr.Labels)
 	return PullRequestSummary{
-		ID:         strconv.Itoa(pr.Number),
-		Number:     pr.Number,
-		URL:        pr.HTMLURL,
-		State:      pr.State,
-		Merged:     pr.Merged || pr.MergedAt != nil,
-		Head:       pr.Head.Ref,
-		Base:       pr.Base.Ref,
-		HeadSHA:    pr.Head.SHA,
-		BaseSHA:    pr.Base.SHA,
-		MergeSHA:   pr.MergeCommitSHA,
-		Draft:      pr.Draft,
-		Labels:     labels,
-		CheckState: checkState,
-		UpdatedAt:  pr.UpdatedAt,
-		Body:       pr.Body,
-		Integrity:  apiintegrity.Unapproved,
+		ID:                 strconv.Itoa(pr.Number),
+		Number:             pr.Number,
+		URL:                pr.HTMLURL,
+		Author:             pr.User.Login,
+		Assignees:          githubUserLogins(pr.Assignees),
+		RequestedReviewers: githubUserLogins(pr.RequestedReviewers),
+		State:              pr.State,
+		Merged:             pr.Merged || pr.MergedAt != nil,
+		Head:               pr.Head.Ref,
+		Base:               pr.Base.Ref,
+		HeadSHA:            pr.Head.SHA,
+		BaseSHA:            pr.Base.SHA,
+		MergeSHA:           pr.MergeCommitSHA,
+		Draft:              pr.Draft,
+		Labels:             labels,
+		CheckState:         checkState,
+		UpdatedAt:          pr.UpdatedAt,
+		Body:               pr.Body,
+		Integrity:          apiintegrity.Unapproved,
 	}
 }
 
@@ -1600,6 +1612,14 @@ func githubLabelNames(labels []githubLabel) []string {
 		names = append(names, label.Name)
 	}
 	return names
+}
+
+func githubUserLogins(users []githubUser) []string {
+	logins := make([]string, 0, len(users))
+	for _, user := range users {
+		logins = append(logins, user.Login)
+	}
+	return logins
 }
 
 // PullRequestFiles lists the files pullID touches — merge-review's
@@ -2336,8 +2356,108 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 	return items, nil
 }
 
-// HasOpenWorkItemBlocker reports whether a GitHub issue has a native blocker
-// that is still open.
+// FindWorkItemsByMarker returns every issue whose body contains marker as an
+// exact line. It scans the authoritative issues listing rather than GitHub's
+// eventually-consistent search index.
+func (p *GitHubProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}})
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode issues page: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
+				matches = append(matches, mapGitHubIssue(issue))
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
+// AttachWorkItemChild attaches child to parent through GitHub's native
+// sub-issues API after confirming both revisions still match the caller's
+// immediately preceding reads.
+func (p *GitHubProvider) AttachWorkItemChild(ctx context.Context, req AttachWorkItemChildRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.ParentID == "" || req.ChildID == "" {
+		return fmt.Errorf("parent and child issue ids are required")
+	}
+	parent, err := p.GetWorkItem(ctx, req.Repository, req.ParentID)
+	if err != nil {
+		return err
+	}
+	child, err := p.GetWorkItem(ctx, req.Repository, req.ChildID)
+	if err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(parent, req.ExpectedParentRevision); err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(child, req.ExpectedChildRevision); err != nil {
+		return err
+	}
+	childDatabaseID, err := strconv.ParseInt(child.ExternalID, 10, 64)
+	if err != nil || childDatabaseID <= 0 {
+		return fmt.Errorf("child issue %q has invalid provider id %q", req.ChildID, child.ExternalID)
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ParentID, "sub_issues")
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"sub_issue_id": childDatabaseID}, nil)
+}
+
+// ListWorkItemBlockers returns the GitHub issues and pull requests registered as
+// native blockers for an issue.
+func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	if err != nil {
+		return nil, err
+	}
+	var blockers []WorkItem
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []githubIssue
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
+		}
+		for _, issue := range issues {
+			blockers = append(blockers, mapGitHubIssue(issue))
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return blockers, nil
+}
+
+// HasOpenWorkItemBlocker reports whether a GitHub issue has a native issue
+// blocker that is still open.
 func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return false, err
@@ -2976,22 +3096,25 @@ type githubPullRequest struct {
 }
 
 type githubPullRequestDetail struct {
-	ID             int64         `json:"id"`
-	Number         int           `json:"number"`
-	Title          string        `json:"title"`
-	State          string        `json:"state"`
-	Merged         bool          `json:"merged"`
-	MergedAt       *time.Time    `json:"merged_at"`
-	MergeCommitSHA string        `json:"merge_commit_sha"`
-	ClosedAt       *time.Time    `json:"closed_at"`
-	Mergeable      *bool         `json:"mergeable"`
-	MergeableState string        `json:"mergeable_state"`
-	Draft          bool          `json:"draft"`
-	Body           string        `json:"body"`
-	HTMLURL        string        `json:"html_url"`
-	Labels         []githubLabel `json:"labels"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	Head           struct {
+	ID                 int64         `json:"id"`
+	Number             int           `json:"number"`
+	Title              string        `json:"title"`
+	State              string        `json:"state"`
+	Merged             bool          `json:"merged"`
+	MergedAt           *time.Time    `json:"merged_at"`
+	MergeCommitSHA     string        `json:"merge_commit_sha"`
+	ClosedAt           *time.Time    `json:"closed_at"`
+	Mergeable          *bool         `json:"mergeable"`
+	MergeableState     string        `json:"mergeable_state"`
+	Draft              bool          `json:"draft"`
+	Body               string        `json:"body"`
+	HTMLURL            string        `json:"html_url"`
+	User               githubUser    `json:"user"`
+	Assignees          []githubUser  `json:"assignees"`
+	RequestedReviewers []githubUser  `json:"requested_reviewers"`
+	Labels             []githubLabel `json:"labels"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	Head               struct {
 		Ref  string            `json:"ref"`
 		SHA  string            `json:"sha"`
 		Repo *githubRepository `json:"repo"`
@@ -3155,6 +3278,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Provider:       ProviderGitHub,
 		ID:             strconv.Itoa(issue.Number),
 		ExternalID:     strconv.FormatInt(issue.ID, 10),
+		Revision:       timeRevision(issue.UpdatedAt),
 		Type:           "issue",
 		Title:          issue.Title,
 		Body:           issue.Body,
@@ -3173,6 +3297,32 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Raw:            issue,
 		Integrity:      apiintegrity.Unapproved,
 	}
+}
+
+func containsExactLine(body, marker string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if line == marker {
+			return true
+		}
+	}
+	return false
+}
+
+func timeRevision(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func checkWorkItemRevision(item WorkItem, expected string) error {
+	if expected == "" {
+		return fmt.Errorf("expected revision is required for work item %s", item.ID)
+	}
+	if item.Revision != expected {
+		return &RevisionConflictError{ItemID: item.ID, Expected: expected, Actual: item.Revision}
+	}
+	return nil
 }
 
 func githubIssueFields(issue githubIssue) fieldpredicate.Fields {

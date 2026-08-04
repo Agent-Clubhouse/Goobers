@@ -250,6 +250,34 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowScopesMainPushToPostMergeJobs(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	for _, job := range []string{"checks", "unit-macos"} {
+		section := workflowJob(workflow, job)
+		if section == "" {
+			t.Errorf("CI workflow is missing post-merge job %q", job)
+		} else if strings.Contains(section, "github.event_name != 'push'") {
+			t.Errorf("post-merge job %q must run on main pushes", job)
+		}
+	}
+	for _, job := range []string{
+		"deadcode", "lint", "darwin-build", "unit", "shipped", "integration",
+		"conformance", "windows-smoke", "vulnerability-scan", "required-ci",
+		"sandbox", "linux-validation",
+	} {
+		if section := workflowJob(workflow, job); !strings.Contains(section, "github.event_name != 'push'") {
+			t.Errorf("merge-gate job %q must not rerun on main pushes", job)
+		}
+	}
+}
+
 func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
@@ -264,6 +292,24 @@ func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
 			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}
 	}
+}
+
+func workflowJob(workflow, name string) string {
+	startMarker := "\n  " + name + ":\n"
+	start := strings.Index(workflow, startMarker)
+	if start < 0 {
+		return ""
+	}
+	start += len(startMarker)
+	lines := strings.Split(workflow[start:], "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "  ") &&
+			!strings.HasPrefix(line, "   ") &&
+			strings.HasSuffix(line, ":") {
+			return strings.Join(lines[:i], "\n")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 type makeTarget struct {

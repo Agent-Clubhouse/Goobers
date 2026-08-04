@@ -1,4 +1,4 @@
-import type { WorkflowStage } from "../prototypeData";
+import type { WorkflowStage } from "../prototypeFixtures";
 import { Icon } from "./Icon";
 
 interface InspectorProps {

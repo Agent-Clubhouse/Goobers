@@ -123,7 +123,7 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	for _, feature := range features {
 		wantLevel := SupportGA
 		switch feature.ID {
-		case featureGaggleSandbox, featureGaggleCheckoutSparse,
+		case featureGaggleSandbox,
 			featureTaskInputsFromQualified:
 			wantLevel = SupportPreview
 			previewSeen++
@@ -523,7 +523,8 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			},
 		},
 		Gates: []apiv1.Gate{
-			automatedFeatureGate("status-equals", "output-equals"),
+			automatedFeatureGate("status-equals", "failure-class"),
+			automatedFeatureGate("failure-class", "output-equals"),
 			automatedFeatureGate("output-equals", "output-not-equals"),
 			automatedFeatureGate("output-not-equals", "output-numeric-gte"),
 			automatedFeatureGate("output-numeric-gte", "output-numeric-lte"),
@@ -833,6 +834,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"gate.evaluator.automated.retry.backoff",
 		"gate.evaluator.automated.pollIntervalSeconds",
 		"gate.evaluator.automated.check.status-equals",
+		"gate.evaluator.automated.check.failure-class",
 		"gate.evaluator.automated.check.output-equals",
 		"gate.evaluator.automated.check.output-not-equals",
 		"gate.evaluator.automated.check.output-numeric-gte",

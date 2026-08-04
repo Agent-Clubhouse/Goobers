@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,12 @@ const (
 	DefaultClaimsLockTimeout         = 30 * time.Second
 	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
 	DefaultTelemetryRetentionMaxRuns = 500
+	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
+	LargeRepoDefaultStageTimeout = "4h"
+	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
+	LargeRepoStalledRunTimeout = "6h"
+	// LargeRepoMaxRunDuration is the preset's total run-age limit.
+	LargeRepoMaxRunDuration = "24h"
 )
 
 // Config is the parsed instance.yaml: target repo(s) + provider, token source
@@ -87,6 +94,12 @@ type Config struct {
 	// repo-token default; an MCP entry is reachable only through an explicit
 	// goober server reference.
 	Credentials []CredentialGrant `json:"credentials,omitempty" yaml:"credentials,omitempty"`
+	// DaemonIdentity declares a distinct bot identity for the daemon's own
+	// authored PRs/reviews/merges/comments (UNOP-7/#1295, #1780), backing the
+	// standard daemon-mutation capability set unless a capability has its own
+	// Credentials override. Nil (the default) is byte-identical to every
+	// instance today.
+	DaemonIdentity *DaemonIdentityConfig `json:"daemonIdentity,omitempty" yaml:"daemonIdentity,omitempty"`
 	// Timezone is an IANA location name (e.g. "America/New_York") every
 	// workflow's cron schedule evaluates in. Empty defaults to UTC — a fixed,
 	// reproducible default independent of the host process's own local zone,
@@ -106,9 +119,9 @@ type Config struct {
 	// existed.
 	SecretStores []SecretStoreConfig `json:"secretStores,omitempty" yaml:"secretStores,omitempty"`
 	// Sandbox declares the instance-wide isolation posture (#1305). Absent or
-	// zero-valued it is "disabled" — sandboxing is strictly opt-in, so an
-	// unconfigured instance runs exactly as before. A gaggle may override it
-	// through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
+	// zero-valued it is "enforced". Setting agentic to "disabled" is the
+	// operator-owned trusted-local opt-out; a gaggle may strengthen but not
+	// weaken it through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
 	Sandbox *SandboxConfig `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 	// Workcopies tunes managed working-copy provisioning (docs/design/
 	// v2-cloud-scale.md §3). Nil keeps every default — a pointer, unlike the
@@ -119,6 +132,9 @@ type Config struct {
 
 // WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
 type WorkcopiesConfig struct {
+	// Root is an optional absolute base path for managed mirrors and worktrees.
+	// Gaggle names are appended beneath it to preserve workforce isolation.
+	Root string `json:"root,omitempty" yaml:"root,omitempty"`
 	// PartialClone opts newly created mirrors into blobless partial clones
 	// with a heads+tags-narrowed refresh refspec (#646, design §3 B1): blobs
 	// are fetched on demand when a stage worktree first materializes them,
@@ -128,12 +144,46 @@ type WorkcopiesConfig struct {
 	// byte-identical to previous releases; existing mirrors are never
 	// migrated in either direction.
 	PartialClone bool `json:"partialClone,omitempty" yaml:"partialClone,omitempty"`
+	// ObjectCache opts newly created mirrors into borrowing objects from a
+	// shared, node-level object cache via git alternates (#654, design §3
+	// B3): one bare mirror clone per repo URL, shared by every gaggle
+	// Manager on the node targeting that repo, instead of each gaggle
+	// paying for its own full clone. False — the default — keeps mirror
+	// creation byte-identical to previous releases; no `_objects` cache
+	// directory is ever created. See worktree.WithObjectCache.
+	ObjectCache bool `json:"objectCache,omitempty" yaml:"objectCache,omitempty"`
 }
 
 // PartialCloneEnabled reports whether newly created mirrors should be
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// ObjectCacheEnabled reports whether newly created mirrors should reference
+// a shared node-level object cache (workcopies.objectCache, defaults to
+// false).
+func (c *Config) ObjectCacheEnabled() bool {
+	return c.Workcopies != nil && c.Workcopies.ObjectCache
+}
+
+// EffectiveWorkcopiesLayout applies the gaggle override, then the instance
+// override, to layout. An empty root preserves the instance-local default.
+func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (Layout, error) {
+	root := ""
+	if c != nil && c.Workcopies != nil {
+		root = c.Workcopies.Root
+	}
+	if gaggle != nil && gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+		root = gaggle.Spec.Workcopies.Root
+	}
+	if root == "" {
+		return layout, nil
+	}
+	if !filepath.IsAbs(root) {
+		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
+	}
+	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
 }
 
 // EffectiveSelfIdentity returns the provider login configured for gaggle,
@@ -354,6 +404,10 @@ type RepoRef struct {
 	Project string `json:"project,omitempty" yaml:"project,omitempty"`
 	// Name is the repo name.
 	Name string `json:"name" yaml:"name"`
+	// LargeRepo enables the monolith-safe execution preset. The preset supplies
+	// defaults only; explicit repository workspace, path-length, stage-timeout,
+	// and run-control settings override it.
+	LargeRepo bool `json:"largeRepo,omitempty" yaml:"largeRepo,omitempty"`
 	// Token is a reference to this repo's credential. Never an inline value
 	// (CFG-009, SEC-010). GitHub and ADO PAT auth require exactly one of Env
 	// or File. Entra-backed ADO auth and GitHub App auth do not use this
@@ -369,6 +423,166 @@ type RepoRef struct {
 	// configures none behaves exactly as before.
 	// +optional
 	Policy *RepoPolicyExpectation `json:"policy,omitempty" yaml:"policy,omitempty"`
+	// PathLength configures the checkout path-length preflight for this repo.
+	// On Windows the preflight defaults to the 260-character MAX_PATH ceiling;
+	// declaring this block enables it on every host. Set disabled to opt out.
+	// +optional
+	PathLength *RepoPathLengthConfig `json:"pathLength,omitempty" yaml:"pathLength,omitempty"`
+	// Workspace selects how this repository is materialized for local runs.
+	// Pinned mode is intentionally non-hermetic: ignored and untracked build
+	// state may persist between runs, so the target repository's .gitignore
+	// hygiene is load-bearing for clean run-branch diffs.
+	Workspace *RepoWorkspaceConfig `json:"workspace,omitempty" yaml:"workspace,omitempty"`
+	// DefaultStageTimeout is the deadline for deterministic stages that omit
+	// timeoutSeconds. It overrides both the large-repo preset and the
+	// instance-wide runner.defaultStageTimeout for this repository.
+	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// RunControls overrides instance-level watchdog defaults for runs targeting
+	// this repository. Gaggle and workflow runControls remain more specific.
+	RunControls *apiv1.RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+}
+
+// RepoPathLengthConfig bounds paths a repository checkout and its build output
+// may create beneath a managed worktree.
+type RepoPathLengthConfig struct {
+	// Disabled explicitly opts this repository out of path-length preflight.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
+	// MaxPathLength is the absolute path ceiling. Zero defaults to 260.
+	MaxPathLength int `json:"maxPathLength,omitempty" yaml:"maxPathLength,omitempty"`
+	// BuildOutputAllowance reserves characters beyond the deepest tracked path
+	// for build-generated subdirectories and files.
+	BuildOutputAllowance int `json:"buildOutputAllowance,omitempty" yaml:"buildOutputAllowance,omitempty"`
+}
+
+const (
+	// WorkspaceCleanNone preserves ignored and untracked files between runs.
+	WorkspaceCleanNone = "none"
+	// WorkspaceCleanIgnoredSafe removes untracked files while preserving ignored files.
+	WorkspaceCleanIgnoredSafe = "ignored-safe"
+	// WorkspaceCleanFull removes all ignored and untracked files.
+	WorkspaceCleanFull = "full"
+)
+
+// RepoWorkspaceConfig configures the mutually exclusive local checkout modes.
+// Worktrees is explicit only so contradictory declarations fail loudly;
+// omitting Workspace retains the existing per-stage worktree behavior.
+type RepoWorkspaceConfig struct {
+	Pinned      bool   `json:"pinned" yaml:"pinned"`
+	Worktrees   bool   `json:"worktrees,omitempty" yaml:"worktrees,omitempty"`
+	CleanPolicy string `json:"cleanPolicy,omitempty" yaml:"cleanPolicy,omitempty"`
+	pinnedSet   bool
+}
+
+// UnmarshalJSON preserves whether pinned was explicitly declared so false can
+// override the large-repo preset rather than looking identical to omission.
+func (c *RepoWorkspaceConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Pinned      *bool  `json:"pinned"`
+		Worktrees   bool   `json:"worktrees"`
+		CleanPolicy string `json:"cleanPolicy"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	c.Worktrees = wire.Worktrees
+	c.CleanPolicy = wire.CleanPolicy
+	c.pinnedSet = wire.Pinned != nil
+	if wire.Pinned != nil {
+		c.Pinned = *wire.Pinned
+	}
+	return nil
+}
+
+// Pinned reports whether this repository uses its node-local persistent copy.
+func (r RepoRef) Pinned() bool {
+	if r.Workspace != nil {
+		if r.Workspace.Worktrees {
+			return false
+		}
+		if r.Workspace.pinnedSet {
+			return r.Workspace.Pinned
+		}
+		if r.Workspace.Pinned {
+			return true
+		}
+	}
+	return r.LargeRepo
+}
+
+// WorkspaceCleanPolicy returns the configured pinned clean policy, defaulting
+// to none so ignored and untracked incremental build state survives.
+func (r RepoRef) WorkspaceCleanPolicy() string {
+	if r.Workspace == nil || r.Workspace.CleanPolicy == "" {
+		return WorkspaceCleanNone
+	}
+	return r.Workspace.CleanPolicy
+}
+
+// EffectiveDefaultStageTimeout returns the repository-specific deterministic
+// stage default after applying the large-repo preset and instance fallback.
+func (r RepoRef) EffectiveDefaultStageTimeout(fallback string) string {
+	if r.DefaultStageTimeout != "" {
+		return r.DefaultStageTimeout
+	}
+	if r.LargeRepo {
+		return LargeRepoDefaultStageTimeout
+	}
+	return fallback
+}
+
+// EffectiveRunControls overlays repository defaults on instance run controls.
+// Gaggle and workflow controls are applied by runcontrol.Resolve afterwards.
+func (r RepoRef) EffectiveRunControls(base apiv1.RunControls) apiv1.RunControls {
+	if r.LargeRepo {
+		base.StalledRunTimeout = LargeRepoStalledRunTimeout
+		base.MaxRunDuration = LargeRepoMaxRunDuration
+	}
+	if r.RunControls == nil {
+		return base
+	}
+	if r.RunControls.MaxRepasses > 0 {
+		base.MaxRepasses = r.RunControls.MaxRepasses
+	}
+	if r.RunControls.StalledRunTimeout != "" {
+		base.StalledRunTimeout = r.RunControls.StalledRunTimeout
+	}
+	if r.RunControls.MaxRunDuration != "" {
+		base.MaxRunDuration = r.RunControls.MaxRunDuration
+	}
+	return base
+}
+
+// ResolveLargeRepoPresets materializes monolith-safe defaults so config
+// inspection and every runtime consumer see the same effective values.
+func (c *Config) ResolveLargeRepoPresets() {
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if !repo.LargeRepo {
+			continue
+		}
+		if repo.Workspace == nil {
+			repo.Workspace = &RepoWorkspaceConfig{Pinned: true}
+		} else if !repo.Workspace.Worktrees && !repo.Workspace.pinnedSet {
+			repo.Workspace.Pinned = true
+		}
+		if repo.PathLength == nil {
+			repo.PathLength = &RepoPathLengthConfig{}
+		}
+		if repo.DefaultStageTimeout == "" {
+			repo.DefaultStageTimeout = LargeRepoDefaultStageTimeout
+		}
+		if repo.RunControls == nil {
+			repo.RunControls = &apiv1.RunControls{}
+		}
+		if repo.RunControls.StalledRunTimeout == "" {
+			repo.RunControls.StalledRunTimeout = LargeRepoStalledRunTimeout
+		}
+		if repo.RunControls.MaxRunDuration == "" {
+			repo.RunControls.MaxRunDuration = LargeRepoMaxRunDuration
+		}
+	}
 }
 
 // RepoPolicyExpectation is one repo's declared forge-conformance manifest
@@ -478,6 +692,118 @@ func (id *GitHubID) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("must be a string or a number, got %s", data)
 	}
 	*id = GitHubID(n.String())
+	return nil
+}
+
+// DaemonIdentityConfig declares a distinct bot identity for the daemon's own
+// authored mutations (UNOP-7/#1295), on equal footing whichever Kind is
+// chosen — a machine-account PAT (#1780) or GitHub App installation minting
+// (#1779), reusing the same Kind vocabulary as RepoAuthConfig (GitHubAuthPAT/
+// GitHubAuthApp) since the underlying mechanisms are identical. Kind is a
+// deliberately open string, not a closed enum (no kubebuilder Enum marker):
+// a future third method (e.g. OIDC federation) is an additive Kind value and
+// new kind-specific fields on this same struct, never a schema break for the
+// first two.
+//
+// Nil (the default) is byte-identical to every instance today: capabilities
+// resolve exactly as they do without this field, and PR/attribution checks
+// that consult it fall back unchanged to their pre-#1780 behavior (see
+// cmd/goobers/prselect.go's isOwnPullRequest). Configuring it is what makes a
+// distinct identity's credential back the standard daemon-mutation
+// capability set (repo:push, github:issues:write, github:pr:write,
+// github:pr:review, github:branch:delete, github:pr:merge) without having to
+// declare each one individually via credentials: — an explicit
+// CredentialGrant for one of those capabilities still overrides this.
+type DaemonIdentityConfig struct {
+	Kind string `json:"kind" yaml:"kind"`
+	// Token references the machine account's PAT for kind "pat" — exactly
+	// one of env/file/keychain/store, never an inline value (CFG-009).
+	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// AppID identifies the GitHub App for kind "github-app" (see
+	// RepoAuthConfig.AppID).
+	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
+	// InstallationID is the App's installation ID for kind "github-app".
+	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// PrivateKey references the App's PEM-encoded private key for kind
+	// "github-app" (see RepoAuthConfig.PrivateKey).
+	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+	// Slug is the App's URL-safe handle (the part before "[bot]" in its
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind "github-app".
+	// Installation tokens cannot self-report a login via the REST API the
+	// way a PAT can (there is no equivalent of GET /user), so attribution
+	// checks need it declared explicitly. Optional and currently
+	// forward-compatible only: #1779 (the App path itself) is not yet
+	// implemented, so a kind "github-app" daemon identity without Slug set
+	// still mints and authenticates correctly, it just cannot yet be
+	// distinguished from the branch-prefix heuristic in PR attribution.
+	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
+}
+
+// hasGitHubAppFields reports whether any github-app-only field is set, for
+// fail-closed rejection on kinds that must not carry them.
+func (d *DaemonIdentityConfig) hasGitHubAppFields() bool {
+	return d.AppID != "" || d.InstallationID != "" || d.PrivateKey != nil || d.Slug != ""
+}
+
+// GitHubApp reports whether this identity authenticates through GitHub App
+// installation-token minting rather than a static token ref.
+func (d *DaemonIdentityConfig) GitHubApp() bool {
+	return d != nil && d.Kind == GitHubAuthApp
+}
+
+// validate enforces exactly-one-kind and kind-specific required fields,
+// mirroring RepoAuthConfig's per-repo validation switch (same fail-closed
+// discipline, same CFG-009/SEC-010 inline-secret rejection).
+func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[string]bool) error {
+	switch d.Kind {
+	case GitHubAuthPAT:
+		if d.hasGitHubAppFields() {
+			return fmt.Errorf("appId, installationId, privateKey, and slug are only valid for kind %q", GitHubAuthApp)
+		}
+		if d.Token == nil || d.Token.sourceCount() != 1 {
+			return fmt.Errorf("token must reference exactly one of env, file, keychain, or store — " +
+				"inline secret values are never permitted (CFG-009, SEC-010)")
+		}
+		if err := validateStoreRef("token", *d.Token, stores); err != nil {
+			return err
+		}
+		if d.Token.Env != "" && stageEnvironmentAllows(d.Token.Env, envPassthrough) {
+			return fmt.Errorf(
+				"token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				d.Token.Env,
+			)
+		}
+	case GitHubAuthApp:
+		if d.Token != nil {
+			return fmt.Errorf("kind %q must not configure token — the installation token is minted", GitHubAuthApp)
+		}
+		if d.AppID == "" {
+			return fmt.Errorf("appId is required for kind %q", GitHubAuthApp)
+		}
+		if d.InstallationID == "" {
+			return fmt.Errorf("installationId is required for kind %q", GitHubAuthApp)
+		}
+		if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
+			return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+		}
+		if d.PrivateKey == nil || d.PrivateKey.sourceCount() != 1 {
+			return fmt.Errorf("privateKey must reference exactly one of env, file, keychain, or store — " +
+				"inline secret values are never permitted (CFG-009, SEC-010)")
+		}
+		if err := validateStoreRef("privateKey", *d.PrivateKey, stores); err != nil {
+			return err
+		}
+		// The App key can mint tokens broadly — never allow the stage
+		// environment to carry it, mirroring RepoAuthConfig's own guard.
+		if d.PrivateKey.Env != "" && stageEnvironmentAllows(d.PrivateKey.Env, envPassthrough) {
+			return fmt.Errorf(
+				"privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				d.PrivateKey.Env,
+			)
+		}
+	default:
+		return fmt.Errorf("unsupported kind %q (supported: %q, %q)", d.Kind, GitHubAuthPAT, GitHubAuthApp)
+	}
 	return nil
 }
 
@@ -669,6 +995,9 @@ type RunConditions struct {
 	// StalledRunTimeout is the maximum period a running journal may remain
 	// silent before the daemon escalates it. Empty defaults to 45 minutes.
 	StalledRunTimeout string `json:"stalledRunTimeout,omitempty" yaml:"stalledRunTimeout,omitempty"`
+	// MaxRunDuration is the maximum total wall-clock age of a run. Empty
+	// disables the limit.
+	MaxRunDuration string `json:"maxRunDuration,omitempty" yaml:"maxRunDuration,omitempty"`
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
 	// Empty defaults to 30 seconds.
 	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
@@ -679,6 +1008,7 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	return apiv1.RunControls{
 		MaxRepasses:       c.MaxRepasses,
 		StalledRunTimeout: c.StalledRunTimeout,
+		MaxRunDuration:    c.MaxRunDuration,
 	}
 }
 
@@ -741,6 +1071,21 @@ func (c RunConditions) StalledRunTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// MaxRunDurationDuration resolves the optional total run-age limit.
+func (c RunConditions) MaxRunDurationDuration() (time.Duration, error) {
+	if c.MaxRunDuration == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(c.MaxRunDuration)
+	if err != nil {
+		return 0, fmt.Errorf("runConditions.maxRunDuration %q: %w", c.MaxRunDuration, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("runConditions.maxRunDuration must be positive, got %s", duration)
+	}
+	return duration, nil
+}
+
 // ClaimsLockTimeoutDuration resolves the configured claims-lock deadline.
 func (c RunConditions) ClaimsLockTimeoutDuration() (time.Duration, error) {
 	if c.ClaimsLockTimeout == "" {
@@ -792,7 +1137,7 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
-// config (selfhost/instance.yaml.example) but had zero callers.
+// config (reference-workflows/instance.yaml.example) but had zero callers.
 func (c *Config) TelemetryEnabled() bool {
 	return c.Telemetry.Enabled == nil || *c.Telemetry.Enabled
 }
@@ -968,6 +1313,10 @@ func LoadConfig(path string) (*Config, error) {
 // IANA timezone — fail closed at load time rather than at the first cron
 // tick that tries to use it.
 func (c *Config) Validate() error {
+	c.ResolveLargeRepoPresets()
+	if c.Workcopies != nil && c.Workcopies.Root != "" && !filepath.IsAbs(c.Workcopies.Root) {
+		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Workcopies.Root)
+	}
 	if err := c.validateAPIConfig(); err != nil {
 		return err
 	}
@@ -1075,6 +1424,37 @@ func (c *Config) Validate() error {
 		}
 		if r.Owner == "" || r.Name == "" {
 			return fmt.Errorf("repos[%d]: owner and name are required", i)
+		}
+		if r.PathLength != nil {
+			if r.PathLength.MaxPathLength < 0 {
+				return fmt.Errorf("repos[%d] (%s/%s): pathLength.maxPathLength must not be negative", i, r.Owner, r.Name)
+			}
+			if r.PathLength.BuildOutputAllowance < 0 {
+				return fmt.Errorf("repos[%d] (%s/%s): pathLength.buildOutputAllowance must not be negative", i, r.Owner, r.Name)
+			}
+		}
+		if r.DefaultStageTimeout != "" {
+			if _, err := (RunnerConfig{DefaultStageTimeout: r.DefaultStageTimeout}).DefaultStageTimeoutDuration(); err != nil {
+				return fmt.Errorf("repos[%d] (%s/%s): %w", i, r.Owner, r.Name, err)
+			}
+		}
+		if r.RunControls != nil {
+			if err := runcontrol.Validate(fmt.Sprintf("repos[%d].runControls", i), *r.RunControls); err != nil {
+				return err
+			}
+		}
+		if r.Workspace != nil {
+			if r.Workspace.Pinned && r.Workspace.Worktrees {
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.pinned and workspace.worktrees are mutually exclusive", i, r.Owner, r.Name)
+			}
+			switch policy := r.Workspace.CleanPolicy; policy {
+			case "", WorkspaceCleanNone, WorkspaceCleanIgnoredSafe, WorkspaceCleanFull:
+			default:
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy %q must be one of none, ignored-safe, or full", i, r.Owner, r.Name, policy)
+			}
+			if !r.Pinned() && r.Workspace.CleanPolicy != "" {
+				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy requires workspace.pinned", i, r.Owner, r.Name)
+			}
 		}
 		if r.Token.sourceCount() > 1 {
 			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
@@ -1195,6 +1575,11 @@ func (c *Config) Validate() error {
 					return fmt.Errorf("repos[%d] (%s/%s): policy.requiredStatusChecks entries must not be empty", i, r.Owner, r.Name)
 				}
 			}
+		}
+	}
+	if c.DaemonIdentity != nil {
+		if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
+			return fmt.Errorf("daemonIdentity: %w", err)
 		}
 	}
 	seen := make(map[string]bool, len(c.Credentials))
@@ -1886,6 +2271,12 @@ func validateLoopbackListenAddress(address string) error {
 		return fmt.Errorf("port %q must be a number from 0 through 65535", port)
 	}
 	return nil
+}
+
+// IsLoopbackListenAddress reports whether address is a valid loopback
+// host:port listener.
+func IsLoopbackListenAddress(address string) bool {
+	return validateLoopbackListenAddress(address) == nil
 }
 
 // WriteConfig marshals cfg as YAML and writes it to path.

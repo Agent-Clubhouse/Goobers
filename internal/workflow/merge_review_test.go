@@ -17,8 +17,8 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 		root string
 	}{
 		{
-			name: "selfhost",
-			root: filepath.Join("..", "..", "selfhost", "gaggles", "goobers"),
+			name: "reference-workflows",
+			root: filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers"),
 		},
 		{
 			name: "acme-web",
@@ -104,7 +104,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Fatal("pr-select task not found")
 			}
 			wantHeadPrefixes := "goobers/implementation/,goobers/docs-updater/"
-			if tt.name == "selfhost" {
+			if tt.name == "reference-workflows" {
 				wantHeadPrefixes += ",goobers/tutor/"
 			}
 			if got := prSelect.Inputs["headPrefixes"]; got != wantHeadPrefixes {
@@ -206,7 +206,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("apply-verdict task not found")
 			}
-			wantApplyCapabilities := []string{"github:pr:write", "github:pr:review"}
+			wantApplyCapabilities := []string{"provider:pr:write", "github:pr:review"}
 			if !reflect.DeepEqual(applyVerdict.Capabilities, wantApplyCapabilities) {
 				t.Errorf("apply-verdict capabilities = %v, want %v", applyVerdict.Capabilities, wantApplyCapabilities)
 			}

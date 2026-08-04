@@ -27,6 +27,12 @@ name: CI
 # platform slices, the Windows gate, the vulnerability scan, and the journal
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
+#
+# Pull requests and merge groups run that complete matrix. A push to main has
+# already passed the merge-group gate, so it runs only `checks` against the
+# exact landed SHA and `unit-macos`, which publishes the canonical main-branch
+# timing and coverage artifacts used for trend comparisons. Keeping this
+# post-merge lane small avoids paying for the full matrix twice.
 
 on:
   push:
@@ -55,6 +61,7 @@ jobs:
   # per-OS step of the old monolith; nothing about it is OS-specific).
   deadcode:
     name: dead-code analysis
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -137,6 +144,7 @@ jobs:
   # branches).
   lint:
     name: lint (${{ matrix.goos }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -199,6 +207,7 @@ jobs:
   # runtime is exercised by the unit/shipped/sandbox macOS jobs.
   darwin-build:
     name: darwin gate (build · vet)
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -242,6 +251,7 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -271,6 +281,23 @@ jobs:
           done
           echo "::error::go mod download failed after 3 attempts"
           exit 1
+
+      - name: Install bubblewrap
+        # Sandboxing agentic stages is enforced by default (TBH-3/SEC-044):
+        # cmd/goobers' acceptance/behavioral tests drive `goobers run` through
+        # the real runner with a fake harness under the default (enforced)
+        # posture, which resolves a real platform sandbox even though the
+        # harness itself is stubbed. macOS runners already carry sandbox-exec
+        # out of the box; Linux needs bubblewrap installed explicitly, same as
+        # the dedicated "sandbox confinement" job below.
+        run: |
+          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
+          # namespaces via AppArmor, which bubblewrap needs to set up its uid
+          # map. Relax it so the acceptance tests can create the sandbox
+          # namespace on the hosted runner. Tolerate the knob being absent
+          # (future runner images / kernels).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
@@ -380,6 +407,7 @@ jobs:
   # shipped-workflows step and the separate non-race shipped-workflows job.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -421,6 +449,7 @@ jobs:
 
   integration:
     name: declared-dependency integration
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -431,6 +460,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
 
       - name: Download modules
         # Explicit bash: the Windows runner defaults to PowerShell, which
@@ -447,18 +483,21 @@ jobs:
 
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
-      - name: Provision declared dependencies (bash, bwrap, dirname, head, mkdir, sh, sleep, yes)
+      - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash
+          sudo apt-get install --yes bash bubblewrap coreutils dash maven
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Run strict integration tier
+        env:
+          GOOBERS_JAVA_E2E: "1"
         run: make test-integration-strict
 
   conformance:
     name: journal conformance
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -510,6 +549,7 @@ jobs:
   # like this one regardless. The contract stands restored, not weakened.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
+    if: ${{ github.event_name != 'push' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -623,6 +663,7 @@ jobs:
 
   vulnerability-scan:
     name: Go vulnerability scan
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -639,7 +680,7 @@ jobs:
 
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name != 'push' }}
     # integration, sandbox, and linux-validation joined this list in #2019:
     # all three ran on every PR already (full runner cost) but a red result
     # never blocked merge (zero enforcement) until now — the worst of both
@@ -689,6 +730,7 @@ jobs:
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
+    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -728,6 +770,7 @@ jobs:
   # while the job was still excluded from required-ci's needs list.
   linux-validation:
     name: linux node validation (#636/#639)
+    if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

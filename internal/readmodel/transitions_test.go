@@ -9,7 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// implementationGraph mirrors selfhost/gaggles/goobers/workflows/implementation.yaml's
+// implementationGraph mirrors reference-workflows/gaggles/goobers/workflows/implementation.yaml's
 // cyclic shape closely enough to exercise it: implement -> review, review
 // pass -> local-ci, review needs-changes -> implement (a repass/back-edge),
 // local-ci -> local-gate, local-gate pass -> open-pr, local-gate fail ->
@@ -78,6 +78,7 @@ func TestProjectTransitionsFirstPassEmphasizesOnlyTheSelectedEdge(t *testing.T) 
 		tev(10, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "open-pr", "success" }),
 		tev(11, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseCompleted) }),
 	}
+
 	rows, status := ProjectTransitions(events, implementationGraph())
 	if status != TransitionsProjected {
 		t.Fatalf("status = %q, want %q", status, TransitionsProjected)
@@ -94,6 +95,27 @@ func TestProjectTransitionsFirstPassEmphasizesOnlyTheSelectedEdge(t *testing.T) 
 		if row.Source == "review" && row.Target == "implement" {
 			t.Fatalf("rows = %+v, the untaken needs-changes->implement edge must not appear", rows)
 		}
+	}
+}
+
+func TestProjectTransitionsIncludesGateOverrideBranch(t *testing.T) {
+	events := []journal.Event{
+		tev(1, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Target, e.Verdict = "review", workflow.TargetEscalate, "needs-changes"
+		}),
+		tev(2, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseEscalated) }),
+		tev(3, journal.EventGateOverridden, func(e *journal.Event) {
+			e.Gate, e.Target, e.Verdict = "review", "implement", "needs-changes"
+		}),
+	}
+	rows, status := ProjectTransitions(events, implementationGraph())
+	if status != TransitionsProjected {
+		t.Fatalf("status = %q, want %q", status, TransitionsProjected)
+	}
+	last := rows[len(rows)-1]
+	if last.Seq != 3 || last.Source != "review" || last.Target != "implement" ||
+		last.Verdict != "needs-changes" || !last.Repass {
+		t.Fatalf("override transition = %+v", last)
 	}
 }
 

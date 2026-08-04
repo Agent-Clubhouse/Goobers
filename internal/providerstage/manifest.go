@@ -3,6 +3,7 @@
 package providerstage
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -13,9 +14,11 @@ type CapabilityUse struct {
 	Capability  capability.Capability
 	Consequence string
 
-	optional  bool
-	flag      string
-	flagValue string
+	optional    bool
+	flag        string
+	flagValue   string
+	anyFlags    []string
+	unlessFlags []string
 }
 
 // Command describes one built-in provider-chain command.
@@ -41,11 +44,19 @@ func requiredWhenFlagEquals(cap capability.Capability, flag, value, consequence 
 	}
 }
 
+func requiredWhenAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, anyFlags: flags}
+}
+
+func requiredUnlessAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, unlessFlags: flags}
+}
+
 var commands = map[string]Command{
 	"apply-verdict": {
 		ResultFile: "verdict-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request routing fails at runtime"),
+			required(capability.ProviderPRWrite, "the capability-scoped credential is not injected, so pull-request routing fails at runtime"),
 			required(capability.GitHubPRReview, "the capability-scoped credential is not injected, so native review publication fails at runtime"),
 		},
 	},
@@ -70,8 +81,21 @@ var commands = map[string]Command{
 	"backlog-query": {
 		ResultFile: "claimed-item.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog query and claim operations fail at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesRead, []string{"read-only"}, "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"read-only"}, "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime"),
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
+		},
+	},
+	"select-source": {
+		ResultFile: "selection.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"),
+		},
+	},
+	"validate-plan": {
+		ResultFile: "plan-validation.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
 		},
 	},
 	"elect-lander": {
@@ -90,6 +114,13 @@ var commands = map[string]Command{
 		ResultFile: "implementation-context.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so implementation context collection fails at runtime"),
+		},
+	},
+	"check-issue-staleness": {
+		ResultFile: "issue-staleness-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so polling and labeling the pull request fails at runtime"),
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the pinned originating issue lookup fails at runtime"),
 		},
 	},
 	"gather-issue-context": {
@@ -143,7 +174,7 @@ var commands = map[string]Command{
 	"open-pr": {
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request creation fails at runtime"),
+			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
 		},
 	},
 	"post-merge": {
@@ -163,6 +194,12 @@ var commands = map[string]Command{
 		ResultFile: "selected-pr.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
+		},
+	},
+	"pr-claim": {
+		ResultFile: "pr-remediation-lifecycle.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"),
 		},
 	},
 	"report-pr-status": {
@@ -282,6 +319,12 @@ func (u CapabilityUse) required(args []string) bool {
 	if u.optional {
 		return false
 	}
+	if len(u.anyFlags) > 0 {
+		return anyFlagEnabled(args, u.anyFlags)
+	}
+	if len(u.unlessFlags) > 0 {
+		return !anyFlagEnabled(args, u.unlessFlags)
+	}
 	if u.flag == "" {
 		return true
 	}
@@ -298,6 +341,38 @@ func (u CapabilityUse) required(args []string) bool {
 			return true
 		}
 		if !hasValue && i+1 < len(args) && args[i+1] == u.flagValue {
+			return true
+		}
+	}
+	return false
+}
+
+func anyFlagEnabled(args, flags []string) bool {
+	enabled := make(map[string]bool, len(flags))
+	for _, arg := range args {
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		name := strings.TrimPrefix(arg, "-")
+		name = strings.TrimPrefix(name, "-")
+		name, value, hasValue := strings.Cut(name, "=")
+		for _, flag := range flags {
+			if name != flag {
+				continue
+			}
+			parsed := true
+			if hasValue {
+				var err error
+				parsed, err = strconv.ParseBool(value)
+				if err != nil {
+					continue
+				}
+			}
+			enabled[flag] = parsed
+		}
+	}
+	for _, value := range enabled {
+		if value {
 			return true
 		}
 	}

@@ -12,9 +12,15 @@ import (
 // the generated portal types.
 type PortalConfig struct {
 	ReadStateEnvelope
-	Brand   PortalBrandResponse   `json:"brand"`
-	Theme   PortalThemeResponse   `json:"theme"`
-	Support PortalSupportResponse `json:"support"`
+	Brand        PortalBrandResponse   `json:"brand"`
+	Theme        PortalThemeResponse   `json:"theme"`
+	Support      PortalSupportResponse `json:"support"`
+	Capabilities PortalCapabilities    `json:"capabilities"`
+}
+
+// PortalCapabilities reports deployment-dependent actions the portal may offer.
+type PortalCapabilities struct {
+	RevealRun bool `json:"revealRun"`
 }
 
 // PortalBrandResponse is the resolved brand identity. Name, Tagline, and

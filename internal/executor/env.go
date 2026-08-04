@@ -164,6 +164,12 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// changes what a crash/quit dump contains. Set here so a hung stage's
 	// captured artifact shows the complete blocked-goroutine picture, not just
 	// user goroutines.
+	// Left unconditional intentionally (#2172): a non-Go stage (`dotnet test`,
+	// `npm run ci`, `pytest`) never reads this var, so it is silently inert for
+	// those stacks rather than harmful — no gating on a declared go-family
+	// capability needed. See the identical call-out already carried in
+	// config-examples/gaggles/dotnet-service/workflows/dotnet-implementation.yaml
+	// (AC5, #1093).
 	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
 		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_GAGGLE="+gaggle, "GOOBERS_WORKFLOW="+workflowID)

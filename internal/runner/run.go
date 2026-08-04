@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -193,6 +194,8 @@ type RateLimitedHandler func(ctx context.Context, o RateLimitedOutcome) error
 // goobers:ready with no record.
 type FailedOutcome struct {
 	RunID string
+	// Seq identifies the journal event whose terminal consequence is surfaced.
+	Seq uint64
 	// RepoRef is the target repository containing the driving backlog item —
 	// the handler resolves its per-repo credential and posts the trace comment
 	// to this repo, mirroring BlockedOutcome.
@@ -203,8 +206,10 @@ type FailedOutcome struct {
 	// harness-timeout case (a dispatch-level runTask error) carries the stage
 	// that was executing.
 	Stage string
-	// Cause is the run's terminal error message — the same text journaled as the
-	// run_failed cause event, which the handler surfaces on the driving item.
+	// Cause is the run's terminal error message, journaled in the run_failed
+	// cause event for local diagnostics. Handlers must not publish this value to
+	// external work items because nested execution errors can contain sensitive
+	// prompts, argv, credentials, environment values, or context.
 	Cause string
 }
 
@@ -336,11 +341,19 @@ type Config struct {
 	// Worktrees provisions the fresh, isolated, disposable working copy each
 	// stage attempt runs in (§5).
 	Worktrees *worktree.Manager
+	// PinnedWorkspace runs every repository-backed stage in one persistent
+	// checkout protected by a whole-run lease.
+	PinnedWorkspace bool
+	// PinnedCleanPolicy is none, ignored-safe, or full. Empty means none.
+	PinnedCleanPolicy string
 	// ScratchDir contains disposable workspaces for deterministic commands that
 	// declare run.workspace=scratch. Required only when such a task executes.
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// JournalAdvanced reports each durable journal append to derived readers.
+	// Optional; the callback owns failure reporting and must not fail the run.
+	JournalAdvanced func(runID string, seq uint64)
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
@@ -408,6 +421,8 @@ type Runner struct {
 	stalledCancelGrace   time.Duration
 	stalledTerminalGrace time.Duration
 	active               activeRunSet
+	pinnedMu             sync.Mutex
+	pinnedRuns           map[string]*worktree.PinnedLease
 	toolchains           ToolchainVerifier
 	lookPath             func(string) (string, error)
 }
@@ -442,6 +457,7 @@ func New(cfg Config) (*Runner, error) {
 		},
 		stalledCancelGrace:   StalledCancellationGrace,
 		stalledTerminalGrace: StalledTerminalizationGrace,
+		pinnedRuns:           make(map[string]*worktree.PinnedLease),
 	}, nil
 }
 
@@ -480,6 +496,8 @@ type StartInput struct {
 	// that declares no requirement behaves exactly as before. A resumed run
 	// leaves this nil — it already passed preflight at its original Start.
 	RequiredCapabilities []string
+	pinnedWorkspace      *worktree.Worktree
+	pinnedStage          *sync.Mutex
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -599,14 +617,26 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:          in.Gaggle,
 		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
-	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
 
 	defer func() { _ = jr.Close() }()
 
-	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (Result, error) {
+	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (result Result, retErr error) {
+		_, err := r.acquirePinnedWorkspace(ctx, jr, &in)
+		if err != nil {
+			if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, in.Machine.Def.Spec.Start, 0); ok {
+				return interrupted, interruptErr
+			}
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, "workspace-lease", 0, err)
+		}
+		defer func() {
+			if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
+				retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
+			}
+		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
 		setStalledAttemptContext(ctx)
@@ -650,7 +680,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			seed.branchRecorded = true
 		}
 
-		result, err := r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
+		result, err = r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -774,10 +804,11 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // recorded is true after a second crash finds that closure already journaled
 // but the replacement attempt not yet started.
 type resumeContext struct {
-	stage    string
-	attempt  int
-	class    journal.AttemptClass
-	recorded bool
+	stage                string
+	attempt              int
+	class                journal.AttemptClass
+	recorded             bool
+	committedWorkOnInfra bool
 }
 
 // BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
@@ -790,6 +821,7 @@ const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
+	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
@@ -1250,6 +1282,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			var instructionAddendum string
 			var taskRerun *rerunContext
 			var resumedResult *apiv1.ResultEnvelope
+			var infraFailedAttemptCommittedWork bool
 			if rerun != nil && rerun.stage == t.Name {
 				taskRerun = rerun
 				startAttempt = int32(rerun.attempt)
@@ -1257,6 +1290,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				instructionAddendum = rerun.instructionAddendum
 			}
 			if resume != nil && resume.stage == t.Name {
+				infraFailedAttemptCommittedWork = resume.committedWorkOnInfra
 				interruptedClass := journal.AttemptInfra
 				if rerun != nil && rerun.stage == t.Name {
 					interruptedClass = resume.class
@@ -1327,7 +1361,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if par != nil {
 					upstreamPointers = par.currentPointers(parallelRootPointers)
 				}
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded, infraFailedAttemptCommittedWork)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -1656,8 +1690,16 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
+	// The shipped parking stage owns the single human-facing comment. Other
+	// named targets are not guaranteed to notify, so they retain this fallback.
+	if gr.Escalated && gr.Target == "park-escalated" {
+		return "", false
+	}
 	if gr.Escalated {
 		if gr.DuplicateDiff {
+			if gr.RepassCause != nil {
+				return gr.RepassCause.String() + "; the implementer produced no change in response", true
+			}
 			return "repass produced a diff identical to the immediately prior attempt", true
 		}
 		return "repass budget exhausted", true
@@ -1697,8 +1739,9 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		}
 		return nil
 	}
+	seq := jr.Seq()
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, gr, reason); err != nil {
+		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, gr, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError,
 				Gate: gr.Gate,
@@ -1781,8 +1824,9 @@ func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, r
 		}
 		return nil
 	}
+	seq := jr.Seq()
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(o.RepoRef), itemID, o.Stage, o.Reason); err != nil {
+		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(o.RepoRef), itemID, runID, seq, o.Stage, o.Reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type:  journal.EventError,
 				Stage: o.Stage,
@@ -1982,7 +2026,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// walk), the exact case that was silently returning the issue to ready.
 	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
 	// a hung provider call. The full origErr is what the item's comment records.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2037,7 +2081,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	// #1054: leave a human-visible trace on the driving item for a stage-reported
 	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
 	// The code-prefixed journaledMessage is the run's terminal cause.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2270,6 +2314,9 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	if err := r.recordPinnedOutcome(runID, phase, jr); err != nil {
+		return Result{}, err
+	}
 	if err := r.prepareTerminal(runID, phase, jr); err != nil {
 		return Result{}, err
 	}
@@ -2282,6 +2329,31 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 		return res, err
 	}
 	return res, nil
+}
+
+func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	r.pinnedMu.Unlock()
+	if lease == nil {
+		return nil
+	}
+	count, err := lease.RecordOutcome(phase == journal.PhaseFailed)
+	if err != nil {
+		return fmt.Errorf("runner: record pinned workspace outcome: %w", err)
+	}
+	if phase != journal.PhaseFailed || count < worktree.PinnedFailureResetThreshold {
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":          "workspace_reset_suggested",
+			"workspaceMode": "pinned",
+			"failureStreak": count,
+			"suggestion":    "Pinned workspace failures are repeating; run `goobers workspace reset <repo>` before retrying.",
+		},
+	})
 }
 
 func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
@@ -2456,7 +2528,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
@@ -2571,7 +2643,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2622,8 +2694,11 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
-				Runner: map[string]any{retryFailureClassKey: string(failureClass)},
+				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Runner: map[string]any{
+					retryFailureClassKey:  string(failureClass),
+					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
+				},
 			}); aerr != nil {
 				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 				span.Fail(err)
@@ -2878,7 +2953,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -3036,6 +3111,27 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = outboxErr
 			}
 		}
+		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
+			*infraFailedAttemptCommittedWork && workspace.worktree != nil {
+			baseRef := in.RepoRef.Branch
+			if baseRef == "" {
+				baseRef = "main"
+			}
+			committedWork, inspectErr := workspace.worktree.HasCommitsAheadOf(ctx, baseRef)
+			if inspectErr != nil {
+				err = fmt.Errorf("inspect committed work before accepting infrastructure retry no-work: %w", inspectErr)
+			} else if committedWork {
+				result = preserveCommittedWorkOnInfraRetry(result)
+			}
+		}
+		if err != nil && invoke.IsInfrastructureFailure(err) && workspace.worktree != nil {
+			committedWork, inspectErr := workspace.worktree.HasNewCommits(ctx)
+			if inspectErr != nil {
+				err = errors.Join(err, fmt.Errorf("inspect commits created by infrastructure-failed attempt: %w", inspectErr))
+			} else {
+				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
+			}
+		}
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -3054,6 +3150,18 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+func preserveCommittedWorkOnInfraRetry(result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	outputs := make(map[string]interface{}, len(result.Outputs)+1)
+	for key, value := range result.Outputs {
+		outputs[key] = value
+	}
+	outputs["preservedCommittedWork"] = true
+	result.Status = apiv1.ResultSuccess
+	result.Summary = "preserved committed work from an infrastructure-failed attempt"
+	result.Outputs = outputs
+	return result
 }
 
 func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.ResultEnvelope {
@@ -3419,6 +3527,12 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		}
 	}
 	gateEval.CachedVerdict = cachedVerdict
+	gateEval.RepassCause, err = priorRepassCause(jr, subjectStage)
+	if err != nil {
+		err = fmt.Errorf("runner: resolve prior repass cause for gate %q: %w", g.Name, err)
+		span.Fail(err)
+		return gate.Result{}, err, nil
+	}
 	if instructionAddendum != "" {
 		// An explicit operator rerun must invoke the reviewer it targets, even
 		// when ordinary automation would reuse a cached verdict or fast-fail an
@@ -3428,11 +3542,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
-		env.Inputs = make(map[string]interface{}, 1+len(subjectResult.Outputs))
-		env.Inputs[gate.InputKeyStatus] = string(subjectResult.Status)
-		for k, v := range subjectResult.Outputs {
-			env.Inputs[k] = v
-		}
+		env.Inputs = gate.AutomatedInputs(subjectResult)
 	case apiv1.EvaluatorAgentic:
 		// A cache hit means Evaluate below will never call the reviewer at
 		// all, so there is nothing for a goober executor to do — skip
@@ -3483,6 +3593,59 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	span.SetGateResult(result.Outcome, result.Attempt)
 	span.Complete(telemetry.OutcomeSuccess, false)
 	return result, nil, nil
+}
+
+func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCause, error) {
+	if jr == nil || subjectStage == "" {
+		return nil, nil
+	}
+	reader, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated || event.Target != subjectStage {
+			continue
+		}
+		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
+		if event.Ref != nil {
+			data, err := reader.ArtifactBytes(*event.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("read prior verdict for gate %q: %w", event.Gate, err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(data, &verdict); err != nil {
+				return nil, fmt.Errorf("parse prior verdict for gate %q: %w", event.Gate, err)
+			}
+			cause.Kind = "reviewer"
+			cause.Rationale = strings.TrimSpace(verdict.Rationale)
+			if cause.Rationale == "" {
+				cause.Rationale = strings.TrimSpace(verdict.Summary)
+			}
+		}
+		for j := i - 1; j >= 0; j-- {
+			prior := events[j]
+			if prior.Type == journal.EventGateEvaluated {
+				break
+			}
+			if prior.Type == journal.EventStageFinished && prior.Status == string(apiv1.ResultFailure) {
+				cause.Kind = "stage-failure"
+				cause.Stage = prior.Stage
+				if prior.Error != nil {
+					cause.ErrorCode = prior.Error.Code
+					cause.ErrorMessage = prior.Error.Message
+				}
+				break
+			}
+		}
+		return cause, nil
+	}
+	return nil, nil
 }
 
 // recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the
@@ -3566,6 +3729,13 @@ type stageWorkspace struct {
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
 	additional []additionalCheckout
+	// sparse records the repo-relative cones this workspace's checkout was
+	// materialized with (project.checkout.sparse, #649) — empty for a full
+	// checkout. Surfaced to the stage via the invocation envelope's
+	// CheckoutCones so an agentic stage knows the tree is partial instead of
+	// treating a pruned path as unexpectedly deleted.
+	sparse  []string
+	release func()
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -3584,10 +3754,48 @@ func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
 	return out
 }
 
+// checkoutCones projects a stage workspace's sparse-checkout cones into the
+// invocation envelope's CheckoutCones (project.checkout.sparse, #649): ""
+// for the primary Workspace, else the matching AdditionalWorkspaces[i].Name.
+// A workspace with a full checkout is omitted, so the common (non-sparse)
+// case publishes no field at all.
+func checkoutCones(w *stageWorkspace) map[string][]string {
+	if w == nil {
+		return nil
+	}
+	cones := map[string][]string{}
+	if len(w.sparse) > 0 {
+		cones[""] = w.sparse
+	}
+	for _, a := range w.additional {
+		if len(a.sparse) > 0 {
+			cones[a.name] = a.sparse
+		}
+	}
+	if len(cones) == 0 {
+		return nil
+	}
+	return cones
+}
+
+// sparseCones returns spec's declared cones, or nil for a full checkout
+// (spec nil, or Sparse empty — validation rejects an explicitly empty Sparse
+// list, so an empty result here only ever means no checkout override was
+// declared).
+func sparseCones(spec *apiv1.CheckoutSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	return spec.Sparse
+}
+
 // additionalCheckout is one provisioned read-only reference-repo worktree.
 type additionalCheckout struct {
 	name     string
 	worktree *worktree.Worktree
+	// sparse records the cones this reference checkout was materialized with
+	// (project.checkout.sparse, #649) — empty for a full checkout.
+	sparse []string
 }
 
 func (w *stageWorkspace) ActivateAssetPathGuard() error {
@@ -3605,6 +3813,12 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
+	defer func() {
+		if w.release != nil {
+			w.release()
+			w.release = nil
+		}
+	}()
 	// Tear down the read-only reference checkouts (MGV-11 #1286) first; they are
 	// independent worktrees off their own mirrors, so a failure to remove one must
 	// not block removing the primary worktree. Best-effort: collect the first error.
@@ -3657,6 +3871,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
+		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,
 		ContextPointers:      upstream,
 		Capabilities:         capabilities,
@@ -3670,11 +3885,20 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 // is the run-scoped branch rebinding (WorkspaceBranchOutput, #392): empty — the
 // normal case — means the run's own branch, providers.BranchName.
 func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageName string, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (*stageWorkspace, error) {
+	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
+		in.pinnedStage.Lock()
+		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+			in.pinnedStage.Unlock()
+			return nil, err
+		}
+		return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
+	}
 	switch mode {
 	case apiv1.WorkspaceScratch:
 		if syncBase {
 			return nil, fmt.Errorf("create scratch workspace: syncBase requires a repo workspace")
 		}
+
 		if r.cfg.ScratchDir == "" {
 			return nil, fmt.Errorf("create scratch workspace: runner ScratchDir is required")
 		}
@@ -3687,6 +3911,25 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		}
 		return &stageWorkspace{path: path}, nil
 	case apiv1.WorkspaceRepoReadOnly:
+		if in.pinnedWorkspace != nil {
+			if syncBase {
+				return nil, fmt.Errorf("create read-only workspace: syncBase requires a writable repo workspace")
+			}
+			if workspaceBranch != "" {
+				return nil, fmt.Errorf("create read-only workspace: a rebound branch requires a writable repo workspace")
+			}
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, false, ""); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		// A detached checkout at the pinned base revision: no branch name, so
 		// two of these can coexist for one run. That is the whole point —
 		// every writable repo workspace is created on ONE run branch and git
@@ -3707,6 +3950,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3715,6 +3959,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// Branch deliberately empty — a detached checkout, the same shape
 			// provisionAdditionalCheckouts already uses for reference repos.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create read-only worktree: %w", err)
@@ -3724,12 +3969,26 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	case "", apiv1.WorkspaceRepo:
+		if in.pinnedWorkspace != nil {
+			in.pinnedStage.Lock()
+			if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
+			if err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
+			return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, additional: additional, release: in.pinnedStage.Unlock}, nil
+		}
 		repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
 		if err != nil {
 			return nil, err
 		}
+
 		baseRef := in.RepoRef.Branch
 		if baseRef == "" {
 			baseRef = "main"
@@ -3738,6 +3997,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if workspaceBranch != "" {
 			branch = workspaceBranch
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3749,6 +4009,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
+			Sparse:                sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
@@ -3760,10 +4021,100 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase bool, workspaceBranch string) error {
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	if workspaceBranch != "" {
+		branch = workspaceBranch
+	}
+	if err := in.pinnedWorkspace.PreparePinned(ctx, worktree.PinnedPrepareOptions{
+		BaseRef:               baseRef,
+		Branch:                branch,
+		SyncBase:              syncBase,
+		RequireExistingBranch: workspaceBranch != "",
+	}); err != nil {
+		return fmt.Errorf("prepare pinned workspace: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) acquirePinnedWorkspace(ctx context.Context, jr executionJournal, in *StartInput) (*worktree.PinnedLease, error) {
+	if !r.cfg.PinnedWorkspace {
+		return nil, nil
+	}
+	if len(r.cfg.AdditionalRepos) > 0 {
+		return nil, fmt.Errorf("runner: pinned project workspaces cannot provision additional repository worktrees")
+	}
+	r.pinnedMu.Lock()
+	owned := r.pinnedRuns[in.RunID]
+	r.pinnedMu.Unlock()
+	if owned != nil {
+		in.pinnedWorkspace = owned.Worktree
+		in.pinnedStage = &sync.Mutex{}
+		return owned, nil
+	}
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		return nil, err
+	}
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	branch := providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	lease, err := r.cfg.Worktrees.AcquirePinned(stalledAttemptContext(ctx), worktree.PinnedOptions{
+		RepoURL:     repoURL,
+		RunID:       in.RunID,
+		BaseRef:     baseRef,
+		Branch:      branch,
+		CleanPolicy: worktree.PinnedCleanPolicy(r.cfg.PinnedCleanPolicy),
+		OnQueuePosition: func(position int) error {
+			return jr.Append(journal.Event{
+				Type: journal.EventRunnerAnnotation,
+				Runner: map[string]any{
+					"workspaceMode": "pinned",
+					"queuePosition": position,
+				},
+			})
+		},
+		OnQueueWait: jr.ObserveActivity,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runner: acquire pinned workspace for run %q: %w", in.RunID, err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"workspaceMode": "pinned",
+			"queuePosition": 0,
+		},
+	}); err != nil {
+		_ = lease.Release()
+		return nil, fmt.Errorf("runner: journal pinned workspace acquisition for run %q: %w", in.RunID, err)
+	}
+	in.pinnedWorkspace = lease.Worktree
+	in.pinnedStage = &sync.Mutex{}
+	r.pinnedMu.Lock()
+	r.pinnedRuns[in.RunID] = lease
+	r.pinnedMu.Unlock()
+	return lease, nil
+}
+
+func (r *Runner) releasePinnedWorkspace(runID string) error {
+	r.pinnedMu.Lock()
+	lease := r.pinnedRuns[runID]
+	delete(r.pinnedRuns, runID)
+	r.pinnedMu.Unlock()
+	return lease.Release()
 }
 
 // provisionAdditionalCheckouts materializes a read-only checkout of each of the
@@ -3790,6 +4141,7 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(repo.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName + "-ref-" + sanitizeRefName(repo.Name),
@@ -3797,12 +4149,13 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 			BaseRef:    baseRef,
 			// Detached, read-only: no run branch, never pushed.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			r.teardownCheckouts(ctx, checkouts)
 			return nil, fmt.Errorf("checkout reference repo %q: %w", repo.Name, err)
 		}
-		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt})
+		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt, sparse: sparse})
 	}
 	return checkouts, nil
 }

@@ -38,6 +38,47 @@ func testIdentity() journal.RunIdentity {
 	}
 }
 
+func TestPinnedWorkspaceQueueIsVisibleAsCurrentStage(t *testing.T) {
+	queued := ev(2, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(3)}
+	})
+	acquired := ev(3, 2*time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+		e.Runner = map[string]any{"workspaceMode": "pinned", "queuePosition": float64(0)}
+	})
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, 0, journal.EventRunStarted, nil), queued,
+	}).Run
+	if run.CurrentStage != "Workspace queue (position 3)" {
+		t.Fatalf("current stage = %q, want visible queue position", run.CurrentStage)
+	}
+	run = ProjectRun(testIdentity(), Projection{Run: run}, []journal.Event{acquired}).Run
+	if run.CurrentStage != "" {
+		t.Fatalf("current stage after acquisition = %q, want cleared", run.CurrentStage)
+	}
+}
+
+func TestPinnedWorkspaceResetSuggestionRemainsVisibleAfterFailure(t *testing.T) {
+	suggestion := "Run `goobers workspace reset <repo>` before retrying."
+	run := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventRunnerAnnotation, func(e *journal.Event) {
+			e.Runner = map[string]any{
+				"kind":          "workspace_reset_suggested",
+				"workspaceMode": "pinned",
+				"failureStreak": float64(3),
+				"suggestion":    suggestion,
+			}
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}).Run
+
+	want := workspaceResetSuggestionPrefix + " " + suggestion
+	if run.CurrentStage != want {
+		t.Fatalf("terminal current stage = %q, want portal-visible suggestion %q", run.CurrentStage, want)
+	}
+}
+
 // completedRunEvents is a run that starts, retries once, and completes.
 func completedRunEvents() []journal.Event {
 	return []journal.Event{
@@ -138,6 +179,120 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	if len(p.Stages) != 1 || p.Stages[0].Stage != "implement" || p.Stages[0].Attempts != 2 {
 		t.Errorf("stage rows = %+v, want one 'implement' row with 2 attempts", p.Stages)
 	}
+	if !p.Stages[0].HadSuccess || !p.Stages[0].HadFailure {
+		t.Errorf("attempt status set = %+v, want both success and failure", p.Stages[0])
+	}
+}
+
+func TestStageOutcomeMatchesAnyAttempt(t *testing.T) {
+	store := openTestStore(t)
+	projection := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
+	if err := store.UpsertRun(t.Context(), projection); err != nil {
+		t.Fatalf("upsert projection: %v", err)
+	}
+
+	for _, outcome := range []Outcome{OutcomeSuccess, OutcomeFailure} {
+		page, err := store.ListRuns(t.Context(), ListOptions{
+			Stage: "implement", Outcome: outcome,
+		})
+		if err != nil {
+			t.Fatalf("list outcome %q: %v", outcome, err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != testIdentity().RunID {
+			t.Errorf("outcome %q returned runs %+v, want retried run", outcome, page.Runs)
+		}
+	}
+}
+
+func TestTerminalRunClosesOpenAttemptAsFailure(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) {
+			e.Stage = "implement"
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if len(projection.Stages) != 1 || !projection.Stages[0].HadFailure {
+		t.Fatalf("stage rows = %+v, want open attempt closed as failure", projection.Stages)
+	}
+}
+
+func TestExecutorErrorSynthesizesFailedStageAttempt(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Attempt = 1
+			e.Error = &journal.ErrorDetail{Code: "executor_error", Message: "worker disappeared"}
+		}),
+		ev(2, 2*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseFailed)
+		}),
+	}
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if len(projection.Stages) != 1 {
+		t.Fatalf("stage rows = %+v, want synthesized executor-error attempt", projection.Stages)
+	}
+	stage := projection.Stages[0]
+	if stage.Stage != "implement" || stage.Attempts != 1 || stage.LastStatus != "failure" || !stage.HadFailure {
+		t.Fatalf("stage row = %+v, want one failed implement attempt", stage)
+	}
+
+	store := openTestStore(t)
+	if err := store.UpsertRun(t.Context(), projection); err != nil {
+		t.Fatalf("upsert projection: %v", err)
+	}
+	for _, outcome := range []Outcome{OutcomeFailure, OutcomeTerminal, OutcomeFinished} {
+		page, err := store.ListRuns(t.Context(), ListOptions{Stage: "implement", Outcome: outcome})
+		if err != nil {
+			t.Fatalf("list outcome %q: %v", outcome, err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != testIdentity().RunID {
+			t.Errorf("outcome %q returned runs %+v, want executor-error run", outcome, page.Runs)
+		}
+	}
+}
+
+// singleStageEvents builds a completed run touching exactly one stage, whose
+// terminal status is the given one — the shape a routine backlog-query no-work
+// tick and a genuine single-task success both produce, distinguished only by
+// that status (#2188).
+func singleStageEvents(status string) []journal.Event {
+	return []journal.Event{
+		ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "query-backlog" }),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "query-backlog", status
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+}
+
+// TestProjectionClassifiesSingleStageNoWork is the regression test for #2188:
+// the portal's run list needs to tell a routine no-work schedule tick apart
+// from a genuine single-stage success, using only the signal the runner
+// already records (a stage's own terminal status).
+func TestProjectionClassifiesSingleStageNoWork(t *testing.T) {
+	noWork := ProjectRun(testIdentity(), Projection{}, singleStageEvents("no-work"))
+	if noWork.Run.Disposition != DispositionNoWork {
+		t.Errorf("disposition = %q, want %q for a single no-work stage", noWork.Run.Disposition, DispositionNoWork)
+	}
+
+	success := ProjectRun(testIdentity(), Projection{}, singleStageEvents("success"))
+	if success.Run.Disposition != DispositionUnknown {
+		t.Errorf("disposition = %q, want %q for a single successful stage — a real single-task workflow is not no-work",
+			success.Run.Disposition, DispositionUnknown)
+	}
+
+	// completedRunEvents touches two stages (implement, review); even though
+	// "implement" itself succeeds, a multi-stage run must never be classified
+	// no-work regardless of any individual stage's status.
+	multiStage := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
+	if multiStage.Run.Disposition != DispositionUnknown {
+		t.Errorf("disposition = %q, want %q for a multi-stage run", multiStage.Run.Disposition, DispositionUnknown)
+	}
 }
 
 // TestResumeReopensATerminalRun pins the case that would otherwise leave a live
@@ -165,6 +320,18 @@ func TestResumeReopensATerminalRun(t *testing.T) {
 	}
 	if run.CurrentStage != "implement" {
 		t.Errorf("current stage = %q after resume, want implement", run.CurrentStage)
+	}
+}
+
+func TestGateOverrideReopensATerminalRun(t *testing.T) {
+	events := append(completedRunEvents(),
+		ev(8, 8*time.Second, journal.EventGateOverridden, func(e *journal.Event) {
+			e.Gate, e.Verdict, e.Target = "review", "needs-changes", "implement"
+		}),
+	)
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	if run.Phase != journal.PhaseRunning || run.Terminal || run.FinishedAt != nil || run.CurrentStage != "implement" {
+		t.Fatalf("run after gate override = %+v, want live at implement", run)
 	}
 }
 

@@ -28,7 +28,7 @@ func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) bool {
 		if cond() {
 			return true
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval for OS process state, which has no portable event hook.
 	}
 	return cond()
 }
@@ -105,6 +105,52 @@ wait`
 			_ = syscall.Kill(p.pid, syscall.SIGKILL)
 			t.Errorf("%s process %d survived KillTree", p.name, p.pid)
 		}
+	}
+
+}
+
+func TestKillTreeReapsDescendantInEscapedSession(t *testing.T) {
+	dir := t.TempDir()
+	script := `"$TESTBIN" -test.run=^TestEscapedSessionProcess$ -- "$PIDDIR/child.pid" & wait`
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PIDDIR="+dir, "TESTBIN="+os.Args[0])
+
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var child int
+	if !waitUntil(t, 5*time.Second, func() bool {
+		var ok bool
+		child, ok = readPID(t, filepath.Join(dir, "child.pid"))
+		return ok
+	}) {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+		t.Fatal("escaped child never recorded its pid")
+	}
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	_ = cmd.Wait()
+	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		t.Fatalf("escaped child process %d survived KillTree", child)
+	}
+}
+
+func TestEscapedSessionProcess(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
+		return
+	}
+	if _, err := syscall.Setsid(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Args[len(os.Args)-1], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		time.Sleep(time.Hour)
 	}
 }
 

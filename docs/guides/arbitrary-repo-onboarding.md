@@ -3,7 +3,11 @@
 This guide takes a GitHub repository that has never used Goobers through one
 curation run and one implementation pull request. It also shows how to add a
 second gaggle to the same local instance. It is the repository-neutral version
-of the [self-hosting runbook](../../selfhost/README.md).
+of the [self-hosting runbook](../../reference-workflows/README.md).
+
+Complete the [canonical first-run quickstart](quickstart.md) before using this
+production-oriented guide. The steps here are the repository-onboarding deltas
+for replacing its disposable target with an adopter-owned repository.
 
 The guide uses the complete
 [`config-examples/`](../../config-examples/) definitions as a starting point,
@@ -22,6 +26,10 @@ Install or build:
 - `goobers`, `git`, and the GitHub Copilot CLI on the daemon's `PATH`.
 - `gh` for the label and test-issue commands below.
 - The target repository's build, test, and lint tools on the daemon's `PATH`.
+
+See [Stack support](stack-support.md) for which languages have a shipped reference gaggle
+today, and how a gaggle declares its own toolchain requirement (`ciCommand`,
+`requiredCapabilities`) for any other stack.
 
 The target repository needs:
 
@@ -201,7 +209,9 @@ create_label "goobers:approved" "0E8A16" "Maintainer-approved; eligible for agen
 create_label "goobers:ready" "1D76DB" "Curated and scoped; eligible for implementation"
 create_label "goobers:claimed" "FBCA04" "Currently claimed by an in-flight run"
 create_label "goobers:nominated" "5319E7" "Filed by a nominator; awaiting approval"
-create_label "goobers:needs-human" "D93F0B" "Needs a human decision"
+create_label "goobers:needs-human" "D93F0B" "Decision only a human can make; not a status/parked state"
+create_label "goobers:blocked-on-sibling" "C5DEF5" "Parked pending a named sibling issue/PR resolving; self-heals"
+create_label "goobers:needs-remediation" "E99695" "Parked after a mechanical failure (repass exhausted, CI/infra failure); needs a fix, not a decision"
 create_label "goobers:auto-close" "0E8A16" "Close a tracking issue after all children close"
 create_label "goobers/status:in-review" "BFDADC" "Implementation PR is awaiting merge"
 create_label "type:bug" "D73A4A" "Defect in existing behavior"
@@ -217,10 +227,15 @@ label taxonomy during a run.
 
 Only a maintainer should apply `goobers:approved`. The curator may add
 `goobers:ready` or `goobers:needs-human`, but its instructions must continue to
-forbid self-approval. Apply `goobers:auto-close` to a `tracking` issue only when
-it should close automatically after reconciliation verifies that all native and
-checklist children are closed. Without that opt-in, reconciliation only removes
-the completed parent's `tracking` label.
+forbid self-approval. The implementation workflow separately applies
+`goobers:blocked-on-sibling` and `goobers:needs-remediation` when a run parks
+for a status reason rather than a decision — see
+[Needs-human label taxonomy](../design/needs-human-taxonomy.md) for the full
+decision-vs-status model and which stage applies which label. Apply
+`goobers:auto-close` to a `tracking` issue only when it should close
+automatically after reconciliation verifies that all native and checklist
+children are closed. Without that opt-in, reconciliation only removes the
+completed parent's `tracking` label.
 
 ## 6. Validate before any live cycle
 
@@ -347,8 +362,11 @@ not a substitute for applying the checked-in source.
 
 Press `Ctrl-C` in the foreground daemon, or send its exact process ID
 `SIGTERM`. `goobers up` stops admitting work, asks in-flight runs to drain, and
-checkpoints before exiting. If a stage exceeds the bounded drain window, the
-next `goobers up` resumes the non-terminal run from its journal.
+prints the remaining workflow/run IDs every 10 seconds while stages reach their
+next checkpoints. Graceful drain waits indefinitely by default. Send a second
+`SIGINT`/`SIGTERM`, or start with `--drain-timeout <duration>`, to terminate
+in-flight stage process groups without a prompt; the next `goobers up` resumes
+those non-terminal runs from their last durable checkpoints.
 
 Do not use `kill -9`, delete `gaggles/*/runs/`, or delete `scheduler/` as a normal stop
 procedure. Confirm shutdown with:

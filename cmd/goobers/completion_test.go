@@ -76,6 +76,11 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 			t.Errorf("completionPositionalArgKinds key %q is not a registry command id", id)
 		}
 	}
+	for id := range completionPositionalArgValues {
+		if id != "help" && !registry[id] {
+			t.Errorf("completionPositionalArgValues key %q is not a registry command id", id)
+		}
+	}
 }
 
 func TestCompletionScriptsGolden(t *testing.T) {

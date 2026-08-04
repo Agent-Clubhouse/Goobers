@@ -20,6 +20,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -168,7 +169,7 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
-	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
+	if webhookListenerTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
 	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
@@ -209,6 +210,7 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
+		r.observedDigest = r.appliedDigest
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
@@ -218,6 +220,7 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
+		r.observedDigest = r.appliedDigest
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
 	if r.readModel != nil {
@@ -297,6 +300,9 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
+		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
+			return filepath.SkipDir
+		}
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -389,6 +395,7 @@ type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
 		Instructions string   `json:"instructions"`
+		Gaggle       string   `json:"gaggle"`
 		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
@@ -414,7 +421,7 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) (
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
 			if err != nil {
 				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
 			}

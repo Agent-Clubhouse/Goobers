@@ -235,7 +235,7 @@ func waitForInstanceError(t *testing.T, schedulerDir, code string) journal.Event
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; the instance journal has no notification hook.
 	}
 	t.Fatalf("timed out waiting for instance-journal error %q", code)
 	return journal.Event{}

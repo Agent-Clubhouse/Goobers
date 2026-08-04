@@ -963,6 +963,32 @@ func TestTraceShowsEscalationSummary(t *testing.T) {
 	}
 }
 
+func TestTraceEscalationShowsRemediationEvidence(t *testing.T) {
+	detail := readservice.RunDetail{Escalation: &readservice.EscalationCause{
+		Selector: readservice.EscalationSelector{Kind: "gate", Name: "checkpoint-gate"},
+		Remediation: &readservice.RemediationEscalation{
+			Outcome:         "budget-exhausted",
+			Attempted:       true,
+			AttemptedCauses: []string{"conflict"},
+		},
+	}}
+	summary := traceEscalation(detail, nil, nil)
+	if summary == nil || summary.Remediation == nil || summary.Remediation.Outcome != "budget-exhausted" {
+		t.Fatalf("trace escalation = %+v", summary)
+	}
+	var output bytes.Buffer
+	printEscalationSummary(&output, *summary)
+	for _, want := range []string{
+		"remediation outcome: budget-exhausted",
+		"repair attempted: true",
+		"attempted causes: conflict",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("escalation summary = %q, want %q", output.String(), want)
+		}
+	}
+}
+
 func TestTraceOmitsEscalationSummaryForCompletedRun(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)

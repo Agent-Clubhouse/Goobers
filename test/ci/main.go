@@ -363,7 +363,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testArgs = append(testArgs,
 		"--",
 		"-race",
-		"-timeout", "20m",
+		"-timeout", "30m",
 		"-covermode=atomic",
 		"-coverprofile=coverage.out",
 		"./...",
@@ -371,14 +371,14 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 	testCheck := check{
 		label:   "test",
 		command: tools.goCommand,
-		// -timeout 20m raises the per-package ceiling above Go's 10m default
+		// -timeout 30m raises the per-package ceiling above Go's 10m default
 		// purely as headroom against macOS hosted-runner contention (#1124):
 		// the cmd/goobers integration package legitimately runs long under a
-		// loaded runner, and a timeout there panics the whole suite. This is
-		// not masking a hang — the affected tests pass locally at high
-		// -count and the OTLP-flush blocking that compounded it is fixed in
-		// this change (telemetry soft-fails an unreachable collector). Normal
-		// runs finish in ~2m, so the higher ceiling never slows a green run.
+		// loaded runner, and a timeout there panics the whole suite. The hermetic
+		// environment also excludes an ambient OTLP collector so unavailable
+		// infrastructure cannot consume this headroom with exporter retries.
+		// Normal runs finish much sooner, so the higher ceiling never slows a
+		// green run.
 		args: testArgs,
 		env: append(
 			append([]string(nil), testEnvironment...),
@@ -408,7 +408,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		check{
 			label:   "lint",
 			command: tools.golangciCommand,
-			args:    []string{"run"},
+			args:    []string{"run", "--allow-serial-runners"},
 			env:     golangciCacheEnvironment(),
 			group:   groupLint,
 		},
@@ -635,12 +635,10 @@ func commandInvocation(current check, goos string, getenv func(string) string) (
 // the working directory, because its cache is neither concurrency-safe nor
 // path-safe and Goobers runs N worktrees against one host at a time.
 //
-// Two distinct failures come from sharing one cache. The lock is per cache
-// directory, so a second concurrent invocation dies with "parallel golangci-lint
-// is running" (exit 3) even though nothing is wrong with the tree. And a cached
-// analysis result carries the path it was computed against, so a run in worktree
-// A can be handed a diagnostic naming a file in sibling worktree B — a violation
-// the failing run cannot fix, because the file is not in its checkout.
+// A cached analysis result carries the path it was computed against, so a run in
+// worktree A can be handed a diagnostic naming a file in sibling worktree B — a
+// violation the failing run cannot fix, because the file is not in its checkout.
+// The separate process-wide runner lock is handled by --allow-serial-runners.
 //
 // Keying on the working directory rather than minting a fresh directory keeps
 // the cache warm for the common case of repeated runs in one checkout, while

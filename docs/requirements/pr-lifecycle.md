@@ -128,8 +128,9 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   backstop that does not depend on the LLM reviewer noticing the collision.
 - **PRL-012 (MUST, Shipped):** The holistic review MUST emit a structured
   **Verdict**: `decision` (`pass` | `needs-changes` | `fail`), classed findings
-  (`rebase-needed`, `conflict`, `substantive`, `cross-pr-blocked` — the last
-  carrying `BlockingPRs`), summary/rationale, and a **SHA pin**
+  (`rebase-needed`, `conflict`, `substantive`, `missing-tests`, `scope-creep`,
+  `contract-change`, `cross-pr-blocked` — the last carrying `BlockingPRs`),
+  summary/rationale, and a **SHA pin**
   (`headSha`, `baseSha`) plus review digest and source run id. The prose PR
   comment is a projection of this artifact, never a second source of truth.
 - **PRL-013 (MUST, Shipped):** Every verdict is **SHA-pinned** (design D6): no
@@ -156,15 +157,18 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   pure, deterministic function of `{selected PR, blocker set, policy}` so every
   cluster member independently computes the **same** winner — exactly one
   member is crowned, with no central coordination. A verdict carrying any real
-  defect (substantive/conflict/rebase-needed finding) is **never electable**.
+  defect (any finding other than `cross-pr-blocked`) is **never electable**.
 - **PRL-022 (MUST, Shipped):** The election policy MUST be a **workflow-
   configurable seam** (#834): `fifo` (lowest PR number — default) and `newest`
   ship as pure policies; cluster-data policies (`most-blockers`,
-  `fewest-overlaps`, #1028/#1029) resolve from the live open-PR set. An
-  unknown policy name falls back to `fifo` with a logged warning, never a
-  pipeline failure. `elect-lander` and `apply-verdict` MUST be configured with
-  the **same** policy and MUST derive identical decisions from identical
-  inputs (a pinned test enforces agreement).
+  `fewest-overlaps`, #1028/#1029) resolve from the live open-PR set; `race`
+  (#2268) is a third pure policy that elects unconditionally, for a dedicated
+  fast-track workflow lane that must not couple a defect-free PR's landing
+  speed to sibling sequencing at all. An unknown policy name falls back to
+  `fifo` with a logged warning, never a pipeline failure. `elect-lander` and
+  `apply-verdict` MUST be configured with the **same** policy and MUST derive
+  identical decisions from identical inputs (a pinned test enforces
+  agreement).
 - **PRL-023 (MUST, Shipped):** Election means "those siblings stop counting as
   blockers", **not** a separate merge authority: the crowned lander's verdict
   is resolved into a **derived, published `pass`** (rationale stating the
@@ -447,11 +451,12 @@ therefore have no action row.
 | Self-approve a nominated issue (`approve-issue`) | `work-nomination/nominate` (conditional persona action) | `github:issues:approve` | Capability-gated; disabled in the shipped task |
 | Modify and commit a worktree (`modify-repository`) | `implementation/implement`, `pr-remediation/implement`, `tutor/draft-change` | `repo:push` | Covered |
 | Push a run branch (`push-repository-branch`) | `implementation/push-branch`, `tutor/push-branch` | `repo:push` | Covered |
-| Open or update a PR (`open-or-update-pr`) | `implementation/open-pr`, `tutor/open-pr` | `github:pr:write` | Covered |
+| Open or update a PR (`open-or-update-pr`) | `implementation/open-pr`, `tutor/open-pr` | `provider:pr:write` | Covered |
 | Comment on and update the driving issue's status (`update-issue`) | `implementation/close-out`, `park-escalated`, `park-needs-human` | `github:issues:write` | Covered |
 | Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
-| Route a verdict to merge-ready, remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `merge-review/apply-verdict`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
-| Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `github:pr:write` | Covered |
+| Route a verdict through the configured repository provider (`route-provider-verdict`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
+| Route a verdict to remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
+| Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
 | Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `github:pr:write` | Covered |
 | Apply or clear the scope-drift advisory and post its first warning (`flag-scope-drift`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Merge a PR after all safety conjuncts hold (`merge-pr`) | `merge-review/merge-pr` | `github:pr:merge` | Covered |
@@ -470,6 +475,7 @@ therefore have no action row.
 | Rebase a PR branch (`rebase-pr`) | `pr-remediation/rebase-pr` | `repo:push` | Covered |
 | Rework a PR from reviewer findings (`rework-pr`) | `pr-remediation/implement` | `repo:push` | Covered |
 | Record remediation progress or cycle exhaustion (`record-remediation-checkpoint`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
+| Release a remediation claim when its PR becomes terminal or the run ends (`release-pr-claim`) | `pr-remediation/guard-before-*`, `release-claim`, `release-escalated-claim` | `github:pr:write` | Covered |
 | Publish a remediated PR branch (`push-pr-branch`) | `pr-remediation/push-remediated` | `repo:push` | Covered |
 | Respond to every original finding (`respond-to-findings`) | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
 | Escalate a non-converging or rejected remediation (`escalate-pr`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |

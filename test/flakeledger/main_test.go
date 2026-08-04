@@ -314,33 +314,29 @@ func seedFailure(fingerprint, signature string) testFailure {
 	}
 }
 
-// TestFlakeLedgerJobHasRefIndependentConcurrencyGroup guards against the
+// TestFlakeLedgerPublishersShareConcurrencyGroup guards against the
 // duplicate-issue race this ledger is exposed to: publish() lists existing
 // flake issues then creates one for any fingerprint it didn't find, which is
-// not atomic. Two publishers racing on the same repo-wide issue tracker
-// (e.g. the nightly cron and a /stress-labeled PR) can both miss a brand-new
-// fingerprint and file duplicate issues for it. The workflow-level
-// concurrency group in stress.yml is scoped per-PR/ref/run, so it does not
-// prevent that — only a fixed, ref-independent group on the flake-ledger job
-// itself serializes every publisher against the shared issue tracker.
-func TestFlakeLedgerJobHasRefIndependentConcurrencyGroup(t *testing.T) {
+// not atomic. Every workflow publishing to the repo-wide issue tracker must
+// therefore use the same fixed, ref-independent concurrency group.
+func TestFlakeLedgerPublishersShareConcurrencyGroup(t *testing.T) {
 	t.Parallel()
+	type concurrency struct {
+		Group string `yaml:"group"`
+	}
+	var stress struct {
+		Jobs map[string]struct {
+			Concurrency concurrency `yaml:"concurrency"`
+		} `yaml:"jobs"`
+	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "stress.yml"))
 	if err != nil {
 		t.Fatalf("read stress.yml: %v", err)
 	}
-	var workflow struct {
-		Jobs map[string]struct {
-			Concurrency struct {
-				Group            string `yaml:"group"`
-				CancelInProgress bool   `yaml:"cancel-in-progress"`
-			} `yaml:"concurrency"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+	if err := yaml.Unmarshal(raw, &stress); err != nil {
 		t.Fatalf("parse stress.yml: %v", err)
 	}
-	job, ok := workflow.Jobs["flake-ledger"]
+	job, ok := stress.Jobs["flake-ledger"]
 	if !ok {
 		t.Fatal("stress.yml has no flake-ledger job")
 	}
@@ -348,9 +344,23 @@ func TestFlakeLedgerJobHasRefIndependentConcurrencyGroup(t *testing.T) {
 	if group == "" {
 		t.Fatal("flake-ledger job has no concurrency group; concurrent publishers can race on the same list-then-create sequence")
 	}
+
+	var watch struct {
+		Concurrency concurrency `yaml:"concurrency"`
+	}
+	raw, err = os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "flake-watch.yml"))
+	if err != nil {
+		t.Fatalf("read flake-watch.yml: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &watch); err != nil {
+		t.Fatalf("parse flake-watch.yml: %v", err)
+	}
+	if watch.Concurrency.Group != group {
+		t.Fatalf("flake-watch concurrency group = %q, want shared ledger publisher group %q", watch.Concurrency.Group, group)
+	}
 	for _, refExpr := range []string{"github.ref", "github.event.pull_request.number", "github.run_id", "github.head_ref"} {
 		if strings.Contains(group, refExpr) {
-			t.Fatalf("flake-ledger concurrency group %q is scoped by %s; publishers on different refs would not be serialized against each other", group, refExpr)
+			t.Fatalf("ledger publisher concurrency group %q is scoped by %s; publishers on different refs would not be serialized against each other", group, refExpr)
 		}
 	}
 }

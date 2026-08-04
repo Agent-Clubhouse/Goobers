@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -41,6 +43,32 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
+	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	observe := runIntakeObserver(store, nil)
+
+	for index, runID := range []string{"run-a", "run-b", "run-c", "run-d", "run-e"} {
+		observe(runID, uint64(index+2))
+	}
+
+	pending, err := store.Pending(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 5 {
+		t.Fatalf("pending markers = %d, want 5", len(pending))
+	}
+	for index, marker := range pending {
+		if marker.SourceSeq != uint64(index+2) {
+			t.Fatalf("marker %s sequence = %d, want %d", marker.RunID, marker.SourceSeq, index+2)
+		}
+	}
+}
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a
@@ -86,8 +114,31 @@ func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data [
 	return journal.ArtifactRef(data)
 }
 
+func (r runnerWiringHarnessRecorder) Append(journal.Event) error {
+	return nil
+}
+
 func (r runnerWiringHarnessRecorder) Dir() string {
 	return r.dir
+}
+
+type runnerWiringArtifactRecorder map[string][]byte
+
+func (r runnerWiringArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	r[name] = append([]byte(nil), data...)
+	return journal.ArtifactRef(data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBounded(name string, data []byte, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, _ apiv1.Integrity, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 func TestResolveOTLPHeaders(t *testing.T) {
@@ -410,6 +461,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 func TestValidationAutomatedChecksGolden(t *testing.T) {
 	want := []string{
 		"ci-status",
+		"failure-class",
 		"land-outcome",
 		"output-equals",
 		"output-matches",
@@ -584,6 +636,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -631,6 +684,7 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		nil,
 		nil,
 		instance.SandboxDisabled,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
@@ -639,6 +693,153 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	_, err = cfg.NewAgentic(gooberName, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
 		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
+	}
+}
+
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
+	root := t.TempDir()
+	shortRoot := filepath.Join(t.TempDir(), "w")
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github",
+		Owner:    "acme",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned:      true,
+			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
+		},
+	}}}
+	cfg, manager, err := buildRunnerConfig(
+		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
+		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
+	}
+	wantRoot, err := filepath.Abs(filepath.Join(shortRoot, "builders"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Root != wantRoot {
+		t.Fatalf("manager root = %q, want alternate gaggle root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	recorder := runnerWiringArtifactRecorder{}
+	deterministic, err := cfg.NewDeterministic(recorder, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("NewDeterministic: %v", err)
+	}
+	script := `printf '%s' "$MSBUILDDISABLENODEREUSE"`
+	if runtime.GOOS == "windows" {
+		script = `@echo off
+echo|set /p="%MSBUILDDISABLENODEREUSE%"`
+	}
+	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
+		TaskID:    "build",
+		Workspace: t.TempDir(),
+	}, apiv1.DeterministicRun{Script: script})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("result = %+v, want success", result)
+	}
+	if got := string(recorder["build/stdout.log"]); got != "1" {
+		t.Fatalf("MSBUILDDISABLENODEREUSE = %q, want preset default 1", got)
+	}
+}
+
+func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) {
+	t.Setenv("ADO_TOKEN", "test-token")
+	root := t.TempDir()
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "acme/widgets",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "monolith",
+		Token:    instance.TokenRef{Env: "ADO_TOKEN"},
+		Workspace: &instance.RepoWorkspaceConfig{
+			Pinned: true,
+		},
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(root).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	if !cfg.PinnedWorkspace {
+		t.Fatal("PinnedWorkspace = false, want true for ADO combined owner/project reference")
 	}
 }
 
@@ -1266,6 +1467,124 @@ func TestGitAuthEnvironmentSupportsMirrorCloneAndFetch(t *testing.T) {
 	}
 }
 
+func TestPathLengthManagerLimits(t *testing.T) {
+	cloneURL := func(repo apiv1.RepoRef) (string, error) {
+		return fmt.Sprintf("https://example.test/%s/%s.git", repo.Owner, repo.Name), nil
+	}
+	base := instance.RepoRef{Provider: "github", Owner: "acme", Name: "web"}
+
+	limits, err := pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("unconfigured linux limits = %d, %v; want 0", len(limits), err)
+	}
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("unconfigured windows limits = %d, %v; want 1", len(limits), err)
+	}
+	base.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 320, BuildOutputAllowance: 40}
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "linux")
+	if err != nil || len(limits) != 1 {
+		t.Fatalf("configured linux limits = %d, %v; want 1", len(limits), err)
+	}
+	base.PathLength.Disabled = true
+	limits, err = pathLengthManagerLimits(&instance.Config{Repos: []instance.RepoRef{base}}, cloneURL, "windows")
+	if err != nil || len(limits) != 0 {
+		t.Fatalf("disabled windows limits = %d, %v; want 0", len(limits), err)
+	}
+}
+
+func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
+	previousCloneURL := repoCloneURL
+	origin := initBareOrigin(t)
+	repoCloneURL = func(apiv1.RepoRef) (string, error) { return origin, nil }
+	t.Cleanup(func() { repoCloneURL = previousCloneURL })
+
+	layout := instance.NewLayout(t.TempDir())
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	layout = layout.ForGaggle("example")
+	repo := instance.RepoRef{
+		Provider:   "github",
+		Owner:      "acme",
+		Name:       "web",
+		PathLength: &instance.RepoPathLengthConfig{Disabled: true},
+	}
+	build := func(manager *worktree.Manager) *worktree.Manager {
+		t.Helper()
+		_, manager, err := buildRunnerConfig(
+			layout,
+			&instance.Config{Repos: []instance.RepoRef{repo}},
+			map[string]apiv1.GooberSpec{},
+			map[string]string{},
+			nil,
+			journal.NewRegistryScrubber(),
+			manager,
+			nil,
+			apiv1.RepoRef{},
+			nil,
+			harnessPreflightInfo{},
+			nil,
+			instance.SandboxDisabled,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("buildRunnerConfig: %v", err)
+		}
+		return manager
+	}
+
+	manager := build(nil)
+	repo.PathLength = &instance.RepoPathLengthConfig{MaxPathLength: 1}
+	reused := build(manager)
+	if reused != manager {
+		t.Fatal("config reload replaced the worktree manager")
+	}
+	if _, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "enabled-after-reload",
+		BaseRef: "main",
+	}); err == nil {
+		t.Fatal("Create succeeded after reload enabled an exhausted path budget")
+	}
+
+	repo.PathLength.Disabled = true
+	build(manager)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "disabled-after-reload",
+		BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create after reload disabled path preflight: %v", err)
+	}
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestADORemoteGitQuotaGateConsumesADOWindow(t *testing.T) {
+	resetAt := time.Now().Add(time.Hour).UTC()
+	quota := localscheduler.NewProviderQuotaState()
+	quota.Record(apiv1.ProviderADO, 1, resetAt)
+	gate := adoRemoteGitQuotaGate(quota)
+
+	if err := gate(context.Background(), "https://github.com/acme/web.git"); err != nil {
+		t.Fatalf("GitHub remote admission: %v", err)
+	}
+	if err := gate(context.Background(), "https://dev.azure.com/acme/widgets/_git/web"); err != nil {
+		t.Fatalf("first ADO remote admission: %v", err)
+	}
+	err := gate(context.Background(), "https://acme.visualstudio.com/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("second ADO remote error = %v, want ProviderPollBudgetError", err)
+	}
+	if budgetErr.Provider != apiv1.ProviderADO || budgetErr.ResetAt != resetAt {
+		t.Fatalf("budget error = %+v, want ADO reset at %s", budgetErr, resetAt)
+	}
+}
+
 func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	testBin, err := os.Executable()
 	if err != nil {
@@ -1374,6 +1693,29 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
 			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
 		}
+	}
+}
+
+func TestWorkcopyRootClaimsAllowSharedDefaultPinnedRoot(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimWorkcopyRoot(claims, "beta", root, false); err != nil {
+		t.Fatalf("shared default pinned root: %v", err)
+	}
+}
+
+func TestWorkcopyRootClaimsRejectAlternateRootCollision(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	err := claimWorkcopyRoot(claims, "beta", root, true)
+	if err == nil || !strings.Contains(err.Error(), "workcopies path collision") {
+		t.Fatalf("error = %v, want alternate-root collision", err)
 	}
 }
 
@@ -1672,6 +2014,133 @@ func TestBuildCredentialsApprovalOverride(t *testing.T) {
 	}
 }
 
+// TestBuildCredentialsDaemonIdentityPAT is #1780's core acceptance: a
+// configured pat-kind DaemonIdentity backs the standard daemon-mutation
+// capability set with its own token, distinct from the repo default, while
+// capabilities outside that set (github:issues:approve, github:milestones:write)
+// keep using the repo token unchanged.
+func TestBuildCredentialsDaemonIdentityPAT(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("DAEMON_PAT", "daemon-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_PAT"}},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if got[string(c)] != "daemon-token" {
+			t.Fatalf("capability %s = %q, want the daemon identity's own token", c, got[string(c)])
+		}
+	}
+	if got[string(capability.GitHubIssuesApprove)] != "tokenA" {
+		t.Fatalf("github:issues:approve = %q, want the repo token (deliberately excluded from the daemon identity default)", got[string(capability.GitHubIssuesApprove)])
+	}
+	if got[string(capability.GitHubMilestonesWrite)] != "tokenA" {
+		t.Fatalf("github:milestones:write = %q, want the repo token (deliberately excluded from the daemon identity default)", got[string(capability.GitHubMilestonesWrite)])
+	}
+}
+
+// TestBuildCredentialsDaemonIdentityExplicitOverrideWins: an explicit
+// credentials: entry for a capability the daemon identity would otherwise
+// back must still take precedence — #1780's design explicitly preserves
+// today's per-capability override as the finer-grained escape hatch.
+func TestBuildCredentialsDaemonIdentityExplicitOverrideWins(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	t.Setenv("DAEMON_PAT", "daemon-token")
+	t.Setenv("REVIEW_TOKEN", "review-token")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_PAT"}},
+		Credentials: []instance.CredentialGrant{
+			{Capability: "github:pr:review", Token: instance.TokenRef{Env: "REVIEW_TOKEN"}},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	if got["github:pr:review"] != "review-token" {
+		t.Fatalf("github:pr:review = %q, want the explicit override to win over the daemon identity", got["github:pr:review"])
+	}
+	if got["github:pr:write"] != "daemon-token" {
+		t.Fatalf("github:pr:write = %q, want the daemon identity's token (not overridden)", got["github:pr:write"])
+	}
+}
+
+// TestBuildCredentialsDaemonIdentityGitHubAppMintsToken mirrors
+// TestBuildCredentialsGitHubAppMintsRepoToken for the daemon-identity path
+// (#1780/#1779): a github-app-kind DaemonIdentity mints per resolve, scoped
+// to this gaggle's own repo name.
+func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
+	prev := newDaemonIdentityGitHubAppTokenSource
+	mints := 0
+	var gotRepoName string
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+		gotRepoName = gaggleRepoName
+		return func(context.Context) (string, error) {
+			mints++
+			return fmt.Sprintf("minted-daemon-token-%d", mints), nil
+		}, nil
+	}
+	t.Cleanup(func() { newDaemonIdentityGitHubAppTokenSource = prev })
+
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+		},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "42",
+			PrivateKey: &instance.TokenRef{File: "/run/secrets/daemon-app.pem"},
+		},
+	}
+	resolver, grants, err := buildCredentials(cfg, nil, "acme", "web", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	if gotRepoName != "web" {
+		t.Fatalf("minting source scoped to repo %q, want %q", gotRepoName, "web")
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if !strings.HasPrefix(got[string(c)], "minted-daemon-token-") {
+			t.Fatalf("capability %s = %q, want a minted daemon-identity installation token", c, got[string(c)])
+		}
+	}
+	if mints < 1 {
+		t.Fatalf("mints = %d, want the source consulted at least once", mints)
+	}
+}
+
+// TestBuildCredentialsWithoutDaemonIdentityUnchanged: nil DaemonIdentity (the
+// default) must be byte-identical to buildCredentials before this field
+// existed — every capability still resolves from the plain repo default.
+func TestBuildCredentialsWithoutDaemonIdentityUnchanged(t *testing.T) {
+	t.Setenv("GH_TOKEN_A", "tokenA")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN_A"}},
+	}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	got := resolveGrants(t, resolver, grants)
+	for _, c := range daemonIdentityCapabilities {
+		if got[string(c)] != "tokenA" {
+			t.Fatalf("capability %s = %q, want the plain repo token (no DaemonIdentity configured)", c, got[string(c)])
+		}
+	}
+}
+
 func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	sources := []credentials.Grant{
 		{Capability: "agent:model", Ref: "model-token"},
@@ -1784,7 +2253,7 @@ func newCIPollWiringTestExecutor(t *testing.T, reg *escTestRegistrar) invoke.Det
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil)
+	deterministic, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1807,7 +2276,7 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 		t.Fatalf("NewInjector: %v", err)
 	}
 	giteaRepo := &instance.RepoRef{Provider: "gitea", BaseURL: "https://gitea.example.com", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "CI_POLL_TOKEN"}}
-	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil)
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, nil, giteaRepo, nil, nil)
 	if err != nil {
 		t.Fatalf("buildCIPollExecutor: %v", err)
 	}
@@ -1820,6 +2289,47 @@ func TestBuildCIPollExecutorSetsGiteaRepo(t *testing.T) {
 	}
 	if e.adoRepo != nil {
 		t.Fatalf("adoRepo must be nil for a gitea ci-poll executor")
+	}
+}
+
+func TestBuildCIPollExecutorWiresADOQuotaState(t *testing.T) {
+	t.Setenv("ADO_TEST_TOKEN", "ado-token")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "acme",
+		Project:  "widgets",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ADO_TEST_TOKEN"},
+	}}}
+	resolver, grants, err := buildCredentials(cfg, nil, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("buildCredentials: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, grants, &escTestRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	quota := localscheduler.NewProviderQuotaState()
+	exec, err := buildCIPollExecutor(cfg, injector, ciPollTestRecorder{}, &cfg.Repos[0], nil, nil, quota)
+	if err != nil {
+		t.Fatalf("buildCIPollExecutor: %v", err)
+	}
+	e, ok := exec.(*ciPollKindExecutor)
+	if !ok {
+		t.Fatalf("executor type = %T, want *ciPollKindExecutor", exec)
+	}
+	if e.quota == nil {
+		t.Fatal("ADO ci-poll quota observer is nil")
+	}
+
+	resetAt := time.Now().Add(time.Hour).UTC()
+	e.quota.ObserveQuota(context.Background(), providers.QuotaObservation{
+		Provider: providers.ProviderADO, Remaining: 0, Reset: resetAt, Known: true,
+	})
+	err = adoRemoteGitQuotaGate(quota)(context.Background(), "https://dev.azure.com/acme/widgets/_git/web")
+	var budgetErr *localscheduler.ProviderPollBudgetError
+	if !errors.As(err, &budgetErr) || !budgetErr.ResetAt.Equal(resetAt) {
+		t.Fatalf("ADO git admission error = %v, want quota exhaustion until %s", err, resetAt)
 	}
 }
 
@@ -1853,6 +2363,16 @@ func TestCIPollCredentialRequiresDeclaredCapability(t *testing.T) {
 	}
 }
 
+func TestADOCIPollRequiresProviderNeutralCapability(t *testing.T) {
+	exec := &ciPollKindExecutor{
+		adoRepo: &instance.RepoRef{Provider: "ado", Owner: "acme", Project: "widgets", Name: "web"},
+	}
+	_, err := exec.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ADOPRWrite)}), apiv1.DeterministicRun{})
+	if !errors.Is(err, credentials.ErrUndeclaredCapability) {
+		t.Fatalf("Run error = %v, want ErrUndeclaredCapability", err)
+	}
+}
+
 func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	reg := &escTestRegistrar{}
 	deterministic := newCIPollWiringTestExecutor(t, reg)
@@ -1865,7 +2385,7 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { newPRPoller = prev })
 
-	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.GitHubPRWrite)}), apiv1.DeterministicRun{})
+	result, err := deterministic.Run(context.Background(), ciPollTestEnvelope([]string{string(capability.ProviderPRWrite)}), apiv1.DeterministicRun{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1885,6 +2405,13 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 
 type escFakeCommenter struct {
 	gotReq providers.UpdateWorkItemRequest
+}
+
+func (f *escFakeCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	if f.gotReq.Comment == "" {
+		return nil, nil
+	}
+	return []providers.Comment{{Body: f.gotReq.Comment}}, nil
 }
 
 func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
@@ -2138,6 +2665,16 @@ type blockedHandlerFakeCommenter struct {
 	calls []providers.UpdateWorkItemRequest
 }
 
+func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
+	var comments []providers.Comment
+	for _, call := range f.calls {
+		if call.ID == itemID {
+			comments = append(comments, providers.Comment{Body: call.Comment})
+		}
+	}
+	return comments, nil
+}
+
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.calls = append(f.calls, req)
 	return providers.WorkItem{}, nil
@@ -2163,7 +2700,8 @@ func TestBuildBlockedHandlerNilForRepoLessInstance(t *testing.T) {
 }
 
 // TestBuildBlockedHandlerKnownBlockersRecordsAndParks retains #552's learned
-// dependency guard while applying #544's needs-human parking disposition.
+// dependency guard while applying #2028's blocked-on-sibling parking
+// disposition for a named, non-cyclic blocker.
 func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	var gotToken string
@@ -2220,11 +2758,13 @@ func TestBuildBlockedHandlerKnownBlockersRecordsAndParks(t *testing.T) {
 	if gotToken != "blocked-secondary-token" {
 		t.Fatalf("parking token = %q, want secondary repository token", gotToken)
 	}
-	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
-		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, blockedOnSiblingLabel)
 	}
-	if got.Assignee == nil || *got.Assignee != "mason" {
-		t.Fatalf("Assignee = %v, want mason", got.Assignee)
+	// #2028: blocked-on-sibling self-heals — no human assignee. Only a
+	// LabelNeedsHuman park gets the configured assignee (needshumanrouting.go).
+	if got.Assignee != nil {
+		t.Fatalf("Assignee = %v, want nil for a self-healing blocked-on-sibling park", *got.Assignee)
 	}
 	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
 	if !slices.Equal(got.RemoveLabels, wantRemoved) {
@@ -2275,9 +2815,9 @@ func TestBuildBlockedHandlerRecordFailureStillParks(t *testing.T) {
 	}
 	got := fake.calls[0]
 	wantRemoved := []string{providers.LabelReady, providers.LabelClaimed}
-	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman ||
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel ||
 		!slices.Equal(got.RemoveLabels, wantRemoved) {
-		t.Fatalf("parking request = %+v, want needs-human added and ready/claimed removed", got)
+		t.Fatalf("parking request = %+v, want blocked-on-sibling added and ready/claimed removed", got)
 	}
 }
 
@@ -2398,9 +2938,9 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0].Repository != webRepo || fake.calls[0].ID != "510" ||
 		fake.calls[0].Comment != "" ||
-		!slices.Equal(fake.calls[0].AddLabels, []string{providers.LabelNeedsHuman}) ||
+		!slices.Equal(fake.calls[0].AddLabels, []string{blockedOnSiblingLabel}) ||
 		!slices.Equal(fake.calls[0].RemoveLabels, []string{providers.LabelReady, providers.LabelClaimed}) {
-		t.Fatalf("web calls = %+v, want one non-cycle parking update for web#510", fake.calls)
+		t.Fatalf("web calls = %+v, want one non-cycle blocked-on-sibling update for web#510", fake.calls)
 	}
 
 	if err := handler(context.Background(), runner.BlockedOutcome{
@@ -2729,7 +3269,7 @@ func TestPRClaimBlockedFlowNormalizesProviderID(t *testing.T) {
 	}
 	notifier := buildEscalationNotifier(instance.Layout{}, cfg, resolver, reg)
 	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
-	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.Stage, outcome.Reason); err != nil {
+	if err := notifier.NotifyStageEscalated(context.Background(), repository, ids[0], outcome.RunID, 7, outcome.Stage, outcome.Reason); err != nil {
 		t.Fatalf("NotifyStageEscalated: %v", err)
 	}
 
@@ -2793,13 +3333,11 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
-// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman is #1054's core: a
-// run that ends terminal `failed` while claiming an item leaves a human-visible
-// trace — exactly one comment on the driving item carrying the terminal cause
-// and the run id — and, crucially, applies NO labels (goobers:needs-human stays
-// reserved for the escalated/park path). The item is resolved from the claim
-// ledger by run id, the same fallback buildBlockedHandler uses, since the
-// implementation/pr-remediation runs that hit this claim their item mid-run.
+// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman proves a run that
+// ends terminal `failed` while claiming an item leaves a human-visible trace
+// with a stable public code and run id, but never the potentially sensitive
+// execution cause. It applies no labels: goobers:needs-human stays reserved for
+// the escalated/park path.
 func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
@@ -2826,11 +3364,13 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 		t.Fatal("expected a non-nil handler for a repo-backed instance")
 	}
 
+	const sensitivePrompt = "SENTINEL_PRIVATE_AGENT_PROMPT"
 	err = h(context.Background(), runner.FailedOutcome{
 		RunID:   "run-timeout",
+		Seq:     17,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 		Stage:   "implement",
-		Cause:   "runner: execute stage \"implement\": harness: copilot-cli: session timed out after 30m0s (attempt 2/2)",
+		Cause:   "runner: execute stage \"implement\": harness: run [claude -p " + sensitivePrompt + "]",
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -2853,8 +3393,14 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "session timed out after 30m0s") {
-		t.Fatalf("comment = %q, want it to carry the terminal failure cause", got.Comment)
+	if !strings.Contains(got.Comment, "run=run-timeout seq=17") {
+		t.Fatalf("comment = %q, want run+seq marker", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "RUN_FAILED") || !strings.Contains(got.Comment, "local run trace") {
+		t.Fatalf("comment = %q, want stable code and local trace guidance", got.Comment)
+	}
+	if strings.Contains(got.Comment, sensitivePrompt) || strings.Contains(got.Comment, "claude -p") {
+		t.Fatalf("comment = %q, must not expose harness argv or prompt", got.Comment)
 	}
 	if strings.Contains(got.Comment, providers.LabelNeedsHuman) && (len(got.AddLabels) > 0) {
 		t.Fatalf("comment = %q, must not apply needs-human", got.Comment)

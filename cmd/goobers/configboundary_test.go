@@ -2,12 +2,12 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // gitRepoWithRunBranchChanges builds a temp git repo — a base commit on main,
@@ -19,7 +19,7 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -50,18 +50,18 @@ func gitRepoWithRunBranchChanges(t *testing.T, files map[string]string) string {
 
 // TestOpenPRWriteBoundaryRejectsOutOfRootChange is #223's core negative test,
 // exercised through the REAL open-pr stage: with confinement on and the config
-// root "selfhost", a run branch that touches a platform path is refused — the
+// root "reference-workflows", a run branch that touches a platform path is refused — the
 // cycle fails closed and NO PR is opened.
 func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
-		"internal/runner/run.go":                        "// smuggled platform edit\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
+		"internal/runner/run.go":                                   "// smuggled platform edit\n",
 	})
 	t.Chdir(wt)
 
@@ -85,13 +85,13 @@ func TestOpenPRWriteBoundaryRejectsOutOfRootChange(t *testing.T) {
 func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml":          "kind: Workflow\n",
-		"selfhost/gaggles/goobers/goobers/coder/instructions.md": "# tutor guidance\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml":          "kind: Workflow\n",
+		"reference-workflows/gaggles/goobers/goobers/coder/instructions.md": "# tutor guidance\n",
 	})
 	t.Chdir(wt)
 
@@ -117,7 +117,7 @@ func TestOpenPRWriteBoundaryAllowsConfigOnlyChange(t *testing.T) {
 func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs,README.md")
 
@@ -147,7 +147,7 @@ func TestOpenPRDocsBoundaryRejectsOutOfRootChange(t *testing.T) {
 func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	t.Setenv(executor.InputEnvVar("docsRoots"), "docs\nREADME.md")
 
@@ -178,7 +178,7 @@ func TestOpenPRDocsBoundaryAllowsDocsOnlyChange(t *testing.T) {
 func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToDocsRoots"), "true")
 	// no docsRoots input
 
@@ -207,9 +207,9 @@ func TestOpenPRDocsBoundaryFailsClosedOnEmptyRoots(t *testing.T) {
 func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
-	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
 		"skills/new-skill/SKILL.md": "# new skill\n",
@@ -239,13 +239,13 @@ func TestOpenPRActionRootsBoundaryAllowsSingleRootChange(t *testing.T) {
 func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToActionRoots"), "true")
-	t.Setenv(executor.InputEnvVar("actionRoots"), "selfhost,skills")
+	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows,skills")
 
 	wt := gitRepoWithRunBranchChanges(t, map[string]string{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
-		"skills/new-skill/SKILL.md":                     "# new skill\n",
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml": "kind: Workflow\n",
+		"skills/new-skill/SKILL.md":                                "# new skill\n",
 	})
 	t.Chdir(wt)
 
@@ -270,9 +270,9 @@ func TestOpenPRActionRootsBoundaryRejectsCrossRootChange(t *testing.T) {
 func TestOpenPRWriteBoundaryFailsClosedOnUnverifiableDiff(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	t.Setenv(executor.InputEnvVar("confineToConfigRoot"), "true")
-	t.Setenv(executor.InputEnvVar("configRoot"), "selfhost")
+	t.Setenv(executor.InputEnvVar("configRoot"), "reference-workflows")
 	t.Chdir(t.TempDir()) // not a git repo
 
 	code, _, stderr := runArgs(t, "open-pr", root)

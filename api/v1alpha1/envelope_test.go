@@ -193,7 +193,15 @@ func TestSeverityRank(t *testing.T) {
 }
 
 func TestFindingClassValidity(t *testing.T) {
-	for _, c := range []FindingClass{FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked} {
+	for _, c := range []FindingClass{
+		FindingRebaseNeeded,
+		FindingConflict,
+		FindingSubstantive,
+		FindingMissingTests,
+		FindingScopeCreep,
+		FindingContractChange,
+		FindingCrossPRBlocked,
+	} {
 		if !c.IsValid() {
 			t.Errorf("expected %q to be a valid finding class", c)
 		}
@@ -203,6 +211,25 @@ func TestFindingClassValidity(t *testing.T) {
 	}
 	if FindingClass("bogus-class").IsValid() {
 		t.Error("expected an unknown class to be invalid")
+	}
+}
+
+func TestFindingClassRequiresCodeChange(t *testing.T) {
+	for _, c := range []FindingClass{
+		FindingConflict,
+		FindingSubstantive,
+		FindingMissingTests,
+		FindingScopeCreep,
+		FindingContractChange,
+	} {
+		if !c.RequiresCodeChange() {
+			t.Errorf("expected %q to require a code change", c)
+		}
+	}
+	for _, c := range []FindingClass{FindingRebaseNeeded, FindingCrossPRBlocked, "", "bogus-class"} {
+		if c.RequiresCodeChange() {
+			t.Errorf("expected %q not to require a code change", c)
+		}
 	}
 }
 

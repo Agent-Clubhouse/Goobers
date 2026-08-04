@@ -367,7 +367,7 @@ func TestADXFailuresAreExplicit(t *testing.T) {
 		{
 			name: "timeout",
 			handler: func(_ http.ResponseWriter, _ *http.Request) {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(100 * time.Millisecond) // Intentional slow response exercises the client timeout.
 			},
 			policy:   externaltelemetry.PolicyConfig{Timeout: "20ms", MaxAttempts: 1, MaxBytes: 4096},
 			wantCode: "timeout",

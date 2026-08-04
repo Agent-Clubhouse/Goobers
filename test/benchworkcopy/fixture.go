@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"os/exec"
 	"strings"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // fixtureSpec parameterizes the synthetic bare-repo fixture. Identical specs
@@ -33,15 +34,21 @@ type fixtureSpec struct {
 	// toward the multi-GB monorepo shape (see the package doc comment).
 	LargeBlobs     int
 	LargeBlobBytes int64
+	// PathDepth shapes source paths like a deeply nested C#/C++ monorepo.
+	PathDepth int
+	// SharedBlobs creates this many reusable source blobs of SharedBlobBytes.
+	// Referencing them across Files makes a >=10 GiB working tree practical
+	// without requiring a >=10 GiB Git object database.
+	SharedBlobs     int
+	SharedBlobBytes int64
 	// TouchPerCommit is the number of files each history commit rewrites.
 	// Zero derives max(1, Files/HistoryDepth) capped at 500.
 	TouchPerCommit int
 }
 
-// presets are the built-in fixture sizes. "large" keeps the file-count and
-// history shape of the monorepo the design targets while sampling large
-// binaries sparsely so default generation stays CI-survivable; crank
-// -large-blobs/-large-blob-bytes for a true multi-GB fixture.
+// presets are the built-in fixture sizes. "large" is a sparse rendition for
+// routine worktree benchmarking. "large-repo" is the >=10 GiB deeply nested
+// working-tree corpus used by the scheduled pinned-workspace gate.
 var presets = map[string]fixtureSpec{
 	"small": {
 		Files: 250, HistoryDepth: 25, Branches: 4, Tags: 2,
@@ -54,6 +61,11 @@ var presets = map[string]fixtureSpec{
 	"large": {
 		Files: 100000, HistoryDepth: 300, Branches: 32, Tags: 8,
 		LargeBlobs: 48, LargeBlobBytes: 4 << 20,
+	},
+	"large-repo": {
+		Files: 220000, HistoryDepth: 20, Branches: 8, Tags: 4,
+		PathDepth: 12, SharedBlobs: 64, SharedBlobBytes: 50 << 10,
+		TouchPerCommit: 10,
 	},
 }
 
@@ -89,7 +101,7 @@ func generateFixture(ctx context.Context, spec fixtureSpec, dir string) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "fast-import", "--quiet")
+	cmd := testgit.CommandContext(ctx, "-c", "safe.bareRepository=all", "fast-import", "--quiet")
 	cmd.Dir = dir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -116,7 +128,10 @@ func generateFixture(ctx context.Context, spec fixtureSpec, dir string) error {
 }
 
 func runFixtureGit(ctx context.Context, dir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		args = append([]string{"-c", "safe.bareRepository=all"}, args...)
+	}
+	cmd := testgit.CommandContext(ctx, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -137,10 +152,24 @@ func writeImportStream(w io.Writer, spec fixtureSpec) error {
 	rng := rand.New(rand.NewSource(spec.Seed))
 	paths := make([]string, spec.Files)
 	for i := range paths {
-		paths[i] = fmt.Sprintf("dir%03d/sub%02d/file%06d.txt", i%97, (i/97)%13, i)
+		paths[i] = fixturePath(i, spec.PathDepth)
 	}
 
 	mark := 0
+	sharedMarks := make([]int, spec.SharedBlobs)
+	for i := range sharedMarks {
+		mark++
+		sharedMarks[i] = mark
+		if _, err := fmt.Fprintf(bw, "blob\nmark :%d\ndata %d\n", mark, spec.SharedBlobBytes); err != nil {
+			return err
+		}
+		if err := writeSourceBlob(bw, spec.SharedBlobBytes, i); err != nil {
+			return err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
 	emitCommit := func(ref string, seq int, from int, msg string) (int, error) {
 		mark++
 		if _, err := fmt.Fprintf(bw, "commit %s\nmark :%d\n", ref, mark); err != nil {
@@ -175,9 +204,19 @@ func writeImportStream(w io.Writer, spec fixtureSpec) error {
 	if _, err := emitCommit("refs/heads/main", 0, 0, "bench: seed tree"); err != nil {
 		return err
 	}
-	for _, path := range paths {
-		if err := modifyText(path, rng); err != nil {
-			return err
+	ignore := ".goobers-build-cache/\n"
+	if _, err := fmt.Fprintf(bw, "M 100644 inline .gitignore\ndata %d\n%s", len(ignore), ignore); err != nil {
+		return err
+	}
+	for i, path := range paths {
+		if len(sharedMarks) > 0 {
+			if _, err := fmt.Fprintf(bw, "M 100644 :%d %s\n", sharedMarks[i%len(sharedMarks)], path); err != nil {
+				return err
+			}
+		} else {
+			if err := modifyText(path, rng); err != nil {
+				return err
+			}
 		}
 	}
 	chunk := make([]byte, 1<<20)
@@ -185,6 +224,7 @@ func writeImportStream(w io.Writer, spec fixtureSpec) error {
 		if _, err := fmt.Fprintf(bw, "M 100644 inline assets/blob%04d.bin\ndata %d\n", b, spec.LargeBlobBytes); err != nil {
 			return err
 		}
+
 		remaining := spec.LargeBlobBytes
 		for remaining > 0 {
 			n := int64(len(chunk))
@@ -238,6 +278,41 @@ func writeImportStream(w io.Writer, spec fixtureSpec) error {
 		}
 	}
 	return bw.Flush()
+}
+
+func fixturePath(index, depth int) string {
+	if depth <= 0 {
+		return fmt.Sprintf("dir%03d/sub%02d/file%06d.txt", index%97, (index/97)%13, index)
+	}
+	parts := make([]string, 0, depth+2)
+	parts = append(parts, "src")
+	for level := 0; level < depth; level++ {
+		parts = append(parts, fmt.Sprintf("Component%02d_%03d", level, (index/(level+1))%997))
+	}
+	ext := ".cs"
+	switch index % 3 {
+	case 0:
+		ext = ".cpp"
+	case 1:
+		ext = ".h"
+	}
+	parts = append(parts, fmt.Sprintf("GeneratedType%06d%s", index, ext))
+	return strings.Join(parts, "/")
+}
+
+func writeSourceBlob(w io.Writer, size int64, variant int) error {
+	line := []byte(fmt.Sprintf("namespace Synthetic.Component%03d { public sealed class Generated%03d { public int Value => %d; } }\n", variant, variant, variant))
+	for remaining := size; remaining > 0; {
+		chunk := int64(len(line))
+		if chunk > remaining {
+			chunk = remaining
+		}
+		if _, err := w.Write(line[:chunk]); err != nil {
+			return err
+		}
+		remaining -= chunk
+	}
+	return nil
 }
 
 // textBlob returns pseudo-source text with a bucketed size distribution
