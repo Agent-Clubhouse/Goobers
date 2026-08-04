@@ -123,6 +123,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
 | [`goobers ios-simulator-test`](#goobers-ios-simulator-test) | run XCUITest on an iOS simulator and parse its xcresult (a workflow stage) |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
+| [`goobers mcp-io`](#goobers-mcp-io) | run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage) |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
@@ -1426,6 +1427,34 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 $ goobers lint
 $ goobers lint --json
 $ goobers lint --check-harness --check-repos
+~~~
+
+## `goobers mcp-io`
+
+run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
+
+~~~text
+Usage: goobers mcp-io --config <path>
+
+Run the goobers-io MCP server over stdio: publish_output, list_inputs,
+read_input, and grep_input — the generic replacement for writing an
+agentic stage's declared output with a file-editing tool (#2406). Not
+meant to be run interactively — the harness spawns this automatically
+via --additional-mcp-config for any eligible stage (one with a declared
+artifactFile and/or upstream context); nothing in a goober's own YAML
+needs to name it. --config points at the workspace-relative runtime
+config (workspace, declared artifactFile, available inputs) the
+harness writes before invocation — deliberately not $COPILOT_HOME-
+relative, so this works whether or not the invocation has Copilot's
+stored-login auth or any other MCP server configured.
+Exit codes: 0 = the stdio session ended cleanly (stdin closed),
+1 = missing or invalid configuration, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers mcp-io --config .goobers/mcp-io/goobers-io-config.json
 ~~~
 
 ## `goobers merge-pr`
