@@ -177,6 +177,19 @@ the scalar outputs or artifact names a later state relies on. A normal
 successful terminal task omits `next`; `@abort` and `@escalate` are explicit
 non-success terminals.
 
+An agentic task that produces a rich, freeform artifact (a report, generated
+doc — anything beyond a scalar output) should declare `inputs: {artifactFile:
+<name>}` rather than have the model write the file with a generic tool and
+self-report the path. This makes the stage automatically eligible for the
+`goobers-io` MCP's `publish_output` tool, and the resulting artifact
+propagates to the *next* stage automatically (no `context:` YAML key exists
+— there is nothing else to declare), making that stage eligible for
+`goobers-io`'s `list_inputs`/`read_input`/`grep_input` read tools over it.
+Never declare `goobers-io` as an `mcpServers`/`tools:` entry by hand — it is
+auto-wired from `artifactFile`/propagated context alone. See
+[the goobers-io MCP guide](../../../docs/guides/goobers-io-mcp.md) for the
+full mechanics and what to put (and not put) in `instructions.md`.
+
 A gate has `name`, exactly one evaluator configuration, and `branches`.
 Automated checks currently include `status-equals`, `output-equals`,
 `output-not-equals`, `output-numeric-gte`, `output-numeric-lte`,
