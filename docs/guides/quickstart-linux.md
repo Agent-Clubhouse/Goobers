@@ -51,16 +51,6 @@ cat ./linux-validation-evidence/summary.md
 
 ## 1. Install prerequisites
 
-Agentic stages are sandboxed by default. Linux nodes require Bubblewrap
-(`bwrap`); startup of an agentic stage fails closed when it is missing or
-cannot create the required namespaces. On hardened distributions,
-`kernel.apparmor_restrict_unprivileged_userns=1` or
-`kernel.unprivileged_userns_clone=0` can make an installed Bubblewrap
-unavailable. Enable unprivileged user namespaces for the daemon user, use a
-correctly installed setuid Bubblewrap, or explicitly select the trusted-local
-opt-out with `sandbox.agentic: disabled` in operator-owned `instance.yaml`.
-Every opted-out attempt is recorded in the run journal.
-
 ```sh
 # Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;
 # prefer the official tarball:
@@ -68,7 +58,7 @@ curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/loca
 export PATH="/usr/local/go/bin:$(go env GOPATH)/bin:$PATH"
 
 # Git (>= 2.17 — any supported Ubuntu/Debian is newer):
-sudo apt-get update && sudo apt-get install --yes git bubblewrap
+sudo apt-get update && sudo apt-get install --yes git
 
 # golangci-lint — REQUIRED on the daemon's PATH (see the note in step 5):
 curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \

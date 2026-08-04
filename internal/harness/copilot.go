@@ -656,10 +656,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
-		env, confinement.privateRoots, err = isolateSandboxProfile(env, confinement.profileDir)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
-		}
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
 		argv = append(argv, "--log-dir", confinement.logDir)
@@ -691,7 +687,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// Wrap last, once argv is final (session id included), so the whole
 		// invocation runs inside the sandbox. promptArg shifts by the wrapper
 		// prefix so the contract-recovery turn below still swaps the prompt.
-		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots, confinement.privateRoots)
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
