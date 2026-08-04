@@ -115,6 +115,41 @@ class GaggleMemoryTest(unittest.TestCase):
         self.assertIn("RECALLED 1 OF 1 ACTIVE MEMORIES", out)
         self.assertIn("advisory institutional memory", out)
 
+    # ---- regression: folded block-scalar (>-) descriptions must parse ---- #
+    def test_folded_block_scalar_description(self):
+        # Agents and the schema example write `description: >-` (folded block
+        # scalar). The parser must fold the continuation lines, not choke on
+        # their indentation and silently skip the whole memory from recall.
+        text = (
+            "---\n"
+            "name: folded-desc-memory\n"
+            "description: >-\n"
+            "  A folded description that spans two lines and must fold into a\n"
+            "  single searchable sentence about widgets.\n"
+            "type: procedure\n"
+            "scope:\n"
+            "  areas: [core]\n"
+            "  workflows: [implementation]\n"
+            "  roles: []\n"
+            "  labels: []\n"
+            "provenance:\n"
+            "  source: human\n"
+            "  proposedBy: tester\n"
+            "  promotedBy: human\n"
+            "confidence: proven\n"
+            "reviewAfter: \"\"\n"
+            "supersedes: []\n"
+            "---\n"
+            "# Folded\n\n## Fact\nWidgets need folding.\n\n"
+            "## Evidence\nSeen in run:xyz.\n\n## Do instead\nFold them.\n"
+        )
+        self._write(os.path.join(self.active, "folded-desc-memory.md"), text)
+        run(["index", "--store", self.store])
+        out = run(["recall", "--store", self.store, "--workflow", "implementation",
+                   "--title", "trouble with widgets"]).stdout
+        self.assertIn("folded-desc-memory", out)
+        self.assertIn("RECALLED", out)
+
     # ---- recall filters by workflow and orders by score ----------------- #
     def test_recall_filter_and_order(self):
         # Matching workflow + labels -> high score.

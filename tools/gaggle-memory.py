@@ -173,6 +173,22 @@ def _parse_block(toks, i, indent):
                 else:
                     result[key] = None
                     i += 1
+            elif re.match(r"^[|>][+-]?$", rest):
+                # YAML block scalar (folded `>`/`>-` or literal `|`/`|-`): consume
+                # the following more-indented lines as this key's value. `>` folds
+                # continuation lines with spaces; `|` keeps them as separate lines.
+                # (Blank lines and #-comment lines inside the block are dropped by
+                # the tokenizer — acceptable for the short folded scalars the memory
+                # schema uses, e.g. `description: >-`.)
+                fold = rest[0] == ">"
+                j = i + 1
+                block_lines = []
+                while j < len(toks) and toks[j][0] > indent:
+                    block_lines.append(toks[j][1])
+                    j += 1
+                result[key] = (" ".join(block_lines) if fold
+                               else "\n".join(block_lines))
+                i = j
             else:
                 result[key] = _scalar_or_inline(rest)
                 i += 1
