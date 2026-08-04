@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -62,6 +63,13 @@ func issueCloseOutIsParkStatus(status providers.WorkItemStatus) bool {
 	return false
 }
 
+func validateIssueCloseOutParkComment(status providers.WorkItemStatus, comment string) error {
+	if status == issueCloseOutNeedsHuman && !strings.HasSuffix(strings.TrimSpace(comment), "?") {
+		return errors.New("needs-human parking comment must end with the exact question requiring a human decision")
+	}
+	return nil
+}
+
 // issueCloseOutStatus resolves the "status" Task.Input to the WorkItemStatus
 // this stage sets, defaulting to WorkItemStatusDone for backward
 // compatibility with any workflow that never declares it. Issue #361/#355:
@@ -110,8 +118,14 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
 				}
 				reason := strings.TrimSpace(verdict.Summary)
+				if verdict.Decision == apiv1.VerdictFail {
+					reason = strings.TrimSpace(verdict.Rationale)
+				}
 				if reason == "" {
 					reason = strings.TrimSpace(verdict.Rationale)
+				}
+				if reason == "" {
+					reason = strings.TrimSpace(verdict.Summary)
 				}
 				if reason != "" {
 					return reason, nil
@@ -337,6 +351,10 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			comment = parkPrefix + reason
 		} else {
 			runsDir, _ = runsDirForRun(l, runID)
+		}
+		if err := validateIssueCloseOutParkComment(status, comment); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
 		}
 		if runsDir != "" {
 			escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)

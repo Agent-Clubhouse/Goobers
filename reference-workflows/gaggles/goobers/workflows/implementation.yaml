@@ -320,12 +320,13 @@ spec:
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
-        # #2028: every route into this stage (repass-budget exhaustion,
-        # identical-diff loop, an infra/executor failure, a CI-poll timeout)
-        # is a mechanical failure someone needs to act on, not a policy
-        # question — so it parks goobers:needs-remediation, not
-        # goobers:needs-human. A genuine policy decision (the reviewer's
-        # explicit "fail" verdict) parks through park-needs-human instead.
+        # #2028/#2333: every route into this stage (an empty implementation
+        # diff, repass-budget exhaustion, identical-diff loop, an
+        # infra/executor failure, a CI-poll timeout) is a mechanical failure
+        # someone needs to act on, not a policy question — so it parks
+        # goobers:needs-remediation, not goobers:needs-human. A genuine policy
+        # decision (the reviewer's explicit "fail" verdict) parks through
+        # park-needs-human instead.
         status: "needs-remediation"
         resultFile: "issue-close-out-result.json"
       capabilities:
@@ -344,7 +345,10 @@ spec:
 
     - name: park-needs-human
       type: deterministic
-      goal: Park a reviewer-rejected issue with the terminal review reason.
+      goal: >-
+        Park an issue only when implementation surfaced a policy or product
+        decision a human must make, stating the exact question in the terminal
+        review reason.
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
@@ -367,8 +371,8 @@ spec:
     # to branches (GT-002: never a silent pass): "needs-changes" repasses to
     # implement with the rationale as evidence; "fail" parks the issue before
     # aborting rather than spending repass budget on a fundamentally rejected
-    # approach. The gate's escalate control branch routes bounded-repass
-    # exhaustion through that same parking stage.
+    # approach. The gate's escalate control branch routes empty diffs and
+    # bounded-repass exhaustion through mechanical-remediation parking.
     # DOGFOOD GUARDRAIL: this gate is ON by design — every implementation run
     # gets an independent reviewer verdict before a PR can reach CI-poll.
     - name: review

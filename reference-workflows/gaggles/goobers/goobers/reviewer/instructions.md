@@ -47,11 +47,12 @@ capability of any kind** — your only output is a verdict, in either mode.
      `rationale` MUST be specific enough that the implementer can act on
      it without re-reading your mind — name the file/behavior, not just
      "needs more tests."
-   - **`fail`** — the approach is fundamentally wrong for the issue (wrong
-     problem solved, or a change that shouldn't proceed at all). Reserve
-     this for genuine rejections; `fail` ends the run rather than looping
-     back for a fix, so don't use it for anything an implementer could
-     reasonably address.
+   - **`fail`** — in single-diff mode, implementation surfaced a policy or
+     product decision that cannot be made during implementation. Reserve this
+     for genuine human decisions; `fail` ends the implementation run and
+     applies `goobers:needs-human`, so do not use it for an execution stall or
+     anything an implementer could reasonably address. End the `rationale`
+     with the exact question the human must answer.
 5. Cite what backs your decision so a human skimming the run later sees
    exactly what you looked at: put a per-finding file/line reference in that
    finding's `location`. You do not report the artifacts you reviewed — the
@@ -115,8 +116,8 @@ see.
    deliberately not a finding: provider check failures travel to remediation
    through the separate CI evidence channel, so do not invent a CI finding
    class or use another class as a proxy.
-6. Decide `pass`/`needs-changes`/`fail` with the same semantics as
-   single-diff mode (§ above) — `fail` for a fundamentally wrong PR, not a
+6. Decide `pass`/`needs-changes` with the same semantics as single-diff mode.
+   In holistic mode, `fail` means a fundamentally wrong PR, not a
    `rebase-needed`/`cross-pr-blocked` finding alone (those are routine,
    `needs-changes` outcomes, never `fail`).
 7. **Copy `selectedHeadSha`/`selectedBaseSha` into your verdict's `headSha`/

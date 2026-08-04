@@ -5966,7 +5966,7 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 // TestRunnerFastFailsEmptyDiffFromAgenticStage is #415's reviewer sibling,
 // driven end to end: an AGENTIC implement stage that returns success but
 // commits nothing (an empty diff) reaching an agentic review gate fast-`fail`s
-// on review-1 — terminal `aborted` via the gate's fail branch — without ever
+// on review-1 and routes through the mechanical escalation branch without ever
 // invoking the reviewer. Exercises the runner wiring the gate-package unit test
 // can't: evaluateGate detecting the empty diff from recordReviewerDiff's nil
 // pointer AND confirming the subject stage is agentic before passing
@@ -6007,8 +6007,8 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseAborted {
-		t.Fatalf("phase = %q, want aborted (an agentic stage's empty diff fast-fails to the gate's fail→@abort branch on review-1)", res.Phase)
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (an agentic stage's empty diff routes to remediation rather than the reviewer fail branch)", res.Phase)
 	}
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
