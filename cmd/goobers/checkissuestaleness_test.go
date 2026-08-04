@@ -101,6 +101,73 @@ func TestCheckIssueStalenessRoutesToRemediationWhenIssueChangedSince(t *testing.
 	}
 }
 
+// TestCheckIssueStalenessAdvancesPinSoARepeatRunDoesNotReFire is the
+// regression test for the live-lock this stage used to cause indefinitely
+// (observed on #2384): once a PR is routed to remediation for a stale issue
+// edit, nothing else ever rewrote the pin, so every subsequent run of this
+// same stage re-compared against the original implementation-time snapshot
+// and re-reported the identical already-handled edit forever, even though
+// the issue itself had gone quiet. The stage must advance its own pin when
+// it reports staleness, so a rerun against an unchanged issue is not stale.
+func TestCheckIssueStalenessAdvancesPinSoARepeatRunDoesNotReFire(t *testing.T) {
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(54, "pr 54 placeholder")
+	server.addOpenPR(54, "goobers/implementation/run-54", "main", "head-54", "base-54", false, nil, nil)
+	server.addIssue(903, "Corrected issue")
+
+	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
+	editedAt := time.Now().UTC().Truncate(time.Second)
+	server.setIssueUpdatedAt(903, editedAt)
+	pin := formatIssueSpecPin("903", snapshotAt.Format(time.RFC3339))
+	server.setPRBody(54, "Implements #903: **Corrected issue**.\n\n---\nFixes #903\n"+pin)
+
+	root, dir := checkIssueStalenessEnv(t, server, "54")
+	if code, stdout, stderr := runArgs(t, "check-issue-staleness", root); code != 0 {
+		t.Fatalf("first check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	first := readIssueStalenessResult(t, dir)
+	if first["issueStale"] != "true" {
+		t.Fatalf("first result = %+v, want issueStale=true", first)
+	}
+
+	server.mu.Lock()
+	refreshedBody := server.prs[54].body
+	commentsAfterFirst := len(server.issues[54].comments)
+	server.mu.Unlock()
+	refreshedPin, ok := parseIssueSpecPin(refreshedBody)
+	if !ok {
+		t.Fatalf("pr body after first run has no pin at all:\n%s", refreshedBody)
+	}
+	if refreshedPin.IssueID != "903" {
+		t.Fatalf("refreshed pin issueId = %q, want 903", refreshedPin.IssueID)
+	}
+	if refreshedPin.UpdatedAt != editedAt.Format(time.RFC3339) {
+		t.Fatalf("refreshed pin updatedAt = %q, want %q (the edit just observed, not the original snapshot)",
+			refreshedPin.UpdatedAt, editedAt.Format(time.RFC3339))
+	}
+
+	// Rerun against the same (unchanged since the first run) issue state --
+	// the regression this guards against is this second run re-reporting the
+	// exact same edit because the pin never advanced.
+	dir2 := t.TempDir()
+	t.Chdir(dir2)
+	if code, stdout, stderr := runArgs(t, "check-issue-staleness", root); code != 0 {
+		t.Fatalf("second check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	second := readIssueStalenessResult(t, dir2)
+	if second["issueStale"] != "false" {
+		t.Fatalf("second result = %+v, want issueStale=false now that the pin has advanced past this edit", second)
+	}
+
+	server.mu.Lock()
+	commentsAfterSecond := len(server.issues[54].comments)
+	server.mu.Unlock()
+	if commentsAfterSecond != commentsAfterFirst {
+		t.Fatalf("second run posted %d more comment(s); want no new staleness comment for an edit already reported",
+			commentsAfterSecond-commentsAfterFirst)
+	}
+}
+
 // TestCheckIssueStalenessNotStaleWhenIssueUnchangedSinceSnapshot confirms the
 // negative case pairs with the positive one above: the pin still matches the
 // issue's live updatedAt (no edit since implementation began), so review must
