@@ -2706,7 +2706,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			}
 			span.FailWithCode(dispatchErr, "executor_error")
 			if shouldRetry {
-				if backoff > 0 {
+				retryDelay := infrastructureRetryDelay(dispatchErr, backoff, time.Now())
+				if retryDelay > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
 					// cancels — the drain contract for an in-flight
 					// dispatch), so a SIGTERM already in progress doesn't
@@ -2720,7 +2721,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 					// pauses BETWEEN stages, per resume.go's interruptedAttempt
 					// doc).
 					select {
-					case <-time.After(backoff):
+					case <-time.After(retryDelay):
 					case <-ctx.Done():
 					case <-attemptCtx.Done():
 					}
@@ -2782,6 +2783,18 @@ func dispatchRetryFailureClass(err error) journal.AttemptClass {
 		return journal.AttemptInfra
 	}
 	return journal.AttemptPolicy
+}
+
+func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
+	retryAt, ok := invoke.InfrastructureRetryAt(err)
+	if !ok {
+		return backoff
+	}
+	until := retryAt.Sub(now)
+	if until > backoff {
+		return until
+	}
+	return backoff
 }
 
 // retryFailureClass identifies command and sync-conflict failures whose

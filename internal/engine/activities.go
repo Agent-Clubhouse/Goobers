@@ -128,7 +128,11 @@ func classifySeamError(err error) error {
 		return nil
 	}
 	if invoke.IsInfrastructureFailure(err) {
-		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
+		options := temporal.ApplicationErrorOptions{}
+		if retryAt, ok := invoke.InfrastructureRetryAt(err); ok {
+			options.Details = []interface{}{retryAt}
+		}
+		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, options)
 	}
 	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
 }
