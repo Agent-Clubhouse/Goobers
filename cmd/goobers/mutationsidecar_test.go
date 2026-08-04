@@ -49,7 +49,7 @@ func TestOpenPRWritesMutationSidecar(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 

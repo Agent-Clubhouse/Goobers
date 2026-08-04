@@ -32,6 +32,11 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.GitHubIssuesWrite},
 		},
 		{
+			name:    "provider-neutral pull request open",
+			command: "open-pr",
+			want:    []capability.Capability{capability.ProviderPRWrite},
+		},
+		{
 			name:    "read-only backlog query",
 			command: "backlog-query",
 			args:    []string{"--read-only"},

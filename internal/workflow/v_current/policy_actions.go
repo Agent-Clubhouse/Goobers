@@ -36,7 +36,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},

@@ -77,7 +77,7 @@ spec:
         confineToDocsRoots: "true"
         docsRoots: "docs,README.md"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:

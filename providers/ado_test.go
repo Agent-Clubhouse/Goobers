@@ -27,6 +27,122 @@ func handleADOTestStateCategories(t *testing.T, mux *http.ServeMux) {
 	})
 }
 
+func TestADOProviderOpenPullRequestCreatesThenUpdates(t *testing.T) {
+	type requestBody struct {
+		SourceRefName string `json:"sourceRefName"`
+		TargetRefName string `json:"targetRefName"`
+		Title         string `json:"title"`
+		Description   string `json:"description"`
+		IsDraft       *bool  `json:"isDraft"`
+	}
+	var posted, patched requestBody
+	created := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			value := []interface{}{}
+			if created {
+				value = append(value, map[string]interface{}{
+					"pullRequestId": 42,
+					"url":           "api-pr-url",
+					"sourceRefName": "refs/heads/goobers/implementation/run-1",
+					"targetRefName": "refs/heads/main",
+					"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+				})
+			}
+			writeJSON(t, w, map[string]interface{}{"value": value})
+		case http.MethodPost:
+			decodeJSON(t, r, &posted)
+			created = true
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42,
+				"url":           "api-pr-url",
+				"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+			})
+		default:
+			t.Fatalf("unexpected pullrequests method %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		decodeJSON(t, r, &patched)
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId": 42,
+			"url":           "api-pr-url",
+			"_links":        map[string]interface{}{"web": map[string]string{"href": "https://ado.example/pr/42"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Implement ADO PR creation",
+		Body:       "Provider-neutral open",
+		Head:       "refs/heads/goobers/implementation/run-1",
+		Base:       "refs/heads/main",
+		Draft:      true,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest returned error: %v", err)
+	}
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
+		t.Fatalf("OpenPullRequest result = %#v", result)
+	}
+	if posted.SourceRefName != "refs/heads/goobers/implementation/run-1" ||
+		posted.TargetRefName != "refs/heads/main" ||
+		posted.Title != "Implement ADO PR creation" ||
+		posted.Description != "Provider-neutral open" ||
+		posted.IsDraft == nil || !*posted.IsDraft {
+		t.Fatalf("OpenPullRequest body = %#v", posted)
+	}
+
+	result, err = provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Updated title",
+		Body:       "Updated description",
+		Head:       "goobers/implementation/run-1",
+		Base:       "main",
+		Draft:      false,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest update returned error: %v", err)
+	}
+	if result.Number != 42 || result.ID != "42" || result.URL != "https://ado.example/pr/42" {
+		t.Fatalf("OpenPullRequest update result = %#v", result)
+	}
+	if patched.Title != "Updated title" || patched.Description != "Updated description" ||
+		patched.IsDraft == nil || *patched.IsDraft {
+		t.Fatalf("OpenPullRequest update body = %#v", patched)
+	}
+}
+
+func TestADOProviderOpenPullRequestReturnsProviderFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		http.Error(w, `{"message":"source branch does not exist"}`, http.StatusBadRequest)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.OpenPullRequest(context.Background(), PullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		Title:      "Broken",
+		Head:       "missing",
+		Base:       "main",
+	})
+	if err == nil || !strings.Contains(err.Error(), "source branch does not exist") {
+		t.Fatalf("OpenPullRequest error = %v, want provider failure", err)
+	}
+}
+
 func TestADOProviderMapsWorkItemsAndStatus(t *testing.T) {
 	mux := http.NewServeMux()
 	handleADOTestStateCategories(t, mux)
