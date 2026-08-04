@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -749,7 +750,14 @@ func buildSelectedBinary(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "goobers")
+	name := "goobers"
+	if runtime.GOOS == "windows" {
+		// go build -o writes exactly this name; unlike a bare `go build`, it
+		// never appends the platform exe suffix on its own, and exec.Command
+		// below can't resolve an extensionless path on Windows.
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
 	command := exec.Command("go", "build", "-o", path, "./cmd/goobers")
 	command.Dir = repositoryRoot
 	if output, err := command.CombinedOutput(); err != nil {

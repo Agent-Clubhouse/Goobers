@@ -323,20 +323,17 @@ func initPortalDistConflictPRBranch(t *testing.T, prBranch string, sourceConflic
 	return origin
 }
 
+// installPortalBuildMake installs a copy of this test binary as the "make"
+// fixture (see installMakeExecutableFixture for why it's a copy, not a hard
+// link to the running test binary).
 func installPortalBuildMake(t *testing.T) {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve test executable for make fixture: %v", err)
-	}
 	dir := t.TempDir()
 	name := "make"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	if err := os.Link(executable, filepath.Join(dir, name)); err != nil {
-		t.Fatalf("install make fixture: %v", err)
-	}
+	installMakeExecutableFixture(t, dir, name)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(portalBuildMakeEnv, "1")
 }

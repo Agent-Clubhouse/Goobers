@@ -334,7 +334,13 @@ func seedClaudeCredentials(env []string, destination string) error {
 			userProfile = value
 		}
 	}
-	if userProfile != "" {
+	// HOME wins when explicitly set — matching the convention used for
+	// resolving Copilot's config home (copilotConfigHome). USERPROFILE is
+	// the Windows-native fallback, only consulted when HOME is unset; it
+	// must not unconditionally override an explicitly configured HOME
+	// (e.g. from a POSIX-style toolchain shim, or a test/sandbox override),
+	// which is ambient on every real Windows runner regardless of HOME.
+	if home == "" {
 		home = userProfile
 	}
 	if sourceDir == "" && home != "" {

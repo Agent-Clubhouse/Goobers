@@ -345,7 +345,7 @@ func addSourceFile(
 	if err != nil {
 		return fmt.Errorf("read agent toolkit source %s: %w", sourcePath, err)
 	}
-	return add(destination, data, sourceMode(sourcePath))
+	return add(destination, data, SourceMode(sourcePath))
 }
 
 func addSourceTree(
@@ -372,7 +372,7 @@ func addSourceTree(
 		if err != nil {
 			return err
 		}
-		return add(path.Join(destinationRoot, relative), data, sourceMode(sourcePath))
+		return add(path.Join(destinationRoot, relative), data, SourceMode(sourcePath))
 	})
 	if err != nil {
 		return fmt.Errorf("collect agent toolkit source %s: %w", sourceRoot, err)
@@ -380,7 +380,17 @@ func addSourceTree(
 	return nil
 }
 
-func sourceMode(sourcePath string) fs.FileMode {
+// SourceMode is the toolkit's canonical permission for a source file, keyed
+// only by name convention rather than the host filesystem's reported mode.
+// Both the go:embed-driven Build below and release/agent_toolkit.go's
+// from-disk packaging path call this so the two produce byte-identical
+// manifests: embed.FS never preserves real permission bits (embedded regular
+// files always report as read-only), and on Windows os.Stat can't report a
+// meaningful executable bit either (every regular file reads back as 0666).
+// Trusting the OS's reported mode instead of this convention made the
+// disk-read side diverge from the embedded side the moment either ran on
+// Windows or read through embed.FS.
+func SourceMode(sourcePath string) fs.FileMode {
 	if strings.HasSuffix(sourcePath, ".sh") {
 		return 0o755
 	}

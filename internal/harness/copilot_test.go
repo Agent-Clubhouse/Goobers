@@ -1126,6 +1126,22 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 				result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0},
 				act: func(req ProcessRequest) error {
 					calls = append(calls, req)
+					if len(calls) == 1 {
+						// The adapter derives the recovery turn's timeout from
+						// time.Since(started) measured around this call (see
+						// CopilotAdapter.Run's "remaining := totalTimeout -
+						// time.Since(started)"). A fake runner that returns
+						// instantly can complete within a single tick of a
+						// coarse OS clock, making the elapsed duration read
+						// back as exactly zero — which would hand the
+						// recovery turn the *entire* original timeout rather
+						// than a genuine remainder, and is exactly what was
+						// observed on Windows CI. Sleep briefly so the first
+						// turn measurably consumes wall-clock time on every
+						// platform, the same way a real subprocess turn
+						// always would.
+						time.Sleep(5 * time.Millisecond)
+					}
 					if len(calls) == 2 {
 						return WriteCompletion(req.Dir, tc.completionPath, tc.completion)
 					}

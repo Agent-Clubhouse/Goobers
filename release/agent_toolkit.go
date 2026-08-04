@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -265,7 +266,7 @@ func readAgentToolkitFile(repoRoot, source, destination string) (agentToolkitPay
 	return newAgentToolkitPayloadAsset(
 		agentToolkitProductRoot+"/"+filepath.ToSlash(destination),
 		data,
-		info.Mode().Perm(),
+		agentkit.SourceMode(sourcePath),
 	), nil
 }
 
@@ -307,7 +308,7 @@ func readAgentToolkitTree(
 		assets = append(assets, newAgentToolkitPayloadAsset(
 			agentToolkitProductRoot+"/"+destinationDir+"/"+relative,
 			data,
-			info.Mode().Perm(),
+			agentkit.SourceMode(path),
 		))
 		return nil
 	})

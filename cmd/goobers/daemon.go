@@ -238,6 +238,24 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if rollupDB != nil {
 			_ = rollupDB.Close()
 		}
+		// Same order as schedulerSetup.Shutdown: stop the projector before
+		// closing the store its commit loop writes through, then release the
+		// read model and intake stores. A setup failure between these opening
+		// (line ~291 onward) and this function's success return used to leak
+		// both handles — invisible on POSIX (an unlinked-but-open file is
+		// fine), but on Windows the open handle keeps the underlying temp
+		// dir's *.db files locked, so a caller's t.TempDir() cleanup fails
+		// outright with "The process cannot access the file because it is
+		// being used by another process."
+		if stopProjector != nil {
+			stopProjector()
+		}
+		if readModel != nil {
+			_ = readModel.Close()
+		}
+		if watermarks != nil {
+			_ = watermarks.Close()
+		}
 		if instanceLog != nil {
 			_ = instanceLog.Close()
 		}

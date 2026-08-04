@@ -141,15 +141,30 @@ func TestShellExecutor_DefaultEnvCanBeOverriddenByStage(t *testing.T) {
 	exec, rec := newPortableTestExecutor(t, nil)
 	exec.DefaultEnv = map[string]string{"GOOBERS_TEST_DEFAULT": "default"}
 	env := baseEnvelope(t)
-	command := []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`}
+	run := apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`},
+		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+	}
 	if runtime.GOOS == "windows" {
-		command = []string{"cmd.exe", "/D", "/S", "/C", `echo|set /p="%GOOBERS_TEST_DEFAULT%"`}
+		// cmd.exe's /C parsing does not follow CommandLineToArgvW quoting
+		// (see the comment in script_windows.go) — a quoted, piped command
+		// like `echo|set /p="%VAR%"` built directly as a Command argv
+		// element gets re-escaped by Go's Windows argv quoting before it
+		// ever reaches cmd.exe, so it no longer parses the way it would
+		// typed at a prompt (that mismatch, not the override logic, is why
+		// this previously exited 1 on Windows). Route the same command
+		// through Script instead: scriptCommand writes it to a real .cmd
+		// file and invokes that file by path, so the pipe/quote syntax
+		// reaches cmd.exe byte-for-byte unmodified — the same mechanism
+		// TestShellExecutor_RunScript below already exercises successfully
+		// on Windows.
+		run = apiv1.DeterministicRun{
+			Script: "@echo off\r\necho|set /p=\"%GOOBERS_TEST_DEFAULT%\"",
+			Env:    map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+		}
 	}
 
-	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		Command: command,
-		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
-	})
+	result, err := exec.Run(context.Background(), env, run)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

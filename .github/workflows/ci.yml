@@ -605,7 +605,18 @@ jobs:
           GIT_CONFIG_VALUE_0: "false"
           GIT_CONFIG_KEY_1: core.safecrlf
           GIT_CONFIG_VALUE_1: "false"
-        run: go test ./...
+        # -timeout 30m (go test's per-package default is 10m): the widest
+        # packages here (cmd/goobers, internal/runner, test/scale,
+        # test/shippedworkflows) enumerate hundreds of process-spawning,
+        # git-shelling subtests, and Windows process creation/git-shelling is
+        # measurably slower than POSIX for the same workload — the first run
+        # of this widened suite hit `panic: test timed out after 10m0s` in
+        # exactly those four packages with the dump showing an individual
+        # subtest only seconds in, i.e. cumulative package time exceeding the
+        # default, not a hung test. Widening the timeout is not the same as
+        # excluding a test: everything still runs, and a genuine deadlock
+        # still fails loudly, just against a budget sized for this platform.
+        run: go test -timeout 30m ./...
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
