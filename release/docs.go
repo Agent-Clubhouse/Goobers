@@ -87,13 +87,22 @@ const (
 		"cat ./linux-validation-evidence/summary.md\n" +
 		"```\n\n"
 	linuxQuickstartSourcePrerequisites = "## 1. Install prerequisites\n\n" +
+		"Agentic stages are sandboxed by default. Linux nodes require Bubblewrap\n" +
+		"(`bwrap`); startup of an agentic stage fails closed when it is missing or\n" +
+		"cannot create the required namespaces. On hardened distributions,\n" +
+		"`kernel.apparmor_restrict_unprivileged_userns=1` or\n" +
+		"`kernel.unprivileged_userns_clone=0` can make an installed Bubblewrap\n" +
+		"unavailable. Enable unprivileged user namespaces for the daemon user, use a\n" +
+		"correctly installed setuid Bubblewrap, or explicitly select the trusted-local\n" +
+		"opt-out with `sandbox.agentic: disabled` in operator-owned `instance.yaml`.\n" +
+		"Every opted-out attempt is recorded in the run journal.\n\n" +
 		"```sh\n" +
 		"# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;\n" +
 		"# prefer the official tarball:\n" +
 		"curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
 		"export PATH=\"/usr/local/go/bin:$(go env GOPATH)/bin:$PATH\"\n\n" +
 		"# Git (>= 2.17 — any supported Ubuntu/Debian is newer):\n" +
-		"sudo apt-get update && sudo apt-get install --yes git\n\n" +
+		"sudo apt-get update && sudo apt-get install --yes git bubblewrap\n\n" +
 		"# golangci-lint — REQUIRED on the daemon's PATH (see the note in step 5):\n" +
 		"curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \\\n" +
 		"  | sh -s -- -b \"$(go env GOPATH)/bin\" v2.12.2\n" +
@@ -347,8 +356,13 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					source: linuxQuickstartSourcePrerequisites,
 					installed: "## 1. Install runtime prerequisites\n\n" +
 						"The packaged `goobers` binary is self-contained; Go, Node.js, and build tools are\n" +
-						"not required to run it. Install Git (version 2.17 or newer):\n\n" +
-						"```sh\nsudo apt-get update && sudo apt-get install --yes git\n```\n\n" +
+						"not required to run it. Install Git (version 2.17 or newer) and Bubblewrap, which\n" +
+						"enforces the default sandbox for agentic stages:\n\n" +
+						"```sh\nsudo apt-get update && sudo apt-get install --yes git bubblewrap\n```\n\n" +
+						"On hardened distributions, disabled unprivileged user namespaces can make\n" +
+						"Bubblewrap unavailable and agentic stages fail closed. Enable them for the daemon\n" +
+						"user, use a correctly installed setuid Bubblewrap, or explicitly select the\n" +
+						"journaled trusted-local opt-out with `sandbox.agentic: disabled`.\n\n" +
 						"Workflow stages may require additional tools from the repositories they operate on.\n\n",
 				},
 				{

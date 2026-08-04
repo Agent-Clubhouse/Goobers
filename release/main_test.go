@@ -250,6 +250,9 @@ func TestRunEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"Use the `goobers` daemon bundled with release `v1.2.3`",
 		"## 1. Install runtime prerequisites",
+		"sudo apt-get install --yes git bubblewrap",
+		"agentic stages fail closed",
+		"`sandbox.agentic: disabled`",
 		"source-only Linux validation harness is not included in release archives",
 		"## 2. Confirm the installed binary",
 		"[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root)",

@@ -341,14 +341,14 @@ spec:
               sandbox:
                 description: |-
                   Sandbox overrides the instance-wide isolation posture for this gaggle's
-                  agentic stages (#1305). Effective posture is gaggle override, else the
-                  instance.yaml sandbox block, else disabled — sandboxing is strictly
-                  opt-in, so a gaggle that omits this behaves exactly as before.
+                  agentic stages (#1305). Agentic stages are sandboxed by default. A gaggle
+                  may strengthen an operator's trusted-local opt-out to enforced, but may
+                  not weaken the instance posture.
                 properties:
                   agentic:
                     description: |-
                       Agentic is the posture for agentic stages: "disabled" or "enforced".
-                      Empty inherits the instance-wide posture.
+                      Empty inherits the instance-wide posture or the enforced default.
                     enum:
                     - disabled
                     - enforced

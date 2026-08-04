@@ -161,8 +161,13 @@ func TestExecutorEnforcedSandboxUnavailableFailsClosed(t *testing.T) {
 	if len(adapter.calls) != 0 {
 		t.Fatal("adapter ran despite an unavailable sandbox under an enforced posture — silent downgrade")
 	}
-	if events := postureEvents(t, run); len(events) != 0 {
-		t.Fatalf("fail-closed attempt journaled %d posture events, want 0 (nothing was confined)", len(events))
+	events := postureEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("fail-closed attempt journaled %d posture events, want 1", len(events))
+	}
+	payload, _ := events[0]["runner"].(map[string]any)
+	if payload["posture"] != "unavailable" || payload["mechanism"] != "none" {
+		t.Fatalf("unavailable posture payload = %v", payload)
 	}
 }
 
@@ -225,7 +230,7 @@ func TestExecutorEnforcedSandboxRequiresJournalBackedRecorder(t *testing.T) {
 	}
 }
 
-func TestExecutorDisabledPostureEmitsNothingAndPassesNoSandbox(t *testing.T) {
+func TestExecutorTrustedLocalOptOutIsJournaledAndPassesNoSandbox(t *testing.T) {
 	run := newSandboxTestRun(t)
 	adapter := &sandboxCapturingAdapter{FakeAdapter: FakeAdapter{
 		Act: func(ctx context.Context, req RunRequest) error {
@@ -235,7 +240,8 @@ func TestExecutorDisabledPostureEmitsNothingAndPassesNoSandbox(t *testing.T) {
 		},
 	}}
 	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), run, run,
-		NewContextResolver(run, t.TempDir()), journal.NewPatternScrubber(), "instructions")
+		NewContextResolver(run, t.TempDir()), journal.NewPatternScrubber(), "instructions",
+		WithSandboxOptOut())
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -250,8 +256,13 @@ func TestExecutorDisabledPostureEmitsNothingAndPassesNoSandbox(t *testing.T) {
 	if len(adapter.calls) != 1 || adapter.calls[0].Sandbox != nil {
 		t.Fatalf("disabled posture leaked a sandbox into the adapter: %+v", adapter.calls)
 	}
-	if events := postureEvents(t, run); len(events) != 0 {
-		t.Fatalf("disabled posture journaled %d isolation events, want 0 — unconfigured instances must emit nothing new", len(events))
+	events := postureEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("disabled posture journaled %d isolation events, want 1", len(events))
+	}
+	payload, _ := events[0]["runner"].(map[string]any)
+	if payload["posture"] != "disabled" || payload["mechanism"] != "none" || payload["trustedLocalOnly"] != true {
+		t.Fatalf("disabled posture payload = %v", payload)
 	}
 }
 

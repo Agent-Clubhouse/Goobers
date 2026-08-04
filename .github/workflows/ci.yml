@@ -282,6 +282,23 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      - name: Install bubblewrap
+        # Sandboxing agentic stages is enforced by default (TBH-3/SEC-044):
+        # cmd/goobers' acceptance/behavioral tests drive `goobers run` through
+        # the real runner with a fake harness under the default (enforced)
+        # posture, which resolves a real platform sandbox even though the
+        # harness itself is stubbed. macOS runners already carry sandbox-exec
+        # out of the box; Linux needs bubblewrap installed explicitly, same as
+        # the dedicated "sandbox confinement" job below.
+        run: |
+          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
+          # namespaces via AppArmor, which bubblewrap needs to set up its uid
+          # map. Relax it so the acceptance tests can create the sandbox
+          # namespace on the hosted runner. Tolerate the knob being absent
+          # (future runner images / kernels).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
           GOOBERS_CI_SHARD: ${{ matrix.shard }}
