@@ -366,7 +366,12 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		"Fixes #42",
 		finalDigest,
 		"goobers run-id: " + runID,
-		formatIssueSpecPin("42", "2026-08-01T12:00:00Z"),
+		formatIssueSpecPin(
+			"42",
+			"2026-08-01T12:00:00Z",
+			"Render rich PR bodies",
+			"## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+		),
 	} {
 		if !strings.Contains(pr.body, want) {
 			t.Errorf("PR body missing %q:\n%s", want, pr.body)

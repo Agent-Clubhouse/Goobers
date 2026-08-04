@@ -73,7 +73,7 @@ func TestCheckIssueStalenessRoutesToRemediationWhenIssueChangedSince(t *testing.
 
 	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
 	server.setIssueUpdatedAt(901, time.Now().UTC()) // "now" is after snapshotAt
-	pin := formatIssueSpecPin("901", snapshotAt.Format(time.RFC3339))
+	pin := formatIssueSpecPin("901", snapshotAt.Format(time.RFC3339), "Original issue", "Original body")
 	server.setPRBody(50, "Implements #901: **Corrected issue**.\n\n---\nFixes #901\n"+pin)
 
 	root, dir := checkIssueStalenessEnv(t, server, "50")
@@ -118,7 +118,7 @@ func TestCheckIssueStalenessAdvancesPinSoARepeatRunDoesNotReFire(t *testing.T) {
 	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
 	editedAt := time.Now().UTC().Truncate(time.Second)
 	server.setIssueUpdatedAt(903, editedAt)
-	pin := formatIssueSpecPin("903", snapshotAt.Format(time.RFC3339))
+	pin := formatIssueSpecPin("903", snapshotAt.Format(time.RFC3339), "Original issue", "Original body")
 	server.setPRBody(54, "Implements #903: **Corrected issue**.\n\n---\nFixes #903\n"+pin)
 
 	root, dir := checkIssueStalenessEnv(t, server, "54")
@@ -184,7 +184,7 @@ func TestCheckIssueStalenessNotStaleWhenIssueUnchangedSinceSnapshot(t *testing.T
 	// compare "after" its own truncated pin.
 	snapshotAt := time.Now().UTC().Truncate(time.Second)
 	server.setIssueUpdatedAt(902, snapshotAt) // unchanged since the snapshot
-	pin := formatIssueSpecPin("902", snapshotAt.Format(time.RFC3339))
+	pin := formatIssueSpecPin("902", snapshotAt.Format(time.RFC3339), "Untouched issue", "")
 	server.setPRBody(51, "Implements #902: **Untouched issue**.\n\n---\nFixes #902\n"+pin)
 
 	root, dir := checkIssueStalenessEnv(t, server, "51")
@@ -198,6 +198,55 @@ func TestCheckIssueStalenessNotStaleWhenIssueUnchangedSinceSnapshot(t *testing.T
 	}
 }
 
+func TestCheckIssueStalenessIgnoresCommentOnlyTimestampChange(t *testing.T) {
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(55, "pr 55 placeholder")
+	server.addOpenPR(55, "goobers/implementation/run-55", "main", "head-55", "base-55", false, nil, nil)
+	server.addIssue(904, "Untouched issue")
+
+	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
+	server.setIssueUpdatedAt(904, time.Now().UTC())
+	pin := formatIssueSpecPin("904", snapshotAt.Format(time.RFC3339), "Untouched issue", "")
+	server.setPRBody(55, "Implements #904: **Untouched issue**.\n\n---\nFixes #904\n"+pin)
+
+	root, dir := checkIssueStalenessEnv(t, server, "55")
+	if code, stdout, stderr := runArgs(t, "check-issue-staleness", root); code != 0 {
+		t.Fatalf("check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readIssueStalenessResult(t, dir)
+	if result["issueStale"] != "false" {
+		t.Fatalf("result = %+v, want comment-only updatedAt change ignored", result)
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[55].labels...)
+	comments := append([]string(nil), server.issues[55].comments...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{needsRemediationLabel}) || len(comments) != 0 {
+		t.Fatalf("PR labels/comments = %v/%v, want no remediation for comment-only activity", labels, comments)
+	}
+}
+
+func TestCheckIssueStalenessLegacyTimestampPinStillRoutes(t *testing.T) {
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(56, "pr 56 placeholder")
+	server.addOpenPR(56, "goobers/implementation/run-56", "main", "head-56", "base-56", false, nil, nil)
+	server.addIssue(905, "Legacy pinned issue")
+
+	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
+	server.setIssueUpdatedAt(905, time.Now().UTC())
+	pin := `<!-- issue-spec-pin: {"issueId":"905","updatedAt":"` + snapshotAt.Format(time.RFC3339) + `"} -->`
+	server.setPRBody(56, "Implements #905.\n\n---\nFixes #905\n"+pin)
+
+	root, dir := checkIssueStalenessEnv(t, server, "56")
+	if code, stdout, stderr := runArgs(t, "check-issue-staleness", root); code != 0 {
+		t.Fatalf("check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readIssueStalenessResult(t, dir)
+	if result["issueStale"] != "true" {
+		t.Fatalf("result = %+v, want legacy timestamp-only pin to retain prior behavior", result)
+	}
+}
+
 // TestCheckIssueStalenessPinnedIssueGoneIsNotStale mirrors
 // gather-issue-context's tolerant handling of a since-deleted issue: there is
 // nothing left to compare against, so the PR fails open rather than getting
@@ -206,7 +255,7 @@ func TestCheckIssueStalenessPinnedIssueGoneIsNotStale(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(52, "pr 52 placeholder")
 	server.addOpenPR(52, "goobers/implementation/run-52", "main", "head-52", "base-52", false, nil, nil)
-	pin := formatIssueSpecPin("999999", time.Now().UTC().Format(time.RFC3339))
+	pin := formatIssueSpecPin("999999", time.Now().UTC().Format(time.RFC3339), "Deleted issue", "")
 	server.setPRBody(52, "Implements #999999.\n\n---\nFixes #999999\n"+pin)
 
 	root, dir := checkIssueStalenessEnv(t, server, "52")

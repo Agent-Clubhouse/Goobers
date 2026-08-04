@@ -529,9 +529,9 @@ route a PR to remediation if its linked issue changed since implementation began
 ~~~text
 Usage: goobers check-issue-staleness [path]
 
-Re-fetch the PR's pinned linked issue and compare its live updatedAt
-against the snapshot taken when the PR was opened. If the issue changed
-materially since implementation began, label the PR goobers:needs-
+Re-fetch the PR's pinned linked issue and compare its title and body
+against the snapshot taken when the PR was opened. If the issue spec
+changed since implementation began, label the PR goobers:needs-
 remediation and post an explanatory comment instead of letting review
 proceed against stale copied criteria. A PR with no pin (predates this
 feature, or its linked issue never resolved an updatedAt) is never
