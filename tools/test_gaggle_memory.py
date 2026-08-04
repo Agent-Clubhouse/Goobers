@@ -150,6 +150,62 @@ class GaggleMemoryTest(unittest.TestCase):
         self.assertIn("folded-desc-memory", out)
         self.assertIn("RECALLED", out)
 
+    # ---- sync-claude: propose (never active), drop user-type, idempotent - #
+    def test_sync_claude_proposes_drops_user_and_is_idempotent(self):
+        inbox = os.path.join(self.store, "inbox", "claude")
+        os.makedirs(inbox, exist_ok=True)
+        # a feedback-type Claude memory -> becomes a proposal
+        self._write(os.path.join(inbox, "lesson.md"),
+            "---\nname: build-flake\n"
+            "description: The build flakes on a cold cache\n"
+            "metadata:\n  type: feedback\n---\n"
+            "The build flakes on a cold cache; warm it first.\n")
+        # a user-type Claude memory -> dropped (personal facts never enter a fleet)
+        self._write(os.path.join(inbox, "whoami.md"),
+            "---\nname: user-fact\ndescription: prefers tabs\n"
+            "metadata:\n  type: user\n---\nTabs over spaces.\n")
+
+        out = run(["sync-claude", "--store", self.store]).stdout
+        proposals = os.listdir(self.proposed)
+        self.assertEqual(len(proposals), 1, out)
+        self.assertTrue(proposals[0].startswith("claude-"))
+        self.assertEqual(os.listdir(self.active), [])  # never writes active/
+        self.assertIn("1 dropped", out)
+
+        # idempotent: an unchanged inbox writes nothing new on a second run
+        out2 = run(["sync-claude", "--store", self.store]).stdout
+        self.assertEqual(len(os.listdir(self.proposed)), 1)
+        self.assertIn("unchanged", out2)
+
+    # ---- init-from-claude: seed, drop user-type, --shared drops private -- #
+    def test_init_from_claude_seeds_and_shared_drops_private(self):
+        claude = os.path.join(self.tmp, "claude-proj")
+        memdir = os.path.join(claude, "memory")
+        os.makedirs(memdir, exist_ok=True)
+        self._write(os.path.join(claude, "CLAUDE.md"),
+            "---\nname: house-style\ndescription: Write tests first\n"
+            "metadata:\n  type: project\n---\nWrite tests first.\n")
+        # a project memory carrying a private host/URL -> kept normally, dropped --shared
+        self._write(os.path.join(memdir, "host.md"),
+            "---\nname: prod-host\ndescription: where prod lives\n"
+            "metadata:\n  type: project\n---\n"
+            "Deploy target https://prod.example.internal\n")
+        # user-type -> dropped in both modes
+        self._write(os.path.join(memdir, "pref.md"),
+            "---\nname: pref\ndescription: editor pref\n"
+            "metadata:\n  type: user\n---\nvim.\n")
+
+        outdir = os.path.join(self.tmp, "seeds")
+        run(["init-from-claude", "--claude-dir", claude, "--out", outdir])
+        active = sorted(os.listdir(os.path.join(outdir, "active")))
+        self.assertEqual(len(active), 2, active)  # house-style + prod-host; user dropped
+        self.assertTrue(os.path.isfile(os.path.join(outdir, "MEMORY.md")))
+
+        outdir2 = os.path.join(self.tmp, "seeds-shared")
+        run(["init-from-claude", "--claude-dir", claude, "--out", outdir2, "--shared"])
+        active2 = sorted(os.listdir(os.path.join(outdir2, "active")))
+        self.assertEqual(len(active2), 1, active2)  # only house-style survives --shared
+
     # ---- recall filters by workflow and orders by score ----------------- #
     def test_recall_filter_and_order(self):
         # Matching workflow + labels -> high score.
