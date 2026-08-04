@@ -3,7 +3,6 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -90,22 +89,28 @@ func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 // auth for every other eligible stage). Returns ("", nil) when this
 // invocation isn't eligible or selfBin is unknown — the caller appends
 // nothing in that case.
+//
+// This write happens in the harness's own process, before the spawned
+// copilot subprocess is sandboxed — req.Workspace is the task's own
+// worktree, which may contain repository-controlled content. mcpio.WriteConfig
+// (not a plain os.MkdirAll+os.WriteFile) is load-bearing here: a symlink
+// planted at goobersIORuntimeSubdir, or at any not-yet-existing intermediate
+// component of it, must not be followed by this trusted, pre-sandbox write
+// (review finding on #2408; see #2413 for the other harness call sites with
+// the same gap, not fixed here since they predate this code).
 func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, error) {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return "", nil
 	}
-	runtimeDir := filepath.Join(req.Workspace, filepath.FromSlash(goobersIORuntimeSubdir))
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
-		return "", fmt.Errorf("create goobers-io runtime dir: %w", err)
-	}
-	configPath := filepath.Join(runtimeDir, mcpio.ConfigFileName)
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
 	cfg := mcpio.Config{
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
 		Inputs:       req.ContextPaths,
 	}
-	if err := mcpio.WriteConfig(configPath, cfg); err != nil {
+	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
+	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
+	if err != nil {
 		return "", fmt.Errorf("write goobers-io config: %w", err)
 	}
 

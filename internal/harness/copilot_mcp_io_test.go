@@ -156,9 +156,18 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	configPath := server.Args[2]
 	// Must be workspace-relative, never $COPILOT_HOME-relative — that's the
 	// whole point of the redesign (stored-login auth must not require
-	// COPILOT_HOME redirection for goobers-io to work).
-	if rel, err := filepath.Rel(workspace, configPath); err != nil || strings.HasPrefix(rel, "..") {
-		t.Fatalf("config path %q is not inside the workspace", configPath)
+	// COPILOT_HOME redirection for goobers-io to work). resolveRooted
+	// canonicalizes the workspace root itself before joining (a #2408 review
+	// finding), so on a platform where t.TempDir() is itself reached through
+	// a symlink (e.g. macOS's /var -> /private/var), configPath is resolved
+	// too — compare against the same resolved form rather than the raw
+	// workspace string.
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(resolvedWorkspace, configPath); err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("config path %q is not inside the workspace %q", configPath, resolvedWorkspace)
 	}
 
 	wantTools := []string{"publish_output", "list_inputs", "read_input", "grep_input"}
@@ -187,6 +196,41 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("config file mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+// TestGoobersIOAdditionalMCPConfigArgRefusesToTraverseAWorkspaceSymlink is a
+// regression test for a #2408 review finding: goobersIOAdditionalMCPConfigArg
+// writes its runtime config in the harness's own process, before the spawned
+// copilot subprocess is sandboxed — req.Workspace is the task's own
+// worktree, which may contain repository-controlled content. A symlink at
+// goobersIORuntimeSubdir (or, as here, an ancestor of it — a repository
+// could equally plant one at goobersIORuntimeSubdir itself, or the config
+// file's exact leaf path) pointing outside the workspace must not be
+// followed by this write. Proves both that the call fails and that nothing
+// is created outside the workspace.
+func TestGoobersIOAdditionalMCPConfigArgRefusesToTraverseAWorkspaceSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outsideDir := t.TempDir()
+	// goobersIORuntimeSubdir is ".goobers/mcp-io" — plant the symlink at
+	// ".goobers" itself, so both the runtime dir and the config file inside
+	// it are reached only by traversing it.
+	if err := os.Symlink(outsideDir, filepath.Join(workspace, ".goobers")); err != nil {
+		t.Fatal(err)
+	}
+
+	req := RunRequest{
+		Envelope:  testEnvelope(workspace),
+		Workspace: workspace,
+	}
+	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "findings.md"}
+
+	if _, err := goobersIOAdditionalMCPConfigArg(req, "/usr/local/bin/goobers"); err == nil {
+		t.Fatal("expected goobersIOAdditionalMCPConfigArg to refuse to traverse the symlinked .goobers directory")
+	}
+
+	if _, err := os.Lstat(filepath.Join(outsideDir, "mcp-io")); !os.IsNotExist(err) {
+		t.Fatalf("runtime directory was created outside the workspace through the symlink: err=%v", err)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // ConfigFileName is the fixed filename the harness writes this server's
@@ -53,16 +52,25 @@ func LoadConfig(path string) (Config, error) {
 // WriteConfig writes cfg to path, creating parent directories as needed.
 // Called from the harness side (internal/harness), not by this server
 // itself.
-func WriteConfig(path string, cfg Config) error {
+// WriteConfig resolves rel against root (a task's own worktree, which may
+// contain repository-controlled content) and writes cfg there, returning
+// the resolved absolute path. This runs in the harness's own process,
+// before the spawned copilot subprocess is sandboxed — so, unlike a normal
+// os.MkdirAll+os.WriteFile, it must not follow a symlink planted at rel or
+// any not-yet-existing intermediate component of it (see resolveRooted's
+// doc comment and #2413, which tracks the same gap at other pre-sandbox
+// harness writes into a workspace).
+func WriteConfig(root, rel string, cfg Config) (string, error) {
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return fmt.Errorf("mcpio: encode config: %w", err)
+		return "", fmt.Errorf("mcpio: encode config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("mcpio: create config dir: %w", err)
+	full, err := resolveRooted(root, rel, true)
+	if err != nil {
+		return "", fmt.Errorf("mcpio: resolve config path: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("mcpio: write config %s: %w", path, err)
+	if err := os.WriteFile(full, data, 0o600); err != nil {
+		return "", fmt.Errorf("mcpio: write config %s: %w", full, err)
 	}
-	return nil
+	return full, nil
 }
