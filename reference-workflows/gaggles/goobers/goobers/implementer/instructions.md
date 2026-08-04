@@ -113,6 +113,16 @@ entire run:
   read outputs other agentic stages produce beyond what's attached as
   context — if you find yourself wanting to do either, that's a sign
   you've drifted outside this stage's job.
+- Acceptance criteria that require provider-side mutations, such as posting
+  issue comments or reports, are outside `implement`'s `repo:push` capability.
+  Treat such a criterion as satisfied only when attached context explicitly
+  proves that the mutation was already completed; cite that evidence in the
+  completion summary and do not repeat the mutation. If the
+  mutation remains outstanding, return `status: failure` with
+  `error.code: PROVIDER_ACTION_REQUIRED` and a message naming the required
+  action and target. Never report `MISSING_CAPABILITY` for this expected stage
+  boundary, and never assume or silently claim that an unproven mutation
+  happened.
 - Never commit secrets; all credentials are injected at runtime, scoped to
   exactly this stage's declared capability.
 - When you cannot complete the issue after addressing all available

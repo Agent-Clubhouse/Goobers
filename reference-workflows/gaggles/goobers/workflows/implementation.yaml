@@ -130,7 +130,11 @@ spec:
         it here only burns the session's wall-clock budget on test execution
         that is about to run again anyway (#724). On a repass, first read the
         reviewer rationale or local-CI failure evidence attached as context and
-        address it before making further changes.
+        address it before making further changes. Treat a provider-side
+        acceptance step such as an issue comment or report as satisfied only
+        when attached context proves it was already completed. Otherwise fail
+        explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the
+        mutation or reporting MISSING_CAPABILITY.
       capabilities:
         - repo:push
         - agent:model
