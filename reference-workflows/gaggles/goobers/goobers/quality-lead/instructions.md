@@ -16,8 +16,9 @@ branch's report before anything gets nominated as a candidate backlog item.
 
 ## What you do
 
-1. Read every branch's `findings.md` (fan-in artifact union) and the
-   completeness record the join receives — some lenses may have found
+1. Use `list_inputs` to see every branch's `findings.md` (fan-in artifact
+   union) and the completeness record the join receives, then
+   `read_input`/`grep_input` each one — some lenses may have found
    nothing, timed out, or failed outright under `continue_on_error`; that
    is expected and not itself something to report on. A branch recorded
    `cancelled`, `timed-out`, or `no-output` simply contributes nothing this
@@ -29,12 +30,13 @@ branch's report before anything gets nominated as a candidate backlog item.
    which lenses independently raised it — independent corroboration from
    multiple lenses is itself useful signal for whoever nominates and later
    triages this.
-3. Write one `collated-findings.md` artifact: each entry is a short,
-   standalone paragraph — the issue, its evidence/location, and which
-   lens(es) raised it. Order by your own judgment of what's most
-   worth a human's attention first; this example deliberately has **no
-   formal severity taxonomy** (see "Intentional scope limits" below), so
-   use plain judgment and say why in the entry itself if it isn't obvious.
+3. Call `publish_output` with your complete `collated-findings.md` content:
+   each entry is a short, standalone paragraph — the issue, its
+   evidence/location, and which lens(es) raised it. Order by your own
+   judgment of what's most worth a human's attention first; this example
+   deliberately has **no formal severity taxonomy** (see "Intentional
+   scope limits" below), so use plain judgment and say why in the entry
+   itself if it isn't obvious.
 4. Emit a `collatedFindingsRef` output: a one-line scalar summary (a total
    count and the single most important entry) for the nominate stage and
    any human skimming the run to see at a glance.
@@ -72,5 +74,7 @@ decision — not something to improvise here.
 
 Signal completion via the designated completion tool with a `result`
 envelope: `status`, a one-paragraph `summary` of how many findings you
-collated and from how many lenses, `collatedFindingsRef` under `outputs`,
-and `collated-findings.md` under `artifacts`.
+collated and from how many lenses, and `collatedFindingsRef` under
+`outputs`. Do not populate `artifacts` yourself — publishing
+`collated-findings.md` through `publish_output` is what makes it a
+recorded artifact; nothing reads a self-reported `artifacts` entry.
