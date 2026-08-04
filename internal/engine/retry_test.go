@@ -147,6 +147,15 @@ func TestInfrastructureFailuresBoundedSeparately(t *testing.T) {
 	})
 }
 
+func TestInfrastructureRetryWaitsUntilDeclaredReset(t *testing.T) {
+	now := time.Date(2026, 8, 4, 3, 0, 0, 0, time.UTC)
+	retryAt := now.Add(17 * time.Minute)
+	err := classifySeamError(invoke.InfrastructureFailureUntil(errors.New("rate limited"), retryAt))
+	if got := infrastructureRetryDelay(err, 5*time.Second, now); got != 17*time.Minute {
+		t.Fatalf("retry delay = %v, want 17m", got)
+	}
+}
+
 // TestMixedInfraAndPolicyBudgets ports the local runner's mixed-failure
 // accounting: infra retries never consume policy attempts, and vice versa.
 func TestMixedInfraAndPolicyBudgets(t *testing.T) {
