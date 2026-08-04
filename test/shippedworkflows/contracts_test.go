@@ -1601,6 +1601,9 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if err := validateThreadedInputs(task, request.Envelope.Inputs); err != nil {
 			return err
 		}
+		if err := writeScriptedArtifactFile(request); err != nil {
+			return err
+		}
 		result := apiv1.ResultEnvelope{
 			Status:  apiv1.ResultSuccess,
 			Summary: "scripted fake-harness completion",
@@ -1868,6 +1871,26 @@ func newFixtureRepository(t *testing.T) string {
 	runGit(t, work, "commit", "-m", "fixture")
 	runGit(t, "", "clone", "--bare", work, bare)
 	return bare
+}
+
+// writeScriptedArtifactFile stands in for a real invocation's publish_output
+// call: a task that declares an artifactFile input (#2406) is now eligible
+// for goobers-io auto-wiring, and the harness's post-hoc liftArtifactFile
+// (internal/harness/executor.go) fails the stage closed if that declared
+// path never gets written — this fake harness has to produce it itself,
+// same as commitAgentChange stands in for whatever else a real invocation
+// would have done to the workspace.
+func writeScriptedArtifactFile(request harness.RunRequest) error {
+	artifactFile, _ := request.Envelope.Inputs[harness.InputArtifactFile].(string)
+	if artifactFile == "" {
+		return nil
+	}
+	path := filepath.Join(request.Workspace, filepath.FromSlash(artifactFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	content := fmt.Sprintf("scripted fake-harness artifact for %s\n", stageName(request.Envelope.TaskID))
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func commitAgentChange(workspace, stage string, call int) error {

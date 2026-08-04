@@ -56,6 +56,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a security lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -67,6 +69,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a performance lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -78,6 +82,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a maintainability lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -89,6 +95,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a test-coverage lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -100,6 +108,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a dependencies lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -111,6 +121,8 @@ spec:
       goober: quality-researcher
       goal: Review the repository through a latent-bugs lens.
       workspace: repo-readonly
+      inputs:
+        artifactFile: findings.md
       capabilities:
         - agent:model
       expectedOutputs:
@@ -124,6 +136,8 @@ spec:
       workspace: repo-readonly
       capabilities:
         - agent:model
+      inputs:
+        artifactFile: collated-findings.md
       inputsFrom:
         securityFindings: "focus-areas.security.review-security.findingsRef"
         performanceFindings: "focus-areas.performance.review-performance.findingsRef"
