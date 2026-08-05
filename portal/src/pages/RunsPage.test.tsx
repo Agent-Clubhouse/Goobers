@@ -119,11 +119,34 @@ describe("runs history page", () => {
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
   });
 
-  it("shows an empty state without inventing runs", async () => {
+  it("shows how to start the first run when no runs exist", async () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
-    expect(await screen.findByText("No runs match this filter.")).toBeInTheDocument();
+    expect(await screen.findByText("No runs recorded")).toBeInTheDocument();
+    expect(screen.getByText("goobers run <workflow> <instance>")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+  });
+
+  it("distinguishes filters that exclude existing runs and offers recovery", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.runs.runs = fixtures.runs.runs.filter((run) => run.phase === "completed");
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "active" }));
+
+    expect(await screen.findByText("Filters exclude existing runs")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Clear all filters" })).toHaveAttribute(
+      "href",
+      "#/runs",
+    );
+    expect(screen.getByText("goobers status <instance>")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Clear all filters" }));
+    expect(
+      await screen.findByRole("link", { name: "Open run 01JZ455ESCALATE" }),
+    ).toBeInTheDocument();
   });
 
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {

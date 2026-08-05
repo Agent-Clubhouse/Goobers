@@ -23,6 +23,7 @@ describe("operational overview", () => {
       await screen.findByRole("heading", { name: "Daemon is ready." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
@@ -226,7 +227,26 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/The daemon is ready/)).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+  });
+
+  it("distinguishes a configured gaggle with no workflows", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.counts.workflows = 0;
+    fixtures.gaggles.items = fixtures.gaggles.items.slice(0, 1).map((gaggle) => ({
+      ...gaggle,
+      workflowCount: 0,
+    }));
+    fixtures.workflows = {
+      core: { items: [], page: { limit: 100, total: 0, hasMore: false, nextCursor: "" } },
+    };
+    window.location.hash = "#/workflows";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("No workflows are configured for this gaggle."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("goobers validate <instance>")).toBeInTheDocument();
   });
 
   it("shows one gaggle's workflows as topology boxes with workflow drill-through", async () => {

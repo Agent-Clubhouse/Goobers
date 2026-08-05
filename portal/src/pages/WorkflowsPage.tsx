@@ -1,5 +1,6 @@
 import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { RecoveryCommand } from "../components/RecoveryAction";
 import {
   latestWorkflowOutcome,
   type GaggleInventory,
@@ -64,17 +65,8 @@ function WorkflowInventory({
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>No gaggles configured</h2>
-            <p>
-              {!standalone && !snapshot.health.healthy
-                ? "The daemon scheduler heartbeat is stale. Check the daemon before relying on live operations."
-                : snapshot.health.ready
-                ? standalone
-                  ? "The instance is ready. Provision a gaggle to make its workflows and goobers visible here."
-                  : "The daemon is ready. Provision a gaggle to make its workflows and goobers visible here."
-                : standalone
-                  ? "The local read service has not reported ready yet, and no gaggle definitions are loaded."
-                  : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
-            </p>
+            <p>No configuration is available to the Portal yet. Initialize the instance to begin.</p>
+            <RecoveryCommand command="goobers init --guided <instance>" />
           </div>
         </section>
       ) : (
@@ -144,7 +136,11 @@ function GaggleSection({
           <span className="section-count">{inventory.workflows.length}</span>
         </div>
         {inventory.workflows.length === 0 ? (
-          <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
+          <div className="inline-empty inline-empty-recovery">
+            <strong>No workflows are configured for this gaggle.</strong>
+            <span>Add a workflow definition, then validate the instance.</span>
+            <RecoveryCommand command="goobers validate <instance>" />
+          </div>
         ) : (
           <DataList
             ariaLabel={`${gaggle.displayName} workflow definitions`}
