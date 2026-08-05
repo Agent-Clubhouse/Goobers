@@ -57,6 +57,59 @@ func TestWithOverlapBackstop(t *testing.T) {
 	})
 }
 
+func TestWithOverlapBackstopReclassifiesPR2478OverlapOnlyVerdict(t *testing.T) {
+	findings := []apiv1.Finding{
+		{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Message:  "PR #2481 also changes docs/guides/quickstart.md; reconcile or sequence these edits.",
+			Location: "PR #2481 (docs/guides/quickstart.md)",
+		},
+		{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Message:  "PR #2476 also changes docs/guides/quickstart.md; reconcile or sequence these edits.",
+			Location: "PR #2476 (docs/guides/quickstart.md)",
+		},
+		{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Message:  "PR #2475 overlaps quickstart documentation; establish merge ordering.",
+			Location: "PR #2475 (docs/guides/quickstart.md, docs/guides/quickstart-linux.md)",
+		},
+	}
+
+	effective := withOverlapBackstop(findings, []int{2481, 2476, 2475})
+	if !allCrossPRBlocked(effective) {
+		t.Fatalf("#2478 overlap-only findings were not normalized: %+v", effective)
+	}
+	if want := []int{2475, 2476, 2481}; !reflect.DeepEqual(unionBlockingPRs(effective), want) {
+		t.Fatalf("blockers = %v, want %v", unionBlockingPRs(effective), want)
+	}
+	if got := verdictLabel(apiv1.VerdictNeedsChanges, effective); got != blockedOnSiblingLabel {
+		t.Fatalf("label = %q, want %q", got, blockedOnSiblingLabel)
+	}
+}
+
+func TestWithOverlapBackstopPreservesMixedRemediationFindings(t *testing.T) {
+	overlap := apiv1.Finding{
+		Severity: apiv1.SeverityError,
+		Class:    apiv1.FindingSubstantive,
+		Message:  "PR #11 changes the same file.",
+		Location: "PR #11 (docs/guides/quickstart.md)",
+	}
+	for _, finding := range []apiv1.Finding{
+		{Severity: apiv1.SeverityError, Class: apiv1.FindingSubstantive, Message: "selected PR has a broken link", Location: "docs/guides/quickstart.md:42"},
+		{Severity: apiv1.SeverityError, Class: apiv1.FindingConflict, Message: "merge conflict"},
+		{Severity: apiv1.SeverityError, Class: apiv1.FindingRebaseNeeded, Message: "base advanced"},
+	} {
+		effective := withOverlapBackstop([]apiv1.Finding{overlap, finding}, []int{11})
+		if got := verdictLabel(apiv1.VerdictNeedsChanges, effective); got != needsRemediationLabel {
+			t.Errorf("class %q label = %q, want %q", finding.Class, got, needsRemediationLabel)
+		}
+	}
+}
+
 // TestOverlapBackstopDrivesElection is #990's routing payoff: a green PR whose
 // reviewer verdict under-named or missed the collision is still correctly
 // elected/parked once the deterministic overlap is folded in — and a real
