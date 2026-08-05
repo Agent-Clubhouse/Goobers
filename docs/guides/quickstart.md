@@ -80,8 +80,8 @@ is **not for production**: it intentionally omits CI gates, remediation loops,
 bounded escalation, merge policy, and issue close-out so the onboarding happy
 path has no stall points.
 
-Continue with section 3 to scaffold a regular instance and run its starter
-`default-implement` workflow. Once that works, read the
+Continue with section 3 to configure a regular instance and run its selected
+canonical workflow. Once that works, read the
 [`config-examples` reference layout](../../config-examples/README.md) and adapt
 its
 [`implementation` workflow](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)

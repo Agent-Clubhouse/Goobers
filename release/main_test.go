@@ -240,7 +240,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
 		"goobers-v1.2.3 init --guided ./my-instance",
-		"goobers-v1.2.3 validate ./my-instance",
+		"goobers validate --source-tree \"<config-source>\"",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)
 	linuxQuickstart, err := readZipEntry(archiveEntries["docs/guides/quickstart-linux.md"])
@@ -252,7 +252,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"## 1. Install runtime prerequisites",
 		"source-only Linux validation harness is not included in release archives",
 		"## 2. Confirm the installed binary",
-		"[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root)",
+		"[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance)",
 		"every tool used by your configured workflows",
 		"bundled [Daemon supervision]",
 	} {
