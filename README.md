@@ -179,6 +179,7 @@ ordered first-run flow and CLI walkthrough. Use these focused guides only for
 the differences relevant to your environment:
 
 - [Linux host setup](docs/guides/quickstart-linux.md)
+- [macOS host setup](docs/guides/quickstart-macos.md)
 - [Windows host setup](docs/guides/quickstart-windows.md)
 - [Release installation and verification](docs/guides/releases.md)
 - [Daemon supervision](docs/guides/supervision.md)
