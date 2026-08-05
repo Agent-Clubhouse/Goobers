@@ -179,15 +179,14 @@ func parseOverlappingSiblings(csv string) []int {
 // verdict's findings so sequencing routing uses ground truth, not only the LLM
 // reviewer's classification. Conservative and additive:
 //
-//   - If a real defect is present (see findingIsRealDefect — a non-ordering
-//     finding above `info` severity), the findings are returned UNCHANGED — a
-//     real bug takes priority over sequencing and must route to remediation,
-//     never be merged as a lander. Severity matters here for the same reason it
-//     matters when crowning (#1726): an `info` nit about identical generated
-//     churn used to suppress the backstop, so no ordering finding was ever
-//     synthesised and the cluster could not elect anyone.
-//   - Otherwise, if overlappingSiblings is non-empty, a cross-pr-blocked
-//     finding carrying that full set is appended, so allCrossPRBlocked /
+//   - A substantive finding whose location names only siblings in the
+//     deterministic overlap set is normalized to cross-pr-blocked. This is the
+//     #2478 shape: pure overlap was misclassified as a selected-PR defect.
+//   - If any real defect remains (see findingIsRealDefect), the normalized
+//     findings are returned without adding the overlap backstop. A real bug,
+//     conflict, or rebase need takes priority and must route to remediation.
+//   - Otherwise, a cross-pr-blocked finding carrying any still-unnamed
+//     overlapping siblings is appended, so allCrossPRBlocked /
 //     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
 //     the whole deterministic cluster even if the reviewer under-named the
 //     blocking PRs or filed no structured finding at all.
@@ -198,17 +197,69 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 	if len(overlappingSiblings) == 0 {
 		return findings
 	}
-	for _, f := range findings {
-		if findingIsRealDefect(f) {
-			return findings
+	normalized := append([]apiv1.Finding(nil), findings...)
+	for i, f := range normalized {
+		if blockers, ok := overlapOnlyBlockingPRs(f, overlappingSiblings); ok {
+			normalized[i].Class = apiv1.FindingCrossPRBlocked
+			normalized[i].BlockingPRs = blockers
 		}
 	}
-	return append(findings[:len(findings):len(findings)], apiv1.Finding{
+	for _, f := range normalized {
+		if findingIsRealDefect(f) {
+			return normalized
+		}
+	}
+	named := make(map[int]bool)
+	for _, blocker := range unionBlockingPRs(normalized) {
+		named[blocker] = true
+	}
+	missing := make([]int, 0, len(overlappingSiblings))
+	for _, sibling := range overlappingSiblings {
+		if !named[sibling] {
+			missing = append(missing, sibling)
+			named[sibling] = true
+		}
+	}
+	if len(missing) == 0 {
+		return normalized
+	}
+	return append(normalized, apiv1.Finding{
 		Severity:    apiv1.SeverityWarning,
 		Class:       apiv1.FindingCrossPRBlocked,
-		Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", overlappingSiblings),
-		BlockingPRs: overlappingSiblings,
+		Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", missing),
+		BlockingPRs: missing,
 	})
+}
+
+func overlapOnlyBlockingPRs(finding apiv1.Finding, overlappingSiblings []int) ([]int, bool) {
+	if finding.Class != apiv1.FindingSubstantive {
+		return nil, false
+	}
+	overlapping := make(map[int]bool, len(overlappingSiblings))
+	for _, number := range overlappingSiblings {
+		overlapping[number] = true
+	}
+	refs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+	if len(refs) == 0 {
+		return nil, false
+	}
+	seen := make(map[int]bool, len(refs))
+	blockers := make([]int, 0, len(refs))
+	for _, ref := range refs {
+		if len(ref) < 2 {
+			return nil, false
+		}
+		number, err := strconv.Atoi(ref[1])
+		if err != nil || !overlapping[number] {
+			return nil, false
+		}
+		if !seen[number] {
+			seen[number] = true
+			blockers = append(blockers, number)
+		}
+	}
+	sort.Ints(blockers)
+	return blockers, true
 }
 
 // predecessorBlockers narrows a parked PR's recorded blockers to only the
@@ -566,16 +617,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
-	// Fold the deterministic file-overlap set (#990) into the findings used for
-	// sequencing ROUTING only — not into the published verdict, whose findings
-	// stay the reviewer's own (renderVerdictComment below reads posted, not
-	// effective). This lets a green PR whose only issue is a file collision
-	// reach election even if the reviewer under-named (or missed) the blocking
-	// siblings; a verdict with a real defect is returned unchanged.
+	// Fold the deterministic file-overlap set (#990/#2486) into the findings used
+	// for sequencing and publication. Publishing the normalized representation
+	// keeps downstream consumers from rediscovering the reviewer's classification
+	// miss; a verdict with any real defect still routes to remediation.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
 	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
+	posted.Findings = effective.Findings
 
 	// Resolve the election policy once, gathering cluster data for the
 	// cluster-data policies (#1028/#1029) from the same open-PR list and cluster
