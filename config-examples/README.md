@@ -53,8 +53,9 @@ reference assumes:
 - Preinstalled project tools. The scheduler does not install toolchains:
   `node@20` plus npm for `acme-web`, the .NET 9 SDK for `dotnet-service`, Java 21
   plus Maven for `java-service`, and Python 3.12 plus pytest for
-  `python-service`. Advertise the matching token in
-  `instance.yaml` under `runner.capabilities`.
+  `python-service`. Advertise the matching token under `runner.capabilities` in
+  the runtime instance's `instance.yaml`, which is operator configuration
+  outside this config source tree.
 
 ## Gaggle and workflow inventory
 
@@ -75,7 +76,7 @@ The workflow families have distinct operational prerequisites:
 | Backlog operations | `backlog-curation`, `backlog-assignment`, `work-nomination` | Curates and deduplicates issues, assigns approved work to a configured roster, or proposes evidence-backed work from telemetry. Curation requires `curator`, Copilot, telemetry reads, and GitHub issue/milestone writes. Assignment is deterministic and needs GitHub issue writes. Nomination requires `nominator`, Copilot, repo and telemetry reads, and GitHub issue writes. Configure labels, roster, schedules, and rate limits before enabling. |
 | Documentation | `docs-updater` | Gathers churn, confines an agentic edit to `docsRoots`, runs npm CI, pushes, and opens a PR. Requires `docs`, Copilot/model access, `node@20` with npm, repo push, and PR write credentials. Its trigger is manual until explicitly changed. |
 | Merge and review | `merge-review` | Selects and reviews PRs, applies verdicts, elects a lander, merges or polls a merge queue, performs post-merge cleanup, and records refusals. Requires `reviewer`, Copilot, webhook delivery and/or scheduling, and GitHub PR review/write/merge, issue write, and branch-delete grants. Configure repository branch protection and merge-queue policy before enabling it. |
-| Policy examples | `todo-check`, `inline-policy-check` | Deterministic scheduled checks demonstrating script-backed and inline shell policy. They require a checkout and POSIX `sh`, but no provider credential or model. `todo-check` also depends on `scripts/check-todos.sh`. |
+| Policy examples | `todo-check`, `inline-policy-check` | Deterministic scheduled checks requiring no provider credential or model. `todo-check` runs in a project checkout and requires POSIX `sh` plus `scripts/check-todos.sh`. `inline-policy-check` runs inline scripts in a scratch workspace, requires the runner capability `os=linux`, and does not require a checkout. |
 
 ## Copying subsets safely
 
@@ -99,8 +100,9 @@ labels, `docsRoots`, and connection references:
   `goobers/nominator`. `backlog-assignment` is deterministic and has no goober
   dependency. Copy only the workflows whose issue mutations and schedules you
   intend to authorize.
-- `inline-policy-check` is file-independent. Copy `todo-check` only together
-  with `scripts/check-todos.sh`. Neither policy example needs a goober.
+- `inline-policy-check` is file-independent but requires a runner advertising
+  `os=linux`. Copy `todo-check` only together with `scripts/check-todos.sh` into
+  a project checkout with POSIX `sh`. Neither policy example needs a goober.
 
 Do not copy a workflow alone when it names a goober, script, connection,
 capability, or runtime that is absent from the destination. Run `goobers
