@@ -1,9 +1,14 @@
 package projector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -487,27 +492,126 @@ func TestRemovalTakesTheRemovalBranchAndConfirms(t *testing.T) {
 // Consuming the marker here would erase the only record that anything was
 // expected; the repair sweep can see the whole picture and decide.
 func TestWatermarkWithNoJournalLeavesTheMarker(t *testing.T) {
-	ctx := context.Background()
-	store := newFakeStore()
-	watermarks := newFakeIntake()
-	watermarks.observe("run-absent", 4)
+	for _, tc := range []struct {
+		name      string
+		createDir bool
+	}{
+		{name: "run directory disappeared"},
+		{name: "journal disappeared", createDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newFakeStore()
+			watermarks := newFakeIntake()
+			watermarks.observe("run-absent", 4)
+			runsDir := t.TempDir()
+			if tc.createDir {
+				if err := os.Mkdir(filepath.Join(runsDir, "run-absent"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	projector := New(store, watermarks, Options{Workers: 1})
-	stop := projector.Start(ctx)
-	defer stop()
-	projector.prepareForTest = func(_ context.Context, _ string) (Projection, bool, error) {
-		return Projection{}, false, nil
-	}
+			projector := New(store, watermarks, Options{
+				Workers: 1, RunsDirs: []string{runsDir},
+			})
+			stop := projector.Start(ctx)
+			defer stop()
 
-	if _, err := projector.Drain(ctx); err != nil {
-		t.Fatalf("drain: %v", err)
+			if _, err := projector.Drain(ctx); err != nil {
+				t.Fatalf("drain: %v", err)
+			}
+			if len(watermarks.pending()) != 1 {
+				t.Error("a marker with no journal was acknowledged away; the only record " +
+					"that the run was expected is now gone")
+			}
+			if watermarks.ackCount() != 0 {
+				t.Errorf("%d acknowledgements issued for a disappeared journal", watermarks.ackCount())
+			}
+			if projector.Stats().ProjectFailures != 0 {
+				t.Errorf("disappeared journal counted as a projection failure")
+			}
+		})
 	}
-	if len(watermarks.pending()) != 1 {
-		t.Error("a marker with no readable journal was acknowledged away; the only record " +
-			"that the run was expected is now gone")
-	}
-	if watermarks.ackCount() != 0 {
-		t.Errorf("%d acknowledgements issued for an unreadable run", watermarks.ackCount())
+}
+
+func TestJournalIdentityFailuresRemainVisibleAndRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "malformed",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("schema: ["), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unsupported",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("schema: goobers.dev/journal/run/v2\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unreadable",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			const runID = "run-bad-identity"
+			runsDir := t.TempDir()
+			runDir := filepath.Join(runsDir, runID)
+			if err := os.Mkdir(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, filepath.Join(runDir, "run.yaml"))
+
+			watermarks := newFakeIntake()
+			watermarks.observe(runID, 4)
+			var logs bytes.Buffer
+			drainedAt := time.Date(2026, 8, 5, 7, 0, 0, 0, time.UTC)
+			projector := New(newFakeStore(), watermarks, Options{
+				Workers: 1, RunsDirs: []string{runsDir},
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+				Now:    func() time.Time { return drainedAt },
+			})
+			stop := projector.Start(ctx)
+			defer stop()
+
+			handled, err := projector.Drain(ctx)
+			if err != nil {
+				t.Fatalf("drain: %v", err)
+			}
+			if handled != 0 {
+				t.Errorf("handled = %d, want 0", handled)
+			}
+			if len(watermarks.pending()) != 1 || watermarks.ackCount() != 0 {
+				t.Fatal("failed journal marker was not retained for retry")
+			}
+			stats := projector.Stats()
+			if stats.ProjectFailures != 1 {
+				t.Errorf("project failures = %d, want 1", stats.ProjectFailures)
+			}
+			if !stats.LastDrainAt.Equal(drainedAt) {
+				t.Errorf("last drain at = %v, want %v", stats.LastDrainAt, drainedAt)
+			}
+			if log := logs.String(); !strings.Contains(log, "project run failed") ||
+				!strings.Contains(log, "run_id="+runID) ||
+				!strings.Contains(log, "read identity for "+runID) {
+				t.Errorf("failure log = %q, want operation and run ID", log)
+			}
+		})
 	}
 }
 
