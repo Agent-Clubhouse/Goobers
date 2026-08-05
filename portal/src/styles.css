@@ -9204,18 +9204,27 @@ a.telemetry-error-row:hover {
 }
 
 .factory-plant-hud-bottom i[data-shape="agentic"] {
+  background: var(--plant-archetype-agentic);
   border-radius: 50%;
 }
 
 .factory-plant-hud-bottom i[data-shape="gate"] {
+  background: var(--plant-archetype-gate);
   clip-path: polygon(0 100%, 0 34%, 50% 0, 100% 34%, 100% 100%, 72% 100%, 72% 52%, 28% 52%, 28% 100%);
 }
 
 .factory-plant-hud-bottom i[data-shape="evaluator"] {
+  background: var(--plant-archetype-evaluator);
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
 }
 
+.factory-plant-hud-bottom i[data-shape="parallel"] {
+  background: var(--plant-archetype-parallel);
+  clip-path: polygon(0 0, 38% 0, 38% 100%, 0 100%, 0 0, 62% 0, 100% 0, 100% 100%, 62% 100%, 62% 0);
+}
+
 .factory-plant-hud-bottom i[data-shape="deterministic"] {
+  background: var(--plant-archetype-deterministic);
   border-radius: 0.1cqw;
 }
 

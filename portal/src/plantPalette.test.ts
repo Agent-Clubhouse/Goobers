@@ -202,6 +202,11 @@ describe("plant scene palette", () => {
       ];
       const environmentalContext = [
         palette.machineTrim,
+        palette.machineAccentGate,
+        palette.machineAccentDeterministic,
+        palette.machineAccentAgentic,
+        palette.machineAccentEvaluator,
+        palette.machineAccentParallel,
         palette.storage,
         palette.utility,
         palette.pallet,
@@ -219,6 +224,48 @@ describe("plant scene palette", () => {
           ).toBeGreaterThanOrEqual(35);
         }
       }
+    }
+  });
+
+  it("gives each machine archetype a distinct, deck-legible accent", () => {
+    for (const palette of PALETTES) {
+      const accents = {
+        gate: palette.machineAccentGate,
+        deterministic: palette.machineAccentDeterministic,
+        agentic: palette.machineAccentAgentic,
+        evaluator: palette.machineAccentEvaluator,
+        parallel: palette.machineAccentParallel,
+      };
+      const entries = Object.entries(accents);
+      // Each accent must read against the deck it is drawn on.
+      for (const [name, accent] of entries) {
+        expect(
+          contrastRatio(accent, palette.pad),
+          `${palette.theme} ${name} accent vs pad`,
+        ).toBeGreaterThanOrEqual(3);
+        expect(
+          contrastRatio(accent, palette.floor),
+          `${palette.theme} ${name} accent vs floor`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+      // Adjacent silhouettes must not share a hue, or the colour channel adds
+      // no identity.
+      for (let i = 0; i < entries.length; i += 1) {
+        for (let j = i + 1; j < entries.length; j += 1) {
+          expect(
+            hueDistance(entries[i][1], entries[j][1]),
+            `${palette.theme} ${entries[i][0]} vs ${entries[j][0]}`,
+          ).toBeGreaterThanOrEqual(30);
+        }
+      }
+      // Grayscale value stays reserved for status: the accents are matched in
+      // encoded luminance so a monochrome print still reads type by shape, not
+      // by brightness.
+      const luminances = entries.map(([, accent]) => encodedLuminance(accent));
+      const spread = Math.max(...luminances) - Math.min(...luminances);
+      expect(spread, `${palette.theme} accent luminance spread`).toBeLessThanOrEqual(
+        0.14,
+      );
     }
   });
 

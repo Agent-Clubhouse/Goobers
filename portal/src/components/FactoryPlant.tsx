@@ -617,6 +617,7 @@ export function FactoryPlant({
           <span><i data-shape="agentic" /> Agentic</span>
           <span><i data-shape="gate" /> Gate</span>
           <span><i data-shape="evaluator" /> Evaluator</span>
+          <span><i data-shape="parallel" /> Parallel</span>
           <span><i data-shape="deterministic" /> Deterministic</span>
           <span><i data-tone="running" /> Running</span>
           <span><i data-tone="held" /> {plantRiskLevelLabel("held")}</span>

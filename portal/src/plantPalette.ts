@@ -73,6 +73,20 @@ export interface PlantScenePalette {
   machineCap: string;
   /** Brand accent, used only as machine trim. */
   machineTrim: string;
+  /**
+   * Per-archetype machine identity accents.
+   *
+   * A bounded cool-band ramp (teal, blue, violet, magenta, chartreuse), each
+   * held at least 35 degrees from every alarm hue and matched in luminance so
+   * grayscale value keeps meaning *status*, not *type*. Applied only to a
+   * machine's trim, never its body, so the machine/deck contrast gate and the
+   * shape-first reading are untouched and the alarm channel cannot collapse.
+   */
+  machineAccentGate: string;
+  machineAccentDeterministic: string;
+  machineAccentAgentic: string;
+  machineAccentEvaluator: string;
+  machineAccentParallel: string;
 
   /* Fixtures and light --------------------------------------------------- */
   lightHousing: string;
@@ -166,6 +180,11 @@ export const PLANT_LIGHT_SCENE_PALETTE: PlantScenePalette = {
   machineBodyAlt: "#303640",
   machineCap: "#515965",
   machineTrim: "#2f6f9f",
+  machineAccentGate: "#3e6f81",
+  machineAccentDeterministic: "#4b569d",
+  machineAccentAgentic: "#774b9d",
+  machineAccentEvaluator: "#9b4b8b",
+  machineAccentParallel: "#566f32",
   pad: "#d6d9de",
   padAlternate: "#cdd1d7",
   padEdge: "#71777f",
@@ -241,6 +260,11 @@ export const PLANT_DARK_SCENE_PALETTE: PlantScenePalette = {
   machineBodyAlt: "#e7ebf0",
   machineCap: "#ffffff",
   machineTrim: "#78b7e3",
+  machineAccentGate: "#5ab6dd",
+  machineAccentDeterministic: "#9eaafa",
+  machineAccentAgentic: "#ce9cfa",
+  machineAccentEvaluator: "#fa91e5",
+  machineAccentParallel: "#97bc5f",
   pad: "#525a65",
   padAlternate: "#4c545e",
   padEdge: "#aab4c1",
@@ -286,6 +310,34 @@ export type PlantPaletteKey = keyof PlantScenePalette;
 /** Resolves the authored palette for a theme name; unknown names read light. */
 export function plantScenePalette(theme: string | undefined): PlantScenePalette {
   return theme === "dark" ? PLANT_DARK_SCENE_PALETTE : PLANT_LIGHT_SCENE_PALETTE;
+}
+
+/**
+ * The identity accent for a machine, chosen by its archetype.
+ *
+ * `meshArchetype` is the scene batch key, e.g. `machine:agentic`. An
+ * unrecognised or observed-unknown machine falls back to the neutral brand
+ * trim rather than borrowing another archetype's colour, so an unread stage is
+ * never painted as a confident type.
+ */
+export function plantMachineAccent(
+  meshArchetype: string,
+  palette: PlantScenePalette,
+): string {
+  switch (meshArchetype) {
+    case "machine:gate":
+      return palette.machineAccentGate;
+    case "machine:deterministic":
+      return palette.machineAccentDeterministic;
+    case "machine:agentic":
+      return palette.machineAccentAgentic;
+    case "machine:evaluator":
+      return palette.machineAccentEvaluator;
+    case "machine:parallel":
+      return palette.machineAccentParallel;
+    default:
+      return palette.machineTrim;
+  }
 }
 
 /** Reads the document theme without reading any UI colour token. */

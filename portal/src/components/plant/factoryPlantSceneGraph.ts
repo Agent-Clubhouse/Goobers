@@ -27,6 +27,7 @@ import type {
 import {
   desaturateHexColor,
   mixHexColor,
+  plantMachineAccent,
   plantScenePalette,
   readPlantTheme,
   type PlantScenePalette,
@@ -1636,12 +1637,20 @@ function applyBatchRecord(
   // erased plant deletes the map it is somewhere on.
   applyDim([record.material], context);
   if (record.trim) {
+    const accent = plantMachineAccent(record.batch.meshArchetype, palette);
     const trim = context
-      ? desaturateHexColor(palette.machineTrim, PLANT_RISK_CONTEXT_DESATURATION)
-      : palette.machineTrim;
+      ? desaturateHexColor(accent, PLANT_RISK_CONTEXT_DESATURATION)
+      : accent;
     record.trim.material.color.set(trim);
     record.trim.material.emissive.set(trim);
-    record.trim.material.emissiveIntensity = record.batch.active ? 0.18 : 0.06;
+    // The archetype trim is the machine's "running lamp": it lights only for
+    // model-confirmed running work, and brighter in the dark hall where there
+    // is luminance headroom. Idle machines never gain a semantic glow.
+    record.trim.material.emissiveIntensity = record.batch.active
+      ? palette.theme === "dark"
+        ? 0.34
+        : 0.2
+      : 0.06;
     applyDim([record.trim.material], context);
   }
 
