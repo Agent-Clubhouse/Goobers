@@ -85,6 +85,29 @@ func TestManagerRemoteGitUsesAdmissionGate(t *testing.T) {
 	}
 }
 
+func TestManagerCreateRunBranchDoesNotAddTrackingConfig(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	repoDir, err := m.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy: %v", err)
+	}
+	runTestGit(t, repoDir, "config", "branch.autoSetupMerge", "always")
+
+	const branch = "goobers/impl/run-1"
+	if _, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: branch,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	config := runTestGitAllowFailure(t, repoDir, "config", "--get-regexp", "^branch\\."+branch+"\\.")
+	if config != "" {
+		t.Fatalf("run branch tracking config = %q, want none", config)
+	}
+}
+
 // TestManager_Create_ExcludesHarnessScratch is #240's regression guard: the
 // harness-owned paths written into a provisioned run worktree must be invisible
 // to git, even though the target repo has no matching .gitignore entries.
