@@ -804,16 +804,55 @@ func (b *selectedBinary) run(t *testing.T, args ...string) []byte {
 	return nil
 }
 
-func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
+// installTestCopilot places a fake "copilot" binary on PATH that re-enters
+// this same test binary (see TestMain). On Windows a hard link to the
+// running test binary shares its inode, and Windows refuses to delete a
+// file that is still mapped as an executing image — which breaks
+// t.TempDir's cleanup even after the copilot subprocess itself has exited.
+// Copying instead avoids sharing that inode.
+func installTestCopilot(t *testing.T, destination string) {
 	t.Helper()
 	testExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperDir := t.TempDir()
-	if err := os.Link(testExecutable, filepath.Join(helperDir, "copilot")); err != nil {
+	if runtime.GOOS != "windows" {
+		if err := os.Link(testExecutable, destination); err != nil {
+			t.Fatalf("install test Copilot model server: %v", err)
+		}
+		return
+	}
+	input, err := os.Open(testExecutable)
+	if err != nil {
 		t.Fatalf("install test Copilot model server: %v", err)
 	}
+	defer func() {
+		if err := input.Close(); err != nil {
+			t.Errorf("close test executable: %v", err)
+		}
+	}()
+	info, err := input.Stat()
+	if err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+	defer func() {
+		if err := output.Close(); err != nil {
+			t.Errorf("close installed copilot binary: %v", err)
+		}
+	}()
+	if _, err := io.Copy(output, input); err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+}
+
+func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
+	t.Helper()
+	helperDir := t.TempDir()
+	installTestCopilot(t, filepath.Join(helperDir, "copilot"))
 	t.Setenv("PATH", helperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	args := []string{"validate", "--json", "--source-tree", root}
