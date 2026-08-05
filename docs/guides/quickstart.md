@@ -89,20 +89,79 @@ for production-oriented review, local CI with bounded implementation repasses,
 explicit escalation paths, and PR CI polling. Add the separate `merge-review`
 workflow only after those safeguards are configured.
 
-## 3. `init` — scaffold a regular instance root
+## 3. `init --guided` — configure a regular instance
 
 ```sh
-bin/goobers init ./my-instance
+export PATH="$PWD/bin:$PATH"
+goobers init --guided ./my-instance
 ```
 
-Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
-`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and
-`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
-gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —
-existing pieces are left untouched.
+The guided flow uses the same configuration sequence as the release installer.
+It separately selects a checked-in config source and target GitHub application
+repository, prompts for credential references and canonical workflows, and
+validates both the source and materialized instance. Use a fresh instance path;
+a new config source path must also be empty, while an existing source is
+validated and left unchanged. Guided init is first-run only and refuses an
+already initialized target before prompting.
 
 A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+
+After validation, guided mode prints the config-source-to-instance mapping and
+the commands for applying later source edits:
+
+```text
+After editing the checked-in source, validate and materialize it before startup:
+  goobers validate --source-tree "<config-source>"
+  goobers config materialize "<instance-root>"
+  goobers up "<instance-root>"
+```
+
+It then prints the runnable next commands and developer documentation:
+
+```text
+Ready to run from <instance-root>:
+  goobers up
+  goobers run <workflow>
+
+Developer docs:
+  Author workflows:         https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md
+  Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/stage-contract.md
+  View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (`goobers trace` / `goobers telemetry`)
+```
+
+Run those commands from the printed instance root. Tagged release binaries use
+the corresponding release tag instead of `main` in the documentation URLs.
+
+### Manual/advanced alternative: bare `init`
+
+Use bare init when you intentionally want to scaffold and edit every
+configuration layer yourself:
+
+```sh
+goobers init ./my-instance
+```
+
+This creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
+`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and
+`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
+gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Bare init is safe
+to re-run because existing pieces are left untouched.
+
+Before starting the instance, edit `my-instance/instance.yaml` to point at your
+repository and set the referenced provider token (env var or file, never inline;
+CFG-009/SEC-010). Edit `my-instance/config/` to shape the workforce: the gaggle's
+`project` and `backlog` repo references, the goober's
+`harness`/`skills`/`tools`, and the workflow's `triggers`/`tasks`/`gates`. Then
+validate the manual configuration:
+
+```sh
+goobers validate ./my-instance
+```
+
+`validate` checks `instance.yaml` and every document under `config/` against the
+canonical schemas. Exit codes are `0` for valid configuration, `1` for
+validation errors, and `2` for usage or I/O errors.
 
 ### Prerequisites for regular workflows
 
@@ -124,46 +183,15 @@ returns to one gaggle, because mixed historical state cannot be assigned safely.
 Operators may relocate retained journals by their recorded gaggle during a
 maintenance window; retained Git workcopies should stay at their legacy paths.
 
-## 4. Configure
-
-Edit `my-instance/instance.yaml` to point at your own repo and set the
-referenced provider token (env var or file — never inline, CFG-009/SEC-010).
-Edit `my-instance/config/` to shape your workforce: the gaggle's `project`
-and `backlog` repo references, the goober's `harness`/`skills`/`tools`, and the
-workflow's `triggers`/`tasks`/`gates`.
-
 For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
 an operator choice.
 
-## 5. `validate` — check it
+## 4. `up` — run the daemon
 
 ```sh
-bin/goobers validate ./my-instance
-```
-
-Checks `instance.yaml` and every document under `config/` against the
-canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
-error (e.g. not an instance root yet).
-
-## 6. `run` — trigger one manually
-
-```sh
-bin/goobers run default-implement ./my-instance
-```
-
-Triggers a run of the named `config/` workflow manually, still honoring run
-conditions (max-parallel, budgets). Pins the workflow's compiled digest,
-creates its run journal (ARCHITECTURE.md §4), and advances it through the
-real local runner — deterministic tasks execute in a fresh worktree, agentic
-tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
-until the run reaches a terminal state or pauses (e.g. a human gate). Prints
-the run id up front and the final phase/state once it returns.
-
-## 7. `up` — run the daemon
-
-```sh
-bin/goobers up ./my-instance
+cd ./my-instance
+goobers up
 ```
 
 Runs the daemon: the embedded scheduler (cron triggers + run conditions, #21)
@@ -185,10 +213,22 @@ last-known-good definitions active. Without the flag, `config/` is also read onc
 at startup. (Live watch is experimental and will be superseded by the Workflow CD
 config source, #453.)
 
-## 8. `status` — list runs
+To trigger one workflow manually instead of starting the daemon, use the other
+command from the guided banner:
 
 ```sh
-bin/goobers status ./my-instance
+goobers run <workflow>
+```
+
+This honors run conditions (max-parallel, budgets), pins the workflow's compiled
+digest, creates its run journal (ARCHITECTURE.md §4), and advances it through the
+local runner. It prints the run ID up front and the final phase and state when it
+returns.
+
+## 5. `status` — list runs
+
+```sh
+goobers status
 ```
 
 `status` revalidates the active configuration before listing runs. On a new
@@ -207,10 +247,10 @@ RUN ID                              WORKFLOW                  GAGGLE      PHASE 
 a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
 ```
 
-## 9. `trace` — inspect one run
+## 6. `trace` — inspect one run
 
 ```sh
-bin/goobers trace a671b69fe766595e550677b91658726a ./my-instance
+goobers trace a671b69fe766595e550677b91658726a
 ```
 
 Prints the run's pinned identity, current phase/checkpoint, and every journal
@@ -220,14 +260,14 @@ in `internal/journal/README.md` use, just pre-formatted. If the telemetry
 rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
 this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
 
-## 10. `reset-rate-limit` — run again without losing history
+## 7. `reset-rate-limit` — run again without losing history
 
 A workflow's `maxRunsPerHour` budget can leave you rate-limited when you want to
 trigger another run immediately (e.g. during acceptance testing). Reset just the
 hourly budget — **never** `rm -rf ./my-instance` to clear it:
 
 ```sh
-bin/goobers reset-rate-limit ./my-instance
+goobers reset-rate-limit
 ```
 
 This writes a small marker under `scheduler/` that moves the rate window's floor
