@@ -73,7 +73,8 @@ func recordPRRemediationNoop(l instance.Layout, runID string) error {
 	}
 
 	var signature remediationNoopSignature
-	implementStatus := ""
+	implementSucceeded := false
+	implementNoWork := false
 	for _, event := range events {
 		if event.Type != journal.EventStageFinished {
 			continue
@@ -83,13 +84,18 @@ func recordPRRemediationNoop(l instance.Layout, runID string) error {
 			signature.HeadSHA = scalarString(event.Outputs["attemptedHeadSha"])
 			signature.Causes = normalizeRemediationCauses(scalarString(event.Outputs["remediationCauses"]))
 		case "implement":
-			implementStatus = event.Status
+			switch event.Status {
+			case string(apiv1.ResultSuccess):
+				implementSucceeded = true
+			case string(apiv1.ResultNoWork):
+				implementNoWork = true
+			}
 		}
 	}
-	if implementStatus != string(apiv1.ResultNoWork) && implementStatus != string(apiv1.ResultSuccess) {
+	if !implementSucceeded && !implementNoWork {
 		return nil
 	}
-	if implementStatus == string(apiv1.ResultNoWork) && (signature.HeadSHA == "" || signature.Causes == "") {
+	if !implementSucceeded && (signature.HeadSHA == "" || signature.Causes == "") {
 		return nil
 	}
 
@@ -107,7 +113,7 @@ func recordPRRemediationNoop(l instance.Layout, runID string) error {
 				return fmt.Errorf("parse PR claim %q: %w", entry.ItemID, err)
 			}
 			key := remediationNoopKey(entry.Gaggle, number)
-			if implementStatus == string(apiv1.ResultSuccess) {
+			if implementSucceeded {
 				return clearRemediationNoopState(l.SchedulerDir(), key)
 			}
 			return updateRemediationNoopState(l.SchedulerDir(), key, signature, runID)

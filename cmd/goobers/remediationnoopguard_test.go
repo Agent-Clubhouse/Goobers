@@ -54,6 +54,47 @@ func TestRecordPRRemediationNoopCountsDistinctRuns(t *testing.T) {
 	}
 }
 
+func TestRecordPRRemediationNoopSuccessThenNoWorkClearsGuard(t *testing.T) {
+	root := initDemo(t)
+	l := layoutFor(root)
+	const runID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	key := remediationNoopKey("", 77)
+	signature := remediationNoopSignature{HeadSHA: "head-a", Causes: "substantive"}
+	if err := updateRemediationNoopState(l.SchedulerDir(), key, signature, "prior-run"); err != nil {
+		t.Fatal(err)
+	}
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []apiv1.ResultStatus{apiv1.ResultSuccess, apiv1.ResultNoWork} {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "implement", Status: string(status),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recordPRRemediationNoop(l, runID); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readRemediationNoopState(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Records[key]; ok {
+		t.Fatalf("record = %+v, want successful implementation attempt to clear guard", state.Records[key])
+	}
+}
+
 func TestRemediationNoopAttemptsResetsOnHeadOrCauseChange(t *testing.T) {
 	l := layoutFor(initDemo(t))
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
