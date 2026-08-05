@@ -256,7 +256,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		return nil, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
 		// First stage of the run: create the run branch off BaseRef.
-		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
+		// Run continuity comes from the local branch tip, so avoid creating
+		// persistent tracking config that branch retention cannot reap.
+		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
 		checkoutTarget = opts.Branch
 	}
 
