@@ -1,0 +1,241 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+)
+
+const (
+	remediationNoopStateFile = "pr-remediation-noop.json"
+	remediationNoopLimit     = 2
+)
+
+type remediationNoopSignature struct {
+	HeadSHA string `json:"headSha"`
+	Causes  string `json:"causes"`
+}
+
+type remediationNoopRecord struct {
+	remediationNoopSignature
+	Attempts  int    `json:"attempts"`
+	LastRunID string `json:"lastRunId"`
+	Parked    bool   `json:"parked,omitempty"`
+}
+
+type remediationNoopState struct {
+	Records map[string]remediationNoopRecord `json:"records"`
+}
+
+func remediationNoopKey(gaggle string, number int) string {
+	return gaggle + "/" + pullRequestClaimKey(number)
+}
+
+func normalizeRemediationCauses(raw string) string {
+	parts := splitLabelList(raw)
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func recordPRRemediationNoop(l instance.Layout, runID string) error {
+	runDir, err := instance.NewLayout(l.Root).FindRunDir(runID)
+	if err != nil {
+		return fmt.Errorf("find terminal run journal: %w", err)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return err
+	}
+	if identity.Workflow != "pr-remediation" {
+		return nil
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return err
+	}
+
+	var signature remediationNoopSignature
+	implementStatus := ""
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished {
+			continue
+		}
+		switch event.Stage {
+		case "rebase-pr":
+			signature.HeadSHA = scalarString(event.Outputs["attemptedHeadSha"])
+			signature.Causes = normalizeRemediationCauses(scalarString(event.Outputs["remediationCauses"]))
+		case "implement":
+			implementStatus = event.Status
+		}
+	}
+	if implementStatus != string(apiv1.ResultNoWork) && implementStatus != string(apiv1.ResultSuccess) {
+		return nil
+	}
+	if implementStatus == string(apiv1.ResultNoWork) && (signature.HeadSHA == "" || signature.Causes == "") {
+		return nil
+	}
+
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRRelease, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		for _, entry := range ledger.ForRunAll(runID) {
+			if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
+				continue
+			}
+			number, err := strconv.Atoi(strings.TrimPrefix(entry.ItemID, pullRequestClaimPrefix))
+			if err != nil {
+				return fmt.Errorf("parse PR claim %q: %w", entry.ItemID, err)
+			}
+			key := remediationNoopKey(entry.Gaggle, number)
+			if implementStatus == string(apiv1.ResultSuccess) {
+				return clearRemediationNoopState(l.SchedulerDir(), key)
+			}
+			return updateRemediationNoopState(l.SchedulerDir(), key, signature, runID)
+		}
+		return nil
+	})
+}
+
+func scalarString(value any) string {
+	switch value := value.(type) {
+	case string:
+		return value
+	case json.Number:
+		return value.String()
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	default:
+		return ""
+	}
+}
+
+func updateRemediationNoopState(schedulerDir, key string, signature remediationNoopSignature, runID string) error {
+	state, err := readRemediationNoopState(schedulerDir)
+	if err != nil {
+		return err
+	}
+	record := state.Records[key]
+	if record.remediationNoopSignature != signature {
+		record = remediationNoopRecord{remediationNoopSignature: signature}
+	}
+	if record.LastRunID == runID {
+		return nil
+	}
+	record.Attempts++
+	record.LastRunID = runID
+	state.Records[key] = record
+	return writeRemediationNoopState(schedulerDir, state)
+}
+
+func clearRemediationNoopState(schedulerDir, key string) error {
+	state, err := readRemediationNoopState(schedulerDir)
+	if err != nil {
+		return err
+	}
+	if _, ok := state.Records[key]; !ok {
+		return nil
+	}
+	delete(state.Records, key)
+	return writeRemediationNoopState(schedulerDir, state)
+}
+
+func remediationNoopRecordForSignature(l instance.Layout, number int, signature remediationNoopSignature) (remediationNoopRecord, error) {
+	var matched remediationNoopRecord
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
+		state, err := readRemediationNoopState(l.SchedulerDir())
+		if err != nil {
+			return err
+		}
+		gaggle := l.Gaggle()
+		if gaggle == "" {
+			gaggle = providerGaggle()
+		}
+		key := remediationNoopKey(gaggle, number)
+		record, ok := state.Records[key]
+		if !ok {
+			return nil
+		}
+		if record.remediationNoopSignature != signature {
+			delete(state.Records, key)
+			return writeRemediationNoopState(l.SchedulerDir(), state)
+		}
+		matched = record
+		return nil
+	})
+	return matched, err
+}
+
+func markRemediationNoopParked(l instance.Layout, key string) error {
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
+		state, err := readRemediationNoopState(l.SchedulerDir())
+		if err != nil {
+			return err
+		}
+		record, ok := state.Records[key]
+		if !ok || record.Parked {
+			return nil
+		}
+		record.Parked = true
+		state.Records[key] = record
+		return writeRemediationNoopState(l.SchedulerDir(), state)
+	})
+}
+
+func clearRemediationNoopRecord(l instance.Layout, key string) error {
+	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
+		return clearRemediationNoopState(l.SchedulerDir(), key)
+	})
+}
+
+func readRemediationNoopState(schedulerDir string) (remediationNoopState, error) {
+	path := filepath.Join(schedulerDir, remediationNoopStateFile)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return remediationNoopState{Records: make(map[string]remediationNoopRecord)}, nil
+	}
+	if err != nil {
+		return remediationNoopState{}, fmt.Errorf("read remediation no-op state: %w", err)
+	}
+	var state remediationNoopState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return remediationNoopState{}, fmt.Errorf("decode remediation no-op state: %w", err)
+	}
+	if state.Records == nil {
+		state.Records = make(map[string]remediationNoopRecord)
+	}
+	return state, nil
+}
+
+func writeRemediationNoopState(schedulerDir string, state remediationNoopState) error {
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, remediationNoopStateFile), data, 0o644); err != nil {
+		return fmt.Errorf("write remediation no-op state: %w", err)
+	}
+	return nil
+}
