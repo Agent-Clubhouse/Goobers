@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -268,5 +269,61 @@ func TestRemediationCheckpointParksRepeatedNoopSignature(t *testing.T) {
 	defer st.mu.Unlock()
 	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
 		t.Fatalf("labels = %v after operator cleared escalation, want no-op guard reset", st.labels)
+	}
+}
+
+func TestRemediationCheckpointResetsNoopGuardWhenHeadChangesBeforePublication(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	baseSHA, initialHeadSHA := initRemediationCheckpointRepo(t, branch)
+	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
+
+	origin := strings.TrimSpace(runGitOutputT(t, ".", "remote", "get-url", "origin"))
+	concurrent := filepath.Join(t.TempDir(), "concurrent")
+	runGitT(t, ".", "clone", "--branch", branch, origin, concurrent)
+	runGitT(t, concurrent, "config", "user.name", "human")
+	runGitT(t, concurrent, "config", "user.email", "human@example.com")
+	if err := os.WriteFile(filepath.Join(concurrent, "concurrent.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatalf("write concurrent change: %v", err)
+	}
+	runGitT(t, concurrent, "add", "concurrent.txt")
+	runGitT(t, concurrent, "commit", "-m", "concurrent PR update")
+	runGitT(t, concurrent, "push", "origin", "HEAD")
+	advancedHeadSHA := strings.TrimSpace(runGitOutputT(t, concurrent, "rev-parse", "HEAD"))
+
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: initialHeadSHA, baseSHA: baseSHA,
+		labels:            []string{needsRemediationLabel},
+		headAfterComments: advancedHeadSHA,
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	root := remediationCheckpointEnv(t, server.URL, false)
+	key := remediationNoopKey("", 77)
+	signature := remediationNoopSignature{HeadSHA: initialHeadSHA, Causes: "substantive"}
+	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, concurrent head must reset the prior head's no-op guard", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.Escalated || state.HeadSHA != advancedHeadSHA {
+		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary checkpoint for advanced head %s", state, ok, advancedHeadSHA)
+	}
+	noOpState, err := readRemediationNoopState(layoutFor(root).SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := noOpState.Records[key]; ok {
+		t.Fatalf("no-op record = %+v, want stale head attempts cleared", noOpState.Records[key])
 	}
 }
