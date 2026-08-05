@@ -1,12 +1,17 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -92,6 +97,95 @@ func TestRecordPRRemediationNoopSuccessThenNoWorkClearsGuard(t *testing.T) {
 	}
 	if _, ok := state.Records[key]; ok {
 		t.Fatalf("record = %+v, want successful implementation attempt to clear guard", state.Records[key])
+	}
+}
+
+func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunConditions.ClaimsLockTimeout = "20ms"
+	if err := instance.WriteConfig(l.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "cccccccccccccccccccccccccccccccc"
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventStageFinished, Stage: "rebase-pr", Status: string(apiv1.ResultSuccess),
+			Outputs: map[string]any{"attemptedHeadSha": "head-a", "remediationCauses": "substantive"},
+		},
+		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultNoWork)},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := lock.Acquire(filepath.Join(l.SchedulerDir(), claimLockFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeTerminalRun(l, nil, manager, runID); err != nil {
+		t.Fatalf("terminal timeout should defer cleanup: %v", err)
+	}
+	state, err := readRemediationNoopState(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Records) != 0 {
+		t.Fatalf("records while claims lock held = %+v, want deferred update", state.Records)
+	}
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	released, err := recoverClaims(l, log, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0].RunID != runID {
+		t.Fatalf("recovery released %+v, want terminal remediation claim", released)
+	}
+	state, err = readRemediationNoopState(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := state.Records[remediationNoopKey("", 77)]
+	if record.Attempts != 1 || record.LastRunID != runID {
+		t.Fatalf("recovered no-op record = %+v, want one attempt for %s", record, runID)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup(pullRequestClaimKey(77)); held {
+		t.Fatalf("terminal claim survived recovery: %+v", entry)
 	}
 }
 

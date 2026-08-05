@@ -67,6 +67,8 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	var claimErr error
 	if noOpErr == nil {
 		claimErr = release(l, log, runID)
+	} else if isJournaledClaimsLockTimeout(noOpErr) {
+		noOpErr = nil
 	}
 	if isJournaledClaimsLockTimeout(claimErr) {
 		claimErr = nil

@@ -38,6 +38,11 @@ type remediationNoopState struct {
 	Records map[string]remediationNoopRecord `json:"records"`
 }
 
+type remediationNoopUpdate struct {
+	remediationNoopSignature
+	implementSucceeded bool
+}
+
 func remediationNoopKey(gaggle string, number int) string {
 	return gaggle + "/" + pullRequestClaimKey(number)
 }
@@ -52,28 +57,41 @@ func normalizeRemediationCauses(raw string) string {
 }
 
 func recordPRRemediationNoop(l instance.Layout, runID string) error {
+	update, err := preparePRRemediationNoopUpdate(l, runID)
+	if err != nil || update == nil {
+		return err
+	}
+	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRRelease, l.Gaggle(), runID, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		return recordPRRemediationNoopLocked(l, ledger, runID, *update)
+	})
+}
+
+func preparePRRemediationNoopUpdate(l instance.Layout, runID string) (*remediationNoopUpdate, error) {
 	runDir, err := instance.NewLayout(l.Root).FindRunDir(runID)
 	if err != nil {
-		return fmt.Errorf("find terminal run journal: %w", err)
+		return nil, fmt.Errorf("find terminal run journal: %w", err)
 	}
 	reader, err := journal.OpenRead(runDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if identity.Workflow != "pr-remediation" {
-		return nil
+		return nil, nil
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var signature remediationNoopSignature
-	implementSucceeded := false
+	var update remediationNoopUpdate
 	implementNoWork := false
 	for _, event := range events {
 		if event.Type != journal.EventStageFinished {
@@ -81,45 +99,42 @@ func recordPRRemediationNoop(l instance.Layout, runID string) error {
 		}
 		switch event.Stage {
 		case "rebase-pr":
-			signature.HeadSHA = scalarString(event.Outputs["attemptedHeadSha"])
-			signature.Causes = normalizeRemediationCauses(scalarString(event.Outputs["remediationCauses"]))
+			update.HeadSHA = scalarString(event.Outputs["attemptedHeadSha"])
+			update.Causes = normalizeRemediationCauses(scalarString(event.Outputs["remediationCauses"]))
 		case "implement":
 			switch event.Status {
 			case string(apiv1.ResultSuccess):
-				implementSucceeded = true
+				update.implementSucceeded = true
 			case string(apiv1.ResultNoWork):
 				implementNoWork = true
 			}
 		}
 	}
-	if !implementSucceeded && !implementNoWork {
-		return nil
+	if !update.implementSucceeded && !implementNoWork {
+		return nil, nil
 	}
-	if !implementSucceeded && (signature.HeadSHA == "" || signature.Causes == "") {
-		return nil
+	if !update.implementSucceeded && (update.HeadSHA == "" || update.Causes == "") {
+		return nil, nil
 	}
+	return &update, nil
+}
 
-	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRRelease, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+func recordPRRemediationNoopLocked(l instance.Layout, ledger *localscheduler.ClaimLedger, runID string, update remediationNoopUpdate) error {
+	for _, entry := range ledger.ForRunAll(runID) {
+		if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
+			continue
+		}
+		number, err := strconv.Atoi(strings.TrimPrefix(entry.ItemID, pullRequestClaimPrefix))
 		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
+			return fmt.Errorf("parse PR claim %q: %w", entry.ItemID, err)
 		}
-		for _, entry := range ledger.ForRunAll(runID) {
-			if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
-				continue
-			}
-			number, err := strconv.Atoi(strings.TrimPrefix(entry.ItemID, pullRequestClaimPrefix))
-			if err != nil {
-				return fmt.Errorf("parse PR claim %q: %w", entry.ItemID, err)
-			}
-			key := remediationNoopKey(entry.Gaggle, number)
-			if implementSucceeded {
-				return clearRemediationNoopState(l.SchedulerDir(), key)
-			}
-			return updateRemediationNoopState(l.SchedulerDir(), key, signature, runID)
+		key := remediationNoopKey(entry.Gaggle, number)
+		if update.implementSucceeded {
+			return clearRemediationNoopState(l.SchedulerDir(), key)
 		}
-		return nil
-	})
+		return updateRemediationNoopState(l.SchedulerDir(), key, update.remediationNoopSignature, runID)
+	}
+	return nil
 }
 
 func scalarString(value any) string {
