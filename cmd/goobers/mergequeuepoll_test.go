@@ -816,13 +816,13 @@ func TestMergeQueuePollClampsPollTimeoutToStageBudget(t *testing.T) {
 		// (providerCommandContext, ~90% of the stage) expires first
 		// mid-HTTP-call instead of the poll loop's own deadline exiting
 		// cleanly — "context deadline exceeded" instead of a clamped
-		// queueOutcome=timeout. 3s keeps the test itself fast (well under the
-		// 30s failsafe below) while giving the internal ~1.5s clamped budget
-		// enough headroom to survive CI contention (see boundedwait_test.go's
-		// "merge queue degenerate stage" case for the same stage/2 shape at
-		// a larger scale).
+		// queueOutcome=timeout. 10s keeps the test well under the 30s failsafe
+		// while leaving roughly 4s after the internal ~5s clamped budget for
+		// the final provider mutation and result write under CI contention
+		// (see boundedwait_test.go's "merge queue degenerate stage" case for
+		// the same stage/2 shape at a larger scale).
 		"pollTimeoutSeconds": "30m",
-		"timeout":            "3s",
+		"timeout":            "10s",
 	})
 
 	done := make(chan struct{})
