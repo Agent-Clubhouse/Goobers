@@ -56,6 +56,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"flake-policy",
 		"build-config-sync",
 		"portal-install",
+		"portal-playwright-install",
 		"portal-build",
 		"portal-dist-diff",
 		"portal-dist-untracked",
@@ -67,6 +68,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"test",
 		"lint",
 		"portal-test",
+		"portal-e2e",
 		"portal-contract-generate",
 		"portal-contract-diff",
 		"portal-contract-typecheck",
@@ -297,8 +299,35 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet flake-policy build-scheduler portal-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet flake-policy build-scheduler portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
+	}
+}
+
+func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "custom-npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	install := checkByLabel(t, got, "portal-playwright-install")
+	if install.command != "custom-npm" {
+		t.Errorf("portal-playwright-install command = %q, want custom-npm", install.command)
+	}
+	if want := []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"}; !reflect.DeepEqual(install.args, want) {
+		t.Errorf("portal-playwright-install args = %q, want %q", install.args, want)
+	}
+
+	e2e := checkByLabel(t, got, "portal-e2e")
+	if e2e.command != "custom-npm" {
+		t.Errorf("portal-e2e command = %q, want custom-npm", e2e.command)
+	}
+	if want := []string{"--prefix", "portal", "run", "test:e2e"}; !reflect.DeepEqual(e2e.args, want) {
+		t.Errorf("portal-e2e args = %q, want %q", e2e.args, want)
 	}
 }
 
