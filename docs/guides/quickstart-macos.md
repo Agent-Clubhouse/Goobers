@@ -132,17 +132,27 @@ required.
 - A deterministic stage declaring `run.network: none` runs under a Seatbelt
   profile that denies all network operations. If the isolation wrapper cannot
   be applied, the stage fails closed rather than running with network access.
-- Agentic harnesses run under a separate Seatbelt filesystem profile. Writes
-  are denied outside the stage worktree and explicitly declared runtime roots,
-  while installed tools, certificates, and the user's local authentication
-  remain readable.
+- Agentic filesystem isolation is opt-in. By default, an omitted
+  `sandbox.agentic` setting resolves to `disabled`, and agentic harnesses run
+  directly on the host. Enable Seatbelt confinement instance-wide with:
+
+  ```yaml
+  sandbox:
+    agentic: enforced
+  ```
+
+  With `sandbox.agentic: enforced`, agentic harnesses run under a separate
+  Seatbelt filesystem profile. Writes are denied outside the stage worktree
+  and explicitly declared runtime roots, while installed tools, certificates,
+  and the user's local authentication remain readable. If Seatbelt is
+  unavailable or cannot be applied, the stage fails closed rather than running
+  the harness unconfined.
 - Agentic workflows generally require network access to their model and
   providers. The filesystem sandbox does not claim to block that egress; use
   `network: none` only for deterministic commands that need no connectivity.
 
 Seatbelt is deprecated by Apple but remains the native mechanism Goobers
-checks and uses. If a future macOS release removes it, sandboxed agentic stages
-fail closed instead of silently executing without confinement. The
+checks and uses when agentic sandbox enforcement is enabled. The
 credential-free demo in the canonical quickstart exercises the deterministic
 network-isolation path.
 
