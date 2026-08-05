@@ -111,6 +111,7 @@ export function RunStageInspector({
   selectedSeq,
   events = [],
   inspectorRef,
+  onSelectAttempt,
   selectedEvidence,
   selectedEvidenceVisit,
 }: {
@@ -120,6 +121,7 @@ export function RunStageInspector({
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
+  onSelectAttempt?: (isLatest: boolean) => void;
   selectedEvidence?: RunEvent;
   selectedEvidenceVisit?: number;
 }) {
@@ -227,12 +229,17 @@ export function RunStageInspector({
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
 
+  const selectAttempt = (attempt: StageAttempt) => {
+    setSelectedId(attempt.id);
+    onSelectAttempt?.(attempt.id === visible[visible.length - 1]?.id);
+  };
+
   const selectVisit = (visit: StageVisit) => {
     const attempt = visit.attempts[visit.attempts.length - 1];
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
   };
 
   const moveVisitSelection = (index: number) => {
@@ -258,7 +265,7 @@ export function RunStageInspector({
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -359,7 +366,7 @@ export function RunStageInspector({
                                 : "attempt-button"
                             }
                             key={attempt.id}
-                            onClick={() => setSelectedId(attempt.id)}
+                            onClick={() => selectAttempt(attempt)}
                             onKeyDown={(event) => onAttemptKeyDown(event, index)}
                             ref={(element) => {
                               attemptButtons.current[index] = element;

@@ -409,6 +409,9 @@ function RunDetailWorkspace({
               events={events}
               inspectorRef={inspectorRef}
               node={selectedNode}
+              onSelectAttempt={(isLatest) =>
+                setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
+              }
               runId={runId}
               selectedEvidence={selectedEvidence}
               selectedEvidenceVisit={selectedEvidenceVisit}

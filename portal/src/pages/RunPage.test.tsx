@@ -832,6 +832,84 @@ describe("run detail", () => {
     client.close();
   });
 
+  it("pins the view when an earlier attempt is selected (#2464)", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const events = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!events || !detail) {
+      throw new Error("Expected active run fixtures.");
+    }
+    fixtures.stageAttempts = {
+      ...fixtures.stageAttempts,
+      [fixtureKey(runId, "review")]: {
+        runId,
+        stage: "review",
+        attempts: [
+          {
+            id: "sta-review-attempt-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "failure",
+            startedSeq: 5,
+            finishedSeq: 5,
+            durationMillis: 1_000,
+            artifacts: [],
+          },
+          {
+            id: "sta-review-attempt-2",
+            visit: 1,
+            number: 2,
+            class: "policy",
+            status: "running",
+            startedSeq: 6,
+            durationMillis: 1_000,
+            artifacts: [],
+          },
+        ],
+      },
+    };
+    const client = new LiveFixtureClient(fixtures);
+    renderRun(runId, client);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Visit 1 · Attempt 1" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    events.events.push({
+      schema: "v1",
+      seq: 7,
+      type: "gate.evaluated",
+      branch: 0,
+      time: "2026-07-18T06:00:07Z",
+      knownSchema: true,
+      gate: "review",
+      attempt: 2,
+      attemptClass: "policy",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    detail.lastSeq = 7;
+    detail.currentStage = "implement";
+    act(() => client.invalidateRun("fixture:attempt-selection"));
+
+    await screen.findByRole("button", { name: /^Select sequence 7:/ });
+    expect(
+      screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute(
+      "aria-current",
+    );
+    client.close();
+  });
+
   it("keeps run detail visible while a refresh is pending or fails", async () => {
     const runId = "01JZ441DAEMONAPI";
     const client = new LiveFixtureClient(populatedDaemonFixtures());
