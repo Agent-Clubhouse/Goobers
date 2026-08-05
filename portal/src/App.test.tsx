@@ -63,9 +63,10 @@ describe("portal foundation", () => {
     await user.click(screen.getByRole("button", { name: "Workflows" }));
     expect(
       await screen.findByText(
-        "The instance is ready. Provision a gaggle to make its workflows and goobers visible here.",
+        "No configuration is available to the Portal yet. Initialize the instance to begin.",
       ),
     ).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
   });
 
