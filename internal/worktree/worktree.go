@@ -20,8 +20,10 @@ import (
 // allowlisting all exist precisely so a stage's behavior doesn't depend on
 // host dotfiles).
 const (
-	botGitUserName  = "goobers-bot"
-	botGitUserEmail = "goobers-bot@users.noreply.github.com"
+	botGitUserName           = "goobers-bot"
+	botGitUserEmail          = "goobers-bot@users.noreply.github.com"
+	botIdentityRetryAttempts = 4
+	botIdentityRetryBackoff  = 50 * time.Millisecond
 )
 
 // CreateOptions configures a single per-run worktree.
@@ -313,10 +315,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// with no --global, so it never touches the managed working copy or the
 	// host's ambient git config) — an agentic stage's commit must not depend
 	// on the daemon host happening to have user.name/user.email set (#237).
-	if err := runGit(ctx, path, "config", "user.name", botGitUserName); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.name", botGitUserName)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
-	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.email", botGitUserEmail)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if sparse {
@@ -390,6 +396,33 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func retryBotIdentityConfig(ctx context.Context, op func() error) error {
+	var err error
+	for attempt := 0; attempt < botIdentityRetryAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(botIdentityRetryBackoff):
+			}
+		}
+		if err = op(); err == nil || !isGitConfigLockContention(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func isGitConfigLockContention(err error) bool {
+	var gitErr *gitCommandError
+	if !errors.As(err, &gitErr) {
+		return false
+	}
+	message := strings.ToLower(string(gitErr.output))
+	return strings.Contains(message, "could not lock config file") &&
+		strings.Contains(message, "file exists")
 }
 
 func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string, limit PathLengthLimit) error {
