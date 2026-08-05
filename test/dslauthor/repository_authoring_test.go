@@ -1002,19 +1002,37 @@ func expandCapture(
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The placeholders are substituted into an already-JSON-encoded string, so
+	// each replacement must itself be JSON-string-escaped first. Raw
+	// substitution works by coincidence on POSIX (forward slashes need no
+	// escaping) but corrupts the JSON on Windows, where workspace/binary/target
+	// paths contain backslashes (e.g. "C:\Users\..." decodes "\U" as an
+	// invalid unicode escape).
 	text := strings.NewReplacer(
-		"{workspace}", workspace,
-		"{workspaceCommit}", workspaceCommit,
-		"{binaryPath}", binary.path,
-		"{targetRoot}", target.Root,
-		"{targetCommit}", target.Commit,
-		"{home}", os.Getenv("HOME"),
+		"{workspace}", jsonStringBody(t, workspace),
+		"{workspaceCommit}", jsonStringBody(t, workspaceCommit),
+		"{binaryPath}", jsonStringBody(t, binary.path),
+		"{targetRoot}", jsonStringBody(t, target.Root),
+		"{targetCommit}", jsonStringBody(t, target.Commit),
+		"{home}", jsonStringBody(t, os.Getenv("HOME")),
 	).Replace(string(data))
 	var expanded invocationCapture
 	if err := json.Unmarshal([]byte(text), &expanded); err != nil {
 		t.Fatalf("expand captured invocation: %v", err)
 	}
 	return expanded
+}
+
+// jsonStringBody returns s encoded as a JSON string, with the surrounding
+// quotes stripped, so it can be substituted directly into the body of an
+// existing JSON string literal.
+func jsonStringBody(t *testing.T, s string) string {
+	t.Helper()
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded[1 : len(encoded)-1])
 }
 
 func capturedPrompt(events []json.RawMessage) string {
