@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,4 +83,97 @@ func TestActiveSamplerSurfacesWalkErrors(t *testing.T) {
 	if _, _, err := sampler.Counts(); err == nil {
 		t.Fatal("a failed sample was served as a success; a stale wrong number is worse than a stated failure")
 	}
+}
+
+func TestActiveSamplerLifecycleIsIdempotent(t *testing.T) {
+	sampler := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
+
+	sampler.Start()
+	sampler.Start()
+	sampler.Stop()
+	sampler.Stop()
+	sampler.Start()
+
+	select {
+	case <-sampler.done:
+	default:
+		t.Fatal("sampler did not remain stopped after repeated lifecycle calls")
+	}
+
+	stoppedBeforeStart := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
+	stoppedBeforeStart.Stop()
+	stoppedBeforeStart.Stop()
+	stoppedBeforeStart.Start()
+	select {
+	case <-stoppedBeforeStart.done:
+	default:
+		t.Fatal("sampler started after it had already been stopped")
+	}
+}
+
+func TestActiveSamplerConcurrentLifecycle(t *testing.T) {
+	sampler := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
+
+	var calls sync.WaitGroup
+	for range 50 {
+		calls.Add(2)
+		go func() {
+			defer calls.Done()
+			sampler.Start()
+		}()
+		go func() {
+			defer calls.Done()
+			sampler.Stop()
+		}()
+	}
+	calls.Wait()
+
+	select {
+	case <-sampler.done:
+	default:
+		t.Fatal("sampler was not stopped after concurrent lifecycle calls")
+	}
+}
+
+func TestLocalReusesActiveRunSampler(t *testing.T) {
+	service, err := NewLocal(LocalSources{
+		Layout:      instance.NewLayout(t.TempDir()),
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	const callers = 50
+	stops := make(chan func(), callers)
+	samplers := make(chan *activeRunSampler, callers)
+	var starts sync.WaitGroup
+	for range callers {
+		starts.Add(1)
+		go func() {
+			defer starts.Done()
+			stops <- service.StartActiveRunSampler(time.Hour)
+			samplers <- service.activeSampler.Load()
+		}()
+	}
+	starts.Wait()
+	close(stops)
+	close(samplers)
+
+	first := <-samplers
+	for sampler := range samplers {
+		if sampler != first {
+			t.Fatal("concurrent start replaced the running sampler")
+		}
+	}
+
+	var shutdown sync.WaitGroup
+	for stop := range stops {
+		shutdown.Add(1)
+		go func() {
+			defer shutdown.Done()
+			stop()
+		}()
+	}
+	shutdown.Wait()
 }

@@ -109,7 +109,7 @@ type Local struct {
 	// opt-in via StartActiveRunSampler so that a one-shot CLI construction does
 	// not spawn a goroutine, and so the walk stays available to callers that have
 	// no daemon to have warmed it — see activeRunCountsWithAge.
-	activeSampler *activeRunSampler
+	activeSampler atomic.Pointer[activeRunSampler]
 
 	// readModelReads gates the read-model list path (§6.6 step 3).
 	//
@@ -179,11 +179,15 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 // have taken a sample, and a single `goobers status` invocation legitimately pays
 // for the answer it asked for).
 //
-// interval <= 0 uses the default. The returned stop function must be called on
-// shutdown; it waits for an in-flight walk, which at 1x is several seconds.
+// interval <= 0 uses the default. Repeated calls reuse the sampler already
+// owned by the service. The returned stop function is idempotent and must be
+// called on shutdown; it waits for an in-flight walk, which at 1x is several
+// seconds.
 func (s *Local) StartActiveRunSampler(interval time.Duration) func() {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
-	s.activeSampler = sampler
+	if !s.activeSampler.CompareAndSwap(nil, sampler) {
+		sampler = s.activeSampler.Load()
+	}
 	sampler.Start()
 	return sampler.Stop
 }
