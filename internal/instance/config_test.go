@@ -1867,6 +1867,34 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "runner.envPassthrough[0]",
 		},
 		{
+			name: "runner harness command override valid",
+			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
+				"copilot":     {"agency", "copilot"},
+				"claude-code": {"claude"},
+			}}},
+		},
+		{
+			name: "runner harness command unknown harness rejected",
+			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
+				"agency": {"agency", "copilot"},
+			}}},
+			wantErr: "unknown harness",
+		},
+		{
+			name: "runner harness command empty argv rejected",
+			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
+				"copilot": {},
+			}}},
+			wantErr: "command must not be empty",
+		},
+		{
+			name: "runner harness command empty program rejected",
+			cfg: Config{Runner: RunnerConfig{HarnessCommand: map[string][]string{
+				"copilot": {"   "},
+			}}},
+			wantErr: "program name",
+		},
+		{
 			name: "OTLP secure endpoint",
 			cfg: Config{Telemetry: TelemetryConfig{OTLP: &OTLPConfig{
 				Endpoint: "https://collector.example.com:4317",

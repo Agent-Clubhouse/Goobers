@@ -375,10 +375,10 @@ var copilotModelLister harness.CopilotModelLister
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot, selfBin string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
-		Command:         []string{"copilot"},
+		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
 		AuthCheckArgs:   copilotAuthCheckArgs,
 		ModelLister:     copilotModelLister,
 		EnvCapabilities: envCaps,
@@ -399,7 +399,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 	}
 	claudeEnvCaps[string(capability.AgentModel)] = claudeModelEnv
 	claudeAdapter := &harness.ClaudeAdapter{
-		Command:         []string{"claude"},
+		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessClaudeCode), []string{"claude"}),
 		EnvCapabilities: claudeEnvCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
@@ -412,6 +412,19 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)
 	}
 	return registry, nil
+}
+
+// harnessCommandOrDefault returns the adopter's launcher override for the named
+// harness (RunnerConfig.HarnessCommand), or def when unset. It defensively
+// copies the override so a later mutation of the config map can't reach into
+// the registered adapter, and falls back to def on an empty slice (already
+// rejected at config load, but belt-and-suspenders — an empty argv would fail
+// at exec).
+func harnessCommandOrDefault(overrides map[string][]string, name string, def []string) []string {
+	if command, ok := overrides[name]; ok && len(command) > 0 {
+		return append([]string(nil), command...)
+	}
+	return def
 }
 
 // buildCredentials is the composition root for the secret-resolver seam. It
@@ -2025,7 +2038,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, instanceRoot, selfBin)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -2577,7 +2590,9 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, "", "")
+	// The admission registry only validates harness config (model/options); the
+	// launcher command never runs here, so the override is intentionally omitted.
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, nil, "", "")
 	if err != nil {
 		return nil, nil, nil, err
 	}
