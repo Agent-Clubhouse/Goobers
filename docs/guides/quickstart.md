@@ -22,9 +22,10 @@ The hermetic demo uses mock providers and requires no repository, provider
 credentials, model tokens, or network writes. It is supported on Linux and
 macOS, where Goobers enforces network isolation.
 
-For host setup differences, see the [Linux](quickstart-linux.md) or
-[Windows](quickstart-windows.md) guide. Native Windows cannot enforce the
-demo's network isolation; use its documented WSL 2 path instead.
+For host setup differences, see the [macOS](quickstart-macos.md),
+[Linux](quickstart-linux.md), or [Windows](quickstart-windows.md) guide. Native
+Windows cannot enforce the demo's network isolation; use its documented WSL 2
+path instead.
 
 ```sh
 bin/goobers init --demo ./demo-instance

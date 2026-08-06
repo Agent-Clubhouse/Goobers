@@ -306,7 +306,8 @@ logs/upgrade instructions are in
 ## Deltas from the macOS flow, at a glance
 
 The CLI is byte-for-byte identical to macOS; only the surrounding host tooling
-differs:
+differs. See the [macOS host setup guide](quickstart-macos.md) for that
+platform's complete prerequisite, credential, isolation, and launchd flow.
 
 | Aspect | macOS | Linux |
 |---|---|---|
