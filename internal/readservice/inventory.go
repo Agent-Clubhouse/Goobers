@@ -640,7 +640,8 @@ func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, erro
 // activeRunCountsWithAge additionally reports how stale the sample is, so a
 // caller can render "as of N ago" rather than implying the number is current.
 func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
-	if s.activeSampler == nil {
+	sampler := s.activeSampler.Load()
+	if sampler == nil {
 		// No sampler configured (a one-shot construction). Walk once rather than
 		// refuse: this is not a request path, and refusing here would break the
 		// CLI surfaces that legitimately have no daemon to have warmed a cache.
@@ -654,7 +655,7 @@ func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]in
 		}
 		return counts, 0, nil
 	}
-	return s.activeSampler.Counts()
+	return sampler.Counts()
 }
 
 func hasGaggle(inventory *inventoryProjection, name string) bool {
