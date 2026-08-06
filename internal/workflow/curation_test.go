@@ -130,6 +130,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if query.Inputs["reconcileMetadata"] != "false" {
 		t.Errorf("query-backlog reconcileMetadata = %q, want false after dedicated reconciliation", query.Inputs["reconcileMetadata"])
 	}
+	if query.Inputs["curation"] != "true" {
+		t.Errorf("query-backlog curation = %q, want structural curation mode", query.Inputs["curation"])
+	}
 	if !strings.Contains(query.Inputs["excludeLabels"], "goobers:blocked-on-sibling") {
 		t.Errorf("query-backlog excludeLabels = %q, blocked-on-sibling must not enter ordinary FIFO selection", query.Inputs["excludeLabels"])
 	}
@@ -184,7 +187,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
-	const wantDigest = "sha256:0e65e82e181ce5a49be4fb3ab76b6e0c2fee0fe83ae202c69b3c3108b7c2a3e4"
+	const wantDigest = "sha256:66235bc31e1a10fe13b6baaee7ca81449d750f095ad524c3d5930025dae00cf0"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

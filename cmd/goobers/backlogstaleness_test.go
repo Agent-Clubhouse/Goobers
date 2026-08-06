@@ -183,6 +183,7 @@ func TestBacklogQueryCurationWritesStructuredStaleness(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")

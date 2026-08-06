@@ -16,6 +16,7 @@ import (
 func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems, interval string) {
 	t.Helper()
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman+","+blockedOnSiblingLabel)
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", maxItems)

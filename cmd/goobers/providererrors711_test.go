@@ -301,6 +301,7 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 			setup: func(t *testing.T, _ string, server *fakeGitHubServer) {
 				server.addIssue(7, "Curation candidate", "goobers:approved")
 				t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+				t.Setenv("GOOBERS_INPUT_CURATION", "true")
 				t.Setenv("GOOBERS_INPUT_MAXITEMS", "2")
 			},
 			match: func(r *http.Request) bool {
