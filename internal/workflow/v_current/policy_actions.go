@@ -298,18 +298,18 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 			actions = append(actions, argumentActions[name]...)
 		}
 	}
-	if command == "backlog-query" && enabled["claim"] && isBatchBacklogClaim(task) {
+	if command == "backlog-query" && enabled["claim"] && isCurationBacklogClaim(task) {
 		actions = append(actions, "close-issue")
 	}
 	return actions
 }
 
-func isBatchBacklogClaim(task apiv1.Task) bool {
-	if _, dynamic := task.InputsFrom["maxItems"]; dynamic {
+func isCurationBacklogClaim(task apiv1.Task) bool {
+	if _, dynamic := task.InputsFrom["curation"]; dynamic {
 		return true
 	}
-	maxItems, err := strconv.Atoi(task.Inputs["maxItems"])
-	return err == nil && maxItems > 1
+	curation, err := strconv.ParseBool(task.Inputs["curation"])
+	return err == nil && curation
 }
 
 func knownPolicyActions() []string {

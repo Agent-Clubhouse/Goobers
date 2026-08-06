@@ -313,7 +313,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		maxItems = n
 	}
-	curationRun := *claim && maxItems > 1
+	curationRun := *claim && providerInput("curation", "false") == "true"
 	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
 	var stalenessPolicy backlogStalenessPolicy
 	if reconcileBeforeClaim || *reconcile {

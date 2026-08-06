@@ -1143,9 +1143,11 @@ func TestBacklogQueryReconciliationPolicyActions(t *testing.T) {
 		want       string
 	}{
 		{name: "direct reconciliation", args: []string{"--reconcile"}, want: "claim-backlog-items,close-issue"},
-		{name: "renamed curation batch defaults to reconciliation", args: []string{"--claim"}, inputs: map[string]string{"maxItems": "20"}, want: "claim-backlog-items,close-issue"},
-		{name: "curation batch conservatively declares reconciliation", args: []string{"--claim"}, inputs: map[string]string{"maxItems": "20", "reconcileMetadata": "false"}, want: "claim-backlog-items,close-issue"},
-		{name: "dynamic curation batch conservatively declares reconciliation", args: []string{"--claim"}, inputsFrom: map[string]string{"maxItems": "batchSize"}, want: "claim-backlog-items,close-issue"},
+		{name: "renamed curation default cardinality", args: []string{"--claim"}, inputs: map[string]string{"curation": "true"}, want: "claim-backlog-items,close-issue"},
+		{name: "renamed curation single item", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "1"}, want: "claim-backlog-items,close-issue"},
+		{name: "renamed curation batch defaults to reconciliation", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "20"}, want: "claim-backlog-items,close-issue"},
+		{name: "curation batch conservatively declares reconciliation", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "20", "reconcileMetadata": "false"}, want: "claim-backlog-items,close-issue"},
+		{name: "dynamic curation mode conservatively declares reconciliation", args: []string{"--claim"}, inputsFrom: map[string]string{"curation": "curationMode"}, want: "claim-backlog-items,close-issue"},
 		{name: "single-item implementation claim", args: []string{"--claim"}, inputs: map[string]string{"maxItems": "1"}, want: "claim-backlog-items"},
 	}
 

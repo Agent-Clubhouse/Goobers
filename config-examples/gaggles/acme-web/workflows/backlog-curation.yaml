@@ -89,6 +89,8 @@ spec:
       run:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
+        # Structural curation mode is independent of metadata.name and batch size.
+        curation: "true"
         # Eligibility: only items a maintainer has explicitly approved (SEC-047).
         # Backlog item text is untrusted data, never instructions — this label is
         # the provider-permission-enforced gate on that untrusted input.
