@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -89,6 +91,9 @@ func respondToFindingsFixture(t *testing.T, verdict apiv1.Verdict, responses str
 
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	resultFile := filepath.Join(t.TempDir(), remediationResponseArtifactName)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
@@ -164,6 +169,69 @@ func TestRespondToFindingsPostsCompleteDurableAccount(t *testing.T) {
 	}
 	if len(result.Findings) != 2 || result.Findings[0].Finding != 1 || result.Findings[1].Finding != 2 {
 		t.Errorf("result findings = %+v, want complete verdict-order account", result.Findings)
+	}
+}
+
+func TestRespondToFindingsDispatchesToGitea(t *testing.T) {
+	const (
+		runID    = "run-gitea-response"
+		prNumber = 77
+		token    = "gitea-issues-token"
+	)
+	var comments []map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "token "+token {
+			t.Errorf("Authorization = %q, want Gitea token", got)
+			http.Error(w, "wrong token", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
+			writeFakeJSON(w, map[string]string{"login": "remediation-bot"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/your-org/your-repo/issues/77/comments":
+			writeFakeJSON(w, comments)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/your-org/your-repo/issues/77":
+			writeFakeJSON(w, map[string]interface{}{
+				"id": 77, "number": prNumber, "title": "Remediated PR", "state": "open",
+				"html_url": "https://gitea.test/your-org/your-repo/pulls/77",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/your-org/your-repo/issues/77/comments":
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode Gitea comment: %v", err)
+			}
+			comment := map[string]interface{}{
+				"id": 1, "body": request["body"], "user": map[string]string{"login": "remediation-bot"},
+			}
+			comments = append(comments, comment)
+			writeFakeJSON(w, comment)
+		default:
+			t.Errorf("unexpected Gitea request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	configureRemediationGitea(t, root, server.URL)
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitea))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", token)
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), remediationResponseArtifactName))
+	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
+		t.Fatalf("seed PR claim: %v", err)
+	}
+	seedRemediationResponseRun(t, root, runID, apiv1.Verdict{}, "", true)
+
+	code, stdout, stderr := runArgs(t, "respond-to-findings", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0]["body"].(string), remediationResponseMarker(runID)) {
+		t.Fatalf("Gitea comments = %+v, want one run-scoped remediation response", comments)
 	}
 }
 

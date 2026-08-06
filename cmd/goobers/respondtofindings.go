@@ -152,7 +152,11 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token)
+	provider, err := remediationStageProvider(root, repo, token, false)
+	if err != nil {
+		pf(stderr, "error: construct remediation provider: %v\n", err)
+		return 1
+	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	if err := reconcileRemediationResponseComment(ctx, provider, repo, selectedNumber, runID, comment); err != nil {
@@ -346,7 +350,7 @@ func renderRemediationResponse(runID string, result remediationResponseResult) s
 
 func reconcileRemediationResponseComment(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	prNumber int,
 	runID, body string,

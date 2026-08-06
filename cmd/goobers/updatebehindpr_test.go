@@ -232,6 +232,47 @@ func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 	}
 }
 
+func TestUpdateBehindPRDispatchesToGitea(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/repos/your-org/your-repo/pulls" {
+			t.Errorf("request path = %q, want Gitea pulls endpoint", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "token "+updateBehindPRToken {
+			t.Errorf("Authorization = %q, want Gitea token", got)
+			http.Error(w, "wrong token", http.StatusUnauthorized)
+			return
+		}
+		writeFakeJSON(w, []interface{}{})
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	configureRemediationGitea(t, root, server.URL)
+	t.Setenv("GOOBERS_RUN_ID", "run-gitea-update")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitea))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", updateBehindPRToken)
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", updateBehindIssuesToken)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if requests != 1 {
+		t.Fatalf("Gitea requests = %d, want 1", requests)
+	}
+	if !strings.Contains(stdout, "no work") || stderr != "" {
+		t.Fatalf("stdout = %q, stderr = %q, want clean no-work result", stdout, stderr)
+	}
+}
+
 func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
 	state := &updateBehindServer{
 		checkState: "failure",
