@@ -13,6 +13,7 @@ interface PortalShellProps {
   standalone: boolean;
   theme: Theme;
   toggleTheme: () => void;
+  workspace?: boolean;
 }
 
 export function PortalShell({
@@ -22,6 +23,7 @@ export function PortalShell({
   standalone,
   theme,
   toggleTheme,
+  workspace = false,
 }: PortalShellProps) {
   const { config } = useCobrand();
   const { dataFreshness, freshness } = useLiveData();
@@ -33,7 +35,7 @@ export function PortalShell({
   };
 
   return (
-    <div className="portal-frame">
+    <div className={workspace ? "portal-frame portal-frame-workspace" : "portal-frame"}>
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
@@ -61,6 +63,16 @@ export function PortalShell({
           >
             <Icon name="overview" />
             <span className="nav-label">Overview</span>
+          </button>
+          <button
+            aria-current={activeArea === "factory" ? "page" : undefined}
+            aria-label="Factory"
+            className={activeArea === "factory" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "factory" })}
+            type="button"
+          >
+            <Icon name="factory" />
+            <span className="nav-label">Factory</span>
           </button>
           <button
             aria-current={activeArea === "workflows" ? "page" : undefined}
@@ -110,7 +122,7 @@ export function PortalShell({
         <SupportFooter />
       </aside>
 
-      <div className="portal-main">
+      <div className={workspace ? "portal-main portal-main-workspace" : "portal-main"}>
         <header className="topbar">
           <div className="topbar-context">
             <span className="scope-mark">{config.brand.scopeMark}</span>
@@ -154,7 +166,12 @@ export function PortalShell({
           </div>
         </header>
 
-        <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
+        <main
+          className={workspace ? "page-content page-content-workspace" : "page-content"}
+          id="main-content"
+          ref={mainContent}
+          tabIndex={-1}
+        >
           {children}
         </main>
       </div>

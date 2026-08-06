@@ -15,6 +15,7 @@ import {
   type PortalDiagnostics,
 } from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
+import { FactoryPage } from "./pages/FactoryPage";
 import { GagglePage } from "./pages/GagglePage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
@@ -182,6 +183,7 @@ function Portal({
         standalone={standalone}
         theme={theme}
         toggleTheme={toggleTheme}
+        workspace={route.page === "factory"}
       >
         {route.page === "overview" && (
           <OverviewPage
@@ -191,6 +193,14 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "factory" && (
+          <FactoryPage
+            client={client}
+            navigate={navigate}
+            scope={route.scope}
+            standalone={standalone}
+          />
+        )}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}

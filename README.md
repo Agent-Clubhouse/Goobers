@@ -154,6 +154,29 @@ documented cloud-scale drop-in points (`docs/ARCHITECTURE.md §10`), not current
 product surfaces or dead code.
 See `docs/ARCHITECTURE.md §11` for the full disposition map.
 
+## Factory Floor
+
+Factory Floor is the portal's operations view. It maps configured workflows,
+stages, active runs, and goobers into a live plant without simulated work.
+
+It offers two layouts over the same live model, chosen by a toggle on the page.
+**Lines** is the precise topology: declared stages in graph order with every
+edge, outcome, and terminal. **Plant** is the boss's-window overview: one
+polished isometric factory with production-zone callouts, real stage machines,
+work crates, alarms, and posted goobers. Factory owns the portal workbench:
+both layouts open fitted to the available viewport, with explicit zoom, pan,
+and Fit All controls instead of nested scrollbars. The shared inspector opens
+over the floor as a drawer rather than shrinking the scene. Switching layout
+changes only how the floor is drawn, never what is read.
+
+![Factory Floor line layout showing synthetic workflow topology](docs/images/factory-floor-lines.png)
+
+![Factory Floor plant layout showing the live boss's-window factory](docs/images/factory-floor-plant.png)
+
+See the [Factory Floor read-model design](docs/design/factory-floor.md) for data
+sources, safe fields, failure behavior, the layout contract, and the proposed
+future read endpoint.
+
 ### Go module
 
 - Module path: `github.com/goobers/goobers`

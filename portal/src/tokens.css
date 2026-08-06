@@ -28,6 +28,13 @@
   --code-bg: #25242b;
   --code-ink: #f2eff8;
   --focus: #7a5de0;
+  /* Plant machine archetype accents, mirroring the authored scene palette in
+     plantPalette.ts (light hall) so the legend swatches match the hall. */
+  --plant-archetype-gate: #3e6f81;
+  --plant-archetype-deterministic: #4b569d;
+  --plant-archetype-agentic: #774b9d;
+  --plant-archetype-evaluator: #9b4b8b;
+  --plant-archetype-parallel: #566f32;
 }
 
 :root[data-theme="dark"] {
@@ -56,4 +63,11 @@
   --code-bg: #0d0d11;
   --code-ink: #eeebf5;
   --focus: #b29aff;
+  /* Plant machine archetype accents, mirroring the authored scene palette in
+     plantPalette.ts (dark hall) so the legend swatches match the hall. */
+  --plant-archetype-gate: #5ab6dd;
+  --plant-archetype-deterministic: #9eaafa;
+  --plant-archetype-agentic: #ce9cfa;
+  --plant-archetype-evaluator: #fa91e5;
+  --plant-archetype-parallel: #97bc5f;
 }

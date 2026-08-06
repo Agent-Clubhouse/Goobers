@@ -38,12 +38,14 @@ coverage.html
 /stress-results/
 *.test
 *.out
+*.exe
 
 # Portal build artifacts
 /node_modules/
 /portal/node_modules/
 /portal/dist/
 /portal/coverage/
+/portal/.plant-harness/
 /portal/*.tsbuildinfo
 
 # Editor / OS cruft

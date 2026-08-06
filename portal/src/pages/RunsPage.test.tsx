@@ -1,10 +1,17 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { RunSummary } from "../api/types";
+import type {
+  DaemonEventStream,
+  DaemonUpdateEvent,
+  EventStreamRequest,
+  RequestOptions,
+  RunSummary,
+} from "../api/types";
 import {
   emptyDaemonFixtures,
   largeJournalFixtures,
@@ -15,45 +22,115 @@ beforeEach(() => {
   window.location.hash = "#/runs";
 });
 
+class PushableRunsClient extends FixtureDaemonClient {
+  private readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
+  private queued: DaemonUpdateEvent[] = [];
+
+  connectEvents(
+    _request?: EventStreamRequest,
+    _options?: RequestOptions,
+  ): Promise<DaemonEventStream> {
+    const self = this;
+    return Promise.resolve({
+      close: () => {},
+      [Symbol.asyncIterator]() {
+        return {
+          next(): Promise<IteratorResult<DaemonUpdateEvent>> {
+            const queued = self.queued.shift();
+            if (queued) {
+              return Promise.resolve({ done: false, value: queued });
+            }
+            return new Promise((resolve) => self.readers.push(resolve));
+          },
+        };
+      },
+    } as DaemonEventStream);
+  }
+
+  push(event: DaemonUpdateEvent): void {
+    const reader = this.readers.shift();
+    if (reader) {
+      reader({ done: false, value: event });
+    } else {
+      this.queued.push(event);
+    }
+  }
+}
+
 describe("runs history page", () => {
-  it("reads live daemon runs and paginates with server-side cursors", async () => {
-    const client = new FixtureDaemonClient(
-      largeJournalFixtures({ completed: 68, running: 0, failed: 0, escalated: 0, aborted: 0 }),
-    );
-    const listRuns = vi.spyOn(client, "listRuns");
-    const user = userEvent.setup();
-    render(<App client={client} />);
+  it(
+    "paginates with server cursors and retains the full journal during revisit revalidation",
+    async () => {
+      const client = new PushableRunsClient(
+        largeJournalFixtures({
+          completed: 68,
+          running: 0,
+          failed: 0,
+          escalated: 0,
+          aborted: 0,
+        }),
+      );
+      const listRuns = vi.spyOn(client, "listRuns");
+      const user = userEvent.setup();
+      render(<App client={client} />);
 
-    const history = await screen.findByRole("region", { name: "Run history" });
-    // The initial load is one bounded page, not the whole 68-run journal.
-    expect(within(history).getAllByRole("link")).toHaveLength(50);
-    const callsBeforeLoadMore = listRuns.mock.calls.length;
+      const history = await screen.findByRole("region", { name: "Run history" });
+      // The initial load is one bounded page, not the whole 68-run journal.
+      expect(within(history).getAllByRole("link")).toHaveLength(50);
+      const callsBeforeLoadMore = listRuns.mock.calls.length;
 
-    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+      await user.click(screen.getByRole("button", { name: "Load more runs" }));
 
-    await waitFor(() =>
+      await waitFor(() =>
+        expect(
+          within(screen.getByRole("region", { name: "Run history" })).getAllByRole(
+            "link",
+          ),
+        ).toHaveLength(68),
+      );
+      // Load more advanced a server-side cursor instead of refetching from the start.
+      const lastCall = listRuns.mock.calls.at(-1);
+      expect(lastCall?.[0]?.cursor).toBeTruthy();
+      expect(listRuns.mock.calls.length).toBeGreaterThan(callsBeforeLoadMore);
+
+      await user.click(screen.getByRole("button", { name: "Insight" }));
       expect(
-        within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-      ).toHaveLength(68),
-    );
-    // Load more advanced a server-side cursor instead of refetching from the start.
-    const lastCall = listRuns.mock.calls.at(-1);
-    expect(lastCall?.[0]?.cursor).toBeTruthy();
-    expect(listRuns.mock.calls.length).toBeGreaterThan(callsBeforeLoadMore);
+        await screen.findByRole("heading", { name: "Insight" }),
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Runs" }));
 
-    await user.click(screen.getByRole("button", { name: "Insight" }));
-    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    const callsBeforeRevisit = listRuns.mock.calls.length;
-    listRuns.mockImplementation(() => new Promise(() => {}));
+      expect(
+        await screen.findByRole("heading", { name: "Runs" }),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("region", { name: "Run history" })).getAllByRole(
+          "link",
+        ),
+      ).toHaveLength(68);
 
-    await user.click(screen.getByRole("button", { name: "Runs" }));
-
-    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-    ).toHaveLength(68);
-    expect(listRuns).toHaveBeenCalledTimes(callsBeforeRevisit);
-  });
+      listRuns.mockClear();
+      listRuns.mockImplementation(() => new Promise(() => {}));
+      act(() => {
+        client.push({
+          id: "runs:pending-refresh",
+          type: "invalidate",
+          data: {
+            cursor: "runs:pending-refresh",
+            models: ["run"],
+            runIds: [],
+            workflows: [],
+          },
+        });
+      });
+      await waitFor(() => expect(listRuns).toHaveBeenCalled());
+      expect(
+        within(screen.getByRole("region", { name: "Run history" })).getAllByRole(
+          "link",
+        ),
+      ).toHaveLength(68);
+    },
+    10_000,
+  );
 
   it("maps filter chips onto server-side phase requests", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());

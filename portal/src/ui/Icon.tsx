@@ -7,6 +7,7 @@ export type IconName =
   | "clock"
   | "close"
   | "code"
+  | "factory"
   | "gate"
   | "insight"
   | "moon"
@@ -66,6 +67,14 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="m8 9-3 3 3 3" />
         <path d="m16 9 3 3-3 3" />
         <path d="m14 5-4 14" />
+      </>
+    ),
+    factory: (
+      <>
+        <path d="M3 21h18" />
+        <path d="M4 21V10l5 3V10l5 3V7l6 3v11" />
+        <path d="M7 17h2" />
+        <path d="M13 17h2" />
       </>
     ),
     gate: (

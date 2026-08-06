@@ -944,6 +944,187 @@ export function largeJournalFixtures(
   return { ...base, runs: { runs } };
 }
 
+// A live floor: work standing on real stages in both gaggles, one stage where
+// every run is blocked (so the Factory Floor alarm has something true to raise),
+// one run paused at a human gate, and one run whose last attempt merely failed,
+// which must NOT read as blocked. Every identifier is synthetic.
+//
+// The free-form fields (`trigger.ref`, attempt/journal error messages) exist so
+// tests can prove they never reach the view model.
+export function factoryFloorFixtures(): DaemonFixtures {
+  const base = populatedDaemonFixtures();
+  const blocked = activeRun("01JZ500BLOCKED", "core", "implement", "2026-07-18T06:30:00Z", 5);
+  const paused = activeRun("01JZ600PAUSED", "tools", "review", "2026-07-18T06:45:00Z", 7);
+  const retrying = activeRun("01JZ700RETRY", "tools", "implement", "2026-07-18T07:00:00Z", 6);
+  const added = [blocked, paused, retrying];
+
+  const gaggles = base.gaggles.items.map((gaggle) => ({
+    ...gaggle,
+    activeRunCount: 2,
+  }));
+  const workflows = Object.fromEntries(
+    Object.entries(base.workflows ?? {}).map(([gaggle, page]) => [
+      gaggle,
+      {
+        ...page,
+        items: page.items.map((item) => ({
+          ...item,
+          concurrency: { ...item.concurrency, activeRuns: 2 },
+        })),
+      },
+    ]),
+  );
+
+  return {
+    ...base,
+    instance: {
+      ...base.instance,
+      concurrency: { activeRuns: 4, maxConcurrentRuns: 4 },
+      counts: { gaggles: 2, goobers: 2, workflows: 2, activeRuns: 4 },
+    },
+    gaggles: { ...base.gaggles, items: gaggles },
+    workflows,
+    runs: { runs: [...base.runs.runs, ...added] },
+    runDetails: {
+      ...base.runDetails,
+      ...Object.fromEntries(added.map((summary) => [summary.id, detail(summary)])),
+    },
+    runEvents: {
+      ...base.runEvents,
+      [blocked.id]: { runId: blocked.id, events: blockedRunEvents(blocked) },
+      [paused.id]: { runId: paused.id, events: pausedGateEvents(paused) },
+      [retrying.id]: { runId: retrying.id, events: retryingRunEvents(retrying) },
+    },
+    stageAttempts: {
+      ...base.stageAttempts,
+      [fixtureKey(blocked.id, "implement")]: {
+        runId: blocked.id,
+        stage: "implement",
+        attempts: [
+          {
+            id: "sta-blocked-implement-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "blocked",
+            startedSeq: 4,
+            finishedSeq: 5,
+            durationMillis: 2_000,
+            artifacts: [],
+            error: {
+              code: "blocked_by_agent",
+              message: "free-form attempt message that must never reach the floor",
+            },
+          },
+        ],
+      },
+      [fixtureKey(retrying.id, "implement")]: {
+        runId: retrying.id,
+        stage: "implement",
+        attempts: [
+          {
+            id: "sta-retry-implement-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "failure",
+            startedSeq: 4,
+            finishedSeq: 5,
+            durationMillis: 2_000,
+            artifacts: [],
+            error: {
+              code: "executor_error",
+              message: "free-form failure message that must never reach the floor",
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+function activeRun(
+  id: string,
+  gaggle: string,
+  stage: string,
+  startedAt: string,
+  lastSeq: number,
+): RunSummary {
+  return {
+    id,
+    workflow: "implementation",
+    workflowVersion: 7,
+    workflowDigest: `sha256:${gaggle}`,
+    gaggle,
+    trigger: { kind: "item", ref: "trigger-ref-should-not-render" },
+    phase: "running",
+    terminal: false,
+    noWork: false,
+    currentStage: stage,
+    startedAt,
+    durationMillis: 240_000,
+    lastActivityAt: new Date(Date.parse(startedAt) + 240_000).toISOString(),
+    lastSeq,
+    repassCount: 0,
+    retryCount: 0,
+    policyRetryCount: 0,
+    infraRetryCount: 0,
+  };
+}
+
+function blockedRunEvents(summary: RunSummary): RunEvent[] {
+  return [
+    journalEvent(summary, 1, "run.started", { runId: summary.id, workflow: summary.workflow }),
+    journalEvent(summary, 2, "stage.started", { stage: "query", attempt: 1 }),
+    journalEvent(summary, 3, "stage.finished", { stage: "query", attempt: 1, status: "success" }),
+    journalEvent(summary, 4, "stage.started", { stage: "implement", attempt: 1 }),
+    journalEvent(summary, 5, "stage.finished", {
+      stage: "implement",
+      attempt: 1,
+      status: "blocked",
+      error: {
+        code: "blocked_by_agent",
+        message: "free-form journal message that must never reach the floor",
+      },
+    }),
+  ];
+}
+
+function pausedGateEvents(summary: RunSummary): RunEvent[] {
+  return [
+    journalEvent(summary, 1, "run.started", { runId: summary.id, workflow: summary.workflow }),
+    journalEvent(summary, 2, "stage.started", { stage: "query", attempt: 1 }),
+    journalEvent(summary, 3, "stage.finished", { stage: "query", attempt: 1, status: "success" }),
+    journalEvent(summary, 4, "stage.started", { stage: "implement", attempt: 1 }),
+    journalEvent(summary, 5, "stage.finished", {
+      stage: "implement",
+      attempt: 1,
+      status: "success",
+    }),
+    journalEvent(summary, 6, "gate.started", { gate: "review", attempt: 1 }),
+    journalEvent(summary, 7, "gate.paused", {
+      gate: "review",
+      attempt: 1,
+      reason: "free-form pause reason that must never reach the floor",
+    }),
+  ];
+}
+
+function retryingRunEvents(summary: RunSummary): RunEvent[] {
+  return [
+    journalEvent(summary, 1, "run.started", { runId: summary.id, workflow: summary.workflow }),
+    journalEvent(summary, 2, "stage.started", { stage: "query", attempt: 1 }),
+    journalEvent(summary, 3, "stage.finished", { stage: "query", attempt: 1, status: "success" }),
+    journalEvent(summary, 4, "stage.started", { stage: "implement", attempt: 1 }),
+    journalEvent(summary, 5, "stage.finished", {
+      stage: "implement",
+      attempt: 1,
+      status: "failure",
+    }),
+    journalEvent(summary, 6, "stage.started", { stage: "implement", attempt: 2 }),
+  ];
+}
+
 export function emptyDaemonFixtures(): DaemonFixtures {
   const fixtures = populatedDaemonFixtures();
   return {

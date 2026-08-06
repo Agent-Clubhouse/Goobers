@@ -5202,6 +5202,506 @@ a.telemetry-error-row:hover {
   }
 }
 
+/* Factory owns the available workbench. The scene camera clips and transforms
+   the world, so neither layout creates a second set of scrollbars. */
+.page-content-workspace {
+  height: auto;
+  margin: 0;
+  max-width: none;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.portal-frame-workspace {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.portal-main-workspace {
+  display: grid;
+  grid-template-rows: 65px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-content-workspace.page-content-workspace :where(.factory-page) {
+  gap: 8px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.page-content-workspace.page-content-workspace :where(.factory-heading) {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 7px 9px 7px 12px;
+}
+
+.factory-heading-title {
+  align-items: baseline;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.factory-heading-title .page-kicker {
+  margin: 0;
+}
+
+.factory-heading-title h1 {
+  font-size: 19px;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.page-content-workspace .factory-controls {
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.page-content-workspace .factory-control,
+.page-content-workspace .factory-segmented-control {
+  gap: 2px;
+}
+
+.page-content-workspace .factory-control select {
+  min-width: 118px;
+  padding-block: 5px;
+}
+
+.factory-inspector-toggle {
+  background: var(--panel-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  padding: 6px 10px;
+}
+
+.factory-inspector-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--accent-ink);
+}
+
+.page-content-workspace .factory-status-strip {
+  gap: 6px;
+  grid-template-columns: 1.2fr repeat(3, minmax(0, 0.8fr));
+}
+
+.page-content-workspace .factory-status-card {
+  min-height: 44px;
+  padding: 6px 9px;
+}
+
+.page-content-workspace .factory-status-card strong {
+  font-size: 14px;
+}
+
+.page-content-workspace .factory-status-card small {
+  display: none;
+}
+
+.page-content-workspace .factory-layout {
+  display: block;
+  min-height: 0;
+  position: relative;
+}
+
+.factory-notices,
+.factory-stage-notices {
+  display: grid;
+  gap: 6px;
+}
+
+.factory-notices:empty,
+.factory-stage-notices:empty {
+  min-height: 0;
+}
+
+.page-content-workspace .factory-stage-area {
+  gap: 6px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.factory-viewport-shell {
+  min-height: 0;
+  position: relative;
+}
+
+.factory-viewport-shell > .factory-viewport {
+  height: 100%;
+}
+
+.factory-viewport {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  cursor: grab;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+}
+
+.factory-viewport[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.factory-viewport-world {
+  left: 0;
+  position: absolute;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.factory-viewport-controls {
+  align-items: center;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 18%);
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 20000;
+}
+
+.factory-viewport-controls button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 7px;
+}
+
+.factory-viewport-controls button:hover {
+  background: var(--accent-soft);
+}
+
+.factory-viewport-controls output {
+  color: var(--muted-strong);
+  font-size: 10px;
+  min-width: 38px;
+  text-align: center;
+}
+
+.factory-viewport-controls .factory-viewport-fit {
+  border-left: 1px solid var(--line);
+  margin-left: 2px;
+  width: auto;
+}
+
+.factory-viewport .factory-floor,
+.factory-viewport .factory-plant {
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  overflow: hidden;
+}
+
+.factory-viewport .factory-plant-classic {
+  aspect-ratio: auto;
+  height: 950px;
+  width: 1450px;
+}
+
+.factory-plant-exact-fallback {
+  align-items: center;
+  background: var(--surface);
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+  z-index: 100;
+}
+
+.factory-plant-exact-fallback-world {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  transform-origin: center;
+}
+
+.factory-plant-exact-fallback .factory-floor {
+  flex: 0 0 auto;
+}
+
+.factory-forced-colors-exact {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
+.factory-forced-colors-notice {
+  background: Canvas;
+  border: 2px solid CanvasText;
+  color: CanvasText;
+  font-size: 12px;
+  font-weight: 700;
+  left: 12px;
+  margin: 0;
+  padding: 7px 10px;
+  position: absolute;
+  top: 12px;
+  z-index: 10000;
+}
+
+@media (forced-colors: active) {
+  .factory-forced-colors-exact,
+  .factory-forced-colors-exact .factory-floor {
+    forced-color-adjust: auto;
+  }
+}
+
+/*
+ * Inspector geometry, shared with factoryViewportSafeArea.ts.
+ *
+ * The camera fit, the overlay clamp and the probe all subtract exactly this
+ * drawer. A second copy of "350px" is how a selected machine ends up hidden
+ * behind the drawer that was opened to describe it, so the numbers live in one
+ * place and are asserted equal by test.
+ */
+.factory-page {
+  --factory-inspector-width: 350px;
+  --factory-inspector-inset: 8px;
+  --factory-inspector-narrow-inset: 6px;
+  --factory-inspector-sheet-top: 30%;
+}
+
+.factory-inspector-drawer {
+  bottom: var(--factory-inspector-inset);
+  max-width: calc(100% - var(--factory-inspector-inset) * 2);
+  pointer-events: none;
+  position: absolute;
+  right: var(--factory-inspector-inset);
+  top: var(--factory-inspector-inset);
+  transform: translateX(calc(100% + 18px));
+  transition: transform 160ms ease;
+  visibility: hidden;
+  width: var(--factory-inspector-width);
+  z-index: 21000;
+}
+
+.factory-inspector-drawer.is-open {
+  pointer-events: auto;
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.factory-inspector-drawer .factory-inspector {
+  height: 100%;
+  max-height: none;
+  padding-top: 38px;
+  position: static;
+}
+
+.factory-inspector-close {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 18px;
+  height: 28px;
+  line-height: 1;
+  position: absolute;
+  right: 9px;
+  top: 9px;
+  width: 28px;
+  z-index: 1;
+}
+
+@media (max-width: 900px) {
+  .page-content-workspace {
+    padding: 6px;
+  }
+
+  @media (max-width: 820px) {
+    .portal-frame-workspace {
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .portal-main-workspace {
+      height: auto;
+    }
+  }
+
+  .page-content-workspace :where(.factory-heading) {
+    align-items: flex-start;
+  }
+
+  .factory-heading-title {
+    display: none;
+  }
+
+  .factory-controls {
+    flex-wrap: wrap;
+  }
+
+  .page-content-workspace .factory-status-strip {
+    grid-template-columns: repeat(4, minmax(90px, 1fr));
+    overflow-x: auto;
+  }
+
+  .factory-inspector-drawer {
+    bottom: var(--factory-inspector-narrow-inset);
+    left: var(--factory-inspector-narrow-inset);
+    max-width: none;
+    right: var(--factory-inspector-narrow-inset);
+    top: var(--factory-inspector-sheet-top);
+    transform: translateY(calc(100% + 12px));
+    width: auto;
+  }
+
+  .factory-inspector-drawer.is-open {
+    transform: translateY(0);
+  }
+}
+
+/*
+ * Short operations screens reserve the pixels for the plant, not chrome.
+ *
+ * The inspector starts closed in this mode and its toolbar button is the
+ * compact summary trigger. If opened, the drawer is capped to the space left
+ * after the explicit 84px Plant safe-area floor.
+ */
+@media (max-height: 600px) {
+  .portal-frame-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .portal-frame-workspace > .sidebar,
+  .portal-main-workspace > .topbar {
+    display: none;
+  }
+
+  .portal-main-workspace {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .page-content-workspace {
+    min-height: 260px;
+    overflow-y: auto;
+    padding: 4px;
+  }
+
+  .page-content-workspace.page-content-workspace :where(.factory-page) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .page-content-workspace.page-content-workspace :where(.factory-heading) {
+    height: 36px;
+    max-height: 36px;
+    min-height: 36px;
+    overflow: hidden;
+    padding: 3px 5px;
+  }
+
+  .factory-heading-title,
+  .page-content-workspace .factory-notices,
+  .page-content-workspace .factory-control-caption,
+  .page-content-workspace .factory-status-strip,
+  .page-content-workspace .factory-legend {
+    display: none;
+  }
+
+  .page-content-workspace .factory-control {
+    flex: 0 0 auto;
+  }
+
+  .page-content-workspace .factory-control > span {
+    display: none;
+  }
+
+  .page-content-workspace .factory-control select {
+    max-width: 104px;
+    min-height: 28px;
+  }
+
+  .page-content-workspace .factory-controls {
+    flex-wrap: nowrap;
+    gap: 4px;
+    justify-content: flex-end;
+    overflow-x: auto;
+    overflow-y: hidden;
+    width: 100%;
+  }
+
+  .page-content-workspace .factory-layout-button,
+  .page-content-workspace .factory-lens-button,
+  .page-content-workspace .factory-inspector-toggle {
+    min-height: 28px;
+    padding: 4px 7px;
+    white-space: nowrap;
+  }
+
+  .page-content-workspace .factory-stage-area {
+    grid-template-rows: minmax(84px, 1fr);
+  }
+
+  .page-content-workspace .factory-layout {
+    flex: 1 1 auto;
+    min-height: 84px;
+  }
+
+  .page-content-workspace .factory-stage-notices {
+    display: none;
+  }
+
+  .factory-inspector-drawer {
+    bottom: var(--factory-inspector-narrow-inset);
+    box-sizing: border-box;
+    height: min(180px, max(0px, calc(100% - 102px)));
+    left: var(--factory-inspector-narrow-inset);
+    min-height: 0;
+    right: var(--factory-inspector-narrow-inset);
+    top: auto;
+    transform: translateY(calc(100% + 12px));
+    width: auto;
+  }
+
+  .factory-inspector-drawer.is-open {
+    transform: translateY(0);
+  }
+
+  .factory-inspector-drawer .factory-inspector {
+    min-height: 0;
+    overflow: auto;
+    padding: 24px 8px 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-inspector-drawer {
+    transition: none;
+  }
+}
+
 /* Captured agent transcripts. The transcript is the only record of why an
    agentic stage acted as it did, so it is rendered as a conversation rather
    than dumped as JSONL; raw bytes stay one click away. */
@@ -5330,4 +5830,3538 @@ a.telemetry-error-row:hover {
 .transcript-result-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* ====================================================================
+   Factory Floor (#/factory)
+   --------------------------------------------------------------------
+   A working plant, not a dashboard: bays, machines, conveyors, crates
+   and staff, all positioned from model coordinates that are a pure
+   function of the daemon snapshot. Nothing here animates on its own.
+   the only motion is a carrier moving because its run changed stage,
+   and the blocked-stage alarm.
+   ==================================================================== */
+
+.factory-page {
+  color: var(--ink);
+  display: grid;
+  gap: 14px;
+}
+
+.factory-heading {
+  align-items: end;
+}
+
+.factory-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.factory-control,
+.factory-segmented-control {
+  display: grid;
+  gap: 4px;
+}
+
+.factory-control > span,
+.factory-control-caption {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.factory-control select {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 11px;
+  min-width: 150px;
+  padding: 6px 8px;
+}
+
+.factory-lens {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.factory-lens-button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+  padding: 6px 11px;
+}
+
+.factory-lens-button.is-active {
+  background: var(--panel-raised);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  color: var(--ink);
+}
+
+/* The layout switch chooses how the floor is drawn. It sits beside the lens,
+   which chooses what the floor emphasises, and the two never merge. */
+
+.factory-layout-switch {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 9px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.factory-layout-button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+  padding: 6px 12px;
+}
+
+.factory-layout-button.is-active {
+  background: var(--panel-raised);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  color: var(--accent-ink);
+}
+
+.factory-scope-notice {
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 9px;
+  color: var(--warning-ink);
+  font-size: 11px;
+  margin: 0;
+  padding: 9px 12px;
+}
+
+.factory-status-strip {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(210px, 1.35fr) repeat(3, minmax(138px, 0.8fr));
+}
+
+.factory-status-card {
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--panel-raised) 94%, var(--accent) 6%),
+      var(--panel)
+    );
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
+  display: grid;
+  gap: 2px;
+  min-height: 70px;
+  padding: 10px 12px;
+}
+
+.factory-status-card > span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 740;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.factory-status-card strong {
+  color: var(--ink);
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+
+.factory-status-card small {
+  color: var(--muted-strong);
+  font-size: 9.5px;
+}
+
+.factory-status-card-primary {
+  border-left: 4px solid var(--success);
+}
+
+.factory-status-card-primary[data-alert="on"] {
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--line));
+  border-left-color: var(--danger);
+}
+
+.factory-status-card-primary[data-state="held"],
+.factory-status-card-primary[data-state="partial"] {
+  border-left-color: var(--warning);
+}
+
+.factory-layout {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 326px;
+}
+
+.factory-stage-area {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.factory-idle-note {
+  background: color-mix(in srgb, var(--success) 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--success) 36%, var(--line));
+  border-radius: 9px;
+  color: var(--muted-strong);
+  font-size: 11px;
+  margin: 0;
+  padding: 8px 11px;
+}
+
+/* --- The plant ----------------------------------------------------- */
+
+.factory-floor {
+  background:
+    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+    var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 55%, transparent), inset 0 -18px 34px -26px rgb(0 0 0 / 55%);
+  max-height: none;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+}
+
+.factory-canvas {
+  position: relative;
+  transform-origin: 0 0;
+}
+
+.factory-ground {
+  display: block;
+  inset: 0;
+  position: absolute;
+}
+
+.factory-slab {
+  fill: color-mix(in srgb, var(--bg) 82%, var(--panel));
+}
+
+.factory-tile-line {
+  stroke: color-mix(in srgb, var(--line) 55%, transparent);
+  stroke-width: 1;
+}
+
+.factory-bay {
+  fill: color-mix(in srgb, var(--panel) 72%, transparent);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.factory-bay-header {
+  fill: color-mix(in srgb, var(--accent) 9%, var(--panel-raised));
+  stroke: color-mix(in srgb, var(--accent) 22%, var(--line));
+  stroke-width: 1;
+}
+
+.factory-hazard-base {
+  fill: color-mix(in srgb, var(--warning) 26%, var(--panel));
+}
+
+.factory-hazard-stripe {
+  fill: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.factory-yard-pad,
+.factory-commons-pad {
+  fill: color-mix(in srgb, var(--ink) 5%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+/* The apron is floor marking, not another building: no fill, just a bay line. */
+.factory-apron {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 55%, transparent);
+  stroke-dasharray: 3 5;
+  stroke-width: 1;
+}
+
+.factory-yard-slot {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 60%, transparent);
+  stroke-dasharray: 2 4;
+  stroke-width: 1;
+}
+
+.factory-floor-decal {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 55%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.factory-pad-label,
+.factory-dock-label,
+.factory-conveyor-label {
+  fill: var(--muted);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.factory-conveyor-bed {
+  fill: none;
+  stroke: var(--surface);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 11;
+}
+
+.factory-conveyor-line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 65%, transparent);
+  stroke-dasharray: 7 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  shape-rendering: geometricPrecision;
+}
+
+.factory-conveyor-line[data-kind="repass"] {
+  stroke: color-mix(in srgb, var(--warning) 60%, transparent);
+}
+
+.factory-conveyor-line[data-kind="terminal"] {
+  stroke: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.factory-conveyor-head {
+  fill: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+/* A belt only runs when a run actually moved along it, and only briefly. */
+.factory-conveyor-line[data-active="true"] {
+  animation: factory-belt 620ms linear 2;
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+
+.factory-conveyor-line[data-working="true"]:not([data-active="true"]) {
+  animation: factory-belt-operating 1.7s linear infinite;
+  stroke: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
+@keyframes factory-belt {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+@keyframes factory-belt-operating {
+  to {
+    stroke-dashoffset: -13;
+  }
+}
+
+.factory-dock {
+  fill: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.factory-dock[data-terminal="complete"] {
+  stroke: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+
+.factory-dock[data-terminal="escalate"] {
+  stroke: color-mix(in srgb, var(--danger) 60%, var(--line));
+}
+
+/* --- Line plaque ---------------------------------------------------- */
+
+.factory-lane-plaque-row {
+  height: 26px;
+  left: 8px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 8;
+}
+
+.factory-lane-plaque {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px -8px rgb(0 0 0 / 75%);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  height: 26px;
+  left: 12px;
+  max-width: min(680px, calc(100vw - 86px));
+  padding: 0 10px;
+  pointer-events: auto;
+  position: sticky;
+  text-align: left;
+  width: max-content;
+}
+
+.factory-lane-plaque:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.factory-lane-plaque[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.factory-lane-plaque[data-blocked="true"] {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.factory-lane-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.factory-lane-gaggle {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 640;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.factory-lane-metrics {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.factory-lane-metric {
+  color: var(--muted-strong);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-lane-capacity {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.factory-lane-gauge {
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  width: 56px;
+}
+
+.factory-lane-gauge > span {
+  background: var(--active);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+}
+
+.factory-lane-badge {
+  background: var(--warning-soft);
+  border-radius: 999px;
+  color: var(--warning-ink);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  text-transform: uppercase;
+}
+
+/* --- Machines ------------------------------------------------------- */
+
+.factory-station {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-raised) 94%, var(--accent) 6%) 0%, var(--panel) 62%,
+      color-mix(in srgb, var(--panel) 82%, var(--line)) 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 60%, transparent),
+    0 8px 0 -4px color-mix(in srgb, var(--line-strong) 55%, transparent),
+    0 16px 24px -18px rgb(0 0 0 / 60%);
+  cursor: pointer;
+  display: grid;
+  gap: 0;
+  grid-template-rows: 14px minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  text-align: left;
+}
+
+.factory-station:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+}
+
+.factory-station[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 8px 0 -4px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 18px 26px -18px rgb(0 0 0 / 62%);
+}
+
+.factory-station-roof {
+  align-items: center;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 26%, var(--panel)) 0%,
+    color-mix(in srgb, var(--ink) 12%, var(--panel)) 100%);
+  border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 80%, transparent);
+  display: flex;
+  gap: 3px;
+  height: 15px;
+  justify-content: flex-end;
+  padding: 0 8px;
+  position: relative;
+}
+
+/* Each machine kind reads as different hardware, not just different text. */
+.factory-station[data-kind="agentic"] .factory-station-roof {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 46%, var(--panel)) 0%,
+    color-mix(in srgb, var(--accent) 18%, var(--panel)) 100%);
+}
+
+.factory-station[data-kind="gate"] .factory-station-roof {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 52%, var(--panel)) 0%,
+    color-mix(in srgb, var(--warning) 20%, var(--panel)) 100%);
+}
+
+.factory-station-vent {
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  border-radius: 1px;
+  height: 5px;
+  width: 9px;
+}
+
+.factory-station-body {
+  display: grid;
+  gap: 3px;
+  padding: 7px 10px 8px;
+}
+
+.factory-station-kind {
+  color: var(--muted);
+  font-size: 7.5px;
+  font-weight: 760;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.factory-station-name {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-station-gauge {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  margin-top: 2px;
+}
+
+.factory-gauge-track {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 999px;
+  flex: 1 1 auto;
+  height: 6px;
+  overflow: hidden;
+}
+
+.factory-gauge-fill {
+  background: var(--active);
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+}
+
+.factory-gauge-readout {
+  color: var(--muted-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-machine-status {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-left: auto;
+}
+
+.factory-station[data-status="held"] .factory-machine-status {
+  color: var(--warning-ink);
+}
+
+.factory-station[data-status="blocked"] .factory-machine-status {
+  color: var(--danger);
+}
+
+.factory-status-light {
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent);
+  height: 7px;
+  position: absolute;
+  right: 9px;
+  top: 20px;
+  width: 7px;
+}
+
+.factory-station[data-status="idle"] .factory-status-light {
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+}
+
+.factory-station[data-status="running"] .factory-status-light {
+  animation: factory-running-light 1.3s ease-in-out infinite;
+  background: var(--success);
+}
+
+.factory-station[data-status="running"] .factory-station-vent {
+  animation: factory-machine-cycle 780ms ease-in-out infinite alternate;
+}
+
+.factory-station[data-status="running"] .factory-station-vent:nth-child(2) {
+  animation-delay: -260ms;
+}
+
+.factory-station[data-status="running"] .factory-station-vent:nth-child(3) {
+  animation-delay: -520ms;
+}
+
+@keyframes factory-running-light {
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent),
+      0 0 9px 3px color-mix(in srgb, var(--success) 58%, transparent);
+  }
+}
+
+@keyframes factory-machine-cycle {
+  to {
+    transform: translateY(3px);
+  }
+}
+
+.factory-station[data-status="impeded"] .factory-status-light {
+  background: var(--warning);
+}
+
+.factory-station[data-status="held"] .factory-status-light {
+  background: var(--warning);
+}
+
+.factory-station[data-status="blocked"] .factory-status-light {
+  background: var(--danger);
+}
+
+.factory-station[data-status="unknown"] .factory-status-light {
+  background: var(--warning);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--panel) 80%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--warning) 25%, transparent);
+}
+
+.factory-station[data-status="idle"] .factory-gauge-fill {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.factory-station[data-status="impeded"] .factory-gauge-fill {
+  background: var(--warning);
+}
+
+.factory-station[data-status="held"] .factory-gauge-fill {
+  background: var(--warning);
+}
+
+.factory-station[data-status="blocked"] .factory-gauge-fill {
+  background: var(--danger);
+}
+
+.factory-station[data-status="unknown"] .factory-gauge-fill {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--warning) 0 5px,
+    color-mix(in srgb, var(--warning) 28%, transparent) 5px 9px
+  );
+}
+
+.factory-station[data-status="running"] {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--line-strong));
+}
+
+.factory-station[data-status="impeded"] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--line-strong));
+}
+
+.factory-station[data-status="held"] {
+  border-color: var(--warning);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--warning) 35%, transparent),
+    0 8px 0 -4px color-mix(in srgb, var(--warning) 38%, transparent),
+    0 16px 24px -18px rgb(0 0 0 / 60%);
+}
+
+.factory-station[data-status="unknown"] {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--line-strong));
+  border-style: dotted;
+}
+
+.factory-station[data-kind="gate"] {
+  border-style: dashed;
+}
+
+.factory-station[data-source="observed"] .factory-station-kind::after {
+  content: " · observed";
+}
+
+/* --- Stage alarms ---------------------------------------------------
+   Only the compact physical beacon blinks. The machine border and wash
+   stay bright and static so large warning surfaces never flash together. */
+
+@keyframes factory-alarm-blink {
+  0%,
+  49.999% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.factory-station[data-alarm="blocked"] {
+  border-color: var(--danger);
+}
+
+.factory-station[data-alarm="hold"] {
+  border-color: var(--warning);
+}
+
+.factory-station[data-alarm="blocked"]::after,
+.factory-station[data-alarm="hold"]::after {
+  border: 2px solid var(--danger);
+  border-radius: 11px;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.factory-station[data-alarm="hold"]::after {
+  border-color: var(--warning);
+}
+
+.factory-alarm-beacon {
+  animation: factory-alarm-blink 880ms steps(1, end) infinite;
+  display: block;
+  left: 8px;
+  position: absolute;
+  top: 3px;
+}
+
+.factory-alarm-lamp {
+  background: var(--danger);
+  border-radius: 999px 999px 2px 2px;
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--danger) 70%, transparent);
+  display: block;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-alarm-beacon[data-alarm="hold"] .factory-alarm-lamp {
+  background: var(--warning);
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--warning) 70%, transparent);
+}
+
+.factory-alarm-wash {
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--danger) 52%, transparent), transparent 76%);
+  border-radius: 18px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.factory-alarm-wash[data-alarm="hold"] {
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--warning) 42%, transparent), transparent 76%);
+}
+
+/* --- Work carriers --------------------------------------------------- */
+
+.factory-carrier {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--panel-raised)),
+    color-mix(in srgb, var(--accent) 8%, var(--panel)));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  border-radius: 5px;
+  box-shadow: 0 4px 8px -5px rgb(0 0 0 / 70%);
+  cursor: pointer;
+  display: grid;
+  height: 22px;
+  left: 0;
+  padding: 0;
+  place-items: center;
+  position: absolute;
+  top: 0;
+  width: 28px;
+}
+
+.factory-carrier.is-transitioning {
+  transition: transform 620ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+
+.factory-carrier-lid {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  height: 1.5px;
+  left: 4px;
+  position: absolute;
+  right: 4px;
+  top: 6px;
+}
+
+.factory-carrier-code {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 4px;
+}
+
+.factory-carrier[data-state="paused"] {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 34%, var(--panel-raised)),
+    color-mix(in srgb, var(--warning) 12%, var(--panel)));
+  border-color: var(--warning);
+}
+
+.factory-carrier[data-state="blocked"] {
+  background:
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--danger) 30%, var(--panel)) 0 4px,
+      color-mix(in srgb, var(--danger) 14%, var(--panel)) 4px 8px);
+  border-color: var(--danger);
+}
+
+.factory-carrier[data-state="starting"] {
+  background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+  border-color: var(--line-strong);
+  border-style: dashed;
+}
+
+.factory-carrier[data-state="unknown"] {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warning) 25%, var(--panel)) 0 4px,
+    color-mix(in srgb, var(--muted) 15%, var(--panel)) 4px 8px
+  );
+  border-color: var(--warning);
+  border-style: dotted;
+}
+
+.factory-carrier[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 8px -5px rgb(0 0 0 / 70%);
+}
+
+/* One-shot transition flash: it fires because the run changed stage, and it
+   ends. There is no idle loop anywhere on this floor. */
+.factory-carrier[data-moved="true"] {
+  animation: factory-carrier-arrive 900ms ease-out 1;
+}
+
+@keyframes factory-carrier-arrive {
+  0% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* --- Staff ----------------------------------------------------------- */
+
+.factory-worker {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  height: 34px;
+  padding: 0;
+  position: absolute;
+  width: 30px;
+  z-index: 1;
+}
+
+.factory-worker-head {
+  background: color-mix(in srgb, var(--accent) 55%, var(--panel-raised));
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 60%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 11px;
+  left: 50%;
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+  width: 11px;
+}
+
+.factory-worker-body {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 40%, var(--panel-raised)),
+    color-mix(in srgb, var(--accent) 16%, var(--panel)));
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 45%, transparent);
+  border-radius: 7px 7px 5px 5px;
+  bottom: 11px;
+  display: block;
+  left: 50%;
+  position: absolute;
+  top: 11px;
+  transform: translateX(-50%);
+  width: 18px;
+}
+
+.factory-worker-tag {
+  bottom: 0;
+  color: var(--muted-strong);
+  font-size: 7.5px;
+  font-weight: 700;
+  left: 0;
+  letter-spacing: 0.04em;
+  position: absolute;
+  right: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.factory-worker[data-active="false"] .factory-worker-head,
+.factory-worker[data-active="false"] .factory-worker-body {
+  background: color-mix(in srgb, var(--muted) 26%, var(--panel));
+  border-color: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.factory-worker[data-working="true"] .factory-worker-head {
+  animation: factory-worker-operating 900ms ease-in-out infinite alternate;
+}
+
+.factory-worker[data-working="true"] .factory-worker-body {
+  animation: factory-worker-operating 900ms ease-in-out -450ms infinite alternate;
+}
+
+@keyframes factory-worker-operating {
+  to {
+    translate: 0 -2px;
+  }
+}
+
+.factory-carrier[data-state="running"] .factory-carrier-lid,
+.factory-carrier[data-state="starting"] .factory-carrier-lid {
+  animation: factory-work-order 1.25s ease-in-out infinite;
+}
+
+@keyframes factory-work-order {
+  50% {
+    filter: brightness(1.35);
+    transform: translateY(-1px);
+  }
+}
+
+.factory-worker[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.factory-overflow {
+  background: color-mix(in srgb, var(--panel-raised) 92%, var(--accent) 8%);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  border-radius: 999px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 760;
+  height: 20px;
+  padding: 0 7px;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.factory-overflow:hover,
+.factory-overflow:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.factory-carrier-overflow {
+  min-width: 96px;
+}
+
+.factory-yard-overflow {
+  min-width: 68px;
+}
+
+.factory-worker-overflow {
+  min-width: 38px;
+  padding-inline: 4px;
+}
+
+.factory-commons-overflow {
+  min-width: 88px;
+}
+
+/* --- Lenses ----------------------------------------------------------
+   World is the full plant. Flow emphasises the belts and mutes the
+   scenery. Risk mutes everything that is not held, so blocked work is
+   the only thing with colour. */
+
+.factory-floor[data-lens="flow"] .factory-conveyor-line {
+  stroke-width: 3;
+}
+
+.factory-floor[data-lens="flow"] .factory-conveyor-bed {
+  stroke-width: 11;
+}
+
+.factory-floor[data-lens="flow"] .factory-station-roof,
+.factory-floor[data-lens="flow"] .factory-worker {
+  opacity: 0.55;
+}
+
+.factory-floor[data-lens="flow"] .factory-alarm-beacon,
+.factory-floor[data-lens="flow"] .factory-alarm-wash,
+.factory-floor[data-lens="flow"] .factory-station[data-alarm="blocked"]::after,
+.factory-floor[data-lens="flow"] .factory-station[data-alarm="hold"]::after {
+  animation: none;
+  opacity: 1;
+}
+
+.factory-floor[data-lens="risk"] .factory-station[data-status="idle"],
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="running"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="starting"],
+.factory-floor[data-lens="risk"] .factory-worker,
+.factory-floor[data-lens="risk"] .factory-conveyor-line {
+  filter: saturate(0.25);
+  opacity: 0.62;
+}
+
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="blocked"],
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="paused"] {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.factory-floor[data-lens="risk"] .factory-conveyor-line[data-working="true"],
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"] .factory-status-light,
+.factory-floor[data-lens="risk"] .factory-station[data-status="running"] .factory-station-vent,
+.factory-floor[data-lens="risk"] .factory-worker[data-working="true"] .factory-worker-head,
+.factory-floor[data-lens="risk"] .factory-worker[data-working="true"] .factory-worker-body,
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="running"] .factory-carrier-lid,
+.factory-floor[data-lens="risk"] .factory-carrier[data-state="starting"] .factory-carrier-lid {
+  animation: none;
+}
+
+/* --- Legend ----------------------------------------------------------- */
+
+.factory-legend {
+  color: var(--muted-strong);
+  display: grid;
+  font-size: 10px;
+  gap: 7px;
+}
+
+.factory-legend-group {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.factory-legend-group > strong {
+  color: var(--ink);
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  min-width: 58px;
+  text-transform: uppercase;
+}
+
+.factory-legend-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.factory-legend-item::before {
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  content: "";
+  height: 9px;
+  width: 12px;
+}
+
+.factory-legend-item[data-legend="running"]::before {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-raised));
+  border-color: var(--accent);
+}
+
+.factory-legend-item[data-legend="paused"]::before {
+  background: color-mix(in srgb, var(--warning) 34%, var(--panel-raised));
+  border-color: var(--warning);
+}
+
+.factory-legend-item[data-legend="blocked"]::before {
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--danger) 30%, var(--panel)) 0 3px,
+    color-mix(in srgb, var(--danger) 12%, var(--panel)) 3px 6px);
+  border-color: var(--danger);
+}
+
+/* Unread is a completeness gap, not a hazard, so it never borrows hold amber. */
+.factory-legend-item[data-legend="unknown"]::before {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--muted) 30%, var(--panel)) 0 3px,
+    var(--panel) 3px 6px
+  );
+  border-color: var(--muted-strong);
+  border-style: dashed;
+}
+
+.factory-legend-item[data-legend="idle"]::before {
+  background: var(--panel);
+}
+
+.factory-legend-item[data-legend="inbound"]::before {
+  background: var(--panel);
+  border-style: dashed;
+}
+
+.factory-legend-item[data-legend="machine-running"]::before {
+  background: var(--success);
+  border-radius: 999px;
+  height: 7px;
+  width: 7px;
+}
+
+.factory-legend-item[data-legend="machine-held"]::before {
+  background: var(--warning);
+  border-color: var(--warning);
+}
+
+.factory-legend-item[data-legend="machine-blocked"]::before {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.factory-legend-item[data-legend="gate"]::before {
+  background: color-mix(in srgb, var(--warning) 18%, var(--panel));
+  border-color: var(--warning);
+  border-style: dashed;
+}
+
+.factory-legend-item[data-legend="observed"]::before {
+  background: var(--panel);
+  border-color: var(--warning);
+  border-style: dotted;
+}
+
+.factory-legend-item[data-legend="beacon"]::before {
+  background: var(--danger);
+  border-color: var(--danger);
+  border-radius: 999px 999px 2px 2px;
+  height: 8px;
+  width: 6px;
+}
+
+.factory-legend-item[data-legend="placard"]::before {
+  background: var(--panel-raised);
+  border-left: 3px solid var(--accent);
+}
+
+.factory-legend-item[data-legend="dock"]::before {
+  background: color-mix(in srgb, var(--success) 22%, var(--panel));
+  border-color: var(--success);
+}
+
+.factory-legend-item[data-legend="commons"]::before {
+  background: var(--panel);
+  border-style: dashed;
+}
+
+/*
+ * Stage shape is the plant's primary channel, so each legend swatch is the
+ * silhouette itself. These read with colour off, in greyscale, and in forced
+ * colours, which is the whole point of authoring shape before hue.
+ */
+.factory-legend-item[data-legend^="shape-"]::before {
+  background: var(--muted-strong);
+  border: 0;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-legend-item[data-legend="shape-agentic"]::before {
+  border-radius: 999px 999px 2px 2px;
+}
+
+.factory-legend-item[data-legend="shape-gate"]::before {
+  clip-path: polygon(0 100%, 0 34%, 50% 0, 100% 34%, 100% 100%, 72% 100%, 72% 52%, 28% 52%, 28% 100%);
+}
+
+.factory-legend-item[data-legend="shape-evaluator"]::before {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.factory-legend-item[data-legend="shape-deterministic"]::before {
+  border-radius: 1px;
+}
+
+.factory-legend-item[data-legend="shape-parallel"]::before {
+  background: linear-gradient(
+    90deg,
+    var(--muted-strong) 0 40%,
+    transparent 40% 60%,
+    var(--muted-strong) 60% 100%
+  );
+}
+
+.factory-legend-item[data-legend="shape-terminal"]::before {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+/*
+ * The Risk sentence. It is a live region because it is the one place the
+ * plant states whether the all-clear is a genuine all-clear or only the
+ * absence of confirmed risk in an incomplete read.
+ */
+.factory-legend-risk {
+  align-items: baseline;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted-strong);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding-left: 8px;
+}
+
+.factory-legend-risk > strong {
+  color: var(--ink);
+}
+
+.factory-legend-risk[data-risk="blocked"] {
+  border-left-color: var(--danger);
+}
+
+.factory-legend-risk[data-risk="held"],
+.factory-legend-risk[data-risk="impeded"] {
+  border-left-color: var(--warning);
+}
+
+.factory-legend-risk[data-risk="unknown"],
+.factory-legend-risk[data-complete="false"] {
+  border-left-style: dashed;
+  border-left-color: var(--muted-strong);
+}
+
+.factory-legend-readout {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding-left: 68px;
+}
+
+/* --- Inspector rail ---------------------------------------------------- */
+
+.factory-inspector {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 4%, var(--panel-raised)),
+      var(--panel) 150px
+    );
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: 0 18px 40px -34px rgb(0 0 0 / 75%);
+  display: grid;
+  gap: 12px;
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  padding: 16px;
+  position: sticky;
+  top: 16px;
+}
+
+.factory-inspector-status {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.factory-freshness {
+  align-items: center;
+  color: var(--muted-strong);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 640;
+  gap: 6px;
+}
+
+.factory-freshness-mark {
+  background: var(--success);
+  border-radius: 999px;
+  height: 7px;
+  width: 7px;
+}
+
+.factory-freshness[data-state="refreshing"] .factory-freshness-mark {
+  background: var(--warning);
+}
+
+.factory-freshness[data-state="degraded"] .factory-freshness-mark {
+  background: var(--danger);
+}
+
+.factory-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.factory-metrics > div {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 9px;
+}
+
+.factory-metrics dt {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.factory-metrics dd {
+  display: grid;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin: 2px 0 0;
+}
+
+.factory-metrics dd small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.factory-state-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  gap: 8px;
+}
+
+.factory-state-chip {
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  text-transform: uppercase;
+}
+
+.factory-state-line[data-state="blocked"] .factory-state-chip {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.factory-state-line[data-state="impeded"] .factory-state-chip,
+.factory-state-line[data-state="held"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="unknown"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="paused"] .factory-state-chip {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.factory-state-line[data-state="idle"] .factory-state-chip {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.factory-state-note,
+.factory-attention-note {
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.factory-alarm-text {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.factory-hold-text {
+  color: var(--warning-ink);
+  font-weight: 650;
+}
+
+.factory-attention h4 {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin: 0 0 7px;
+  text-transform: uppercase;
+}
+
+.factory-attention ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.factory-attention-row {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 7px 9px;
+}
+
+.factory-attention-row[data-kind="blocked-run"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.factory-attention-run {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 660;
+}
+
+.factory-attention-row small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.factory-attention-meta {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.factory-hold-chip {
+  background: var(--danger-soft);
+  border-radius: 999px;
+  color: var(--danger);
+  font-size: 8.5px;
+  font-weight: 660;
+  padding: 2px 7px;
+}
+
+.factory-links {
+  display: grid;
+  gap: 6px;
+}
+
+.factory-link {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  display: flex;
+  font-size: 11px;
+  font-weight: 620;
+  justify-content: space-between;
+  padding: 8px 10px;
+  text-decoration: none;
+}
+
+.factory-link:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.factory-inspector-note {
+  color: var(--muted-strong);
+  font-size: 10.5px;
+  margin: 0;
+}
+
+.factory-empty-counts {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- The plant, isometric ---------------------------------------------
+   The alternate layout of the same floor. One SVG ground layer carries the
+   hall, the districts and the belts; every semantic object above it is an
+   ordinary button clipped to its own silhouette, because rectangles overlap
+   constantly in an isometric scene and a near machine must never swallow a
+   click meant for the one behind it. */
+
+.factory-plant {
+  background:
+    radial-gradient(120% 80% at 46% -14%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 62%),
+    var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent), inset 0 -20px 38px -28px rgb(0 0 0 / 60%);
+  max-height: none;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+}
+
+.factory-plant-scene {
+  position: relative;
+  transform-origin: 0 0;
+}
+
+.factory-plant-ground {
+  display: block;
+  inset: 0;
+  position: absolute;
+}
+
+.factory-plant-annotations {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 9800;
+}
+
+/* --- Hall ------------------------------------------------------------- */
+
+.plant-floor-stop-near {
+  stop-color: color-mix(in srgb, var(--panel) 78%, var(--bg));
+}
+
+.plant-floor-stop-far {
+  stop-color: color-mix(in srgb, var(--bg) 88%, var(--ink));
+}
+
+.plant-wall-stop-top {
+  stop-color: color-mix(in srgb, var(--panel-raised) 84%, var(--accent) 6%);
+}
+
+.plant-wall-stop-base {
+  stop-color: color-mix(in srgb, var(--panel) 62%, var(--bg));
+}
+
+.plant-floor {
+  stroke: color-mix(in srgb, var(--line-strong) 80%, transparent);
+  stroke-width: 1;
+}
+
+.plant-grid {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line) 44%, transparent);
+  stroke-width: 0.7;
+}
+
+.plant-wall {
+  stroke: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  stroke-width: 1;
+}
+
+.plant-wall-cap {
+  fill: color-mix(in srgb, var(--panel-raised) 92%, var(--ink) 8%);
+  stroke: color-mix(in srgb, var(--line-strong) 60%, transparent);
+  stroke-width: 0.8;
+}
+
+.plant-window {
+  fill: color-mix(in srgb, var(--active) 26%, var(--panel-raised));
+  stroke: color-mix(in srgb, var(--active) 34%, var(--line));
+  stroke-width: 0.8;
+}
+
+.plant-rail {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 52%, transparent);
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+.plant-rail-post {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 34%, transparent);
+  stroke-width: 1.2;
+}
+
+.plant-aisle {
+  fill: color-mix(in srgb, var(--warning) 9%, transparent);
+  stroke: color-mix(in srgb, var(--warning) 34%, transparent);
+  stroke-width: 1;
+}
+
+.plant-aisle-mark {
+  fill: none;
+  stroke: color-mix(in srgb, var(--warning) 42%, transparent);
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+/* --- Districts -------------------------------------------------------- */
+
+.plant-plot {
+  fill: color-mix(in srgb, var(--panel) 46%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 62%, transparent);
+  stroke-width: 1;
+}
+
+.plant-plot-kerb {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 26%, transparent);
+  stroke-dasharray: 7 7;
+  stroke-width: 1.2;
+}
+
+.plant-hazard-base {
+  fill: color-mix(in srgb, var(--warning) 24%, var(--panel));
+}
+
+.plant-hazard-stripe {
+  fill: color-mix(in srgb, var(--ink) 26%, transparent);
+}
+
+.plant-floor-paint {
+  fill: color-mix(in srgb, var(--muted) 40%, transparent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.plant-yard-pad,
+.plant-commons-pad,
+.plant-empty-bay {
+  fill: color-mix(in srgb, var(--ink) 5%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 68%, transparent);
+  stroke-dasharray: 5 4;
+  stroke-width: 1;
+}
+
+.plant-yard-slot {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 55%, transparent);
+  stroke-dasharray: 2 4;
+  stroke-width: 0.9;
+}
+
+.plant-empty-bay {
+  fill: color-mix(in srgb, var(--warning) 8%, transparent);
+  stroke: color-mix(in srgb, var(--warning) 45%, var(--line-strong));
+}
+
+.plant-pad-label {
+  fill: var(--muted-strong);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plant-annotation-plate {
+  fill: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 78%, transparent);
+  stroke-width: 0.8;
+}
+
+.plant-return-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--warning) 42%, transparent);
+  stroke-dasharray: 6 5;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
+.plant-shadow {
+  fill: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+
+.plant-selection-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+/* The alarm wash is a static pool of light on the floor. It never blinks:
+   only the compact beacon hardware does. */
+.plant-wash-blocked-core {
+  stop-color: color-mix(in srgb, var(--danger) 82%, transparent);
+}
+
+.plant-wash-hold-core {
+  stop-color: color-mix(in srgb, var(--warning) 74%, transparent);
+}
+
+.plant-wash-edge {
+  stop-color: transparent;
+}
+
+.plant-alarm-wash {
+  pointer-events: none;
+}
+
+/* --- Belts ------------------------------------------------------------- */
+
+.plant-belt-bed {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 88%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 7;
+}
+
+.plant-belt-rail {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 30%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1;
+}
+
+.plant-belt-line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 62%, transparent);
+  stroke-dasharray: 6 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.plant-belt-line[data-kind="repass"] {
+  stroke: color-mix(in srgb, var(--warning) 58%, transparent);
+}
+
+.plant-belt-line[data-kind="terminal"] {
+  stroke: color-mix(in srgb, var(--success) 54%, transparent);
+}
+
+.plant-belt-head {
+  fill: color-mix(in srgb, var(--muted) 68%, transparent);
+}
+
+/* A belt only runs when a run actually moved along it, and only briefly. */
+.plant-belt-line[data-active="true"] {
+  animation: plant-belt 640ms linear 2;
+  stroke: var(--accent);
+  stroke-width: 2.4;
+}
+
+@keyframes plant-belt {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.plant-belt-label {
+  fill: var(--ink);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* --- Line signage ------------------------------------------------------ */
+
+.factory-plant-sign {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  position: absolute;
+  transform: translate(-100%, calc(-100% - 16px));
+  z-index: 9000;
+}
+
+.factory-plant-sign-mast {
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--line-strong) 90%, transparent));
+  bottom: -16px;
+  height: 16px;
+  position: absolute;
+  right: 12px;
+  width: 2px;
+}
+
+.factory-plant-sign-board {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel-raised) 95%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 76%, transparent);
+  border-radius: 9px;
+  box-shadow: 0 8px 18px -12px rgb(0 0 0 / 85%);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  justify-content: flex-end;
+  max-width: 232px;
+  padding: 5px 9px;
+}
+
+.factory-plant-sign[data-blocked="true"] .factory-plant-sign-board {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--line-strong));
+}
+
+.factory-plant-sign[aria-pressed="true"] .factory-plant-sign-board {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.factory-plant-sign-title {
+  font-size: 11.5px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+}
+
+.factory-plant-sign-gaggle {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.factory-plant-sign-readout {
+  color: var(--muted-strong);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-plant-sign-gauge {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  width: 54px;
+}
+
+.factory-plant-sign-gauge > span {
+  background: var(--accent);
+  display: block;
+  height: 100%;
+}
+
+.factory-plant-sign-gauge[data-known="false"] {
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--muted) 26%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.factory-plant-sign-badge {
+  background: color-mix(in srgb, var(--warning) 16%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--line));
+  border-radius: 999px;
+  color: var(--warning-ink);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 6px;
+}
+
+/* --- Machinery --------------------------------------------------------- */
+
+.factory-plant-machine,
+.factory-plant-dock {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  position: absolute;
+}
+
+.factory-plant-machine {
+  --machine-tint: var(--muted);
+  cursor: pointer;
+}
+
+.factory-plant-machine[data-kind="agentic"] {
+  --machine-tint: var(--accent);
+}
+
+.factory-plant-machine[data-kind="gate"] {
+  --machine-tint: var(--active);
+}
+
+.factory-plant-machine[data-status="idle"] {
+  --machine-tint: var(--line-strong);
+}
+
+.factory-plant-machine[data-status="held"] {
+  --machine-tint: var(--warning);
+}
+
+.factory-plant-machine[data-status="blocked"] {
+  --machine-tint: var(--danger);
+}
+
+.factory-plant-machine[data-status="unknown"] {
+  --machine-tint: var(--muted-strong);
+}
+
+.factory-plant-art {
+  display: block;
+  pointer-events: none;
+}
+
+.plant-face {
+  stroke: color-mix(in srgb, var(--ink) 20%, transparent);
+  stroke-linejoin: round;
+  stroke-width: 0.6;
+}
+
+.plant-face-top {
+  fill: color-mix(in srgb, var(--machine-tint) 16%, color-mix(in srgb, var(--panel-raised) 86%, white 14%));
+}
+
+.plant-face-right {
+  fill: color-mix(in srgb, var(--machine-tint) 22%, color-mix(in srgb, var(--panel) 92%, var(--ink) 8%));
+}
+
+.plant-face-front {
+  fill: color-mix(in srgb, var(--machine-tint) 28%, color-mix(in srgb, var(--panel) 78%, var(--ink) 22%));
+}
+
+[data-role="plinth"] .plant-face-top {
+  fill: color-mix(in srgb, var(--bg) 72%, var(--ink) 10%);
+}
+
+[data-role="plinth"] .plant-face-right,
+[data-role="plinth"] .plant-face-front {
+  fill: color-mix(in srgb, var(--ink) 26%, var(--panel));
+}
+
+[data-role="roof"] .plant-face-top {
+  fill: color-mix(in srgb, var(--machine-tint) 30%, color-mix(in srgb, var(--panel-raised) 76%, var(--ink) 8%));
+}
+
+[data-role="stack"] .plant-face-top,
+[data-role="column"] .plant-face-top,
+[data-role="arm"] .plant-face-top,
+[data-role="boom"] .plant-face-top {
+  fill: color-mix(in srgb, var(--machine-tint) 44%, var(--panel-raised));
+}
+
+[data-role="stack"] .plant-face-right,
+[data-role="column"] .plant-face-right,
+[data-role="arm"] .plant-face-right,
+[data-role="boom"] .plant-face-right {
+  fill: color-mix(in srgb, var(--machine-tint) 52%, var(--panel));
+}
+
+[data-role="stack"] .plant-face-front,
+[data-role="column"] .plant-face-front,
+[data-role="arm"] .plant-face-front,
+[data-role="boom"] .plant-face-front {
+  fill: color-mix(in srgb, var(--machine-tint) 60%, color-mix(in srgb, var(--panel) 74%, var(--ink) 26%));
+}
+
+[data-role="panel"] .plant-face-top,
+[data-role="post"] .plant-face-top {
+  fill: color-mix(in srgb, var(--ink) 22%, var(--panel-raised));
+}
+
+[data-role="panel"] .plant-face-right,
+[data-role="post"] .plant-face-right,
+[data-role="panel"] .plant-face-front,
+[data-role="post"] .plant-face-front {
+  fill: color-mix(in srgb, var(--ink) 40%, var(--panel));
+}
+
+.factory-plant-machine[data-source="observed"] .plant-face {
+  stroke-dasharray: 3 2;
+}
+
+.factory-plant-machine:hover .plant-face-top {
+  fill: color-mix(in srgb, var(--accent) 22%, color-mix(in srgb, var(--panel-raised) 86%, white 14%));
+}
+
+.factory-plant-machine[aria-pressed="true"] .plant-face {
+  stroke: var(--accent);
+  stroke-width: 1.3;
+}
+
+/* The clip that keeps hit areas honest also clips an outside outline, so
+   focus is drawn inside the silhouette instead. */
+.factory-plant-machine:focus-visible,
+.factory-plant-crate:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+
+.factory-plant-machine:focus-visible .plant-face,
+.factory-plant-crate:focus-visible .plant-crate-face {
+  stroke: var(--focus);
+  stroke-width: 2.2;
+}
+
+.factory-plant-crate:focus-visible .plant-crate-halo {
+  opacity: 1;
+  stroke: var(--focus);
+  stroke-width: 3;
+}
+
+.factory-plant-lamp {
+  border-radius: 999px;
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--success) 60%, transparent);
+  background: var(--success);
+  height: 7px;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 7px;
+}
+
+.factory-plant-machine[data-status="idle"] .factory-plant-lamp {
+  background: var(--line-strong);
+  box-shadow: none;
+}
+
+.factory-plant-machine[data-status="impeded"] .factory-plant-lamp,
+.factory-plant-machine[data-status="held"] .factory-plant-lamp {
+  background: var(--warning);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--warning) 60%, transparent);
+}
+
+.factory-plant-machine[data-status="blocked"] .factory-plant-lamp {
+  background: var(--danger);
+  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--danger) 60%, transparent);
+}
+
+.factory-plant-machine[data-status="unknown"] .factory-plant-lamp {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warning) 0 2px,
+    color-mix(in srgb, var(--muted) 60%, transparent) 2px 4px
+  );
+  box-shadow: none;
+}
+
+.factory-plant-beacon {
+  animation: plant-alarm-blink 880ms steps(1, end) infinite;
+  display: grid;
+  place-items: end center;
+  position: absolute;
+  transform: translate(-50%, -100%);
+}
+
+.factory-plant-beacon-lamp {
+  background: var(--danger);
+  border-radius: 999px 999px 2px 2px;
+  box-shadow: 0 0 9px 3px color-mix(in srgb, var(--danger) 68%, transparent);
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.factory-plant-beacon[data-alarm="hold"] .factory-plant-beacon-lamp {
+  background: var(--warning);
+  box-shadow: 0 0 9px 3px color-mix(in srgb, var(--warning) 68%, transparent);
+}
+
+@keyframes plant-alarm-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+
+  56%,
+  100% {
+    opacity: 0.25;
+  }
+}
+
+.factory-plant-placard {
+  align-content: center;
+  background: color-mix(in srgb, var(--panel-raised) 93%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--machine-tint) 60%, var(--line-strong));
+  border-radius: 7px;
+  box-shadow: 0 7px 16px -12px rgb(0 0 0 / 88%);
+  display: grid;
+  gap: 1px;
+  padding: 3px 6px;
+  position: absolute;
+  text-align: left;
+}
+
+.factory-plant-placard-head {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  justify-content: space-between;
+}
+
+.factory-plant-placard-kind {
+  color: var(--muted);
+  flex: 0 1 auto;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.factory-plant-placard-status {
+  color: var(--muted-strong);
+  flex: 0 0 auto;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.factory-plant-machine[data-status="blocked"] .factory-plant-placard-status {
+  color: var(--danger);
+}
+
+.factory-plant-machine[data-status="held"] .factory-plant-placard-status,
+.factory-plant-machine[data-status="impeded"] .factory-plant-placard-status {
+  color: var(--warning-ink);
+}
+
+.factory-plant-machine[data-status="unknown"] .factory-plant-placard-status {
+  color: var(--muted-strong);
+  text-decoration: underline dashed;
+}
+
+.factory-plant-placard-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-plant-placard-foot {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.factory-plant-placard-wip {
+  color: var(--muted-strong);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.factory-plant-placard-gauge {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 999px;
+  flex: 1 1 auto;
+  height: 3px;
+  min-width: 18px;
+  overflow: hidden;
+}
+
+.factory-plant-placard-gauge > span {
+  background: var(--accent);
+  display: block;
+  height: 100%;
+}
+
+.factory-plant-placard-gauge[data-known="false"] {
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--muted) 26%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.factory-plant-machine[data-status="blocked"] .factory-plant-placard-gauge > span {
+  background: var(--danger);
+}
+
+.factory-plant-machine[data-status="held"] .factory-plant-placard-gauge > span {
+  background: var(--warning);
+}
+
+/* --- Docks ------------------------------------------------------------- */
+
+.factory-plant-dock {
+  --machine-tint: var(--muted);
+}
+
+.factory-plant-dock[data-terminal="complete"] {
+  --machine-tint: var(--success);
+}
+
+.factory-plant-dock[data-terminal="escalate"] {
+  --machine-tint: var(--danger);
+}
+
+.factory-plant-dock-label {
+  color: var(--muted-strong);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  position: absolute;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+
+/* --- Work crates -------------------------------------------------------- */
+
+.factory-plant-crate {
+  --crate-top: color-mix(in srgb, var(--accent) 34%, var(--panel-raised));
+  --crate-right: color-mix(in srgb, var(--accent) 44%, var(--panel));
+  --crate-front: color-mix(in srgb, var(--accent) 54%, color-mix(in srgb, var(--panel) 72%, var(--ink) 28%));
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  left: 0;
+  padding: 0;
+  position: absolute;
+  top: 0;
+}
+
+.factory-plant-crate.is-transitioning {
+  transition: transform 640ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+
+.plant-crate-face {
+  stroke: color-mix(in srgb, var(--ink) 34%, transparent);
+  stroke-linejoin: round;
+  stroke-width: 0.6;
+}
+
+.plant-crate-top {
+  fill: var(--crate-top);
+}
+
+.plant-crate-right {
+  fill: var(--crate-right);
+}
+
+.plant-crate-front {
+  fill: var(--crate-front);
+}
+
+.plant-crate-halo {
+  fill: none;
+  opacity: 0;
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.factory-plant-crate[data-state="paused"] {
+  --crate-top: color-mix(in srgb, var(--warning) 40%, var(--panel-raised));
+  --crate-right: color-mix(in srgb, var(--warning) 52%, var(--panel));
+  --crate-front: color-mix(in srgb, var(--warning) 62%, color-mix(in srgb, var(--panel) 72%, var(--ink) 28%));
+}
+
+.factory-plant-crate[data-state="blocked"] {
+  --crate-top: color-mix(in srgb, var(--danger) 42%, var(--panel-raised));
+  --crate-right: color-mix(in srgb, var(--danger) 54%, var(--panel));
+  --crate-front: color-mix(in srgb, var(--danger) 66%, color-mix(in srgb, var(--panel) 72%, var(--ink) 28%));
+}
+
+.factory-plant-crate[data-state="blocked"] .plant-crate-face {
+  stroke: var(--danger);
+  stroke-width: 1.1;
+}
+
+.factory-plant-crate[data-state="paused"] .plant-crate-face {
+  stroke: var(--warning);
+  stroke-width: 1.1;
+}
+
+.factory-plant-crate[data-state="starting"] {
+  --crate-top: var(--panel-raised);
+  --crate-right: var(--panel);
+  --crate-front: color-mix(in srgb, var(--panel) 78%, var(--ink) 22%);
+}
+
+.factory-plant-crate[data-state="starting"] .plant-crate-face {
+  stroke-dasharray: 3 2;
+}
+
+.factory-plant-crate[data-state="unknown"] .plant-crate-face {
+  stroke: var(--warning);
+  stroke-dasharray: 2 2;
+  stroke-width: 1.1;
+}
+
+.factory-plant-crate[aria-pressed="true"] .plant-crate-face {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+}
+
+/* One-shot arrival flash. It fires because the run changed stage, and ends. */
+.factory-plant-crate[data-moved="true"] .plant-crate-halo {
+  animation: plant-crate-arrive 900ms ease-out 1;
+}
+
+@keyframes plant-crate-arrive {
+  0% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+/* --- Staff -------------------------------------------------------------- */
+
+.factory-plant-staff {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  position: absolute;
+}
+
+.factory-plant-staff-head {
+  background: color-mix(in srgb, var(--accent) 46%, var(--panel-raised));
+  border: 1px solid color-mix(in srgb, var(--ink) 32%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 38%;
+  left: 50%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  width: 62%;
+}
+
+.factory-plant-staff-body {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 40%, var(--panel-raised)),
+    color-mix(in srgb, var(--accent) 22%, var(--panel))
+  );
+  border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  border-radius: 40% 40% 32% 32%;
+  bottom: 16%;
+  display: block;
+  left: 50%;
+  position: absolute;
+  top: 32%;
+  transform: translateX(-50%);
+  width: 92%;
+}
+
+.factory-plant-staff-tag {
+  background: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  border-radius: 4px;
+  bottom: -6px;
+  color: var(--muted-strong);
+  font-size: 7px;
+  font-weight: 800;
+  left: 50%;
+  letter-spacing: 0.04em;
+  padding: 0 3px;
+  position: absolute;
+  transform: translateX(-50%);
+  text-transform: uppercase;
+}
+
+.factory-plant-staff[data-active="false"] .factory-plant-staff-head,
+.factory-plant-staff[data-active="false"] .factory-plant-staff-body {
+  background: color-mix(in srgb, var(--muted) 26%, var(--panel));
+  border-color: color-mix(in srgb, var(--line-strong) 80%, transparent);
+}
+
+.factory-plant-staff[aria-pressed="true"] .factory-plant-staff-body,
+.factory-plant-staff[aria-pressed="true"] .factory-plant-staff-head {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.factory-plant-overflow {
+  transform: translate(-50%, -50%);
+  z-index: 9500;
+}
+
+.factory-plant-overflow-staff {
+  min-width: 38px;
+  padding-inline: 4px;
+}
+
+/* --- Plant lenses ------------------------------------------------------- */
+
+.factory-plant[data-lens="flow"] .plant-belt-line {
+  stroke-width: 2.8;
+}
+
+.factory-plant[data-lens="flow"] .plant-belt-bed {
+  stroke: color-mix(in srgb, var(--accent) 26%, var(--line-strong));
+}
+
+.factory-plant[data-lens="flow"] .factory-plant-staff,
+.factory-plant[data-lens="flow"] .plant-window,
+.factory-plant[data-lens="flow"] .plant-floor-paint {
+  opacity: 0.4;
+}
+
+.factory-plant[data-lens="flow"] .factory-plant-beacon,
+.factory-plant[data-lens="flow"] .plant-alarm-wash {
+  opacity: 0.45;
+}
+
+.factory-plant[data-lens="risk"] .factory-plant-machine[data-status="idle"],
+.factory-plant[data-lens="risk"] .factory-plant-machine[data-status="running"],
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="running"],
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="starting"],
+.factory-plant[data-lens="risk"] .factory-plant-staff,
+.factory-plant[data-lens="risk"] .plant-belt-line,
+.factory-plant[data-lens="risk"] .factory-plant-dock {
+  filter: saturate(0.16);
+  opacity: 0.6;
+}
+
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="blocked"],
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="paused"] {
+  filter: none;
+  opacity: 1;
+}
+
+.factory-plant[data-lens="risk"] .factory-plant-machine[data-status="running"] .factory-plant-machine-core,
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="running"] .plant-crate-halo,
+.factory-plant[data-lens="risk"] .factory-plant-crate[data-state="starting"] .plant-crate-halo,
+.factory-plant[data-lens="risk"] .factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+.factory-plant[data-lens="risk"] .factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation: none;
+}
+
+/* --- Boss's-window plant ---------------------------------------------- */
+
+.factory-plant-classic {
+  aspect-ratio: 1450 / 950;
+  container-type: inline-size;
+  margin-inline: auto;
+  max-height: none;
+  overflow: hidden;
+  width: min(100%, calc(68vh * 1450 / 950));
+}
+
+.factory-plant-classic .factory-plant-scene {
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-backdrop {
+  display: block;
+  height: 100%;
+  inset: 0;
+  object-fit: fill;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
+  width: 100%;
+}
+
+.factory-plant-renderer {
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-renderer .factory-plant-backdrop {
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-backdrop {
+  opacity: 0;
+}
+
+.factory-plant-webgl {
+  display: block;
+  height: 100%;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 180ms ease;
+  width: 100%;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-webgl {
+  opacity: 1;
+}
+
+.factory-plant-renderer-status {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  bottom: 6.2%;
+  color: var(--muted-strong);
+  display: flex;
+  font-size: 0.62cqw;
+  gap: 0.55cqw;
+  left: 50%;
+  padding: 0.34cqw 0.52cqw;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 55;
+}
+
+.factory-plant-renderer-status button {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0.2cqw 0.42cqw;
+  white-space: nowrap;
+}
+
+/*
+ * The authored hall floor, in CSS.
+ *
+ * This is the complete fallback: it is present in the very first frame, needs
+ * no network, and reads as the same neutral operating floor the renderer
+ * authors. The 540 KB illustration is progressive enhancement mounted only
+ * once we are actually on the fallback, so the successful WebGL path never
+ * pays for it.
+ */
+.factory-plant-backdrop-authored {
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--panel) 88%, var(--ink) 4%) 0%,
+      color-mix(in srgb, var(--panel) 70%, var(--ink) 12%) 46%,
+      color-mix(in srgb, var(--panel) 58%, var(--ink) 18%) 100%
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 5.6%,
+      color-mix(in srgb, var(--line) 42%, transparent) 5.6% 5.9%
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 7.2%,
+      color-mix(in srgb, var(--line) 30%, transparent) 7.2% 7.5%
+    );
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
+  width: 100%;
+  z-index: 0;
+}
+
+.factory-plant-renderer[data-webgl="ready"] .factory-plant-backdrop-authored {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+/*
+ * Forced colours: the OS has already told us the author's palette is unusable.
+ * A canvas is exempt from the substitution, so the hall would keep painting a
+ * status system the operator cannot read. The renderer is never mounted; the
+ * DOM plant carries the whole meaning in system colours and shape.
+ */
+.factory-plant-renderer[data-forced-colors="true"] .factory-plant-backdrop-authored {
+  background: Canvas;
+  border: 1px solid CanvasText;
+}
+
+@media (forced-colors: active) {
+  .factory-plant-backdrop-authored {
+    background: Canvas;
+    border: 1px solid CanvasText;
+    forced-color-adjust: none;
+  }
+
+  /* Status is a shape and an outline here, never a fill colour. */
+  .factory-plant-machine .plant-face,
+  .factory-plant-dock .plant-face {
+    fill: Canvas;
+    stroke: CanvasText;
+    stroke-width: 1.5;
+  }
+
+  .factory-plant-machine[data-status="blocked"] .plant-face-top,
+  .factory-plant-machine[data-status="held"] .plant-face-top,
+  .factory-plant-machine[data-status="impeded"] .plant-face-top {
+    fill: Highlight;
+  }
+
+  .factory-plant-machine[data-status="unknown"] .plant-face-top {
+    fill: Canvas;
+    stroke-dasharray: 4 3;
+  }
+
+  .factory-plant-machine[data-source="observed"] .plant-face {
+    stroke-dasharray: 4 3;
+    opacity: 1;
+  }
+
+  .factory-plant-lamp,
+  .factory-plant-beacon-lamp {
+    fill: CanvasText;
+    opacity: 1;
+  }
+
+  .factory-plant-crate .plant-crate-face {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+
+  /* Nothing may hide its own meaning: the lens dimming is author colour. */
+  .factory-plant-classic[data-lens="risk"] .factory-plant-machine,
+  .factory-plant-classic[data-lens="risk"] .factory-plant-crate,
+  .factory-plant-classic[data-lens="risk"] .factory-plant-staff,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-machine,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-sign,
+  .factory-plant-classic[data-lens="flow"] .factory-plant-staff {
+    opacity: 1;
+  }
+
+  .factory-plant-hud-top > span,
+  .factory-plant-hud-top > b,
+  .factory-plant-hud-bottom {
+    background: Canvas;
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .factory-plant-hud-bottom i {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
+}
+
+.factory-plant-overlay {
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+  z-index: 4;
+}
+
+/*
+ * Every overlay control is a zero-size box pinned to the projected point and
+ * counter-scaled, so its hit target keeps a real CSS size at any zoom and its
+ * measured centre is the projected anchor itself.
+ */
+.factory-plant-overlay-item {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  height: 0;
+  padding: 0;
+  pointer-events: none;
+  position: absolute;
+  transform-origin: 0 0;
+  width: 0;
+}
+
+.factory-plant-overlay-origin {
+  display: block;
+  height: 0;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 0;
+}
+
+.factory-plant-overlay-hit {
+  cursor: pointer;
+  display: block;
+  height: var(--plant-hit-height);
+  left: 0;
+  pointer-events: auto;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: var(--plant-hit-width);
+}
+
+.factory-plant-overlay-ring {
+  border: 2px solid var(--focus);
+  border-radius: 999px;
+  display: block;
+  height: calc(var(--plant-hit-height) + 8px);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: calc(var(--plant-hit-width) + 8px);
+}
+
+.factory-plant-overlay-item:focus-visible .factory-plant-overlay-hit {
+  box-shadow: 0 0 0 3px var(--focus);
+  outline: none;
+}
+
+.factory-plant-overlay-label,
+.factory-plant-overlay-chip {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  display: flex;
+  font-size: 11px;
+  justify-content: center;
+  left: 0;
+  line-height: 1;
+  overflow: hidden;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 0;
+  white-space: nowrap;
+}
+
+.factory-plant-overlay-label {
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.factory-plant-risk-badge {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 800;
+  gap: 4px;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.factory-plant-risk-badge > i,
+.factory-plant-risk-marker {
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.factory-plant-risk-badge[data-shape="stop-octagon"] > i,
+.factory-plant-risk-marker[data-shape="stop-octagon"] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--danger) 0 2px,
+    color-mix(in srgb, var(--danger) 45%, var(--surface)) 2px 4px
+  );
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+}
+
+.factory-plant-risk-badge[data-shape="pause-bars"] > i,
+.factory-plant-risk-marker[data-shape="pause-bars"] {
+  background: linear-gradient(
+    90deg,
+    var(--warning) 0 32%,
+    transparent 32% 68%,
+    var(--warning) 68% 100%
+  );
+  border-block: 1px solid var(--ink);
+}
+
+.factory-plant-risk-badge[data-shape="warning-triangle"] > i,
+.factory-plant-risk-marker[data-shape="warning-triangle"] {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warning) 0 2px,
+    var(--ink) 2px 3px
+  );
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.factory-plant-risk-badge[data-shape="open-diamond"] > i,
+.factory-plant-risk-marker[data-shape="open-diamond"] {
+  background: var(--surface);
+  border: 2px solid var(--muted-strong);
+  transform: rotate(45deg) scale(0.72);
+}
+
+.factory-plant-risk-badge[data-risk="blocked"] {
+  color: var(--danger);
+}
+
+.factory-plant-risk-badge[data-risk="held"],
+.factory-plant-risk-badge[data-risk="impeded"] {
+  color: var(--warning-ink);
+}
+
+.factory-plant-risk-badge[data-risk="unknown"] {
+  color: var(--muted-strong);
+}
+
+.factory-plant-overlay-chip {
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 0;
+  pointer-events: auto;
+  transform-origin: 0 0;
+  z-index: 5;
+}
+
+.factory-plant-overlay-item[data-tier="selected"] .factory-plant-overlay-label,
+.factory-plant-overlay-item[data-tier="focused"] .factory-plant-overlay-label {
+  border-color: var(--focus);
+  font-weight: 600;
+}
+
+.factory-plant-overlay-item[data-tier="alarm"] .factory-plant-overlay-label {
+  border-color: var(--danger-border);
+  font-weight: 600;
+}
+
+.factory-plant-overlay-item[data-onscreen="false"] {
+  display: none;
+}
+
+.factory-plant-live-belts,
+.factory-plant-classic .factory-plant-annotations {
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+}
+
+.factory-plant-live-belts {
+  z-index: 2;
+}
+
+.factory-plant-classic .factory-plant-annotations {
+  z-index: 40;
+}
+
+.factory-plant-classic .plant-belt-bed {
+  opacity: 0.06;
+  stroke-width: 8;
+}
+
+.factory-plant-classic .plant-belt-line {
+  opacity: 0;
+  stroke-width: 3.5;
+}
+
+.factory-plant-classic .factory-plant-annotations {
+  opacity: 0;
+}
+
+.factory-plant-classic[data-lens="flow"] .plant-belt-bed {
+  opacity: 0;
+}
+
+.factory-plant-classic[data-lens="flow"] .plant-belt-line {
+  opacity: 0;
+}
+
+.factory-plant-classic .plant-belt-line[data-active="true"] {
+  opacity: 1;
+}
+
+.factory-plant-classic .factory-plant-sign {
+  background: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-left: 0.32cqw solid var(--success);
+  border-radius: 0.62cqw;
+  box-shadow: 0 0.4cqw 1.1cqw -0.8cqw rgb(0 0 0 / 65%);
+  display: grid;
+  gap: 0.12cqw;
+  min-height: 3.7cqw;
+  padding: 0.46cqw 0.62cqw;
+  text-align: left;
+  transform: none;
+  width: 14.8cqw;
+  z-index: 30;
+}
+
+.factory-plant-classic .factory-plant-sign[data-blocked="true"] {
+  border-left-color: var(--danger);
+}
+
+.factory-plant-classic .factory-plant-sign[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.2cqw color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.factory-plant-classic .factory-plant-sign-title {
+  font-size: 0.82cqw;
+  line-height: 1.05;
+}
+
+.factory-plant-classic .factory-plant-sign-gaggle,
+.factory-plant-classic .factory-plant-sign-readout,
+.factory-plant-classic .factory-plant-sign-summary {
+  font-size: 0.56cqw;
+  line-height: 1.1;
+}
+
+.factory-plant-classic .factory-plant-sign-summary {
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.factory-plant-classic .factory-plant-sign-badge {
+  border-radius: 0.4cqw;
+  font-size: 0.52cqw;
+  justify-self: start;
+  padding: 0.08cqw 0.34cqw;
+}
+
+.factory-plant-classic .factory-plant-machine {
+  --machine-tint: var(--muted);
+  background: var(--machine-tint);
+  border: 0.22cqw solid var(--panel-raised);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.14cqw color-mix(in srgb, var(--machine-tint) 60%, transparent);
+  height: 1.35cqw;
+  padding: 0;
+  transform: translate(-50%, -100%);
+  width: 1.35cqw;
+  z-index: 24;
+}
+
+.factory-plant-classic .factory-plant-machine[data-kind="agentic"] {
+  --machine-tint: var(--accent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-kind="gate"] {
+  --machine-tint: var(--active);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="running"] .factory-plant-machine-core {
+  animation: factory-plant-machine-core 1.1s linear infinite;
+}
+
+@keyframes factory-plant-machine-core {
+  50% {
+    filter: drop-shadow(0 0 0.38cqw color-mix(in srgb, var(--success) 72%, transparent));
+  }
+
+  to {
+    rotate: 1turn;
+  }
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="blocked"] {
+  --machine-tint: var(--danger);
+  animation: plant-alarm-blink 760ms steps(1, end) infinite;
+  box-shadow: 0 0 2.2cqw 0.7cqw color-mix(in srgb, var(--danger) 70%, transparent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="held"] {
+  --machine-tint: var(--warning);
+  animation: plant-alarm-blink 900ms steps(1, end) infinite;
+  box-shadow: 0 0 1.8cqw 0.55cqw color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="idle"] {
+  --machine-tint: var(--line-strong);
+  box-shadow: none;
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="impeded"] {
+  --machine-tint: var(--warning);
+}
+
+.factory-plant-classic .factory-plant-machine[data-status="unknown"] {
+  --machine-tint: var(--muted-strong);
+  border-style: dashed;
+}
+
+.factory-plant-classic .factory-plant-machine[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.26cqw var(--focus), 0 0 1.4cqw 0.3cqw color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.factory-plant-machine-core {
+  display: block;
+  inset: 0;
+  position: absolute;
+}
+
+.factory-plant-machine-core > i {
+  background: color-mix(in srgb, white 82%, transparent);
+  border-radius: 50%;
+  display: block;
+  height: 0.28cqw;
+  margin: 0.12cqw;
+  width: 0.28cqw;
+}
+
+.factory-plant-machine-tooltip {
+  align-content: center;
+  background: color-mix(in srgb, var(--panel-raised) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
+  border-left: 0.3cqw solid var(--machine-tint);
+  border-radius: 0.58cqw;
+  box-shadow: 0 0.7cqw 1.5cqw -0.9cqw rgb(0 0 0 / 82%);
+  display: grid;
+  gap: 0.2cqw;
+  left: 50%;
+  min-height: 4.1cqw;
+  opacity: 0;
+  padding: 0.48cqw 0.62cqw;
+  pointer-events: none;
+  position: absolute;
+  text-align: left;
+  top: -0.7cqw;
+  transform: translate(-50%, -100%) scale(0.96);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  width: 13.5cqw;
+  z-index: 60;
+}
+
+.factory-plant-machine:hover .factory-plant-machine-tooltip,
+.factory-plant-machine:focus-visible .factory-plant-machine-tooltip,
+.factory-plant-machine[aria-pressed="true"] .factory-plant-machine-tooltip,
+.factory-plant-machine[data-alarm="blocked"] .factory-plant-machine-tooltip,
+.factory-plant-machine[data-alarm="hold"] .factory-plant-machine-tooltip {
+  opacity: 1;
+  transform: translate(-50%, -100%) scale(1);
+  visibility: visible;
+}
+
+.factory-plant-machine-alarm {
+  background: var(--danger);
+  border-radius: 0.25cqw;
+  color: white;
+  font-size: 0.58cqw;
+  font-weight: 800;
+  left: 50%;
+  letter-spacing: 0.08em;
+  padding: 0.18cqw 0.42cqw;
+  position: absolute;
+  top: -1.6cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.factory-plant-machine[data-alarm="hold"] .factory-plant-machine-alarm {
+  background: var(--warning);
+  color: var(--ink);
+}
+
+.factory-plant-risk-label {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 0.3cqw;
+  color: var(--ink);
+  display: flex;
+  font-size: 0.54cqw;
+  font-weight: 850;
+  gap: 0.28cqw;
+  left: 50%;
+  letter-spacing: 0.04em;
+  padding: 0.16cqw 0.34cqw;
+  position: absolute;
+  top: -2.05cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 65;
+}
+
+.factory-plant-crate .factory-plant-risk-label {
+  top: -1.4cqw;
+}
+
+.factory-plant-risk-label[data-risk="blocked"] {
+  border-color: var(--danger);
+}
+
+.factory-plant-risk-label[data-risk="held"],
+.factory-plant-risk-label[data-risk="impeded"] {
+  border-color: var(--warning);
+}
+
+.factory-plant-risk-label[data-risk="unknown"] {
+  border-style: dashed;
+  border-color: var(--muted-strong);
+}
+
+.factory-plant-classic .factory-plant-placard-head,
+.factory-plant-classic .factory-plant-placard-foot {
+  gap: 0.35cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-kind,
+.factory-plant-classic .factory-plant-placard-status,
+.factory-plant-classic .factory-plant-placard-wip,
+.factory-plant-classic .factory-plant-placard-foot > span:last-child {
+  font-size: 0.53cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-name {
+  font-size: 0.78cqw;
+}
+
+.factory-plant-classic .factory-plant-placard-gauge {
+  height: 0.28cqw;
+  min-width: 2.4cqw;
+}
+
+.factory-plant-machine-pin {
+  background: var(--success);
+  border: 0.22cqw solid var(--panel-raised);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.13cqw color-mix(in srgb, var(--success) 60%, transparent);
+  height: 1.25cqw;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: 1.25cqw;
+  z-index: 18;
+}
+
+.factory-plant-machine-pin > i {
+  background: color-mix(in srgb, white 80%, transparent);
+  border-radius: 50%;
+  display: block;
+  height: 0.28cqw;
+  margin: 0.16cqw;
+  width: 0.28cqw;
+}
+
+.factory-plant-machine-pin[data-status="idle"] {
+  background: var(--line-strong);
+  box-shadow: none;
+}
+
+.factory-plant-machine-pin[data-status="held"],
+.factory-plant-machine-pin[data-status="impeded"] {
+  background: var(--warning);
+  box-shadow: 0 0 1.8cqw 0.55cqw color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.factory-plant-machine-pin[data-status="unknown"] {
+  background: var(--surface);
+  border-color: var(--muted-strong);
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.factory-plant-machine-pin[data-status="blocked"] {
+  background: var(--danger);
+  box-shadow: 0 0 2.2cqw 0.7cqw color-mix(in srgb, var(--danger) 70%, transparent);
+}
+
+.factory-plant-machine-pin[data-alarm="blocked"],
+.factory-plant-machine-pin[data-alarm="hold"] {
+  animation: plant-alarm-blink 760ms steps(1, end) infinite;
+}
+
+.factory-plant-machine-pin > b {
+  background: var(--danger);
+  border-radius: 0.25cqw;
+  color: white;
+  font-size: 0.58cqw;
+  left: 50%;
+  letter-spacing: 0.08em;
+  padding: 0.18cqw 0.42cqw;
+  position: absolute;
+  top: -1.7cqw;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.factory-plant-machine-pin[data-alarm="hold"] > b {
+  background: var(--warning);
+  color: var(--ink);
+}
+
+.factory-plant-classic .factory-plant-crate {
+  height: 2.1cqw;
+  left: auto;
+  top: auto;
+  transform: translate(-50%, -50%) rotate(-1deg);
+  transition:
+    left 640ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    top 640ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  width: 2.3cqw;
+  z-index: 20;
+}
+
+.factory-plant-classic .factory-plant-crate > span:not(.sr-only) {
+  display: block;
+  position: absolute;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-top {
+  background: var(--crate-top);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  height: 48%;
+  inset: 0 8% auto;
+  transform: skewX(-28deg);
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-front {
+  background: var(--crate-front);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  height: 52%;
+  inset: 43% 19% auto 0;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-right {
+  background: var(--crate-right);
+  border: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+  clip-path: polygon(0 0, 100% 18%, 100% 100%, 0 82%);
+  height: 52%;
+  inset: 43% 0 auto 79%;
+  width: 21%;
+}
+
+.factory-plant-classic .factory-plant-crate .plant-crate-halo {
+  border: 0.18cqw solid var(--accent);
+  border-radius: 50%;
+  height: 150%;
+  inset: -25%;
+  opacity: 0;
+  width: 150%;
+}
+
+.factory-plant-crate[data-state="running"] .plant-crate-halo,
+.factory-plant-crate[data-state="starting"] .plant-crate-halo {
+  animation: factory-plant-work-order 1.4s ease-in-out infinite;
+}
+
+@keyframes factory-plant-work-order {
+  50% {
+    opacity: 0.7;
+    scale: 1.08;
+  }
+}
+
+.factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+.factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation: factory-plant-staff-operating 850ms ease-in-out infinite alternate;
+}
+
+.factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+  animation-delay: -425ms;
+}
+
+@keyframes factory-plant-staff-operating {
+  to {
+    translate: 0 -0.18cqw;
+  }
+}
+
+.factory-plant-classic .factory-plant-crate[data-state="blocked"] {
+  filter: drop-shadow(0 0 0.45cqw color-mix(in srgb, var(--danger) 75%, transparent));
+}
+
+.factory-plant-classic .factory-plant-crate[aria-pressed="true"] {
+  filter: drop-shadow(0 0 0.45cqw color-mix(in srgb, var(--accent) 80%, transparent));
+}
+
+.factory-plant-classic .factory-plant-staff {
+  height: 4.1cqw;
+  transform: translate(-50%, -75%);
+  width: 2.4cqw;
+  z-index: 19;
+}
+
+.factory-plant-classic .factory-plant-staff-tag {
+  bottom: -0.55cqw;
+  border-radius: 0.24cqw;
+  font-size: 0.48cqw;
+  max-width: 7cqw;
+  overflow: hidden;
+  padding: 0.08cqw 0.25cqw;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.factory-plant-classic .factory-plant-overflow {
+  font-size: 0.55cqw;
+  min-height: 1.4cqw;
+  min-width: 3.8cqw;
+  padding: 0.18cqw 0.42cqw;
+  z-index: 35;
+}
+
+.factory-plant-hud {
+  align-items: center;
+  display: flex;
+  font-size: 0.62cqw;
+  justify-content: space-between;
+  left: 1.2%;
+  pointer-events: none;
+  position: absolute;
+  right: 1.2%;
+  z-index: 45;
+}
+
+.factory-plant-hud-top {
+  top: 1.4%;
+}
+
+.factory-plant-hud-top > span,
+.factory-plant-hud-top > b,
+.factory-plant-hud-bottom {
+  background: color-mix(in srgb, var(--panel-raised) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 65%, transparent);
+  border-radius: 0.55cqw;
+  box-shadow: 0 0.35cqw 0.9cqw -0.7cqw rgb(0 0 0 / 70%);
+  padding: 0.34cqw 0.65cqw;
+}
+
+.factory-plant-hud-top > b {
+  color: var(--success);
+  letter-spacing: 0.1em;
+}
+
+.factory-plant-hud-bottom {
+  bottom: 1.3%;
+  gap: 1.1cqw;
+  left: 1.2%;
+  right: auto;
+}
+
+.factory-plant-hud-bottom > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.28cqw;
+}
+
+/*
+ * The scene vocabulary, in the HUD.
+ *
+ * Shape is the primary channel — an operator must be able to tell an agentic
+ * silo from a gate arch with no colour at all — so the swatches are shapes
+ * first and tinted second.
+ */
+.factory-plant-hud-bottom i {
+  background: var(--muted);
+  height: 0.52cqw;
+  width: 0.52cqw;
+}
+
+.factory-plant-hud-bottom i[data-shape] {
+  background: var(--ink);
+}
+
+.factory-plant-hud-bottom i[data-shape="agentic"] {
+  background: var(--plant-archetype-agentic);
+  border-radius: 50%;
+}
+
+.factory-plant-hud-bottom i[data-shape="gate"] {
+  background: var(--plant-archetype-gate);
+  clip-path: polygon(0 100%, 0 34%, 50% 0, 100% 34%, 100% 100%, 72% 100%, 72% 52%, 28% 52%, 28% 100%);
+}
+
+.factory-plant-hud-bottom i[data-shape="evaluator"] {
+  background: var(--plant-archetype-evaluator);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.factory-plant-hud-bottom i[data-shape="parallel"] {
+  background: var(--plant-archetype-parallel);
+  clip-path: polygon(0 0, 38% 0, 38% 100%, 0 100%, 0 0, 62% 0, 100% 0, 100% 100%, 62% 100%, 62% 0);
+}
+
+.factory-plant-hud-bottom i[data-shape="deterministic"] {
+  background: var(--plant-archetype-deterministic);
+  border-radius: 0.1cqw;
+}
+
+.factory-plant-hud-bottom i[data-tone] {
+  border-radius: 50%;
+}
+
+.factory-plant-hud-bottom i[data-tone="running"] {
+  background: var(--success);
+}
+
+.factory-plant-hud-bottom i[data-tone="held"] {
+  background: var(--warning);
+}
+
+.factory-plant-hud-bottom i[data-tone="blocked"] {
+  background: var(--danger);
+}
+
+/* Unread is not a hazard, so it never borrows hold amber. */
+.factory-plant-hud-bottom i[data-tone="unknown"] {
+  background: transparent;
+  border: 0.14cqw dashed var(--muted);
+  border-radius: 0;
+}
+
+.factory-plant-hud-top > b[data-risk="blocked"] {
+  color: var(--danger);
+}
+
+.factory-plant-hud-top > b[data-risk="held"],
+.factory-plant-hud-top > b[data-risk="impeded"] {
+  color: var(--warning);
+}
+
+.factory-plant-hud-top > b[data-risk="unknown"] {
+  color: var(--muted);
+}
+
+.factory-plant-classic[data-lens="flow"] .factory-plant-machine,
+.factory-plant-classic[data-lens="flow"] .factory-plant-sign,
+.factory-plant-classic[data-lens="flow"] .factory-plant-staff {
+  opacity: 0.68;
+}
+
+.factory-plant-classic[data-lens="risk"] .factory-plant-machine:not([data-status="blocked"]):not([data-status="held"]):not([data-status="impeded"]),
+.factory-plant-classic[data-lens="risk"] .factory-plant-crate:not([data-state="blocked"]):not([data-state="paused"]),
+.factory-plant-classic[data-lens="risk"] .factory-plant-staff {
+  filter: saturate(0.32);
+  opacity: 0.82;
+}
+
+/* --- Responsive -------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .factory-status-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .factory-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .factory-inspector {
+    max-height: none;
+    position: static;
+  }
+
+}
+
+@media (max-width: 720px) {
+  .factory-controls {
+    width: 100%;
+  }
+
+  .factory-control select {
+    min-width: 120px;
+  }
+
+  .factory-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .factory-status-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- Reduced motion ----------------------------------------------------
+   The alarm must still read as an alarm when motion is off, so it freezes
+   in its BRIGHT state rather than wherever the blink happened to stop, and
+   carriers jump to their new stage instead of sliding. Declared after the
+   global reduced-motion block on purpose: it has to win. */
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-plant-backdrop,
+  .factory-plant-webgl {
+    transition: none !important;
+  }
+
+  .factory-alarm-beacon,
+  .factory-plant-beacon {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  .factory-carrier,
+  .factory-carrier.is-transitioning,
+  .factory-plant-crate,
+  .factory-plant-crate.is-transitioning {
+    transition: none !important;
+  }
+
+  .factory-carrier[data-moved="true"] {
+    animation: none !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  .factory-plant-crate[data-moved="true"] .plant-crate-halo {
+    animation: none !important;
+    opacity: 1;
+  }
+
+  .factory-conveyor-line[data-active="true"],
+  .factory-conveyor-line[data-working="true"],
+  .plant-belt-line[data-active="true"],
+  .factory-station[data-status="running"] .factory-status-light,
+  .factory-station[data-status="running"] .factory-station-vent,
+  .factory-worker[data-working="true"] .factory-worker-head,
+  .factory-worker[data-working="true"] .factory-worker-body,
+  .factory-carrier[data-state="running"] .factory-carrier-lid,
+  .factory-carrier[data-state="starting"] .factory-carrier-lid,
+  .factory-plant-machine[data-status="running"] .factory-plant-machine-core,
+  .factory-plant-crate[data-state="running"] .plant-crate-halo,
+  .factory-plant-crate[data-state="starting"] .plant-crate-halo,
+  .factory-plant-staff[data-working="true"] .factory-plant-staff-head,
+  .factory-plant-staff[data-working="true"] .factory-plant-staff-body {
+    animation: none !important;
+  }
 }
