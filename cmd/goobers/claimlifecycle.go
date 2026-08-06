@@ -93,6 +93,7 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		return nil, err
 	}
 	var terminalEntries []localscheduler.ClaimEntry
+	terminalUpdates := make(map[string]remediationNoopUpdate)
 	for _, entry := range snapshot.Snapshot() {
 		terminal, err := claimHolderTerminal(l.Root, entry)
 		if err != nil {
@@ -101,6 +102,15 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		}
 		if terminal {
 			terminalEntries = append(terminalEntries, entry)
+			if _, prepared := terminalUpdates[entry.RunID]; !prepared {
+				update, err := preparePRRemediationNoopUpdate(l, entry.RunID)
+				if err != nil {
+					return nil, err
+				}
+				if update != nil {
+					terminalUpdates[entry.RunID] = *update
+				}
+			}
 		}
 	}
 
@@ -112,6 +122,24 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		)
 		if err != nil {
 			return err
+		}
+		recorded := make(map[string]struct{})
+		for _, entry := range terminalEntries {
+			current, held := currentClaimEntry(ledger, entry)
+			if !held || current.RunID != entry.RunID {
+				continue
+			}
+			update, ok := terminalUpdates[entry.RunID]
+			if !ok {
+				continue
+			}
+			if _, ok := recorded[entry.RunID]; ok {
+				continue
+			}
+			if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
+				return err
+			}
+			recorded[entry.RunID] = struct{}{}
 		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {

@@ -63,11 +63,17 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		annotationErr = errors.Join(annotationErr, annotationLog.Close())
 	}
 
-	claimErr := release(l, log, runID)
+	noOpErr := recordPRRemediationNoop(l, runID)
+	var claimErr error
+	if noOpErr == nil {
+		claimErr = release(l, log, runID)
+	} else if isJournaledClaimsLockTimeout(noOpErr) {
+		noOpErr = nil
+	}
 	if isJournaledClaimsLockTimeout(claimErr) {
 		claimErr = nil
 	}
-	return errors.Join(worktreeErr, annotationErr, claimErr)
+	return errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
 }
 
 func keptWorktreeJournaled(schedulerDir, runID, worktreeID string) (bool, error) {

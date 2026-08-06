@@ -829,6 +829,41 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			"",
 		)
 	}
+	if !forced && len(causes) > 0 {
+		signature := remediationNoopSignature{
+			HeadSHA: current.HeadSHA,
+			Causes:  normalizeRemediationCauses(providerInput("remediationCauses", "")),
+		}
+		l := layoutFor(root)
+		noOpRecord, err := remediationNoopRecordForSignature(l, selectedNumber, signature)
+		if err != nil {
+			pf(stderr, "error: inspect remediation no-op guard: %v\n", err)
+			return 1
+		}
+		gaggle := l.Gaggle()
+		if gaggle == "" {
+			gaggle = providerGaggle()
+		}
+		key := remediationNoopKey(gaggle, selectedNumber)
+		if noOpRecord.Parked && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+			if err := clearRemediationNoopRecord(l, key); err != nil {
+				pf(stderr, "error: reset operator-cleared remediation no-op guard: %v\n", err)
+				return 1
+			}
+			noOpRecord = remediationNoopRecord{}
+		}
+		if noOpRecord.Attempts >= remediationNoopLimit {
+			if err := markRemediationNoopParked(l, key); err != nil {
+				pf(stderr, "error: park remediation no-op guard: %v\n", err)
+				return 1
+			}
+			escalateReasonValue = fmt.Sprintf(
+				"the implementer reported no-work %d consecutive times for unchanged head %s and remediation cause(s) %s",
+				noOpRecord.Attempts, signature.HeadSHA, signature.Causes,
+			)
+			forced = true
+		}
+	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded
 	// checkpoint state is still actionable. Its comment ID (if any) is the
