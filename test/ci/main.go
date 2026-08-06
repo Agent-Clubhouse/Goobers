@@ -420,6 +420,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			group:        groupChecks,
 		},
 		check{
+			label:        "portal-e2e",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "test:e2e"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
 			label:   "portal-contract-generate",
 			command: tools.goCommand,
 			args:    []string{"generate", "./internal/apicontract"},
@@ -517,6 +524,13 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:        "portal-install",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "ci", "--no-audit", "--no-fund"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		{
+			label:        "portal-playwright-install",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},
