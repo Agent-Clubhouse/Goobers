@@ -8,10 +8,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// remediationProvider is the narrow surface the pr-remediation lane needs
-// (gather-pr-context, gather-review-threads, gather-ci-failures,
-// gather-issue-context, rebase-pr, push-remediated, remediation-checkpoint,
-// and the helpers they share). Both *providers.GitHubProvider and
+// remediationProvider is the narrow surface the pr-remediation lane needs.
+// Both *providers.GitHubProvider and
 // *providers.GiteaProvider satisfy it, so the lane is provider-neutral once
 // the backend is resolved from the routed repo — same idiom as
 // openPRProvider (openpr.go).
@@ -22,10 +20,14 @@ type remediationProvider interface {
 	PullRequestFiles(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.ChangedFile, error)
 	ListComments(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.Comment, error)
 	UpdateComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error
+	DeleteComment(ctx context.Context, repo providers.RepositoryRef, commentID string) error
 	AuthenticatedLogin(ctx context.Context) (string, error)
 	GetWorkItem(ctx context.Context, repo providers.RepositoryRef, id string) (providers.WorkItem, error)
 	UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	BranchTipSHA(ctx context.Context, repo providers.RepositoryRef, branch string) (string, error)
+	CompareCommits(ctx context.Context, repo providers.RepositoryRef, base, head string) (providers.CompareResult, error)
+	PullRequestMergeable(ctx context.Context, repo providers.RepositoryRef, pullID string) (*bool, error)
+	UpdateBranch(ctx context.Context, req providers.UpdateBranchRequest) (providers.UpdateBranchResult, error)
 	CIFailures(ctx context.Context, repo providers.RepositoryRef, ref string) ([]providers.CIFailureDetail, error)
 	ListPullRequestReviewThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestReviewThreads, error)
 }

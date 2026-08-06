@@ -65,8 +65,16 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, prToken)
-	issuesProvider := newGitHubProvider(issuesToken)
+	provider, err := remediationStageProvider(root, repo, prToken, true)
+	if err != nil {
+		pf(stderr, "error: construct remediation provider: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProvider(root, repo, issuesToken, false)
+	if err != nil {
+		pf(stderr, "error: construct remediation issues provider: %v\n", err)
+		return 1
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -151,7 +159,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
+func updateBehindActionForPR(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		return updateBehindRouteFull, nil
 	}
@@ -190,7 +198,7 @@ func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProv
 	return updateBehindClearLabel, nil
 }
 
-func pullRequestBehindLiveBase(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
+func pullRequestBehindLiveBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
 	baseTip := baseTips[pr.Base]
 	if baseTip == "" {
 		var err error
