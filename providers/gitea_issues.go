@@ -320,6 +320,25 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
 }
 
+// DeleteComment removes an issue/PR comment. A missing comment is already in
+// the desired state, so retries treat 404 as success.
+func (p *GiteaProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
+}
+
 // CreateWorkItemComment appends one issue comment and returns its identity.
 func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
 	if err := p.ready(); err != nil {
