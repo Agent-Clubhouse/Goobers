@@ -55,6 +55,15 @@ type implementationFeedbackItem struct {
 	Evidence            []rollup.ImplementationOutcome `json:"evidence"`
 }
 
+type backlogHealthProvider interface {
+	providers.BacklogProvider
+	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
+}
+
+type repositoryLabelTransitionProvider interface {
+	ListWorkItemLabelTransitions(context.Context, providers.RepositoryRef, string) ([]providers.WorkItemLabelTransition, error)
+}
+
 func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("backlog-health", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -77,11 +86,12 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubIssuesWrite)
+	issueProvider, err := newBacklogHealthProvider(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", "goobers:ready")
 	var labels []string
@@ -97,20 +107,15 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	issueProvider := newCachedGitHubProvider(
-		root,
-		token,
-		providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}),
-	)
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: repo,
+		Repository: backlogRepo,
 		Labels:     labels,
 		State:      "all",
 	})
 	if err != nil {
 		return failProviderStage(stderr, "snapshot ready backlog", err, "backlog-health.json")
 	}
-	transitions, err := issueProvider.ListWorkItemLabelTransitions(ctx, repo, readyLabel)
+	transitions, err := backlogHealthTransitions(ctx, issueProvider, backlogRepo, items, readyLabel)
 	if err != nil {
 		return failProviderStage(stderr, "read ready-label transitions", err, "backlog-health.json")
 	}
@@ -123,7 +128,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		return applyImplementationFeedback(
 			ctx,
 			root,
-			repo,
+			backlogRepo,
 			issueProvider,
 			items,
 			trustLabel,
@@ -139,7 +144,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(repo.Provider), observedAt)
+	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	data, err := json.Marshal(report)
@@ -156,11 +161,53 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func newBacklogHealthProvider(root string, repo providers.RepositoryRef) (backlogHealthProvider, error) {
+	switch repo.Provider {
+	case providers.ProviderADO:
+		return newADOProviderForStage(root, repo)
+	case providers.ProviderGitea:
+		token, err := providerToken(capability.GitHubIssuesWrite)
+		if err != nil {
+			return nil, err
+		}
+		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	case providers.ProviderGitHub:
+		token, err := providerToken(capability.GitHubIssuesWrite)
+		if err != nil {
+			return nil, err
+		}
+		return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"})), nil
+	default:
+		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
+	}
+}
+
+func backlogHealthTransitions(
+	ctx context.Context,
+	provider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	items []providers.WorkItem,
+	label string,
+) ([]providers.WorkItemLabelTransition, error) {
+	if repositoryProvider, ok := provider.(repositoryLabelTransitionProvider); ok {
+		return repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
+	}
+	var transitions []providers.WorkItemLabelTransition
+	for _, item := range items {
+		itemTransitions, err := provider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
+		if err != nil {
+			return nil, err
+		}
+		transitions = append(transitions, itemTransitions...)
+	}
+	return transitions, nil
+}
+
 func applyImplementationFeedback(
 	ctx context.Context,
 	root string,
 	repo providers.RepositoryRef,
-	issueProvider *providers.GitHubProvider,
+	issueProvider backlogHealthProvider,
 	items []providers.WorkItem,
 	trustLabel string,
 	readyLabel string,
@@ -260,7 +307,7 @@ func reCurateImplementationFeedbackItem(
 	ctx context.Context,
 	layout instance.Layout,
 	repo providers.RepositoryRef,
-	issueProvider *providers.GitHubProvider,
+	issueProvider backlogHealthProvider,
 	outcomes []rollup.ImplementationOutcome,
 	itemID, trustLabel, readyLabel string,
 	threshold int,

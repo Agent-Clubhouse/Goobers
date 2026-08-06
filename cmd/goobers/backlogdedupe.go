@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -137,17 +138,17 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubIssuesWrite)
+	issueProvider, err := backlogDedupeProvider(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider := newGitHubProvider(token, apiReadCacheOption(root))
+	backlogRepo := backlogRepoRefForStage(root, repo)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repo,
+		Repository:  backlogRepo,
 		State:       "open",
 		OldestFirst: true,
 	})
@@ -195,6 +196,27 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d open item(s)\n", len(candidates), len(openItems))
 	return 0
+}
+
+func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
+	switch repo.Provider {
+	case providers.ProviderADO:
+		return newADOProviderForStage(root, repo)
+	case providers.ProviderGitea:
+		token, err := providerToken(capability.GitHubIssuesWrite)
+		if err != nil {
+			return nil, err
+		}
+		return newGiteaProviderForStage(root, repo, token)
+	case providers.ProviderGitHub:
+		token, err := providerToken(capability.GitHubIssuesWrite)
+		if err != nil {
+			return nil, err
+		}
+		return newCachedGitHubProvider(root, token), nil
+	default:
+		return nil, fmt.Errorf("backlog-dedupe does not support repository provider %q", repo.Provider)
+	}
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

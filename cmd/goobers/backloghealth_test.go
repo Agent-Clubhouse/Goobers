@@ -18,6 +18,19 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root, repo := providerDispatchFixture(t, kind)
+			provider, err := newBacklogHealthProvider(root, repo)
+			if err != nil {
+				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
+			}
+			assertDispatchedProviderKind(t, provider, kind)
+		})
+	}
+}
+
 func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
 	oneHourAgo := now.Add(-time.Hour)

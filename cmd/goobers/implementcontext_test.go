@@ -10,7 +10,21 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestImplementationContextProviderDispatchesADOAndGitea(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root, repo := providerDispatchFixture(t, kind)
+			provider, err := implementationContextProvider(root, repo)
+			if err != nil {
+				t.Fatalf("implementationContextProvider(%s): %v", kind, err)
+			}
+			assertDispatchedProviderKind(t, provider, kind)
+		})
+	}
+}
 
 func TestBuildImplementationHotFileMapIsBoundedAndDeterministic(t *testing.T) {
 	openTouches := []openPRTouch{
