@@ -124,7 +124,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 		}
 
 		command := policyCommand(task)
-		for _, action := range prescribedCommandPolicyActions(task, def.Name) {
+		for _, action := range prescribedCommandPolicyActions(task) {
 			if !declared[action] {
 				problems = append(problems, fmt.Sprintf(
 					"task %q command %q prescribes policy action %q but policyActions does not declare it",
@@ -248,7 +248,7 @@ func policyCommand(task apiv1.Task) string {
 	return task.Run.Command[1]
 }
 
-func prescribedCommandPolicyActions(task apiv1.Task, workflowName string) []string {
+func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
 	actions := append([]string(nil), commandPolicyActions[command]...)
 	argumentActions := commandArgumentPolicyActions[command]
@@ -298,10 +298,18 @@ func prescribedCommandPolicyActions(task apiv1.Task, workflowName string) []stri
 			actions = append(actions, argumentActions[name]...)
 		}
 	}
-	if command == "backlog-query" && enabled["claim"] && workflowName == "backlog-curation" {
+	if command == "backlog-query" && enabled["claim"] && isBatchBacklogClaim(task) {
 		actions = append(actions, "close-issue")
 	}
 	return actions
+}
+
+func isBatchBacklogClaim(task apiv1.Task) bool {
+	if _, dynamic := task.InputsFrom["maxItems"]; dynamic {
+		return true
+	}
+	maxItems, err := strconv.Atoi(task.Inputs["maxItems"])
+	return err == nil && maxItems > 1
 }
 
 func knownPolicyActions() []string {

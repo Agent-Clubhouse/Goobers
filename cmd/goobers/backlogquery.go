@@ -299,16 +299,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// is no separate null-mode branch to get wrong.
 	respectAssignee := providerInput("respectAssignee", "") == "true"
 	assignedTo := providerInput("assignedTo", "")
-	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
-	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
-	var stalenessPolicy backlogStalenessPolicy
-	if reconcileBeforeClaim || *reconcile {
-		stalenessPolicy, err = readBacklogStalenessPolicy()
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-	}
 
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
@@ -322,6 +312,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			return 1
 		}
 		maxItems = n
+	}
+	curationRun := *claim && maxItems > 1
+	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
+	var stalenessPolicy backlogStalenessPolicy
+	if reconcileBeforeClaim || *reconcile {
+		stalenessPolicy, err = readBacklogStalenessPolicy()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	resweepPolicy, resweepEnabled, err := readBacklogResweepPolicy(maxItems)
 	if err != nil {

@@ -141,7 +141,7 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 	server.addIssue(8, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
-	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_WORKFLOW", "widget-backlog-curation")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman)
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
