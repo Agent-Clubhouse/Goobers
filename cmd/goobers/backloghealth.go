@@ -123,7 +123,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "read ready-label transitions", err, "backlog-health.json")
 	}
 	transitions = transitionsForItems(transitions, items)
-	if err := annotateReadyTimes(items, readyLabel, transitions); err != nil {
+	if err := annotateBacklogReadyTimes(backlogRepo.Provider, items, readyLabel, transitions); err != nil {
 		pf(stderr, "error: snapshot ready backlog: %v\n", err)
 		return 1
 	}
@@ -196,7 +196,7 @@ func backlogHealthTransitions(
 		return repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
 	}
 	if repo.Provider == providers.ProviderADO {
-		return adoCurrentReadyTransitions(items, label)
+		return nil, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
 	if !ok {
@@ -213,39 +213,6 @@ func backlogHealthTransitions(
 	return transitions, nil
 }
 
-func adoCurrentReadyTransitions(items []providers.WorkItem, label string) ([]providers.WorkItemLabelTransition, error) {
-	transitions := make([]providers.WorkItemLabelTransition, 0, len(items))
-	for _, item := range items {
-		if !item.HasLabel(label) {
-			continue
-		}
-		// ADO does not expose label history yet; ChangedDate is a conservative
-		// lower bound for how long the currently ready cohort has been ready.
-		occurredAt := item.ReadyAt
-		if occurredAt == nil {
-			occurredAt = item.UpdatedAt
-		}
-		if occurredAt == nil {
-			occurredAt = item.CreatedAt
-		}
-		if occurredAt == nil {
-			return nil, fmt.Errorf("ADO work item %s has %q but no provider timestamp", item.ID, label)
-		}
-		eventID, err := strconv.ParseInt(item.ID, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ADO work item ID %q: %w", item.ID, err)
-		}
-		transitions = append(transitions, providers.WorkItemLabelTransition{
-			EventID:    eventID,
-			ItemID:     item.ID,
-			Label:      label,
-			Added:      true,
-			OccurredAt: *occurredAt,
-		})
-	}
-	return transitions, nil
-}
-
 func backlogHealthItemTransitions(
 	ctx context.Context,
 	provider backlogHealthProvider,
@@ -254,7 +221,7 @@ func backlogHealthItemTransitions(
 	label string,
 ) ([]providers.WorkItemLabelTransition, error) {
 	if repo.Provider == providers.ProviderADO {
-		return adoCurrentReadyTransitions([]providers.WorkItem{item}, label)
+		return nil, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
 	if !ok {
@@ -397,7 +364,7 @@ func reCurateImplementationFeedbackItem(
 		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
 	}
 	live := []providers.WorkItem{current}
-	if err := annotateReadyTimes(live, readyLabel, transitions); err != nil {
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
 		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
 	}
 	current = live[0]
@@ -610,6 +577,29 @@ func annotateReadyTimes(
 			return fmt.Errorf("issue %s has %q but no active label-add event", items[i].ID, readyLabel)
 		}
 		items[i].ReadyAt = &readyAt
+	}
+	return nil
+}
+
+func annotateBacklogReadyTimes(
+	provider providers.ProviderKind,
+	items []providers.WorkItem,
+	readyLabel string,
+	transitions []providers.WorkItemLabelTransition,
+) error {
+	if provider != providers.ProviderADO {
+		return annotateReadyTimes(items, readyLabel, transitions)
+	}
+	for i := range items {
+		if !items[i].HasLabel(readyLabel) {
+			continue
+		}
+		// ADO does not expose tag history. ChangedDate is only a conservative
+		// timestamp for the current ready cohort, not a provider transition.
+		if items[i].UpdatedAt == nil {
+			return fmt.Errorf("ADO work item %s has %q but no ChangedDate", items[i].ID, readyLabel)
+		}
+		items[i].ReadyAt = items[i].UpdatedAt
 	}
 	return nil
 }

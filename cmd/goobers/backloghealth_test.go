@@ -102,9 +102,8 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 	if got.AverageReadyAgeSeconds < (2*time.Hour - time.Minute).Seconds() {
 		t.Fatalf("average ready age = %f, want provider timestamp age near two hours", got.AverageReadyAgeSeconds)
 	}
-	if len(got.ReadyTransitions) != 1 || got.ReadyTransitions[0].ItemID != "42" ||
-		!got.ReadyTransitions[0].Added || !got.ReadyTransitions[0].OccurredAt.Equal(changedAt) {
-		t.Fatalf("ready transitions = %#v", got.ReadyTransitions)
+	if len(got.ReadyTransitions) != 0 {
+		t.Fatalf("ready transitions = %#v, want no synthesized ADO transitions", got.ReadyTransitions)
 	}
 }
 
