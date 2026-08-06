@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -28,6 +31,80 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 			}
 			assertDispatchedProviderKind(t, provider, kind)
 		})
+	}
+}
+
+func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	changedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/acme/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"workItems": []map[string]int{{"id": 42}},
+		})
+	})
+	mux.HandleFunc("/acme/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"fields": map[string]any{
+				"System.WorkItemType": "Task",
+				"System.Title":        "Ready backlog item",
+				"System.State":        "Active",
+				"System.Tags":         "goobers:approved; goobers:ready",
+				"System.CreatedDate":  changedAt.Add(-time.Hour).Format(time.RFC3339),
+				"System.ChangedDate":  changedAt.Format(time.RFC3339),
+			},
+		})
+	})
+	mux.HandleFunc("/acme/project/_apis/wit/workitemtypes/Task/states", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"value": []map[string]string{{"name": "Active", "category": "InProgress"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	original := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		if routed != repo {
+			t.Fatalf("routed repo = %#v, want %#v", routed, repo)
+		}
+		return providers.NewADOProvider(
+			routed.Owner,
+			routed.Project,
+			"token",
+			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL },
+		), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = original })
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code != 0 {
+		t.Fatalf("backlog-health: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "backlog-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got backlogHealthReport
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ReadyPoolDepth != 1 || got.ReadyPoolStarved {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if got.AverageReadyAgeSeconds < (2*time.Hour - time.Minute).Seconds() {
+		t.Fatalf("average ready age = %f, want provider timestamp age near two hours", got.AverageReadyAgeSeconds)
+	}
+	if len(got.ReadyTransitions) != 1 || got.ReadyTransitions[0].ItemID != "42" ||
+		!got.ReadyTransitions[0].Added || !got.ReadyTransitions[0].OccurredAt.Equal(changedAt) {
+		t.Fatalf("ready transitions = %#v", got.ReadyTransitions)
 	}
 }
 

@@ -57,6 +57,9 @@ type implementationFeedbackItem struct {
 
 type backlogHealthProvider interface {
 	providers.BacklogProvider
+}
+
+type itemLabelTransitionProvider interface {
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
 }
 
@@ -192,15 +195,72 @@ func backlogHealthTransitions(
 	if repositoryProvider, ok := provider.(repositoryLabelTransitionProvider); ok {
 		return repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
 	}
+	if repo.Provider == providers.ProviderADO {
+		return adoCurrentReadyTransitions(items, label)
+	}
+	itemProvider, ok := provider.(itemLabelTransitionProvider)
+	if !ok {
+		return nil, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
+	}
 	var transitions []providers.WorkItemLabelTransition
 	for _, item := range items {
-		itemTransitions, err := provider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
+		itemTransitions, err := itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
 		if err != nil {
 			return nil, err
 		}
 		transitions = append(transitions, itemTransitions...)
 	}
 	return transitions, nil
+}
+
+func adoCurrentReadyTransitions(items []providers.WorkItem, label string) ([]providers.WorkItemLabelTransition, error) {
+	transitions := make([]providers.WorkItemLabelTransition, 0, len(items))
+	for _, item := range items {
+		if !item.HasLabel(label) {
+			continue
+		}
+		// ADO does not expose label history yet; ChangedDate is a conservative
+		// lower bound for how long the currently ready cohort has been ready.
+		occurredAt := item.ReadyAt
+		if occurredAt == nil {
+			occurredAt = item.UpdatedAt
+		}
+		if occurredAt == nil {
+			occurredAt = item.CreatedAt
+		}
+		if occurredAt == nil {
+			return nil, fmt.Errorf("ADO work item %s has %q but no provider timestamp", item.ID, label)
+		}
+		eventID, err := strconv.ParseInt(item.ID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ADO work item ID %q: %w", item.ID, err)
+		}
+		transitions = append(transitions, providers.WorkItemLabelTransition{
+			EventID:    eventID,
+			ItemID:     item.ID,
+			Label:      label,
+			Added:      true,
+			OccurredAt: *occurredAt,
+		})
+	}
+	return transitions, nil
+}
+
+func backlogHealthItemTransitions(
+	ctx context.Context,
+	provider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	label string,
+) ([]providers.WorkItemLabelTransition, error) {
+	if repo.Provider == providers.ProviderADO {
+		return adoCurrentReadyTransitions([]providers.WorkItem{item}, label)
+	}
+	itemProvider, ok := provider.(itemLabelTransitionProvider)
+	if !ok {
+		return nil, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
+	}
+	return itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
 }
 
 func applyImplementationFeedback(
@@ -332,7 +392,7 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := issueProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, itemID, readyLabel)
+	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
 	if err != nil {
 		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
 	}
