@@ -119,6 +119,14 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/severity/enum", source: "api/v1alpha1.Severity", want: goConsts("api/v1alpha1/envelope.go", "Severity")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/class/enum", source: "api/v1alpha1.FindingClass", want: goConsts("api/v1alpha1/envelope.go", "FindingClass")},
 
+	// --- mission-control verdict artifact types ---
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/verdict/enum", source: "internal/missioncontrol.Verdict", want: goConsts("internal/missioncontrol/contract.go", "Verdict")},
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/reasonCode/enum", source: "internal/missioncontrol.ReasonCode", want: goConsts("internal/missioncontrol/contract.go", "ReasonCode")},
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/requirement/enum", source: "internal/missioncontrol.Requirement", want: goConsts("internal/missioncontrol/contract.go", "Requirement")},
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/policy/properties/unknown/enum", source: "internal/missioncontrol.UnknownPolicy", want: goConsts("internal/missioncontrol/contract.go", "UnknownPolicy")},
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/criterion/properties/comparator/enum", source: "internal/missioncontrol.Comparator", want: goConsts("internal/missioncontrol/contract.go", "Comparator")},
+	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/value/properties/type/enum", source: "internal/missioncontrol.ValueType", want: goConsts("internal/missioncontrol/contract.go", "ValueType")},
+
 	// --- input-integrity grades ---
 	{schema: "artifact-pointer.schema.json", path: "properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},
 	{schema: "invocation.schema.json", path: "$defs/contextPointer/properties/integrity/enum", source: "api/integrity.Grade", want: goConsts("api/integrity/grade.go", "Grade")},

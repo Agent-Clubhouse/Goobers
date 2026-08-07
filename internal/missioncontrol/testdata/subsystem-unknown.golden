@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "goobers.dev/mission-control-verdict/v1alpha1",
+  "generatedAt": "2026-08-07T07:00:00Z",
+  "evidence": [
+    {
+      "id": "query.latency",
+      "uri": "artifacts/latency.json",
+      "digest": "sha256:latency"
+    }
+  ],
+  "metrics": [
+    {
+      "id": "latency",
+      "displayName": "Latency",
+      "subsystemId": "api",
+      "requirement": "required",
+      "evidenceId": "query.latency",
+      "criterion": {
+        "comparator": "lt",
+        "unit": "ms",
+        "threshold": 100
+      },
+      "displayPrecision": 1,
+      "observationWindow": {
+        "start": "2026-08-07T06:55:00Z",
+        "end": "2026-08-07T07:00:00Z"
+      },
+      "requiredFreshness": "5m0s",
+      "verdict": "unknown",
+      "reasonCode": "query-error"
+    }
+  ],
+  "subsystems": [
+    {
+      "id": "api",
+      "displayName": "API",
+      "requirement": "required",
+      "policy": {
+        "unknown": "block"
+      },
+      "requiredMetricIds": [
+        "latency"
+      ],
+      "advisoryMetricIds": [],
+      "verdict": "unknown",
+      "reasonCode": "required-unknown"
+    }
+  ],
+  "overall": {
+    "policy": {
+      "unknown": "block"
+    },
+    "requiredSubsystemIds": [
+      "api"
+    ],
+    "advisorySubsystemIds": [],
+    "verdict": "unknown",
+    "reasonCode": "required-unknown"
+  }
+}
+--- FACTS ---
+MISSION CONTROL: UNKNOWN (required-unknown)
+SUBSYSTEM API [required]: UNKNOWN (required-unknown)
+  METRIC Latency [required]: value=unavailable; criterion=lt 100.0 ms; freshness=age unavailable, required 5m0s, data-as-of unavailable; window=2026-08-07T06:55:00Z to 2026-08-07T07:00:00Z; UNKNOWN (query-error)

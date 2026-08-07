@@ -41,6 +41,9 @@ const (
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
+// MissionControlVerdict is the provider-neutral launch verdict artifact schema.
+const MissionControlVerdict = "mission-control-verdict-v1alpha1.schema.json"
+
 // RemediationBrief is the current versioned PR-remediation evidence artifact schema.
 const RemediationBrief = "remediation-brief-v3.schema.json"
 
