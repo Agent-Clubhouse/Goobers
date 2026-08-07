@@ -1,9 +1,10 @@
 # Onboard an arbitrary repository (tiers 1-2)
 
 This guide takes a GitHub repository that has never used Goobers through one
-curation run and one implementation pull request. It also shows how to add a
-second gaggle to the same local instance. It is the repository-neutral version
-of the [self-hosting runbook](../../reference-workflows/README.md).
+curation run and one implementation pull request. It also shows how to scale
+the same local instance with more gaggles and repositories. It is the
+repository-neutral version of the
+[self-hosting runbook](../../reference-workflows/README.md).
 
 Complete the [canonical first-run quickstart](quickstart.md) before using this
 production-oriented guide. The steps here are the repository-onboarding deltas
@@ -375,12 +376,54 @@ procedure. Confirm shutdown with:
 goobers status --daemon "$GOOBERS_INSTANCE"
 ```
 
-## 10. Add a second gaggle for the same repository
+## 10. Scale out with more gaggles and repositories
 
-The current local runtime resolves several built-in provider and cleanup stages
-through the first `repos` entry. Until repository selection is gaggle-aware,
-keep exactly one operational repository in each instance root. To operate
-against another repository, repeat this guide with a separate instance root.
+Repository selection is gaggle-aware. Each gaggle's `project` and `backlog`
+connections resolve the instance `repos` entry whose provider, owner, and name
+match, and provider stages inside a run receive that gaggle's repository
+through the run environment. One instance root therefore supports both
+scaling shapes:
+
+- **More gaggles on the same repository.** Add a gaggle with its own workflow
+  names, budget, isolation identity, and non-overlapping backlog labels. The
+  worked example below adds a documentation gaggle.
+- **One gaggle per additional repository.** Add a second `repos` entry and a
+  gaggle whose `project` and `backlog` connections point at it, then confirm
+  with `goobers validate --check-repos`. This is the recommended shape for
+  repositories you operate together: one daemon, one journal, shared run
+  conditions, and per-workflow budgets.
+
+Separate instance roots remain the right choice when a repository needs an
+isolation boundary — different credentials or trust postures, different
+machines, or independent journals and budgets — not because of a repository
+count. See [Choose where an instance and its config
+live](instance-placement.md) for that decision.
+
+Two constraints apply to either shape. Goober and workflow names are
+instance-global, not gaggle-scoped, so a copied gaggle that keeps a name such
+as `coder` fails validation with a duplicate-name error; prefix names per
+gaggle as in step 2 below. And a new gaggle only claims work its backlog
+labels actually match: the `goobers init` scaffold defaults the backlog labels
+and `trustLabel` to `goobers`, which a real repository often does not carry,
+and a workflow whose labels match nothing claims nothing without an error —
+check `gh label list --repo <owner>/<name>` and set the trust label from
+section 5 before the first cycle.
+
+### Current single-repo residue
+
+Three built-in behaviors still resolve through the first `repos` entry
+regardless of gaggle. Account for them when a second repository shares the
+instance:
+
+- The open-PR poll behind `readiness.maxOpenPRs` counts the first repository's
+  open PRs only, so the cap throttles every gaggle by that one count.
+- Terminal branch-delete cleanup targets the first repository only; branches
+  left by terminal runs against another repository are not deleted.
+- The backlog counter that sizes scheduled work queries the gaggle's own
+  repository but resolves its credential from the first `repos` entry; a
+  second repository readable only by a different token can fail to count.
+
+### Worked example: a documentation gaggle for the same repository
 
 Multiple gaggles can safely share the configured repository. For example, add a
 documentation gaggle with its own workflow names, budget, isolation identity,
