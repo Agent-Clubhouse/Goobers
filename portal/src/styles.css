@@ -757,6 +757,56 @@ summary:focus-visible {
   margin: 0;
 }
 
+.goober-roster-page {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.goober-card-toggle {
+  align-items: start;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  justify-content: space-between;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.goober-card-toggle-label h4 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.goober-card-toggle-label p {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+
+.goober-card-toggle-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.goober-card-chevron {
+  color: var(--muted);
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.goober-card-toggle[aria-expanded="true"] .goober-card-chevron {
+  transform: rotate(90deg);
+}
+
+.goober-detail {
+  margin-top: 14px;
+  padding: 14px 0 0;
+}
+
 .section-heading,
 .panel-heading-row {
   align-items: end;
@@ -4976,6 +5026,10 @@ a.telemetry-error-row:hover {
   }
 
   .goober-roster {
+    grid-template-columns: 1fr;
+  }
+
+  .goober-roster-page {
     grid-template-columns: 1fr;
   }
 

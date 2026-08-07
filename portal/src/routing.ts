@@ -3,6 +3,7 @@ import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
+  | { page: "goobers" }
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
@@ -30,7 +31,7 @@ export interface ErrorRouteFilters {
   until?: string;
 }
 
-export type PrimaryArea = "overview" | "workflows" | "runs" | "insight";
+export type PrimaryArea = "overview" | "workflows" | "goobers" | "runs" | "insight";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -52,6 +53,9 @@ export function parseRoute(hash = window.location.hash): Route {
   }
   if (area === "workflows") {
     return { page: "workflows" };
+  }
+  if (area === "goobers") {
+    return { page: "goobers" };
   }
   if (area === "runs") {
     const filters: RunRouteFilters = {

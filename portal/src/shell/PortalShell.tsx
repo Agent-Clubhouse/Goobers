@@ -73,6 +73,16 @@ export function PortalShell({
             <span className="nav-label">Workflows</span>
           </button>
           <button
+            aria-current={activeArea === "goobers" ? "page" : undefined}
+            aria-label="Goobers"
+            className={activeArea === "goobers" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "goobers" })}
+            type="button"
+          >
+            <Icon name="goober" />
+            <span className="nav-label">Goobers</span>
+          </button>
+          <button
             aria-current={activeArea === "runs" ? "page" : undefined}
             aria-label="Runs"
             className={activeArea === "runs" ? "nav-item nav-item-active" : "nav-item"}

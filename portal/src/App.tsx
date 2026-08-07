@@ -16,6 +16,7 @@ import {
 } from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
+import { GoobersPage } from "./pages/GoobersPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -191,6 +192,7 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}
