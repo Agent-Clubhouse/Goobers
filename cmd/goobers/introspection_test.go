@@ -276,8 +276,8 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		path := defaultWorkflowPath(root)
 		replaceInFile(t, path,
-			"      expectedOutputs:\n        - pull-request",
-			"      expectedOutputs:\n        - pull-request\n      next: verify\n  gates:\n    - name: verify\n      evaluator: automated\n      automated:\n        check: missing-check\n      branches:\n        pass: \"\"\n        fail: \"@abort\"\n        escalate: \"@abort\"")
+			"      expectedOutputs:\n        - pull-request-url\n        - prNumber\n        - opened",
+			"      expectedOutputs:\n        - pull-request-url\n        - prNumber\n        - opened\n      next: verify\n  gates:\n    - name: verify\n      evaluator: automated\n      automated:\n        check: missing-check\n      branches:\n        pass: \"\"\n        fail: \"@abort\"\n        escalate: \"@abort\"")
 
 		code, stdout, stderr := runArgs(t, "validate", "--json", root)
 		if code != 1 || stderr != "" {
