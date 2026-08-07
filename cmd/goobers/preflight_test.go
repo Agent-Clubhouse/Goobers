@@ -34,23 +34,23 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	}}}}
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if _, err := preflightAgenticHarnesses(goobers, agentic); err == nil {
+	if _, err := preflightAgenticHarnesses(goobers, agentic, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly); err != nil {
+	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, nil); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
 	// Healthy harness → preflight passes.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
-	info, err := preflightAgenticHarnesses(goobers, agentic)
+	info, err := preflightAgenticHarnesses(goobers, agentic, nil)
 	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
 	}
@@ -65,6 +65,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	info, err = preflightAgenticHarnesses(
 		map[string]apiv1.GooberSpec{"reviewer": {}},
 		gateOnly,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("reviewer-only default harness preflight: %v", err)
@@ -79,7 +80,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 // preflight through adapterFor — validate --check-harness AND the automatic
 // daemon-startup preflight — verifies sign-in, not just CLI presence.
 func TestAdapterForConfiguresAuthProbe(t *testing.T) {
-	a, err := adapterFor(apiv1.HarnessCopilot)
+	a, err := adapterFor(apiv1.HarnessCopilot, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -113,14 +114,14 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// Installed but signed out: version 0, auth probe non-zero. The adapter
 	// carries copilotAuthCheckArgs (as the real adapterFor now does), so the
 	// probe actually runs during the startup preflight.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := preflightAgenticHarnesses(goobers, agentic)
+	_, err := preflightAgenticHarnesses(goobers, agentic, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}

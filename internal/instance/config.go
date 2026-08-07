@@ -269,6 +269,27 @@ type RunnerConfig struct {
 	//
 	// Per-stage timeoutSeconds still wins; this only moves the floor.
 	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
+	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
+	// keep the built-in default (["copilot"] / ["claude"]).
+	//
+	// The launcher was always data on the adapter (harness.CopilotAdapter.Command)
+	// but hardcoded at the composition root, so pointing a harness at a
+	// contract-compatible wrapper required a Goobers code change. This is the
+	// adopter escape hatch (the launcher twin of EnvPassthrough, #736): a
+	// deployment can run the same engine CLI through a wrapper — e.g.
+	// {"copilot": ["agency", "copilot"]} to launch a wrapper that forwards to
+	// the GitHub Copilot CLI and emits the same session/result artifacts — with
+	// no code change and no new harness. Goobers stays vendor-neutral: the
+	// wrapper name lives only in the adopter's instance.yaml, never in the enum.
+	//
+	// Each value must be a non-empty argv whose first element (the program) is
+	// non-empty; keys must be a known harness name. Validated at load, fail
+	// closed. Downstream harness logic (model/context/extra-arg selection,
+	// session capture, completion-file readback) is unchanged — the override
+	// only replaces the launch prefix, so it is safe only for a launcher that
+	// honors the same CLI contract as the harness it overrides.
+	HarnessCommand map[string][]string `json:"harnessCommand,omitempty" yaml:"harnessCommand,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -1134,6 +1155,24 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// knownHarnessNames lists the harness names an adopter may key a launcher
+// override under, sorted for a stable admission-error message.
+func knownHarnessNames() []string {
+	return []string{string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCopilot)}
+}
+
+// knownHarnessName reports whether name is a harness a launcher override may
+// target — the enum's authoritative membership, so a typo fails closed at load
+// instead of silently doing nothing.
+func knownHarnessName(name string) bool {
+	switch apiv1.Harness(name) {
+	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+		return true
+	default:
+		return false
+	}
+}
+
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
@@ -1648,6 +1687,21 @@ func (c *Config) Validate() error {
 	for i, name := range c.Runner.EnvPassthrough {
 		if !procenv.ValidName(name) {
 			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
+		}
+	}
+	// Fail closed on a malformed harness launcher override: an unknown harness
+	// key can never take effect (silent no-op that hides an adopter typo), and
+	// an empty argv or empty program name would fail at exec time on every run
+	// of that harness. Validate the shape here, at load, not mid-run.
+	for name, command := range c.Runner.HarnessCommand {
+		if !knownHarnessName(name) {
+			return fmt.Errorf("runner.harnessCommand[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+		}
+		if len(command) == 0 {
+			return fmt.Errorf("runner.harnessCommand[%q]: command must not be empty", name)
+		}
+		if strings.TrimSpace(command[0]) == "" {
+			return fmt.Errorf("runner.harnessCommand[%q]: program name (first element) must not be empty", name)
 		}
 	}
 	if c.WorkflowSource != nil && c.WorkflowSource.Token != nil {

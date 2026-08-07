@@ -344,7 +344,7 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 
 	t.Run("harness", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
-		withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+		withHarnessAdapter(t, func(apiv1.Harness, map[string][]string) (harness.Adapter, error) {
 			return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 		})
 
