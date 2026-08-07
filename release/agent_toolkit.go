@@ -198,6 +198,7 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		{"agent-toolkit/.gitattributes", ".gitattributes"},
 		{"agent-toolkit/README.md", "README.md"},
 		{"docs/ARCHITECTURE.md", "docs/ARCHITECTURE.md"},
+		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
 		{"docs/stage-contract.md", "docs/stage-contract.md"},
 		{"internal/capability/capability.go", "internal/capability/capability.go"},
 	}

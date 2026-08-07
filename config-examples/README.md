@@ -44,8 +44,10 @@ reference assumes:
 - A Goobers runner with the `goobers` binary on `PATH`, git access to each target
   repository, and schedule/webhook support for workflows that use those
   triggers.
-- A configured Copilot agent harness, including its model authentication, for
-  every agentic goober. Deterministic-only policy workflows do not need a model.
+- A configured Copilot or Claude Code agent harness, including its model
+  authentication, for every agentic goober. The `acme-web` coder demonstrates
+  `claude-code`; the other examples use `copilot`. Deterministic-only policy
+  workflows do not need a model.
 - GitHub project and backlog connections named `github-main` and
   `github-backlog`. The example resolves `github-pat` from the `acme-kv` key
   vault; an adapted credential must grant only the capabilities listed below.
@@ -61,7 +63,7 @@ reference assumes:
 
 | Gaggle | Contents | Runner and tools | Credentials |
 |---|---|---|---|
-| `acme-web` | Six goobers and nine workflow examples spanning implementation, backlog operations, docs, merge, and policy | `node@20`, npm, POSIX `sh`, git, Goobers; Copilot for agentic stages | GitHub repo and backlog connections; grants vary by family below |
+| `acme-web` | Six goobers and nine workflow examples spanning implementation, backlog operations, docs, merge, and policy | `node@20`, npm, POSIX `sh`, git, Goobers; Copilot or Claude Code for agentic stages | GitHub repo and backlog connections; grants vary by family below |
 | `dotnet-service` | Implementer + reviewer and `dotnet-implementation` | `dotnet@9`, .NET 9 SDK, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |
 | `java-service` | Implementer + reviewer and `java-implementation` | `java@21`, Maven, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |
 | `python-service` | Implementer + reviewer and `python-implementation` | `python@3.12`, pytest, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |
@@ -70,7 +72,7 @@ The workflow families have distinct operational prerequisites:
 
 | Family | Workflows | Purpose and additional prerequisites |
 |---|---|---|
-| Starter implementation | `default-implement` | Manually claims one approved GitHub issue and delegates to `coder`. Requires the coder definition, Copilot, the project checkout, and `github:issues:write`. It illustrates the starter shape; use the generated init scaffold rather than extracting this file for a minimal install. |
+| Starter implementation | `default-implement` | Manually claims one approved GitHub issue and delegates to `coder`. Requires the coder definition, Claude Code, the project checkout, and `github:issues:write`. It illustrates the starter shape; use the generated init scaffold rather than extracting this file for a minimal install. |
 | Production implementation | `implementation` | Scheduled claim, context gathering, implement/review repasses, project CI, branch push, PR creation and polling, and issue close-out. Requires `implementer` and `reviewer`, Copilot, the `acme-web` npm CI command, journal reads, repo push, and GitHub issue/PR write credentials. |
 | Polyglot implementation | `dotnet-implementation`, `java-implementation`, `python-implementation` | Focused manual implement/review/local-CI loops. Each requires its sibling implementer and reviewer, Copilot, repo push, and its gaggle's declared runtime and CI tool. These examples deliberately omit claim, PR publication, and close-out stages, so the caller must supply the claimed work and compose a publication lifecycle if needed. |
 | Backlog operations | `backlog-curation`, `backlog-assignment`, `work-nomination` | Curates and deduplicates issues, assigns approved work to a configured roster, or proposes evidence-backed work from telemetry. Curation requires `curator`, Copilot, telemetry reads, and GitHub issue/milestone/PR writes; the PR grant supports its open-PR eligibility check. Assignment is deterministic and needs GitHub issue writes. Nomination requires `nominator`, Copilot, repo and telemetry reads, and GitHub issue writes. Configure labels, roster, schedules, and rate limits before enabling. |

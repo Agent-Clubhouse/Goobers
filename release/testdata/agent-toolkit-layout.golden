@@ -69,6 +69,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/py
 payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/workflows/python-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
+payload/.goobers/agent-toolkit/docs/guides/goobers-io-mcp.md
 payload/.goobers/agent-toolkit/docs/requirements/README.md
 payload/.goobers/agent-toolkit/docs/requirements/backlog-providers.md
 payload/.goobers/agent-toolkit/docs/requirements/config-as-code.md

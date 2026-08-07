@@ -9,7 +9,7 @@ spec:
   # Markdown (with YAML frontmatter) defining behavior/persona/scope, resolved
   # relative to this goober definition directory (CFG-003, GBO-002).
   instructions: instructions.md
-  harness: copilot
+  harness: claude-code
   model: auto
   harnessOptions: {}
   skills:
