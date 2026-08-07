@@ -12,11 +12,13 @@ list with all or stages, a command's full help, or one of these concepts:
 instance, gaggle, goober, workflow, stage, gate, harness, capability.
 `
 
+const workflowConcept = "A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions."
+
 var glossary = map[string]string{
 	"instance":   "One Goobers installation and its runtime state: instance.yaml, validated config, scheduler journal, telemetry, managed workcopies, and gaggle run journals.",
 	"gaggle":     "A team or bounded workforce: its project/backlog connections, goobers, and workflows.",
 	"goober":     "An agent role or worker definition: instructions, harness, tools, skills, model options, and allowed capabilities.",
-	"workflow":   "A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.",
+	"workflow":   workflowConcept,
 	"stage":      "One unit of work. It is deterministic (a command or built-in operation) or agentic (a harness invocation with an explicit contract).",
 	"gate":       "A decision state that branches a workflow using an automated check, agentic verdict, or human approval. A gate is not a stage.",
 	"harness":    "The adapter that invokes an agentic stage's model and tools, such as GitHub Copilot CLI or Claude Code, behind the same invocation and result contract.",

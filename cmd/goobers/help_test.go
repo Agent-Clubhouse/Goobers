@@ -23,24 +23,20 @@ func TestHelpRoutesCommandsAndConcepts(t *testing.T) {
 	})
 
 	for _, topic := range helpConceptTopics {
-		if topic == "workflow" {
-			continue
-		}
 		t.Run(topic+" concept", func(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "help", topic)
 			want := topic + "\n\n" + glossary[topic] + "\n"
+			if command, ok := helpCommand(topic); ok {
+				want = command.long
+			}
 			if code != 0 || stdout != want || stderr != "" {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 			}
+			if !strings.Contains(stdout, glossary[topic]) {
+				t.Fatalf("stdout does not include %s concept prose: %q", topic, stdout)
+			}
 		})
 	}
-
-	t.Run("command takes precedence over concept", func(t *testing.T) {
-		code, stdout, stderr := runArgs(t, "help", "workflow")
-		if code != 0 || stdout != workflowHelp || stderr != "" {
-			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
-		}
-	})
 }
 
 func TestHelpUnknownTopicErrorsWithSuggestion(t *testing.T) {

@@ -3049,6 +3049,10 @@ inspect workflows
 Usage: goobers workflow show [--dot] <name> [path]
 
 Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+
+Workflow
+
+A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions.
 ~~~
 
 ## `goobers workflow show`
