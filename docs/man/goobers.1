@@ -13,6 +13,9 @@ modes exit 0 before a terminal outcome is known.
 
 Use `goobers help all` for advanced operator commands or
 `goobers help stages` for runner-invoked workflow internals.
+Quickstart guide: docs/guides/quickstart.md
+DSL entry points: `goobers schema` and `goobers examples`
+Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`
 .fi
 .SH COMMANDS
 .SS Core commands
@@ -31,6 +34,9 @@ list escalated runs newest first
 .TP
 \fBgoobers examples\fR
 browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers help\fR
+show command or concept help
 .TP
 \fBgoobers init\fR
 scaffold an instance root
@@ -433,6 +439,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-gather-pr-context\fR(1),
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
+\fBgoobers-help\fR(1),
 \fBgoobers-init\fR(1),
 \fBgoobers-ios-simulator-test\fR(1),
 \fBgoobers-issue-close-out\fR(1),

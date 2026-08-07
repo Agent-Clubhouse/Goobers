@@ -66,7 +66,10 @@ var completionPositionalArgKinds = map[string]string{
 }
 
 var completionPositionalArgValues = map[string][]string{
-	"help": {"all", "stages"},
+	"help": append([]string{
+		"all",
+		"stages",
+	}, helpConceptTopics...),
 }
 
 // completionFlagSpecs maps a command id to its completable flags. The set and
