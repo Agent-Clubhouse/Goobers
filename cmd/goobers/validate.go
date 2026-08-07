@@ -195,6 +195,13 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	diagnostics.addReport(report, diagnosticFile(root, configDir))
 	printValidationIssues(stdout, report)
 	if errors.Is(err, instance.ErrInvalidConfig) {
+		// The legacy single-repo fallback can only be observed after decoding
+		// the schema-invalid empty project. Preserve the schema errors while
+		// still telling operators which repository runtime would bind.
+		comparisonSet, _, comparisonErr := instance.LoadConfigDirForComparison(configDir)
+		if comparisonSet != nil && errors.Is(comparisonErr, instance.ErrInvalidConfig) {
+			_ = checkGaggleRepositoryBindings(root, configDir, cfg, comparisonSet, stdout, diagnostics)
+		}
 		pf(stdout, "\nconfig directory failed validation\n")
 		return 1
 	}
@@ -297,6 +304,11 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 
+	if !checkGaggleRepositoryBindings(root, configDir, cfg, set, stdout, diagnostics) {
+		pf(stdout, "\ngaggle repositories do not match instance repos[]\n")
+		return 1
+	}
+
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
@@ -361,6 +373,109 @@ func configSourceDiagnosticFile(root, configDir, source string) string {
 func gooberDiagnosticFile(root, configDir string, set *instance.ConfigSet, name string) string {
 	source, _ := set.GooberSource(name)
 	return configSourceDiagnosticFile(root, configDir, source)
+}
+
+func gaggleDiagnosticFile(root, configDir string, set *instance.ConfigSet, name string) string {
+	source, _ := set.GaggleSource(name)
+	return configSourceDiagnosticFile(root, configDir, source)
+}
+
+func checkGaggleRepositoryBindings(
+	root, configDir string,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	stdout io.Writer,
+	diagnostics *diagnosticCollector,
+) bool {
+	ok := true
+	for _, gaggle := range set.Gaggles {
+		project := gaggle.Spec.Project
+		if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+			repo := cfg.Repos[0]
+			pf(stdout, "INFO Gaggle/%s: empty spec.project binds to instance repos[0] %s\n",
+				gaggle.Name, instanceRepoName(repo))
+		} else if _, found := configuredRepoForProject(cfg, project); !found {
+			message := unmatchedGaggleRepoMessage("spec.project", project, cfg.Repos)
+			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				"/spec/project", "REPO002", string(validate.Error), message)
+			ok = false
+		}
+		for i, repo := range gaggle.Spec.AdditionalRepos {
+			if _, found := configuredRepoForProject(cfg, repo); found {
+				continue
+			}
+			field := fmt.Sprintf("spec.additionalRepos[%d]", i)
+			message := unmatchedGaggleRepoMessage(field, repo, cfg.Repos)
+			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				fmt.Sprintf("/spec/additionalRepos/%d", i), "REPO002", string(validate.Error), message)
+			ok = false
+		}
+	}
+	return ok
+}
+
+func unmatchedGaggleRepoMessage(field string, repo apiv1.RepoRef, configured []instance.RepoRef) string {
+	message := fmt.Sprintf("%s repository %s matches no instance repos[] entry", field, apiRepoName(repo))
+	if suggestion, found := suggestConfiguredRepo(repo, configured); found {
+		message += fmt.Sprintf("; did you mean %q?", instanceRepoName(suggestion))
+	}
+	return message
+}
+
+func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (instance.RepoRef, bool) {
+	wanted := strings.ToLower(repo.Owner + "/" + repo.Name)
+	bestDistance := -1
+	var best instance.RepoRef
+	for _, candidate := range configured {
+		if repo.Provider != "" && candidate.Provider != string(repo.Provider) {
+			continue
+		}
+		distance := repositoryEditDistance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
+		if bestDistance == -1 || distance < bestDistance {
+			bestDistance = distance
+			best = candidate
+		}
+	}
+	if bestDistance < 0 || bestDistance > 3 {
+		return instance.RepoRef{}, false
+	}
+	return best, true
+}
+
+func repositoryEditDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for i := range previous {
+		previous[i] = i
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(current[j-1]+1, previous[j]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
+}
+
+func apiRepoName(repo apiv1.RepoRef) string {
+	if repo.Project != "" {
+		return fmt.Sprintf("%s/%s/%s", repo.Owner, repo.Project, repo.Name)
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func instanceRepoName(repo instance.RepoRef) string {
+	if repo.Project != "" {
+		return fmt.Sprintf("%s/%s/%s", repo.Owner, repo.Project, repo.Name)
+	}
+	return repo.Owner + "/" + repo.Name
 }
 
 func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, err error) (file, path, code string) {

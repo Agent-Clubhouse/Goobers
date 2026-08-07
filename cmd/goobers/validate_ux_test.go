@@ -108,6 +108,96 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	}
 }
 
+func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceTree bool
+		mutate     func(t *testing.T, path string)
+		want       string
+	}{
+		{
+			name: "instance project",
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "    name: your-repo", "    name: your-rep")
+			},
+			want: `spec.project repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+		{
+			name:       "source tree additional repo",
+			sourceTree: true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: your-org
+      name: your-rep
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			if tc.sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			tc.mutate(t, gagglePath)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("validate stdout missing %q:\n%s", tc.want, stdout)
+			}
+		})
+	}
+}
+
+func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
+	for _, sourceTree := range []bool{false, true} {
+		name := "instance"
+		if sourceTree {
+			name = "source tree"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			if sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			replaceInFile(t, gagglePath, "    owner: your-org", `    owner: ""`)
+			replaceInFile(t, gagglePath, "    name: your-repo", `    name: ""`)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			want := "INFO Gaggle/example: empty spec.project binds to instance repos[0] your-org/your-repo"
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+			}
+		})
+	}
+}
+
 // TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
 // becomes a GitHub Actions ::error/::warning workflow command anchored to its
 // file, written to stderr so it composes cleanly with --json (stdout stays a
