@@ -139,6 +139,7 @@ func runInitWithInputForOSAndGitHub(
 	if *guided {
 		if err := instance.CheckGuidedInitTarget(root); err != nil {
 			pf(stderr, "error: %v\n", err)
+			printDefaultedTargetNote(stderr, err, fs.NArg())
 			return 2
 		}
 	}
@@ -158,6 +159,7 @@ func runInitWithInputForOSAndGitHub(
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		printDefaultedTargetNote(stderr, err, fs.NArg())
 		return errCode
 	}
 
@@ -212,6 +214,17 @@ func runInitWithInputForOSAndGitHub(
 		return 2
 	}
 	return 0
+}
+
+// printDefaultedTargetNote explains, after an init target-conflict refusal,
+// that the conflicting target was never chosen explicitly — init with no
+// [path] defaults to the current directory, the exact trap of running it from
+// inside a source checkout (#2513).
+func printDefaultedTargetNote(stderr io.Writer, err error, narg int) {
+	var conflict *instance.TargetConflictError
+	if narg == 0 && errors.As(err, &conflict) {
+		pf(stderr, "note: no [path] argument was given, so the target defaulted to the current directory\n")
+	}
 }
 
 func ensureInitCompleted(root string) error {

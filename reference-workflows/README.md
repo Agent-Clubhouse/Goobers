@@ -201,7 +201,15 @@ After the canonical quickstart has created and validated a regular instance:
      gh label create "$ns:$name" --color "$color" --description "$desc" \
        --repo Agent-Clubhouse/Goobers --force
    done
+   gh label create goobers --color 006B75 \
+     --description "Scopes which issues count as a gaggle's backlog (gaggle.yaml backlog.labels)" \
+     --repo Agent-Clubhouse/Goobers --force
    ```
+
+   The bare `goobers` label is the gaggle's backlog scope — `gaggle.yaml` sets
+   `backlog.labels: [goobers]`, a hard AND-filter — so apply it to every issue
+   the gaggle should treat as backlog; an issue without it is invisible to
+   every backlog-consuming workflow.
 
 5. **Start the daemon** (scheduler + runner + telemetry rollup):
 

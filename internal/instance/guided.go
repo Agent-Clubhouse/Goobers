@@ -393,7 +393,7 @@ func copyGuidedSourcePath(destination, source, name string) error {
 func CheckGuidedInitTarget(root string) error {
 	layout := NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err == nil {
-		return fmt.Errorf("guided setup requires an unconfigured target: %s already exists; choose an empty path", ConfigFileName)
+		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigFileName, absPath(root))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
 	}
@@ -403,7 +403,11 @@ func CheckGuidedInitTarget(root string) error {
 		return fmt.Errorf("inspect %s: %w", ConfigDirName, err)
 	}
 	if populated {
-		return fmt.Errorf("guided setup requires an unconfigured target: %s already contains files; choose an empty path", ConfigDirName)
+		detail := ""
+		if hasManifest, probeErr := configDirHasManifest(layout.ConfigDir()); probeErr == nil && !hasManifest {
+			detail = ", and none is Goobers config (no `kind: Manifest` document) — the target looks like an unrelated project, for example a Goobers source checkout whose config/ holds CRD manifests"
+		}
+		return targetConflictf("guided setup requires an unconfigured target: %s in %s already contains files%s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigDirName, absPath(root), detail)
 	}
 	return nil
 }

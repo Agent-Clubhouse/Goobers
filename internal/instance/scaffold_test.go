@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -288,5 +289,75 @@ func TestSeedQuickstartConfigSourceRejectsInvalidCompletedTree(t *testing.T) {
 	_, err := SeedQuickstartConfigSource(root)
 	if err == nil || !strings.Contains(err.Error(), "validate seeded config source") {
 		t.Fatalf("SeedQuickstartConfigSource error = %v, want validation failure", err)
+	}
+}
+
+func TestInitRefusesForeignConfigDirWithoutWriting(t *testing.T) {
+	// A source checkout of this repository is the canonical trap (#2513): its
+	// tracked config/ holds CRD manifests, not instance config.
+	root := t.TempDir()
+	crd := filepath.Join(root, ConfigDirName, "crd", "bases", "widgets.yaml")
+	if err := os.MkdirAll(filepath.Dir(crd), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\n"
+	if err := os.WriteFile(crd, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Init(root)
+	if err == nil {
+		t.Fatalf("Init adopted a foreign %s directory", ConfigDirName)
+	}
+	var conflict *TargetConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Init error = %T %v, want *TargetConflictError", err, err)
+	}
+	abs, absErr := filepath.Abs(root)
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	for _, want := range []string{abs, "kind: Manifest", "goobers init ./my-instance"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Init error = %q, missing %q", err, want)
+		}
+	}
+	// Refusal must leave the target untouched.
+	for _, name := range []string{ConfigFileName, GagglesDirName, SchedulerDirName, TelemetryDBName} {
+		if _, statErr := os.Stat(filepath.Join(root, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("refused Init wrote %s, stat error = %v", name, statErr)
+		}
+	}
+}
+
+func TestInitAdoptsConfigFirstLayoutWithManifest(t *testing.T) {
+	// Authoring config/ before running init is a supported layout: a Manifest
+	// document marks the directory as genuine Goobers config.
+	root := t.TempDir()
+	manifest := filepath.Join(root, ConfigDirName, "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\nmetadata:\n  name: preauthored\n"
+	if err := os.WriteFile(manifest, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	found := false
+	for _, skipped := range res.Skipped {
+		if skipped == ConfigDirName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s to be skipped (adopted), got skipped=%v created=%v", ConfigDirName, res.Skipped, res.Created)
+	}
+	data, err := os.ReadFile(manifest)
+	if err != nil || string(data) != doc {
+		t.Fatalf("pre-authored manifest changed: data=%q err=%v", data, err)
 	}
 }
