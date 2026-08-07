@@ -317,6 +317,134 @@ export function useInsightCostTrend(
   return { retry, state };
 }
 
+/**
+ * Instance-wide cost rollup: total spend and a per-gaggle ranking.
+ *
+ * Deliberately unscoped — no gaggle/workflow arguments. #2533 asks for a
+ * number visible "without selecting a specific scope", but the rest of
+ * Insight's `getTelemetryStats` calls narrow by whatever scope is currently
+ * selected in the UI (see `useInsightStats`). This hook always asks for the
+ * whole instance, independent of that selection, so switching the Scope
+ * dropdown does not change what it reports.
+ */
+export function useInsightCostRollup(
+  client: DaemonClient,
+  window: InsightWindow,
+): {
+  retry: () => void;
+  state: QueryState<InsightCostRollupSnapshot>;
+} {
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("insight-cost-rollup", window);
+  const [state, setState] = useState<QueryState<InsightCostRollupSnapshot>>(() => {
+    const cached = cache.get<InsightCostRollupSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
+  const request = useRef<AbortController | undefined>(undefined);
+
+  const refresh = useCallback(() => {
+    request.current?.abort();
+    const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
+    const controller = new AbortController();
+    request.current = controller;
+    const filters = insightWindowFilters(window);
+    setState((current) =>
+      (current.status === "ready" || current.status === "stale") &&
+      current.data.window === window
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
+
+    return client.getTelemetryStats(filters, { signal: controller.signal }).then(
+      (stats) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        const data = costRollupFromStats(filters, stats, window);
+        cache.set(cacheKey, data, RUN_DATA_DEPENDENCIES, cacheRevision);
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+        return true;
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted) {
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read instance spend.");
+          setState((current) =>
+            (current.status === "ready" || current.status === "stale") &&
+            current.data.window === window
+              ? { status: "stale", data: current.data, error: queryError }
+              : { status: "error", error: queryError },
+          );
+        }
+        return false;
+      },
+    );
+  }, [cache, cacheKey, client, isFresh, window]);
+
+  useEffect(() => {
+    const cached = cache.get<InsightCostRollupSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(["run"], (_models, reason) => {
+      const current =
+        reason === "initial" ? cache.get<InsightCostRollupSnapshot>(cacheKey) : undefined;
+      if (current) {
+        setState(
+          isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+        );
+        return true;
+      }
+      return refresh();
+    });
+    return () => {
+      unsubscribe();
+      request.current?.abort();
+    };
+  }, [cache, cacheKey, isFresh, refresh, subscribe]);
+
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    return refresh();
+  }, [cache, cacheKey, refresh]);
+  return { retry, state };
+}
+
+function costRollupFromStats(
+  filters: TelemetryStatsOptions,
+  stats: TelemetryStatsResult,
+  window: InsightWindow,
+): InsightCostRollupSnapshot {
+  const totalCostSamples = stats.models.reduce((sum, model) => sum + model.costSamples, 0);
+  const totalCostUSD =
+    totalCostSamples === 0
+      ? undefined
+      : stats.models.reduce((sum, model) => sum + (model.costUSD ?? 0), 0);
+  const byGaggle = stats.gaggles
+    .map((gaggle) => ({
+      gaggle: gaggle.gaggle,
+      usage: stats.usage.find(
+        (item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle,
+      ),
+    }))
+    .sort((left, right) => estimatedGaggleSpend(right.usage) - estimatedGaggleSpend(left.usage));
+  return { filters, totalCostUSD, totalCostSamples, byGaggle, window };
+}
+
+function estimatedGaggleSpend(usage: TelemetryUsageStats | undefined): number {
+  return (usage?.p50CostUSD ?? 0) * (usage?.costSamples ?? 0);
+}
+
 export function useInsightErrorSignatures(
   client: DaemonClient,
   window: InsightWindow,
