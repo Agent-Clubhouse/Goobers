@@ -228,11 +228,13 @@
         "requiredFreshness": {
           "type": "string",
           "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "examples": ["5m"],
           "description": "Positive Go-duration freshness requirement."
         },
         "age": {
           "type": "string",
           "pattern": "^(0|([0-9]+(ns|us|µs|ms|s|m|h))+)$",
+          "examples": ["1m"],
           "description": "Calculated non-negative age at artifact generation."
         },
         "verdict": {
