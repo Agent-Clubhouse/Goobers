@@ -388,7 +388,8 @@ func TestClaudeAdapterPreflightRequiresBinaryAndAuthentication(t *testing.T) {
 	}}
 	signedOut := &ClaudeAdapter{Command: []string{"echo"}, Runner: signedOutRunner}
 	if _, err := signedOut.Preflight(context.Background()); err == nil ||
-		!strings.Contains(err.Error(), "claude auth login") {
+		!strings.Contains(err.Error(), `{"loggedIn":false}`) ||
+		!strings.Contains(err.Error(), "if this is an authentication failure, run `claude auth login`") {
 		t.Fatalf("signed-out error = %v", err)
 	}
 	if len(signedOutRunner.reqs) != 2 ||
