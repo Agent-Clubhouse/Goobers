@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,7 +39,9 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"remediation-checkpoint":   {test: TestRemediationStagesDispatchFromCommands},
 	"report-pr-status":         {test: TestADOBacklogStagesDispatchFromCommands},
 	"respond-to-findings":      {test: TestRespondToFindingsDispatchesToGitea},
+	"select-source":            {test: TestDecompositionStagesDispatchFromCommands},
 	"update-behind-pr":         {test: TestUpdateBehindPRDispatchesToGitea},
+	"validate-plan":            {test: TestDecompositionStagesDispatchFromCommands},
 }
 
 var providerDispatchAllowlist = map[string]string{
@@ -52,10 +55,8 @@ var providerDispatchAllowlist = map[string]string{
 	"reconcile-post-merge":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"record-merge-refusal":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"reconcile-branches":     "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
-	"select-source":          "This decomposition command is scoped to GitHub parent issues and requires github:issues:write.",
 	"set-milestone":          "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
 	"telemetry-query":        "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
-	"validate-plan":          "This decomposition command validates a live GitHub parent issue and requires github:issues:write.",
 }
 
 func TestBlessedTierStageDispatchCoverage(t *testing.T) {
@@ -202,6 +203,51 @@ func TestADOBacklogStagesDispatchFromCommands(t *testing.T) {
 			args := append([]string{test.command}, test.args...)
 			args = append(args, root)
 			code, _, stderr := runArgs(t, args...)
+			if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+				t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
+			}
+		})
+	}
+}
+
+func TestDecompositionStagesDispatchFromCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		setup   func(*testing.T)
+	}{
+		{"select-source", func(*testing.T) {}},
+		{"validate-plan", func(t *testing.T) {
+			dir := t.TempDir()
+			planFile := filepath.Join(dir, "plan.json")
+			selectionFile := filepath.Join(dir, "selection.json")
+			if err := os.WriteFile(planFile, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(selectionFile, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(executor.InputEnvVar("planFile"), planFile)
+			t.Setenv(executor.InputEnvVar("selectionFile"), selectionFile)
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
+			root := initDemo(t)
+			test.setup(t)
+			setNonGitHubStageEnv(t, providers.ProviderADO)
+			previous := newADOProviderForStage
+			called := false
+			newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
+				called = true
+				if repo.Provider != providers.ProviderADO {
+					t.Fatalf("provider = %q, want ado", repo.Provider)
+				}
+				return nil, errors.New(dispatchProbeError)
+			}
+			t.Cleanup(func() { newADOProviderForStage = previous })
+
+			code, _, stderr := runArgs(t, test.command, root)
 			if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
 				t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
 			}
