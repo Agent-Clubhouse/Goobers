@@ -7,6 +7,7 @@ export type IconName =
   | "clock"
   | "close"
   | "code"
+  | "gaggle"
   | "gate"
   | "goober"
   | "insight"
@@ -67,6 +68,14 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="m8 9-3 3 3 3" />
         <path d="m16 9 3 3-3 3" />
         <path d="m14 5-4 14" />
+      </>
+    ),
+    gaggle: (
+      <>
+        <circle cx="8" cy="9" r="3" />
+        <circle cx="16" cy="9" r="3" />
+        <path d="M3 20c0-3 2.2-5 5-5s5 2 5 5" />
+        <path d="M11 20c0-3 2.2-5 5-5s5 2 5 5" />
       </>
     ),
     gate: (

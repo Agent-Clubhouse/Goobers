@@ -1,7 +1,9 @@
 import { useRef } from "react";
+import type { DaemonClient } from "../api/types";
 import { useCobrand } from "../cobrand";
 import { useLiveData, type DataFreshness, type LiveFreshness } from "../liveData";
-import type { Navigate, PrimaryArea } from "../routing";
+import { useGaggleList } from "../operationalData";
+import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
 import { Icon } from "../ui/Icon";
@@ -9,7 +11,9 @@ import { SupportFooter } from "./SupportFooter";
 
 interface PortalShellProps {
   activeArea: PrimaryArea;
+  activeGaggle?: string;
   children: React.ReactNode;
+  client: DaemonClient;
   currentScope: Pick<ScopeFilters, "gaggle" | "workflow" | "stage">;
   navigate: Navigate;
   standalone: boolean;
@@ -19,7 +23,9 @@ interface PortalShellProps {
 
 export function PortalShell({
   activeArea,
+  activeGaggle,
   children,
+  client,
   currentScope,
   navigate,
   standalone,
@@ -122,6 +128,8 @@ export function PortalShell({
           </button>
         </nav>
 
+        <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
+
         <div className="sidebar-status">
           <div>
             <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
@@ -187,6 +195,57 @@ export function PortalShell({
         </main>
       </div>
     </div>
+  );
+}
+
+/**
+ * Persistent gaggle affordance (#2531): a gaggle must be reachable directly
+ * from anywhere in the app, not only by drilling down through Workflows. It
+ * doubles as the switcher on multi-gaggle instances since the sidebar
+ * carries it on every page, including the gaggle view itself.
+ */
+function GaggleNav({
+  activeGaggle,
+  client,
+  navigate,
+}: {
+  activeGaggle?: string;
+  client: DaemonClient;
+  navigate: Navigate;
+}) {
+  const { state } = useGaggleList(client);
+  const gaggles =
+    state.status === "ready" || state.status === "stale" ? state.data : undefined;
+
+  if (!gaggles || gaggles.length === 0) {
+    return null;
+  }
+
+  return (
+    <nav aria-label="Gaggles" className="sidebar-gaggle-nav">
+      <span className="sidebar-section-label">Gaggles</span>
+      <ul>
+        {gaggles.map((gaggle) => (
+          <li key={gaggle.name}>
+            <a
+              aria-current={activeGaggle === gaggle.name ? "page" : undefined}
+              aria-label={`Open gaggle ${gaggle.displayName}`}
+              className={
+                activeGaggle === gaggle.name ? "nav-item nav-item-active" : "nav-item"
+              }
+              href={routeHash({ page: "gaggle", id: gaggle.name })}
+              onClick={(event) => {
+                event.preventDefault();
+                navigate({ page: "gaggle", id: gaggle.name });
+              }}
+            >
+              <Icon name="gaggle" />
+              <span className="nav-label">{gaggle.displayName}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }
 
