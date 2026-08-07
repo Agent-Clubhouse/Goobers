@@ -7,7 +7,7 @@ spec:
   role: implementer
   displayName: Implementer
   instructions: instructions.md
-  harness: copilot
+  harness: claude-code
   model: auto
   harnessOptions: {}
   # Implement-only: this stage never opens the PR or touches issues directly

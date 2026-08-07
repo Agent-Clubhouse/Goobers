@@ -3,7 +3,7 @@
 > Status: **Approved for implementation**
 > Area prefix: `CBR`
 > Milestone: **V1 — arbitrary repos / teams / hardening**
-> Related: [`docs/design/dashboard.md`](dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)
+> Related: [`docs/design/dashboard.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)
 
 ## 1. Problem
 
