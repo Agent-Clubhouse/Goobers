@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,16 +22,18 @@ const (
 )
 
 type updateBehindServer struct {
-	mergeable             *bool
-	labels                []string
-	comments              []map[string]interface{}
-	checkState            string
-	updateCalls           int
-	updateStatus          int
-	current               bool
-	failLabelDelete       bool
-	includeUnselected     bool
-	includeEarlierPassing bool
+	mergeable           *bool
+	labels              []string
+	comments            []map[string]interface{}
+	checkState          string
+	updateCalls         int
+	updateStatus        int
+	current             bool
+	failLabelDelete     bool
+	includeUnselected   bool
+	includeEarlierCrown bool
+	unselectedCount     int
+	graphQLCalls        int
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -55,21 +58,38 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
 			"labels": labelsJSON(s.labels),
 		}}
-		if s.includeEarlierPassing {
+		if s.includeEarlierCrown {
 			prs = append([]map[string]interface{}{{
 				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54",
 				"head": map[string]string{"ref": "goobers/implementation/run-54", "sha": "earlier-passing-sha"},
 				"base": map[string]string{"ref": "main", "sha": "opening-base-sha"},
 			}}, prs...)
-		}
-		if s.includeUnselected {
 			prs = append(prs, map[string]interface{}{
-				"number": 56, "state": "open", "html_url": "https://github.test/pulls/56",
-				"head": map[string]string{"ref": "goobers/implementation/run-56", "sha": "unselected-head-sha"},
+				"number": 1055, "state": "open", "html_url": "https://github.test/pulls/1055",
+				"head":   map[string]string{"ref": "goobers/implementation/run-1055", "sha": "parked-dependent-sha"},
+				"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
+				"labels": labelsJSON([]string{blockedOnSiblingLabel}),
+			})
+		}
+		unselectedCount := s.unselectedCount
+		if s.includeUnselected && unselectedCount == 0 {
+			unselectedCount = 1
+		}
+		for i := 0; i < unselectedCount; i++ {
+			prs = append(prs, map[string]interface{}{
+				"number": 56 + i, "state": "open", "html_url": fmt.Sprintf("https://github.test/pulls/%d", 56+i),
+				"head": map[string]string{"ref": fmt.Sprintf("goobers/implementation/run-%d", 56+i), "sha": fmt.Sprintf("unselected-head-sha-%d", i)},
 				"base": map[string]string{"ref": "main", "sha": "opening-base-sha"},
 			})
 		}
 		writeFakeJSON(w, prs)
+	})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		state := "SUCCESS"
+		if s.checkState == "failure" {
+			state = "FAILURE"
+		}
+		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{headSHA: state})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, _ *http.Request) {
 		state := s.checkState
@@ -93,7 +113,7 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
-	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(prefix+"/commits/unselected-head-sha-", func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
 	})
 	mux.HandleFunc(prefix+"/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
@@ -144,6 +164,18 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/issues/55/comments", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, s.comments)
 	})
+	if s.includeEarlierCrown {
+		mux.HandleFunc(prefix+"/issues/1055/comments", func(w http.ResponseWriter, _ *http.Request) {
+			writeFakeJSON(w, []map[string]interface{}{{
+				"id": 1055, "body": blockedOnSiblingCommentFor(t, 54),
+			}})
+		})
+		mux.HandleFunc(prefix+"/issues/54", func(w http.ResponseWriter, _ *http.Request) {
+			writeFakeJSON(w, map[string]interface{}{
+				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54", "labels": []interface{}{},
+			})
+		})
+	}
 	mux.HandleFunc(prefix+"/issues/55/labels/"+needsRemediationLabel, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "want DELETE", http.StatusMethodNotAllowed)
@@ -239,14 +271,17 @@ func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, std
 func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 	mergeable := true
 	state := &updateBehindServer{
-		mergeable:         &mergeable,
-		labels:            []string{needsRemediationLabel, "other"},
-		includeUnselected: true,
+		mergeable:       &mergeable,
+		labels:          []string{needsRemediationLabel, "other"},
+		unselectedCount: 40,
 	}
 	stdout, _, result := runUpdateBehindPRTest(t, state)
 
 	if state.updateCalls != 1 {
 		t.Fatalf("update-branch calls = %d, want 1", state.updateCalls)
+	}
+	if state.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 41 PRs", state.graphQLCalls)
 	}
 	if strings.Join(state.labels, ",") != "other" {
 		t.Fatalf("labels = %v, want needs-remediation cleared", state.labels)
@@ -302,15 +337,18 @@ func TestUpdateBehindPRDispatchesToGitea(t *testing.T) {
 
 func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
 	state := &updateBehindServer{
-		checkState:            "failure",
-		current:               true,
-		includeUnselected:     true,
-		includeEarlierPassing: true,
+		checkState:          "failure",
+		current:             true,
+		unselectedCount:     40,
+		includeEarlierCrown: true,
 	}
 	stdout, _, result := runUpdateBehindPRTest(t, state)
 
 	if state.updateCalls != 0 {
 		t.Fatalf("update-branch calls = %d, want 0 for current PR", state.updateCalls)
+	}
+	if state.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 42 PRs", state.graphQLCalls)
 	}
 	if result["needsFullRemediation"] != "true" || result["selectedNumber"] != "55" {
 		t.Fatalf("result = %v, want failing PR routed to full remediation", result)
@@ -348,12 +386,13 @@ func TestUpdateBehindPRFailingCurrentUnlabeledHandoffReachesGatherPRContext(t *t
 	runGitT(t, work, "push", "origin", prBranch)
 	headSHA := strings.TrimSpace(runGitOutputT(t, work, "rev-parse", "HEAD"))
 
-	gatherServer := gatherPRContextServer{
+	gatherState := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
 		prNumber: 55, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA,
 		checkState: "failure",
-	}.start(t)
+	}
+	gatherServer := gatherState.start(t)
 	newGitHubProvider = mergePRTestServer{url: gatherServer.URL}.newGitHubProvider
 
 	mgr, err := worktree.NewManager(t.TempDir())

@@ -210,34 +210,26 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			}
 			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
 		}
-		candidates = deferredRemediationCandidates(nonBlocked)
+		if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
+			return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
+		}
+		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
+		if err != nil {
+			pf(stderr, "error: determine remediation eligibility: %v\n", err)
+			return 1
+		}
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	var claimed *providers.PullRequestSummary
-	if hasPinnedCandidate {
-		claimed, err = claimEligiblePullRequestInOrder(root, candidates)
-	} else {
-		claimed, err = claimFirstMatchingPullRequest(root, candidates, func(candidate *providers.PullRequestSummary) (bool, error) {
-			if err := resolveRemediationCheckState(ctx, provider, repo, candidate); err != nil {
-				return false, fmt.Errorf("check state for PR #%d: %w", candidate.Number, err)
-			}
-			if remediationPriorityFor(*candidate) != remediationPriorityNone {
-				return true, nil
-			}
-			if blockedDependents[candidate.Number] == 0 {
-				return false, nil
-			}
-			return behindBase(*candidate)
-		})
-	}
+	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
 	if err != nil {
-		return failProviderStage(stderr, "select and claim eligible PR", err, remediationBriefResultFile)
+		pf(stderr, "error: claim eligible PR: %v\n", err)
+		return 1
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "no unclaimed PR needs remediation this cycle")
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
 	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
@@ -462,21 +454,30 @@ func resolveRemediationCheckState(ctx context.Context, provider remediationProvi
 	return nil
 }
 
-// deferredRemediationCandidates preserves strong-signal ordering while keeping
-// unresolved PRs available for atomic claim fallthrough. Their check state is
-// resolved only after one candidate is claimed.
-func deferredRemediationCandidates(prs []providers.PullRequestSummary) []providers.PullRequestSummary {
-	strong, _ := strongRemediationCandidates(prs)
-	unresolved := make([]providers.PullRequestSummary, 0, len(prs))
+func resolveRemediationCheckStates(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) error {
+	refs := make([]string, 0, len(prs))
+	seen := make(map[string]bool, len(prs))
 	for _, pr := range prs {
-		if remediationPriorityFor(pr) == remediationPriorityNone && pr.CheckState == "" {
-			unresolved = append(unresolved, pr)
+		if pr.CheckState == "" && !seen[pr.HeadSHA] {
+			refs = append(refs, pr.HeadSHA)
+			seen[pr.HeadSHA] = true
 		}
 	}
-	sort.Slice(unresolved, func(i, j int) bool {
-		return unresolved[i].Number < unresolved[j].Number
-	})
-	return append(strong, unresolved...)
+	states, err := provider.RefCheckStates(ctx, repo, refs)
+	if err != nil {
+		return err
+	}
+	for i := range prs {
+		if prs[i].CheckState != "" {
+			continue
+		}
+		state, ok := states[prs[i].HeadSHA]
+		if !ok {
+			return fmt.Errorf("check state for ref %q was not returned", prs[i].HeadSHA)
+		}
+		prs[i].CheckState = state
+	}
+	return nil
 }
 
 // selectRemediationCandidates returns every open PR carrying a strong

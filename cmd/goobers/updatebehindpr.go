@@ -107,28 +107,24 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		}
 		return behind, err
 	}
-	candidates := deferredRemediationCandidates(prs)
+	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+		return failProviderStage(stderr, "resolve remediation check states", err, "update-behind-result.json")
+	}
+	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
+	if err != nil {
+		return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
+	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimFirstMatchingPullRequest(root, candidates, func(candidate *providers.PullRequestSummary) (bool, error) {
-		if err := resolveRemediationCheckState(ctx, provider, repo, candidate); err != nil {
-			return false, fmt.Errorf("check state for PR #%d: %w", candidate.Number, err)
-		}
-		if remediationPriorityFor(*candidate) != remediationPriorityNone {
-			return true, nil
-		}
-		if blockedDependents[candidate.Number] == 0 {
-			return false, nil
-		}
-		return behindBase(*candidate)
-	})
+	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
 	if err != nil {
-		return failProviderStage(stderr, "select and claim eligible PR", err, "update-behind-result.json")
+		pf(stderr, "error: claim eligible PR: %v\n", err)
+		return 1
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "no unclaimed PR needs remediation this cycle")
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	candidate := *claimed
 	minSeverity := resolveMinSeverity(stderr)

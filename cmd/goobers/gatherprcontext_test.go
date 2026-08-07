@@ -26,39 +26,48 @@ import (
 // gather-pr-context's tests: one open PR, its check state, and a fixed set of
 // comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
-	owner, repo           string
-	authenticatedLogin    string
-	prNumber              int
-	head, base            string
-	headSHA               string
-	baseSHA               string
-	body                  string
-	checkState            string
-	labels                []string
-	comments              []map[string]interface{}
-	includeUnselected     bool
-	includeEarlierPassing bool
+	owner, repo         string
+	authenticatedLogin  string
+	prNumber            int
+	head, base          string
+	headSHA             string
+	baseSHA             string
+	body                string
+	checkState          string
+	labels              []string
+	comments            []map[string]interface{}
+	includeUnselected   bool
+	includeEarlierCrown bool
+	unselectedCount     int
+	graphQLCalls        int
 }
 
-func TestDeferredRemediationCandidatesPreserveMixedTierClaimFallthrough(t *testing.T) {
-	prs := []providers.PullRequestSummary{
-		{Number: 30},
-		{Number: 20, CheckState: providers.CheckStateFailing},
-		{Number: 10, Labels: []string{needsRemediationLabel}},
-		{Number: 40, CheckState: providers.CheckStatePassing},
+func serveBulkCheckStates(t *testing.T, w http.ResponseWriter, r *http.Request, calls *int, states map[string]string) {
+	t.Helper()
+	*calls++
+	var request struct {
+		Variables map[string]interface{} `json:"variables"`
 	}
-	candidates := deferredRemediationCandidates(prs)
-	got := make([]int, len(candidates))
-	for i, candidate := range candidates {
-		got[i] = candidate.Number
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		t.Fatalf("decode GraphQL request: %v", err)
 	}
-	want := []int{10, 20, 30}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("candidates = %v, want %v", got, want)
+	repository := make(map[string]interface{})
+	for variable, value := range request.Variables {
+		if !strings.HasPrefix(variable, "ref") {
+			continue
+		}
+		state := states[fmt.Sprint(value)]
+		if state == "" {
+			state = "SUCCESS"
+		}
+		repository["r"+strings.TrimPrefix(variable, "ref")] = map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": state},
+		}
 	}
+	writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": repository}})
 }
 
-func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
+func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	prefix := "/repos/" + s.owner + "/" + s.repo
 	mux := http.NewServeMux()
@@ -101,23 +110,41 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 				"labels":   labelObjs,
 			},
 		}
-		if s.includeEarlierPassing {
+		if s.includeEarlierCrown {
 			prs = append([]map[string]interface{}{{
 				"number": s.prNumber - 1, "draft": false,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber-1),
 				"head":     map[string]interface{}{"ref": "goobers/impl/earlier-passing", "sha": "earlier-passing-sha"},
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 			}}, prs...)
-		}
-		if s.includeUnselected {
 			prs = append(prs, map[string]interface{}{
-				"number": s.prNumber + 1, "draft": false,
-				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+1),
-				"head":     map[string]interface{}{"ref": "goobers/impl/unselected", "sha": "unselected-head-sha"},
+				"number": s.prNumber + 1000, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+1000),
+				"head":     map[string]interface{}{"ref": "goobers/impl/parked-dependent", "sha": "parked-dependent-sha"},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+				"labels":   []map[string]string{{"name": blockedOnSiblingLabel}},
+			})
+		}
+		unselectedCount := s.unselectedCount
+		if s.includeUnselected && unselectedCount == 0 {
+			unselectedCount = 1
+		}
+		for i := 0; i < unselectedCount; i++ {
+			prs = append(prs, map[string]interface{}{
+				"number": s.prNumber + i + 1, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+i+1),
+				"head":     map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/unselected-%d", i), "sha": fmt.Sprintf("unselected-head-sha-%d", i)},
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 			})
 		}
 		writeFakeJSON(w, prs)
+	})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		state := "SUCCESS"
+		if s.checkState == "failure" {
+			state = "FAILURE"
+		}
+		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{s.headSHA: state})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		state := s.checkState
@@ -140,12 +167,26 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/check-runs", func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
-	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(prefix+"/commits/unselected-head-sha-", func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, s.comments)
 	})
+	if s.includeEarlierCrown {
+		mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber+1000), func(w http.ResponseWriter, r *http.Request) {
+			writeFakeJSON(w, []map[string]interface{}{{
+				"id": 1000, "body": blockedOnSiblingCommentFor(t, s.prNumber-1),
+			}})
+		})
+		mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, s.prNumber-1), func(w http.ResponseWriter, r *http.Request) {
+			writeFakeJSON(w, map[string]interface{}{
+				"number": s.prNumber - 1, "state": "open",
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber-1),
+				"labels":   []interface{}{},
+			})
+		})
+	}
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "want GET", http.StatusMethodNotAllowed)
@@ -283,8 +324,8 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		owner: "your-org", repo: "your-repo",
 		prNumber: 55, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA,
-		labels:            []string{"goobers:needs-remediation"},
-		includeUnselected: true,
+		labels:          []string{"goobers:needs-remediation"},
+		unselectedCount: 40,
 		comments: []map[string]interface{}{
 			{"id": 1, "user": map[string]string{"login": "human-reviewer"}, "body": "please rebase", "created_at": "2026-07-01T00:00:00Z"},
 			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-02T00:00:00Z"},
@@ -317,11 +358,17 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if srv.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 41 PRs", srv.graphQLCalls)
 	}
 	if !strings.Contains(stdout, "PR #55") {
 		t.Fatalf("stdout = %q, want a mention of PR #55", stdout)
@@ -978,7 +1025,7 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 		owner: "your-org", repo: "your-repo",
 		prNumber: 56, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA, checkState: "failure",
-		includeUnselected: true, includeEarlierPassing: true,
+		unselectedCount: 40, includeEarlierCrown: true,
 	}
 	server := srv.start(t)
 
@@ -1005,11 +1052,17 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if srv.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 42 PRs", srv.graphQLCalls)
 	}
 	if !strings.Contains(stdout, "PR #56") {
 		t.Fatalf("stdout = %q, want a mention of PR #56", stdout)
