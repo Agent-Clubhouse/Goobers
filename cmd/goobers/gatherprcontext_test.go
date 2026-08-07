@@ -36,6 +36,7 @@ type gatherPRContextServer struct {
 	checkState         string
 	labels             []string
 	comments           []map[string]interface{}
+	includeUnselected  bool
 }
 
 func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
@@ -71,7 +72,7 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		for i, l := range s.labels {
 			labelObjs[i] = map[string]string{"name": l}
 		}
-		writeFakeJSON(w, []map[string]interface{}{
+		prs := []map[string]interface{}{
 			{
 				"number": s.prNumber, "draft": false,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber),
@@ -80,7 +81,16 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 				"labels":   labelObjs,
 			},
-		})
+		}
+		if s.includeUnselected {
+			prs = append(prs, map[string]interface{}{
+				"number": s.prNumber + 1, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+1),
+				"head":     map[string]interface{}{"ref": "goobers/impl/unselected", "sha": "unselected-head-sha"},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+			})
+		}
+		writeFakeJSON(w, prs)
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		state := s.checkState
@@ -96,6 +106,9 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, s.comments)
@@ -237,7 +250,8 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		owner: "your-org", repo: "your-repo",
 		prNumber: 55, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA,
-		labels: []string{"goobers:needs-remediation"},
+		labels:            []string{"goobers:needs-remediation"},
+		includeUnselected: true,
 		comments: []map[string]interface{}{
 			{"id": 1, "user": map[string]string{"login": "human-reviewer"}, "body": "please rebase", "created_at": "2026-07-01T00:00:00Z"},
 			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-02T00:00:00Z"},

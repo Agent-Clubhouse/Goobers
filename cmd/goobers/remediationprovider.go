@@ -16,6 +16,7 @@ import (
 type remediationProvider interface {
 	ListPullRequests(ctx context.Context, req providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
 	ListRecentlyClosedPullRequests(ctx context.Context, req providers.ListPullRequestsRequest, updatedSince time.Time) ([]providers.PullRequestSummary, error)
+	RefCheckState(ctx context.Context, repo providers.RepositoryRef, ref string) (providers.CheckState, error)
 	GetPullRequest(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error)
 	PullRequestFiles(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.ChangedFile, error)
 	ListComments(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.Comment, error)

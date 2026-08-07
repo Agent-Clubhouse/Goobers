@@ -79,9 +79,10 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo,
-		Base:       providerInput("base", providerBaseBranch()),
-		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
+		Repository:     repo,
+		Base:           providerInput("base", providerBaseBranch()),
+		HeadPrefix:     providerInput("headPrefix", providerBranchNamespace()),
+		SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
@@ -95,6 +96,11 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	)
 	if err != nil {
 		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
+	}
+	if !hasNeedsRemediationCandidate(prs) {
+		if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+			return failProviderStage(stderr, "resolve remediation check states", err, "update-behind-result.json")
+		}
 	}
 
 	baseTips := map[string]string{}
@@ -123,6 +129,9 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	candidate := *claimed
+	if err := resolveRemediationCheckState(ctx, provider, repo, &candidate); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", candidate.Number), err, "update-behind-result.json")
+	}
 	minSeverity := resolveMinSeverity(stderr)
 	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)
 	if err != nil {

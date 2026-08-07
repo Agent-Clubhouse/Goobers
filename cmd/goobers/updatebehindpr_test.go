@@ -21,14 +21,15 @@ const (
 )
 
 type updateBehindServer struct {
-	mergeable       *bool
-	labels          []string
-	comments        []map[string]interface{}
-	checkState      string
-	updateCalls     int
-	updateStatus    int
-	current         bool
-	failLabelDelete bool
+	mergeable         *bool
+	labels            []string
+	comments          []map[string]interface{}
+	checkState        string
+	updateCalls       int
+	updateStatus      int
+	current           bool
+	failLabelDelete   bool
+	includeUnselected bool
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -47,12 +48,20 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			http.Error(w, "want GET", http.StatusMethodNotAllowed)
 			return
 		}
-		writeFakeJSON(w, []map[string]interface{}{{
+		prs := []map[string]interface{}{{
 			"number": 55, "state": "open", "html_url": "https://github.test/pulls/55",
 			"head":   map[string]string{"ref": "goobers/implementation/run-55", "sha": headSHA},
 			"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
 			"labels": labelsJSON(s.labels),
-		}})
+		}}
+		if s.includeUnselected {
+			prs = append(prs, map[string]interface{}{
+				"number": 56, "state": "open", "html_url": "https://github.test/pulls/56",
+				"head": map[string]string{"ref": "goobers/implementation/run-56", "sha": "unselected-head-sha"},
+				"base": map[string]string{"ref": "main", "sha": "opening-base-sha"},
+			})
+		}
+		writeFakeJSON(w, prs)
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/status", func(w http.ResponseWriter, _ *http.Request) {
 		state := s.checkState
@@ -69,6 +78,9 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
 	})
 	mux.HandleFunc(prefix+"/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": baseSHA}})
@@ -213,8 +225,9 @@ func runUpdateBehindPRTest(t *testing.T, state *updateBehindServer) (stdout, std
 func TestUpdateBehindPRUsesAPIAndClearsLabel(t *testing.T) {
 	mergeable := true
 	state := &updateBehindServer{
-		mergeable: &mergeable,
-		labels:    []string{needsRemediationLabel, "other"},
+		mergeable:         &mergeable,
+		labels:            []string{needsRemediationLabel, "other"},
+		includeUnselected: true,
 	}
 	stdout, _, result := runUpdateBehindPRTest(t, state)
 

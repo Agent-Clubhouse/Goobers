@@ -118,7 +118,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
@@ -195,6 +195,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
 		}
+		if !hasNeedsRemediationCandidate(nonBlocked) {
+			if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
+				return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
+			}
+		}
 		fetchedBases := make(map[string]bool)
 		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
@@ -227,6 +232,9 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
+	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
+	}
 
 	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
@@ -432,6 +440,38 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 		return remediationPriorityFailingCI
 	}
 	return remediationPriorityNone
+}
+
+func hasNeedsRemediationCandidate(prs []providers.PullRequestSummary) bool {
+	for _, pr := range prs {
+		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+			return true
+		}
+	}
+	return false
+}
+
+// Failing CI remains a selection signal when no higher-priority label exists,
+// so that fallback must inspect every candidate to preserve claim fallthrough.
+func resolveRemediationCheckStates(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) error {
+	for i := range prs {
+		if err := resolveRemediationCheckState(ctx, provider, repo, &prs[i]); err != nil {
+			return fmt.Errorf("check state for PR #%d: %w", prs[i].Number, err)
+		}
+	}
+	return nil
+}
+
+func resolveRemediationCheckState(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
+	if pr.CheckState != "" {
+		return nil
+	}
+	checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+	if err != nil {
+		return err
+	}
+	pr.CheckState = checkState
+	return nil
 }
 
 // selectRemediationCandidates returns every open PR carrying a strong

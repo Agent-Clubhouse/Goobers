@@ -1105,6 +1105,12 @@ func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, 
 	return summarizeGiteaPull(pr, ""), nil
 }
 
+// RefCheckState resolves a ref's combined commit-status state on demand.
+func (p *GiteaProvider) RefCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+	state, _, err := p.combinedCheckState(ctx, repo, ref)
+	return state, err
+}
+
 // ListRecentlyClosedPullRequests lists pull requests closed or merged since
 // updatedSince. It is the bounded terminal-PR complement to ListPullRequests
 // used when a workflow needs current state for recently relevant siblings.
