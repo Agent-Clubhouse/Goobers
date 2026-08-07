@@ -198,8 +198,9 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		// The legacy single-repo fallback can only be observed after decoding
 		// the schema-invalid empty project. Preserve the schema errors while
 		// still telling operators which repository runtime would bind.
-		comparisonSet, _, comparisonErr := instance.LoadConfigDirForComparison(configDir)
-		if comparisonSet != nil && errors.Is(comparisonErr, instance.ErrInvalidConfig) {
+		comparisonSet, comparisonReport, comparisonErr := instance.LoadConfigDirForComparison(configDir)
+		if comparisonSet != nil && comparisonReport != nil && comparisonReport.HasErrors() &&
+			errors.Is(comparisonErr, instance.ErrInvalidConfig) {
 			_ = checkGaggleRepositoryBindings(root, configDir, cfg, comparisonSet, stdout, diagnostics)
 		}
 		pf(stdout, "\nconfig directory failed validation\n")
@@ -387,6 +388,11 @@ func checkGaggleRepositoryBindings(
 	stdout io.Writer,
 	diagnostics *diagnosticCollector,
 ) bool {
+	// A repository-free instance has no runtime repository join to validate.
+	// This preserves the credential-free, scratch-only built-in demo.
+	if len(cfg.Repos) == 0 {
+		return true
+	}
 	ok := true
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
