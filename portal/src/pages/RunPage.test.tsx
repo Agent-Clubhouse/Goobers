@@ -910,17 +910,35 @@ describe("run detail", () => {
     client.close();
   });
 
-  it("keeps run detail visible while a refresh is pending or fails", async () => {
+  it("keeps run detail visible, without a busy banner, while a refresh is pending, and surfaces failures (#2530)", async () => {
+    // Regression test for #2530: a background refresh triggered by a live
+    // invalidation dips useLiveData's connection freshness through "stale"
+    // for the round-trip (liveData.tsx's drainInvalidations) on every single
+    // live event for an active run, not just on genuine disconnects. Before
+    // this fix, RunPage rendered a "Refreshing run detail…" banner for any
+    // stale-without-error state, so it popped in and out above the
+    // graph/journal once per event — a recurrence of the
+    // #2307/#2304/#2308 "background refresh must not visibly disrupt the
+    // view" class, this time as a pure visual flicker with selection intact.
+    // RunPage must behave like every other query-driven page in the portal
+    // (WorkflowPage, ErrorsPage, InsightPage, GagglePage): stale-without-error
+    // is invisible, and only stale-with-error surfaces anything.
     const runId = "01JZ441DAEMONAPI";
     const client = new LiveFixtureClient(populatedDaemonFixtures());
     renderRun(runId, client);
     await screen.findByRole("heading", { name: `Run ${runId}` });
 
     client.holdRefresh();
-    act(() => client.invalidateRun("fixture:stale"));
+    await act(async () => {
+      client.invalidateRun("fixture:stale");
+      await client.waitForPendingRefresh();
+    });
 
-    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    // The refresh is genuinely pending (not yet resolved), and the run
+    // detail must stay fully visible without any busy banner appearing.
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
     act(() => client.failRefresh(new Error("Unable to refresh this run.")));
@@ -928,11 +946,15 @@ describe("run detail", () => {
     expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
     expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
 
     client.holdRefresh();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await client.waitForPendingRefresh();
+    });
 
-    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
@@ -1104,6 +1126,7 @@ class LiveFixtureClient extends FixtureDaemonClient {
   private readonly stream = new PushEventStream();
   private refreshError: Error | undefined;
   private refreshGate: Deferred | undefined;
+  private refreshStarted: Deferred | undefined;
 
   override connectEvents(): Promise<DaemonEventStream> {
     return Promise.resolve(this.stream);
@@ -1133,6 +1156,16 @@ class LiveFixtureClient extends FixtureDaemonClient {
   holdRefresh(): void {
     this.refreshError = undefined;
     this.refreshGate = deferred();
+    this.refreshStarted = deferred();
+  }
+
+  // Since the removal of the #2530 stale-without-error banner leaves no DOM
+  // signal that a held refresh has actually reached the gate (the previous
+  // version of this test relied on `findByText("Refreshing run detail…")`
+  // for that synchronization), tests must await this instead of racing
+  // `failRefresh`/`release` against a refresh that hasn't started yet.
+  async waitForPendingRefresh(): Promise<void> {
+    await this.refreshStarted?.promise;
   }
 
   failRefresh(error: Error): void {
@@ -1154,6 +1187,7 @@ class LiveFixtureClient extends FixtureDaemonClient {
     if (!gate) {
       return;
     }
+    this.refreshStarted?.resolve();
     await gate.promise;
     if (this.refreshError) {
       throw this.refreshError;
