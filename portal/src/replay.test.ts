@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunEvent } from "./api/types";
+import type { RunEvent, WorkflowGraph } from "./api/types";
 import {
   compressedIdleDelayMs,
   formatReplayClock,
@@ -88,6 +88,40 @@ describe("replay engine (live event stream)", () => {
         endPercent: 100,
       }),
     ]);
+  });
+
+  it("groups the timeline into stage segments attributed to their owning goober (#2538)", () => {
+    const graph: WorkflowGraph = {
+      name: "implementation",
+      version: 1,
+      digest: "sha256:graph",
+      start: "query",
+      nodes: [
+        { id: "query", kind: "deterministic" },
+        { id: "implement", kind: "agentic", owner: "builder-goober" },
+      ],
+      edges: [],
+    };
+    const events = [
+      ev(1, "2026-01-01T00:00:00Z", { type: "stage.started", stage: "query" }),
+      ev(2, "2026-01-01T00:00:01Z", { type: "stage.finished", stage: "query", status: "success" }),
+      ev(3, "2026-01-01T00:00:02Z", { type: "stage.started", stage: "implement" }),
+      ev(4, "2026-01-01T00:00:03Z", {
+        type: "artifact.recorded",
+        category: "evidence",
+        replayChapter: false,
+      }),
+    ];
+
+    const timeline = replayTimeline(events, graph, "run-1");
+
+    expect(timeline.stageSegments).toEqual([
+      expect.objectContaining({ stageId: "query", label: "Query", owner: undefined }),
+      expect.objectContaining({ stageId: "implement", label: "Implement", owner: "builder-goober" }),
+    ]);
+    // Event 4 carries no stage of its own; it stays attributed to the last
+    // known stage rather than opening an unscoped, ownerless segment.
+    expect(timeline.stageSegments[1].endPercent).toBe(100);
   });
 
   it("assigns distinct landmark kinds to meaningful chapters", () => {

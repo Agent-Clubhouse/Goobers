@@ -2811,6 +2811,20 @@ a.telemetry-error-row:hover {
   margin: 0;
 }
 
+.inspector-heading .inspector-scope {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.inspector-heading span.inspector-owner {
+  color: var(--accent-ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 .primitive-icon {
   align-items: center;
   background: var(--bg);
@@ -3267,6 +3281,34 @@ a.telemetry-error-row:hover {
   white-space: nowrap;
 }
 
+.playback-now .playback-scope {
+  align-items: center;
+  color: var(--muted-strong);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: inherit;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.playback-now .playback-phase {
+  color: var(--muted-strong);
+  font-weight: 700;
+}
+
+.playback-now .playback-stage {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.playback-now .playback-owner {
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font-weight: 700;
+  padding: 1px 7px;
+}
+
 .playback-position {
   color: var(--ink);
   font-size: 11px;
@@ -3299,6 +3341,43 @@ a.telemetry-error-row:hover {
 
 .replay-timeline:focus-within .replay-track {
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.replay-stage-lane {
+  height: 5px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 1px;
+}
+
+.replay-stage-segment {
+  border-radius: 2px;
+  box-sizing: border-box;
+  cursor: help;
+  height: 100%;
+  position: absolute;
+}
+
+.replay-stage-segment-0 {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.replay-stage-segment-1 {
+  background: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.replay-stage-segment-2 {
+  background: color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.replay-stage-segment-3 {
+  background: color-mix(in srgb, var(--active) 55%, transparent);
+}
+
+.replay-stage-segment:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .replay-timeline input[type="range"] {
@@ -3522,6 +3601,14 @@ a.telemetry-error-row:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.replay-chapter-cluster-scope {
+  color: var(--accent-ink);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .replay-chapter-cluster-copy strong {

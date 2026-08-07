@@ -123,7 +123,7 @@ describe("run detail", () => {
         }),
       );
 
-      let inspector = screen.getByRole("complementary", { name: "query attempt inspector" });
+      let inspector = screen.getByRole("complementary", { name: "implementation · query attempt inspector" });
       expect(inspector).toHaveFocus();
       expect(scrollIntoView).toHaveBeenLastCalledWith({
         block: "start",
@@ -131,7 +131,7 @@ describe("run detail", () => {
       });
 
       await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
-      inspector = screen.getByRole("complementary", { name: "implement attempt inspector" });
+      inspector = screen.getByRole("complementary", { name: "implementation · implement attempt inspector" });
       expect(inspector).toHaveFocus();
       expect(scrollIntoView).toHaveBeenCalledTimes(2);
     } finally {
@@ -205,7 +205,7 @@ describe("run detail", () => {
     expect(await screen.findByText("artifact-30.txt")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
     const workspace = document.querySelector(".run-detail-workspace");
-    const inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    const inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     const ledger = screen.getByRole("region", { name: "Event ledger" });
     expect(workspace).toHaveAttribute("data-scroll-owner", "page");
     expect(
@@ -252,7 +252,7 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(
-      screen.getByRole("complementary", { name: "query attempt inspector" }),
+      screen.getByRole("complementary", { name: "implementation · query attempt inspector" }),
     ).toBeInTheDocument();
   });
 
@@ -441,13 +441,13 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
     ).toHaveAttribute("aria-pressed", "true");
-    let inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    let inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
@@ -471,13 +471,13 @@ describe("run detail", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 10:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();

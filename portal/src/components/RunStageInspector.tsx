@@ -108,6 +108,7 @@ export function RunStageInspector({
   client,
   runId,
   node,
+  phase,
   selectedSeq,
   events = [],
   inspectorRef,
@@ -118,6 +119,8 @@ export function RunStageInspector({
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
+  /** The run's own workflow, shown as the stage's parent in the hierarchy (#2538). */
+  phase?: string;
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
@@ -282,7 +285,7 @@ export function RunStageInspector({
   return (
     <Inspector
       className="run-inspector"
-      label={`${node.id} attempt inspector`}
+      label={phase ? `${phase} · ${node.id} attempt inspector` : `${node.id} attempt inspector`}
       rootRef={inspectorRef}
     >
       <div className="inspector-heading">
@@ -290,8 +293,13 @@ export function RunStageInspector({
           <Icon name={nodeIcon(node.kind)} size={17} />
         </span>
         <div>
-          <span>{node.kind}</span>
+          <span className="inspector-scope">
+            {phase && <span className="inspector-phase">{phase}</span>}
+            {phase && <Icon name="chevron" size={9} />}
+            <span>{node.kind}</span>
+          </span>
           <h3>{node.id}</h3>
+          {node.owner && <span className="inspector-owner">Owned by {node.owner}</span>}
         </div>
       </div>
 

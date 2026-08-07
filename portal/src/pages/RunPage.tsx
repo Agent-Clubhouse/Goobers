@@ -24,6 +24,7 @@ import {
   isInspectableEvidenceEvent,
   eventStage,
   journalEntries,
+  nodeOwner,
   orderRunEvents,
   runFailure,
   type JournalEntry,
@@ -403,10 +404,12 @@ function RunDetailWorkspace({
           {events.length > 0 && (
             <ReplayScrubber
               events={events}
+              graph={run.graph}
               onSeek={replaySeek}
               runId={runId}
               selectedSeq={selectedSeq}
               terminal={run.finishedAt != null}
+              workflow={run.workflow}
             />
           )}
 
@@ -419,6 +422,7 @@ function RunDetailWorkspace({
               onSelectAttempt={(isLatest) =>
                 setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
               }
+              phase={run.workflow}
               runId={runId}
               selectedEvidence={selectedEvidence}
               selectedEvidenceVisit={selectedEvidenceVisit}
@@ -525,11 +529,12 @@ function EventLedger({
         </div>
         <div className="journal-heading-actions">
           <span className="graph-legend">Ordered by durable sequence</span>
-          <div aria-label="Journal event view" className="journal-view-control" role="group">
+          <div aria-label="Journal event kind" className="journal-view-control" role="group">
             <button
               aria-pressed={view === "major"}
               className={view === "major" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("major")}
+              title="Show only stage/gate landmarks, hiding evidence and liveness noise"
               type="button"
             >
               Major events
@@ -538,6 +543,7 @@ function EventLedger({
               aria-pressed={view === "all"}
               className={view === "all" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("all")}
+              title="Show every durable event of every kind"
               type="button"
             >
               All events ({events.length})
@@ -547,15 +553,21 @@ function EventLedger({
             <label className="journal-stage-filter">
               <span>Stage</span>
               <select
+                aria-label="Narrow the journal to one stage, independent of the event-kind toggle above"
                 onChange={(changeEvent) => setStageFilter(changeEvent.target.value)}
                 value={activeStage}
               >
                 <option value="">All stages</option>
-                {stages.map((stage) => (
-                  <option key={stage} value={stage}>
-                    {stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage}
-                  </option>
-                ))}
+                {stages.map((stage) => {
+                  const owner =
+                    stage === UNSCOPED_EVENT_STAGE ? undefined : nodeOwner(run.graph, stage);
+                  const label = stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage;
+                  return (
+                    <option key={stage} value={stage}>
+                      {owner ? `${label} — ${owner}` : label}
+                    </option>
+                  );
+                })}
               </select>
             </label>
           )}

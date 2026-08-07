@@ -1,4 +1,5 @@
-import type { RunEvent } from "./api/types";
+import type { RunEvent, WorkflowGraph } from "./api/types";
+import { eventNodeId, humanize, nodeOwner } from "./runDetailData";
 
 export const replaySpeeds = [1, 5, 10] as const;
 export type ReplaySpeed = (typeof replaySpeeds)[number];
@@ -42,11 +43,25 @@ export interface ReplayIdleGap {
   endPercent: number;
 }
 
+// ReplayStageSegment is a contiguous run of timeline points attributed to the
+// same workflow stage/gate node — the run's own hierarchy (stage, and the
+// goober that owns it) rendered as a band beneath the chapter markers instead
+// of the flat, same-weight marker list #2538 reports.
+export interface ReplayStageSegment {
+  key: string;
+  stageId: string;
+  label: string;
+  owner?: string;
+  startPercent: number;
+  endPercent: number;
+}
+
 export interface ReplayTimeline {
   events: RunEvent[];
   points: ReplayTimelinePoint[];
   chapters: ReplayChapter[];
   idleGaps: ReplayIdleGap[];
+  stageSegments: ReplayStageSegment[];
   compressedDurationMs: number;
   realDurationMs: number;
 }
@@ -98,7 +113,11 @@ export function replayTransition(
   };
 }
 
-export function replayTimeline(events: RunEvent[]): ReplayTimeline {
+export function replayTimeline(
+  events: RunEvent[],
+  graph?: WorkflowGraph,
+  runId?: string,
+): ReplayTimeline {
   const ordered = orderedReplayEvents(events);
   const offsets: Array<{ compressed: number; real: number }> = [];
   const idleOffsets: Array<{
@@ -158,9 +177,45 @@ export function replayTimeline(events: RunEvent[]): ReplayTimeline {
       startPercent: percentAt(gap.start),
       endPercent: percentAt(gap.end),
     })),
+    stageSegments: replayStageSegments(points, graph, runId),
     compressedDurationMs: compressedOffsetMs,
     realDurationMs: realOffsetMs,
   };
+}
+
+// replayStageSegments groups consecutive timeline points by the run's own
+// stage/gate node id, carrying the last-known node forward across events that
+// don't name one directly (evidence, liveness) — the same attribution
+// eventNodeAtSequence uses for the graph and journal.
+function replayStageSegments(
+  points: ReplayTimelinePoint[],
+  graph: WorkflowGraph | undefined,
+  runId: string | undefined,
+): ReplayStageSegment[] {
+  const runs: Array<{ stageId: string; startIndex: number; endIndex: number }> = [];
+  let activeStageId: string | undefined;
+
+  points.forEach((point, index) => {
+    activeStageId = eventNodeId(point.event, runId) ?? activeStageId;
+    if (!activeStageId) {
+      return;
+    }
+    const current = runs.at(-1);
+    if (current && current.stageId === activeStageId) {
+      current.endIndex = index;
+    } else {
+      runs.push({ stageId: activeStageId, startIndex: index, endIndex: index });
+    }
+  });
+
+  return runs.map((run) => ({
+    key: `${run.stageId}-${run.startIndex}`,
+    stageId: run.stageId,
+    label: humanize(run.stageId),
+    owner: nodeOwner(graph, run.stageId),
+    startPercent: points[run.startIndex].percent,
+    endPercent: points[run.endIndex].percent,
+  }));
 }
 
 export function replayChapterKind(event: RunEvent): ReplayChapterKind {
