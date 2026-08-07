@@ -160,9 +160,13 @@ func parseDocument(path, relative string) (document, error) {
 			})
 			lastLinkOffset = offset + 1
 		case *ast.HTMLBlock:
-			addHTMLAnchors(result.anchors, current.Text(source))
+			block := current.Lines().Value(source)
+			if current.HasClosure() {
+				block = append(block, current.ClosureLine.Value(source)...)
+			}
+			addHTMLAnchors(result.anchors, block)
 		case *ast.RawHTML:
-			addHTMLAnchors(result.anchors, current.Text(source))
+			addHTMLAnchors(result.anchors, current.Segments.Value(source))
 		}
 		return ast.WalkContinue, nil
 	})
@@ -190,7 +194,7 @@ func renderedText(root ast.Node, source []byte) []byte {
 		}
 		switch current := node.(type) {
 		case *ast.Text:
-			result = append(result, current.Text(source)...)
+			result = append(result, current.Value(source)...)
 			if current.SoftLineBreak() || current.HardLineBreak() {
 				result = append(result, ' ')
 			}
