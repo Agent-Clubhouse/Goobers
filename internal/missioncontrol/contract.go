@@ -181,11 +181,12 @@ func EvaluateMetric(def MetricDefinition, observation Observation, now time.Time
 		ID: def.ID, DisplayName: def.DisplayName, SubsystemID: def.SubsystemID,
 		Requirement: def.Requirement, EvidenceID: observation.EvidenceID,
 		Criterion: def.Criterion, DisplayPrecision: def.DisplayPrecision,
-		ObservationWindow: def.ObservationWindow, DataAsOf: observation.DataAsOf,
+		ObservationWindow: def.ObservationWindow,
 		RequiredFreshness: def.RequiredFreshness.String(),
 		Verdict:           VerdictUnknown, ReasonCode: ReasonMissing,
 	}
-	if !observation.Window.Start.IsZero() || !observation.Window.End.IsZero() {
+	validObservationWindow := !observation.Window.Start.IsZero() && observation.Window.End.After(observation.Window.Start)
+	if validObservationWindow {
 		result.ObservationWindow = observation.Window
 	}
 	if observation.Error != "" {
@@ -204,7 +205,7 @@ func EvaluateMetric(def MetricDefinition, observation Observation, now time.Time
 		result.ReasonCode = ReasonInsufficientEvidence
 		return result
 	}
-	if observation.Window.Start.IsZero() || !observation.Window.End.After(observation.Window.Start) {
+	if !validObservationWindow {
 		result.ReasonCode = ReasonSchemaError
 		return result
 	}
@@ -213,6 +214,7 @@ func EvaluateMetric(def MetricDefinition, observation Observation, now time.Time
 		result.ReasonCode = ReasonSchemaError
 		return result
 	}
+	result.DataAsOf = observation.DataAsOf
 	result.Age = age.String()
 	if def.RequiredFreshness <= 0 {
 		result.ReasonCode = ReasonSchemaError

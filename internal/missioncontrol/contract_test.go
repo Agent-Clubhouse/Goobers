@@ -100,7 +100,7 @@ func TestEvaluateMetricRejectsMalformedValue(t *testing.T) {
 	}
 }
 
-func TestEvaluateMetricRejectsIncompleteEvidence(t *testing.T) {
+func TestBuildNormalizesIncompleteEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Observation)
@@ -123,14 +123,32 @@ func TestEvaluateMetricRejectsIncompleteEvidence(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			definition := metricDefinition("latency", Required, lessThan(100, "ms"))
 			observation := validObservation(50, "ms")
 			test.mutate(&observation)
-			got := EvaluateMetric(metricDefinition("latency", Required, lessThan(100, "ms")), observation, testNow)
-			if got.Verdict != VerdictUnknown || got.ReasonCode != test.reason {
-				t.Fatalf("EvaluateMetric = %q/%q, want unknown/%s", got.Verdict, got.ReasonCode, test.reason)
+			artifact, err := Build(
+				testNow,
+				[]EvidenceRef{{ID: "query.latency", URI: "artifacts/latency.json", Digest: "sha256:latency"}},
+				[]MetricDefinition{definition},
+				map[string]Observation{"latency": observation},
+				[]SubsystemDefinition{{
+					ID: "api", DisplayName: "API", Requirement: Required,
+					Policy: AggregationPolicy{Unknown: UnknownBlocksGo},
+				}},
+				OverallDefinition{Policy: AggregationPolicy{Unknown: UnknownBlocksGo}},
+			)
+			if err != nil {
+				t.Fatalf("Build returned an error: %v", err)
 			}
-			if got.Value != nil {
-				t.Fatal("incomplete evidence must not be retained as a canonical value")
+			got := artifact.Metrics[0]
+			if got.Verdict != VerdictUnknown || got.ReasonCode != test.reason {
+				t.Fatalf("metric verdict = %q/%q, want unknown/%s", got.Verdict, got.ReasonCode, test.reason)
+			}
+			if got.Value != nil || got.DataAsOf != nil || got.Age != "" {
+				t.Fatal("incomplete evidence must not retain observation values or freshness")
+			}
+			if got.ObservationWindow != definition.ObservationWindow {
+				t.Fatal("invalid observation window must fall back to the metric definition")
 			}
 		})
 	}
