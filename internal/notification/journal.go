@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -14,6 +15,7 @@ type JournalRecorder struct {
 	run      *journal.Run
 	runID    string
 	workflow string
+	mu       sync.Mutex
 }
 
 func NewJournalRecorder(run *journal.Run) (*JournalRecorder, error) {
@@ -45,6 +47,12 @@ func (r *JournalRecorder) RecordRequest(ctx context.Context, request apiv1.Notif
 }
 
 func (r *JournalRecorder) RecordReceipt(ctx context.Context, receipt apiv1.NotificationReceipt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recordReceipt(ctx, receipt)
+}
+
+func (r *JournalRecorder) recordReceipt(ctx context.Context, receipt apiv1.NotificationReceipt) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -57,22 +65,24 @@ func (r *JournalRecorder) RecordReceipt(ctx context.Context, receipt apiv1.Notif
 	})
 }
 
-func (r *JournalRecorder) DeliveryState(ctx context.Context, digest, sink string) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
+func (r *JournalRecorder) ClaimDelivery(ctx context.Context, pending apiv1.NotificationReceipt) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
 	if err := ctx.Err(); err != nil {
-		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	reader, err := journal.OpenRead(r.run.Dir())
 	if err != nil {
-		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		receipt := events[i].NotificationReceipt
-		if receipt == nil || receipt.IdempotencyDigest != digest ||
-			receipt.Sink.Kind != sink || receipt.Attempt == 0 {
+		if receipt == nil || receipt.IdempotencyDigest != pending.IdempotencyDigest ||
+			receipt.Sink.Kind != pending.Sink.Kind || receipt.Attempt == 0 {
 			continue
 		}
 		switch {
@@ -81,8 +91,14 @@ func (r *JournalRecorder) DeliveryState(ctx context.Context, digest, sink string
 		case receipt.Status == apiv1.NotificationPending || receipt.Unresolved:
 			return *receipt, DeliveryUnresolved, nil
 		default:
-			return *receipt, DeliveryAvailable, nil
+			if err := r.recordReceipt(ctx, pending); err != nil {
+				return apiv1.NotificationReceipt{}, DeliveryClaimed, err
+			}
+			return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
 		}
 	}
-	return apiv1.NotificationReceipt{}, DeliveryAvailable, nil
+	if err := r.recordReceipt(ctx, pending); err != nil {
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
+	}
+	return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
 }

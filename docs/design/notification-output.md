@@ -16,12 +16,13 @@ and an explicit `require-all` or `require-any` partial-delivery policy. A reques
 past its expiry is suppressed. The terminal sink is a credential-free development
 transport, and the recording sink is the hermetic test transport. A timed-out
 attempt is not retried because a non-cooperative sink may still complete its
-external side effect after the dispatcher deadline. An attempt-start receipt is
-journaled before invoking a sink, and timed-out outcomes are marked unresolved.
-While that attempt remains unresolved, later dispatches with the same
-idempotency key and sink are durably suppressed across process restarts. Its
-eventual outcome is recorded before the barrier is released, so a late successful
-delivery cannot be repeated.
+external side effect after the dispatcher deadline. The recorder atomically
+checks durable delivery state and journals an attempt-start receipt before
+invoking a sink, so concurrent dispatchers cannot both claim delivery. Timed-out
+outcomes are marked unresolved. While that attempt remains unresolved, later
+dispatches with the same idempotency key and sink are durably suppressed across
+process restarts. Its eventual outcome is recorded before the barrier is
+released, so a late successful delivery cannot be repeated.
 
 Each attempt journals a pending `goobers.dev/notification/receipt/v1` before
 invocation and then its delivered/failed outcome; each pre-delivery suppression

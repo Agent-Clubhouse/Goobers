@@ -35,22 +35,22 @@ type Sink interface {
 	Deliver(context.Context, apiv1.NotificationRequest) (externalReference string, err error)
 }
 
-// RecordedDeliveryState describes the durable outcome relevant to a retry.
+// RecordedDeliveryState describes the durable outcome of a delivery claim.
 type RecordedDeliveryState uint8
 
 const (
-	DeliveryAvailable RecordedDeliveryState = iota
+	DeliveryClaimed RecordedDeliveryState = iota
 	DeliveryUnresolved
 	DeliveryComplete
 )
 
-// Recorder is the durable request/receipt boundary. DeliveryState is queried
-// before dispatch so a process retry cannot repeat a successful or unresolved
-// delivery.
+// Recorder is the durable request/receipt boundary. ClaimDelivery atomically
+// checks prior receipts and records the pending receipt when delivery is
+// available, so concurrent dispatchers cannot repeat a delivery.
 type Recorder interface {
 	RecordRequest(context.Context, apiv1.NotificationRequest) error
 	RecordReceipt(context.Context, apiv1.NotificationReceipt) error
-	DeliveryState(context.Context, string, string) (apiv1.NotificationReceipt, RecordedDeliveryState, error)
+	ClaimDelivery(context.Context, apiv1.NotificationReceipt) (apiv1.NotificationReceipt, RecordedDeliveryState, error)
 }
 
 // Registry owns sink implementations independently of workflow definitions.
@@ -209,23 +209,6 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		receipt, _ = d.persist(ctx, receipt)
 		return []apiv1.NotificationReceipt{receipt}, false
 	}
-	digest := idempotencyDigest(request.IdempotencyKey)
-	previous, state, err := d.recorder.DeliveryState(context.WithoutCancel(ctx), digest, kind)
-	if err != nil {
-		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationFailed, "", fmt.Errorf("check idempotency: %w", err))
-		receipt, _ = d.persist(ctx, receipt)
-		return []apiv1.NotificationReceipt{receipt}, false
-	}
-	if state == DeliveryComplete {
-		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, previous.ExternalReference, nil)
-		receipt, recordErr := d.persist(ctx, receipt)
-		return []apiv1.NotificationReceipt{receipt}, recordErr == nil
-	}
-	if state == DeliveryUnresolved {
-		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
-		receipt, _ = d.persist(ctx, receipt)
-		return []apiv1.NotificationReceipt{receipt}, false
-	}
 	key := deliveryKey{idempotencyKey: request.IdempotencyKey, sinkKind: kind}
 	if _, pending := d.pending[key]; pending {
 		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
@@ -251,10 +234,23 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 			deadline = request.ExpiresAt
 		}
 		pending := d.receipt(request, sinkRef(sink), attempt, started, started, apiv1.NotificationPending, "", nil)
-		var err error
-		if pending, err = d.persist(ctx, pending); err != nil {
+		previous, state, err := d.recorder.ClaimDelivery(context.WithoutCancel(ctx), pending)
+		if err != nil {
+			pending.Status = apiv1.NotificationFailed
+			pending.Error = d.sanitizeError(fmt.Errorf("claim delivery: %w", err))
+			pending, _ = d.persist(ctx, pending)
 			receipts = append(receipts, pending)
 			return receipts, false
+		}
+		if state == DeliveryComplete {
+			receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, previous.ExternalReference, nil)
+			receipt, recordErr := d.persist(ctx, receipt)
+			return append(receipts, receipt), recordErr == nil
+		}
+		if state == DeliveryUnresolved {
+			receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
+			receipt, _ = d.persist(ctx, receipt)
+			return append(receipts, receipt), false
 		}
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
 		delivery := startDelivery(attemptCtx, sink, request)

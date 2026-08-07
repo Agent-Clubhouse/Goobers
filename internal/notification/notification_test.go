@@ -36,12 +36,12 @@ func (r *memoryRecorder) RecordReceipt(_ context.Context, receipt apiv1.Notifica
 	return nil
 }
 
-func (r *memoryRecorder) DeliveryState(_ context.Context, digest, sink string) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
+func (r *memoryRecorder) ClaimDelivery(_ context.Context, pending apiv1.NotificationReceipt) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := len(r.receipts) - 1; i >= 0; i-- {
 		receipt := r.receipts[i]
-		if receipt.IdempotencyDigest != digest || receipt.Sink.Kind != sink || receipt.Attempt == 0 {
+		if receipt.IdempotencyDigest != pending.IdempotencyDigest || receipt.Sink.Kind != pending.Sink.Kind || receipt.Attempt == 0 {
 			continue
 		}
 		switch {
@@ -50,10 +50,12 @@ func (r *memoryRecorder) DeliveryState(_ context.Context, digest, sink string) (
 		case receipt.Status == apiv1.NotificationPending || receipt.Unresolved:
 			return receipt, DeliveryUnresolved, nil
 		default:
-			return receipt, DeliveryAvailable, nil
+			r.receipts = append(r.receipts, pending)
+			return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
 		}
 	}
-	return apiv1.NotificationReceipt{}, DeliveryAvailable, nil
+	r.receipts = append(r.receipts, pending)
+	return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
 }
 
 func validRequest(sinks ...string) apiv1.NotificationRequest {
@@ -401,4 +403,67 @@ func TestJournalRecorderRecoversUnresolvedAttempt(t *testing.T) {
 		t.Fatalf("recovered dispatch reached sink: calls = %d, want 1", got)
 	}
 	close(release)
+}
+
+type claimBarrierRecorder struct {
+	Recorder
+	arrivals chan<- struct{}
+	release  <-chan struct{}
+}
+
+func (r claimBarrierRecorder) ClaimDelivery(ctx context.Context, pending apiv1.NotificationReceipt) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
+	r.arrivals <- struct{}{}
+	<-r.release
+	return r.Recorder.ClaimDelivery(ctx, pending)
+}
+
+func TestJournalRecorderAtomicallyClaimsConcurrentDelivery(t *testing.T) {
+	root := t.TempDir()
+	runID := "0123456789abcdef0123456789abcdef"
+	_, scrubber := journal.DefaultScrubber()
+	run, err := journal.Create(root, journal.RunIdentity{
+		RunID: runID, Workflow: "mission-control", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Gaggle:         "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	recorder, err := NewJournalRecorder(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrivals := make(chan struct{}, 2)
+	release := make(chan struct{})
+	contended := claimBarrierRecorder{Recorder: recorder, arrivals: arrivals, release: release}
+	sink := &RecordingSink{}
+	request := validRequest(sink.Kind())
+	first := newTestDispatcherWithScrubber(t, contended, scrubber, Policy{}, sink)
+	second := newTestDispatcherWithScrubber(t, contended, scrubber, Policy{}, sink)
+
+	results := make(chan error, 2)
+	go func() {
+		_, dispatchErr := first.Dispatch(context.Background(), request)
+		results <- dispatchErr
+	}()
+	go func() {
+		_, dispatchErr := second.Dispatch(context.Background(), request)
+		results <- dispatchErr
+	}()
+	<-arrivals
+	<-arrivals
+	close(release)
+	failures := 0
+	for range 2 {
+		if err := <-results; err != nil {
+			failures++
+		}
+	}
+	if failures > 1 {
+		t.Fatalf("concurrent dispatch failures = %d, want at most 1 suppressed claimant", failures)
+	}
+	if got := len(sink.Requests()); got != 1 {
+		t.Fatalf("concurrent dispatch sink calls = %d, want 1", got)
+	}
 }
