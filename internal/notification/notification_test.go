@@ -448,17 +448,24 @@ func TestJournalRecorderAtomicallyClaimsConcurrentDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = run.Close() }()
-	recorder, err := NewJournalRecorder(run)
+	firstRecorder, err := NewJournalRecorder(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRecorder, err := NewJournalRecorder(run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	arrivals := make(chan struct{}, 2)
 	release := make(chan struct{})
-	contended := claimBarrierRecorder{Recorder: recorder, arrivals: arrivals, release: release}
 	sink := &RecordingSink{}
 	request := validRequest(sink.Kind())
-	first := newTestDispatcherWithScrubber(t, contended, scrubber, Policy{}, sink)
-	second := newTestDispatcherWithScrubber(t, contended, scrubber, Policy{}, sink)
+	first := newTestDispatcherWithScrubber(t, claimBarrierRecorder{
+		Recorder: firstRecorder, arrivals: arrivals, release: release,
+	}, scrubber, Policy{}, sink)
+	second := newTestDispatcherWithScrubber(t, claimBarrierRecorder{
+		Recorder: secondRecorder, arrivals: arrivals, release: release,
+	}, scrubber, Policy{}, sink)
 
 	results := make(chan error, 2)
 	go func() {

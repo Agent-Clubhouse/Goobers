@@ -3,7 +3,6 @@ package notification
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -15,7 +14,6 @@ type JournalRecorder struct {
 	run      *journal.Run
 	runID    string
 	workflow string
-	mu       sync.Mutex
 }
 
 func NewJournalRecorder(run *journal.Run) (*JournalRecorder, error) {
@@ -47,8 +45,6 @@ func (r *JournalRecorder) RecordRequest(ctx context.Context, request apiv1.Notif
 }
 
 func (r *JournalRecorder) RecordReceipt(ctx context.Context, receipt apiv1.NotificationReceipt) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	return r.recordReceipt(ctx, receipt)
 }
 
@@ -69,36 +65,18 @@ func (r *JournalRecorder) ClaimDelivery(ctx context.Context, pending apiv1.Notif
 	if err := ctx.Err(); err != nil {
 		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	reader, err := journal.OpenRead(r.run.Dir())
+	if pending.Source.RunID != r.runID || pending.Source.Workflow != r.workflow {
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, fmt.Errorf("notification: receipt source does not match run journal")
+	}
+	existing, err := r.run.ClaimNotificationDelivery(pending)
 	if err != nil {
 		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
 	}
-	events, err := reader.Events()
-	if err != nil {
-		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
+	if existing == nil {
+		return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		receipt := events[i].NotificationReceipt
-		if receipt == nil || receipt.IdempotencyDigest != pending.IdempotencyDigest ||
-			receipt.Sink.Kind != pending.Sink.Kind || receipt.Attempt == 0 {
-			continue
-		}
-		switch {
-		case receipt.Status == apiv1.NotificationDelivered:
-			return *receipt, DeliveryComplete, nil
-		case receipt.Status == apiv1.NotificationPending || receipt.Unresolved:
-			return *receipt, DeliveryUnresolved, nil
-		default:
-			if err := r.recordReceipt(ctx, pending); err != nil {
-				return apiv1.NotificationReceipt{}, DeliveryClaimed, err
-			}
-			return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
-		}
+	if existing.Status == apiv1.NotificationDelivered {
+		return *existing, DeliveryComplete, nil
 	}
-	if err := r.recordReceipt(ctx, pending); err != nil {
-		return apiv1.NotificationReceipt{}, DeliveryClaimed, err
-	}
-	return apiv1.NotificationReceipt{}, DeliveryClaimed, nil
+	return *existing, DeliveryUnresolved, nil
 }
