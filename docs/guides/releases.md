@@ -48,7 +48,7 @@ installer. Replace `v1.2.3` with the release you intend to adopt:
 ```sh
 VERSION=v1.2.3
 /bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
-  -- "$VERSION" ./goobers-instance
+  -- "$VERSION"
 ```
 
 The command downloads only assets attached to that tag. The helper detects the
@@ -60,12 +60,18 @@ convenience command. It installs the
 archive's `README.md`, `docs/` tree, and `onboarding/` payload to the versioned
 `${XDG_DATA_HOME:-$HOME/.local/share}/goobers/<version>` directory (override the
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
-earlier documentation, templates, or sample. It then runs the release binary's
-`goobers init --guided` flow, which separately selects a checked-in config
-source and target application repository, prompts for credential references and
-canonical workflows, and validates both source and instance. Use a fresh
-instance path; a new source path must also be empty, while an adopted source is
-validated and left unchanged.
+earlier documentation, templates, or sample. Installation ends there: the
+default run configures nothing and prints the next steps — the credential-free
+demo and guided setup — so the install result never depends on setup choices.
+To chain guided setup in the same run, opt in with
+`--guided [instance-path]` (default `./goobers-instance`): the installer then
+runs the release binary's `goobers init --guided` flow, which separately
+selects a checked-in config source and target application repository, prompts
+for credential references and canonical workflows, and validates both source
+and instance. Use a fresh instance path; a new source path must also be empty,
+while an adopted source is validated and left unchanged. A failed or canceled
+guided setup is reported separately from the successful install and sets the
+script's exit status.
 
 The helper intentionally delegates all config generation and validation to the
 installed binary. The release-pinned README and platform-neutral quickstart
