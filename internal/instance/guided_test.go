@@ -48,6 +48,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 
 	layout := NewLayout(root)
+	assertPreviewFeaturesDefaultOff(t, layout.ConfigDir())
 	cfg, err := LoadConfig(layout.ConfigFile())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)

@@ -709,6 +709,18 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	return currentFeatureRegistry.resolve(used.ids())
 }
 
+// FeaturesForGaggle returns registry metadata for the DSL features used by spec.
+func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
+	used := featureSet{}
+	if spec.Sandbox != nil {
+		used.add(featureGaggleSandbox)
+	}
+	if spec.Project.Checkout != nil && spec.Project.Checkout.Sparse != nil {
+		used.add(featureGaggleCheckoutSparse)
+	}
+	return currentFeatureRegistry.resolve(used.ids())
+}
+
 // FeaturesForGoober returns registry metadata for the DSL features used by
 // spec. VER-2 consumes the returned levels to enforce compatibility policy.
 func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {

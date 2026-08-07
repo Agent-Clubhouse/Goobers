@@ -55,7 +55,8 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
   - `deprecated` feature used → **warning** (still compiles/runs), message names the replacement + removal target.
   - `preview` feature used → **info/warning** (works, flagged unstable), gated behind the explicit
     instance Manifest annotation `goobers.dev/allow-preview-features: "true"` so preview usage is
-    never accidental.
+    never accidental. The gate is default-off: `goobers init` omits the annotation, and operators
+    add it only when their configuration deliberately uses a preview feature.
   - `ga` → silent.
 - **Non-breaking vs breaking policy** (documented contract, enforced by CI test over the registry):
   - *Non-breaking* (allowed within an `apiVersion`): adding optional fields, adding enum values,

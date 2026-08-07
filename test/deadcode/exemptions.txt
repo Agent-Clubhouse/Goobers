@@ -32,9 +32,12 @@ github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema i
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy facade, exercised by api/validate/validate_test.go and both interpreters' features_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow.FeaturesForGaggle # Gaggle feature-resolution facade retained for API symmetry and exercised by both interpreters' feature inventory tests (#2046).
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
+github.com/goobers/goobers/internal/workflow/v_next.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
+github.com/goobers/goobers/internal/workflow/v_next.FeaturesForGaggle # Next-interpreter Gaggle feature resolver retained for versioned-interpreter parity and exercised by feature inventory tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.

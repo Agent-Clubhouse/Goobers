@@ -66,21 +66,24 @@ func TestConcurrentFirstOpenSucceeds(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
+			<-start
 			store, err := Open(path)
 			if err != nil {
-				errs <- fmt.Errorf("open: %w", err)
+				errs <- fmt.Errorf("open %d: %w", i, err)
 				return
 			}
 			defer func() { _ = store.Close() }()
 			if _, err := store.State(context.Background()); err != nil {
-				errs <- fmt.Errorf("state: %w", err)
+				errs <- fmt.Errorf("state %d: %w", i, err)
 			}
-		}()
+		}(i)
 	}
+	close(start)
 	wg.Wait()
 	close(errs)
 	for err := range errs {

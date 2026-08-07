@@ -42,8 +42,8 @@ identities. Replace those values before validation or deployment. The complete
 reference assumes:
 
 - A Goobers runner with the `goobers` binary on `PATH`, git access to each target
-  repository, preview DSL features enabled as shown in `manifest.yaml`, and
-  schedule/webhook support for workflows that use those triggers.
+  repository, and schedule/webhook support for workflows that use those
+  triggers.
 - A configured Copilot agent harness, including its model authentication, for
   every agentic goober. Deterministic-only policy workflows do not need a model.
 - GitHub project and backlog connections named `github-main` and
