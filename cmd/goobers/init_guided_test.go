@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -347,6 +348,9 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	if _, err := instance.Init(root); err != nil {
 		t.Fatalf("plain Init: %v", err)
 	}
+	if err := ensureInitCompleted(root); err != nil {
+		t.Fatalf("record init completion: %v", err)
+	}
 	layout := instance.NewLayout(root)
 	configBefore, err := os.ReadFile(layout.ConfigFile())
 	if err != nil {
@@ -367,9 +371,11 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	if input.Len() != len("acme/replacement\n") {
 		t.Fatalf("guided rerun consumed prompt input before rejecting existing config")
 	}
-	if !strings.Contains(stderr.String(), "guided setup requires an unconfigured target") ||
-		!strings.Contains(stderr.String(), instance.ConfigFileName) {
-		t.Fatalf("guided rerun stderr = %q", stderr.String())
+	wantStderr := "error: guided setup requires an unconfigured target: " + instance.ConfigFileName +
+		" already exists in " + root +
+		"; choose an empty path, e.g. `goobers init --guided ./my-instance`\n"
+	if stderr.String() != wantStderr {
+		t.Fatalf("guided rerun stderr = %q, want %q", stderr.String(), wantStderr)
 	}
 	if strings.Contains(stdout.String(), "Guided first-run setup") ||
 		strings.Contains(stdout.String(), "Ready to run") {
@@ -385,6 +391,60 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	}
 	if !bytes.Equal(configAfter, configBefore) || !bytes.Equal(manifestAfter, manifestBefore) {
 		t.Fatal("guided rerun modified existing configuration")
+	}
+}
+
+func TestGuidedInitRerunAfterInterruptedMaterializationGivesRecovery(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "interrupted-instance")
+	sourceRoot := root + "-config"
+	opts := instance.GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "acme",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		CopilotTokenEnv:      "MODEL_TOKEN",
+		Workflows:            []string{instance.GuidedWorkflowWorkNomination},
+	}
+	if _, err := instance.SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("seed guided source: %v", err)
+	}
+	cfg, err := instance.LoadGuidedSourceConfig(sourceRoot)
+	if err != nil {
+		t.Fatalf("load guided source: %v", err)
+	}
+	if _, err := instance.InitGuidedFromSource(root, sourceRoot, cfg); err != nil {
+		t.Fatalf("materialize guided instance: %v", err)
+	}
+	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	if slices.ContainsFunc(events, func(event journal.Event) bool {
+		return event.Type == journal.EventInitCompleted
+	}) {
+		t.Fatal("interrupted guided setup unexpectedly has an init.completed marker")
+	}
+
+	input := strings.NewReader("acme/replacement\n")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("guided rerun code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != len("acme/replacement\n") {
+		t.Fatal("guided rerun prompted before reporting interrupted setup recovery")
+	}
+	for _, want := range []string{
+		"no init.completed marker",
+		"delete " + strconv.Quote(root),
+		"goobers init --guided " + strconv.Quote(root),
+		"goobers validate " + strconv.Quote(root),
+		"goobers config materialize " + strconv.Quote(root),
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("guided rerun stderr = %q, missing %q", stderr.String(), want)
+		}
 	}
 }
 
