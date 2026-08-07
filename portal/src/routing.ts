@@ -1,4 +1,5 @@
-import type { OutcomeFilter, StagePopulationFilter } from "./api/types";
+import type { InsightWindow } from "./insightData";
+import { hasScopeFilters, type ScopeFilters } from "./scope";
 
 export type Route =
   | { page: "overview" }
@@ -7,28 +8,18 @@ export type Route =
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
-  | { page: "insight" }
+  | { page: "insight"; filters?: ScopeFilters }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
-export interface RunRouteFilters {
-  gaggle?: string;
-  workflow?: string;
-  stage?: string;
-  outcome?: OutcomeFilter;
-  population?: StagePopulationFilter;
-  since?: string;
-  until?: string;
-}
+// The Runs and Insight route filters are exactly the shared scope model
+// (#2528) — kept as named aliases so call sites read in terms of the view
+// they're for, without three parallel field-by-field type declarations.
+export type RunRouteFilters = ScopeFilters;
 
-export interface ErrorRouteFilters {
-  gaggle?: string;
-  workflow?: string;
-  stage?: string;
+export interface ErrorRouteFilters extends ScopeFilters {
   code?: string;
   errorClass?: string;
-  since?: string;
-  until?: string;
 }
 
 export type PrimaryArea = "overview" | "workflows" | "goobers" | "runs" | "insight";
@@ -58,33 +49,22 @@ export function parseRoute(hash = window.location.hash): Route {
     return { page: "goobers" };
   }
   if (area === "runs") {
-    const filters: RunRouteFilters = {
-      gaggle: optionalQuery(search, "gaggle"),
-      workflow: optionalQuery(search, "workflow"),
-      stage: optionalQuery(search, "stage"),
-      outcome: outcomeQuery(search),
-      population: populationQuery(search),
-      since: optionalQuery(search, "since"),
-      until: optionalQuery(search, "until"),
-    };
-    return Object.values(filters).some(Boolean) ? { page: "runs", filters } : { page: "runs" };
+    const filters = parseScopeFilters(search);
+    return hasScopeFilters(filters) ? { page: "runs", filters } : { page: "runs" };
   }
   if (area === "errors") {
     return {
       page: "errors",
       filters: {
-        gaggle: optionalQuery(search, "gaggle"),
-        workflow: optionalQuery(search, "workflow"),
-        stage: optionalQuery(search, "stage"),
+        ...parseScopeFilters(search),
         code: exactOptionalQuery(search, "code"),
         errorClass: exactOptionalQuery(search, "errorClass"),
-        since: optionalQuery(search, "since"),
-        until: optionalQuery(search, "until"),
       },
     };
   }
   if (area === "insight") {
-    return { page: "insight" };
+    const filters = parseScopeFilters(search);
+    return hasScopeFilters(filters) ? { page: "insight", filters } : { page: "insight" };
   }
   return { page: "overview" };
 }
@@ -104,23 +84,24 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "runs" && route.filters) {
     const search = new URLSearchParams();
-    for (const [name, value] of Object.entries(route.filters)) {
-      if (value) {
-        search.set(name, value);
-      }
-    }
+    encodeScopeFilters(search, route.filters);
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
   if (route.page === "errors") {
     const search = new URLSearchParams();
-    for (const [name, value] of Object.entries(route.filters)) {
-      if (value !== undefined) {
-        search.set(name, value);
-      }
-    }
+    writeScopeIdentity(search, route.filters);
+    writeExactQuery(search, "code", route.filters.code);
+    writeExactQuery(search, "errorClass", route.filters.errorClass);
+    writeScopeWindow(search, route.filters);
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/errors${suffix}`;
+  }
+  if (route.page === "insight" && route.filters) {
+    const search = new URLSearchParams();
+    encodeScopeFilters(search, route.filters);
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return `#/insight${suffix}`;
   }
   return `#/${route.page}`;
 }
@@ -148,7 +129,7 @@ function exactOptionalQuery(search: URLSearchParams, name: string): string | und
   return search.has(name) ? (search.get(name) ?? "") : undefined;
 }
 
-function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
+function outcomeQuery(search: URLSearchParams): ScopeFilters["outcome"] {
   const value = optionalQuery(search, "outcome");
   return value === "finished" ||
     value === "terminal" ||
@@ -159,7 +140,7 @@ function outcomeQuery(search: URLSearchParams): OutcomeFilter | undefined {
     : undefined;
 }
 
-function populationQuery(search: URLSearchParams): StagePopulationFilter | undefined {
+function populationQuery(search: URLSearchParams): ScopeFilters["population"] {
   const value = optionalQuery(search, "population");
   return value === "attempts" ||
     value === "measured" ||
@@ -169,4 +150,62 @@ function populationQuery(search: URLSearchParams): StagePopulationFilter | undef
     value === "retry-waste"
     ? value
     : undefined;
+}
+
+function windowQuery(search: URLSearchParams): InsightWindow | undefined {
+  const value = optionalQuery(search, "window");
+  return value === "24h" || value === "7d" || value === "30d" || value === "all"
+    ? value
+    : undefined;
+}
+
+function writeQuery(search: URLSearchParams, name: string, value: string | undefined): void {
+  if (value) {
+    search.set(name, value);
+  }
+}
+
+function writeExactQuery(search: URLSearchParams, name: string, value: string | undefined): void {
+  if (value !== undefined) {
+    search.set(name, value);
+  }
+}
+
+function parseScopeFilters(search: URLSearchParams): ScopeFilters {
+  return {
+    gaggle: optionalQuery(search, "gaggle"),
+    workflow: optionalQuery(search, "workflow"),
+    stage: optionalQuery(search, "stage"),
+    outcome: outcomeQuery(search),
+    population: populationQuery(search),
+    since: optionalQuery(search, "since"),
+    until: optionalQuery(search, "until"),
+    window: windowQuery(search),
+  };
+}
+
+function writeScopeIdentity(search: URLSearchParams, filters: ScopeFilters): void {
+  writeQuery(search, "gaggle", filters.gaggle);
+  writeQuery(search, "workflow", filters.workflow);
+  writeQuery(search, "stage", filters.stage);
+}
+
+function writeScopeRefinement(search: URLSearchParams, filters: ScopeFilters): void {
+  writeQuery(search, "outcome", filters.outcome);
+  writeQuery(search, "population", filters.population);
+}
+
+function writeScopeWindow(search: URLSearchParams, filters: ScopeFilters): void {
+  writeQuery(search, "since", filters.since);
+  writeQuery(search, "until", filters.until);
+  writeQuery(search, "window", filters.window);
+}
+
+// Runs/Insight order: identity, then the outcome/population refinement, then
+// the time range — matches the field order Runs' URLs already used before
+// #2528, so existing bookmarks/links keep resolving to the same hash.
+function encodeScopeFilters(search: URLSearchParams, filters: ScopeFilters): void {
+  writeScopeIdentity(search, filters);
+  writeScopeRefinement(search, filters);
+  writeScopeWindow(search, filters);
 }

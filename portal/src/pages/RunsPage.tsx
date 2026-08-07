@@ -2,7 +2,9 @@ import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { ScopeStrip } from "../components/ScopeStrip";
 import { routeHash, type RunRouteFilters } from "../routing";
+import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
@@ -48,7 +50,7 @@ export function RunsPage({
         <h1>Runs</h1>
         <p>
           {filters
-            ? `Executions behind the selected Insight scope${formatWindow(filters)}.`
+            ? `Executions behind the selected Insight scope${scopeWindowLabel(filters)}.`
             : standalone
               ? "Every execution recorded in this instance, filtered and paginated by the read service."
               : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
@@ -56,10 +58,12 @@ export function RunsPage({
       </header>
 
       {filters && (
-        <div aria-label="Insight drill-through scope" className="run-scope-strip">
-          <strong>{formatScope(filters)}</strong>
-          <a href={routeHash({ page: "runs" })}>Clear Insight scope</a>
-        </div>
+        <ScopeStrip
+          ariaLabel="Insight drill-through scope"
+          clearHref={routeHash({ page: "runs" })}
+          filters={filters}
+          suffix={formatPopulation(filters)}
+        />
       )}
 
       <div aria-label="Filter runs" className="filter-bar" role="group">
@@ -151,18 +155,6 @@ export function RunsPage({
   );
 }
 
-function formatScope(filters: RunRouteFilters): string {
-  let scope: string;
-  if (filters.stage) {
-    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
-  } else if (filters.workflow) {
-    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
-  } else {
-    scope = filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
-  }
-  return `${scope}${formatPopulation(filters)}`;
-}
-
 function formatPopulation(filters: RunRouteFilters): string {
   switch (filters.population) {
     case "measured":
@@ -188,19 +180,6 @@ function formatPopulation(filters: RunRouteFilters): string {
     default:
       return filters.population === "attempts" ? " · All attempts" : "";
   }
-}
-
-function formatWindow(filters: RunRouteFilters): string {
-  if (filters.since && filters.until) {
-    return ` from ${formatTimestamp(filters.since)} to ${formatTimestamp(filters.until)}`;
-  }
-  if (filters.since) {
-    return ` since ${formatTimestamp(filters.since)}`;
-  }
-  if (filters.until) {
-    return ` through ${formatTimestamp(filters.until)}`;
-  }
-  return "";
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
