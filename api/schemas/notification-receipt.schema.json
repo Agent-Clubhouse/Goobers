@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goobers.dev/schemas/notification-receipt.schema.json",
   "title": "NotificationReceipt",
-  "description": "Durable result of one notification sink attempt or suppression.",
+  "description": "Durable state or result of one notification sink attempt or suppression.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "notificationId", "idempotencyKey", "source", "sink", "attempt", "startedAt", "completedAt", "status"],
+  "required": ["schema", "notificationId", "idempotencyKey", "idempotencyDigest", "source", "sink", "attempt", "startedAt", "completedAt", "status"],
   "properties": {
     "schema": {
       "description": "Versioned receipt contract identifier.",
@@ -20,6 +20,11 @@
       "description": "Request idempotency key paired with sink kind.",
       "type": "string",
       "minLength": 1
+    },
+    "idempotencyDigest": {
+      "description": "Stable non-secret index of the idempotency key.",
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
     },
     "source": {
       "description": "Run, workflow, and stage that produced the request.",
@@ -52,9 +57,13 @@
       "format": "date-time"
     },
     "status": {
-      "description": "Delivered, failed, or skipped without pretending failure is success.",
+      "description": "Pending, delivered, failed, or skipped without pretending failure is success.",
       "type": "string",
-      "enum": ["delivered", "failed", "skipped"]
+      "enum": ["pending", "delivered", "failed", "skipped"]
+    },
+    "unresolved": {
+      "description": "Whether an invoked sink may still complete after this observation.",
+      "type": "boolean"
     },
     "externalReference": {
       "description": "Transport-issued reference when available.",

@@ -36,16 +36,24 @@ func (r *memoryRecorder) RecordReceipt(_ context.Context, receipt apiv1.Notifica
 	return nil
 }
 
-func (r *memoryRecorder) Delivered(_ context.Context, key, sink string) (apiv1.NotificationReceipt, bool, error) {
+func (r *memoryRecorder) DeliveryState(_ context.Context, digest, sink string) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := len(r.receipts) - 1; i >= 0; i-- {
 		receipt := r.receipts[i]
-		if receipt.IdempotencyKey == key && receipt.Sink.Kind == sink && receipt.Status == apiv1.NotificationDelivered {
-			return receipt, true, nil
+		if receipt.IdempotencyDigest != digest || receipt.Sink.Kind != sink || receipt.Attempt == 0 {
+			continue
+		}
+		switch {
+		case receipt.Status == apiv1.NotificationDelivered:
+			return receipt, DeliveryComplete, nil
+		case receipt.Status == apiv1.NotificationPending || receipt.Unresolved:
+			return receipt, DeliveryUnresolved, nil
+		default:
+			return receipt, DeliveryAvailable, nil
 		}
 	}
-	return apiv1.NotificationReceipt{}, false, nil
+	return apiv1.NotificationReceipt{}, DeliveryAvailable, nil
 }
 
 func validRequest(sinks ...string) apiv1.NotificationRequest {
@@ -208,7 +216,7 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 			recorder.mu.Lock()
 			receipts := append([]apiv1.NotificationReceipt(nil), recorder.receipts...)
 			recorder.mu.Unlock()
-			if len(receipts) == 3 && receipts[2].Status == apiv1.NotificationDelivered {
+			if len(receipts) >= 4 && receipts[len(receipts)-1].Status == apiv1.NotificationDelivered {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -326,6 +334,7 @@ func TestJournalRecorderPersistsRedactedRequestAndIdempotency(t *testing.T) {
 	request.Body = "token ghp_abcdefghijklmnopqrstuvwxyz1234567890"
 	secret := strings.TrimPrefix(request.Body, "token ")
 	registry.Register([]byte(secret))
+	request.IdempotencyKey = secret
 	sink.Err = errors.New("delivery rejected credential " + secret)
 	dispatcher := newTestDispatcherWithScrubber(t, recorder, scrubber, Policy{}, sink)
 	if _, err := dispatcher.Dispatch(context.Background(), request); err == nil {
@@ -347,9 +356,49 @@ func TestJournalRecorderPersistsRedactedRequestAndIdempotency(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte("ghp_abcdefghijklmnopqrstuvwxyz1234567890")) ||
 		bytes.Contains(raw, []byte(secret)) ||
+		!bytes.Contains(raw, []byte(idempotencyDigest(secret))) ||
 		!bytes.Contains(raw, []byte(journal.Redacted)) ||
 		!bytes.Contains(raw, []byte(`"type":"notification.requested"`)) ||
 		!bytes.Contains(raw, []byte(`"type":"notification.delivery.receipt"`)) {
 		t.Fatalf("journal did not redact and persist notification records:\n%s", raw)
 	}
+}
+
+func TestJournalRecorderRecoversUnresolvedAttempt(t *testing.T) {
+	root := t.TempDir()
+	runID := "0123456789abcdef0123456789abcdef"
+	_, scrubber := journal.DefaultScrubber()
+	run, err := journal.Create(root, journal.RunIdentity{
+		RunID: runID, Workflow: "mission-control", WorkflowVersion: 1,
+		WorkflowDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Gaggle:         "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	recorder, err := NewJournalRecorder(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var calls atomic.Int32
+	sink := uncooperativeSink{release: release, calls: &calls}
+	request := validRequest(sink.Kind())
+	dispatcher := newTestDispatcherWithScrubber(t, recorder, scrubber, Policy{Timeout: 10 * time.Millisecond}, sink)
+	if _, err := dispatcher.Dispatch(context.Background(), request); err == nil {
+		t.Fatal("timed-out delivery reported as success")
+	}
+
+	recovered := newTestDispatcherWithScrubber(t, recorder, scrubber, Policy{Timeout: 10 * time.Millisecond}, sink)
+	result, err := recovered.Dispatch(context.Background(), request)
+	if err == nil || len(result.Receipts) != 1 ||
+		result.Receipts[0].Status != apiv1.NotificationSkipped ||
+		!strings.Contains(result.Receipts[0].Error, "remains unresolved") {
+		t.Fatalf("recovered dispatch result=%+v err=%v", result, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("recovered dispatch reached sink: calls = %d, want 1", got)
+	}
+	close(release)
 }

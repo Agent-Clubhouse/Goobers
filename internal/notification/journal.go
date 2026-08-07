@@ -57,24 +57,32 @@ func (r *JournalRecorder) RecordReceipt(ctx context.Context, receipt apiv1.Notif
 	})
 }
 
-func (r *JournalRecorder) Delivered(ctx context.Context, idempotencyKey, sink string) (apiv1.NotificationReceipt, bool, error) {
+func (r *JournalRecorder) DeliveryState(ctx context.Context, digest, sink string) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
 	if err := ctx.Err(); err != nil {
-		return apiv1.NotificationReceipt{}, false, err
+		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
 	}
 	reader, err := journal.OpenRead(r.run.Dir())
 	if err != nil {
-		return apiv1.NotificationReceipt{}, false, err
+		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
 	}
 	events, err := reader.Events()
 	if err != nil {
-		return apiv1.NotificationReceipt{}, false, err
+		return apiv1.NotificationReceipt{}, DeliveryAvailable, err
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		receipt := events[i].NotificationReceipt
-		if receipt != nil && receipt.IdempotencyKey == idempotencyKey &&
-			receipt.Sink.Kind == sink && receipt.Status == apiv1.NotificationDelivered {
-			return *receipt, true, nil
+		if receipt == nil || receipt.IdempotencyDigest != digest ||
+			receipt.Sink.Kind != sink || receipt.Attempt == 0 {
+			continue
+		}
+		switch {
+		case receipt.Status == apiv1.NotificationDelivered:
+			return *receipt, DeliveryComplete, nil
+		case receipt.Status == apiv1.NotificationPending || receipt.Unresolved:
+			return *receipt, DeliveryUnresolved, nil
+		default:
+			return *receipt, DeliveryAvailable, nil
 		}
 	}
-	return apiv1.NotificationReceipt{}, false, nil
+	return apiv1.NotificationReceipt{}, DeliveryAvailable, nil
 }

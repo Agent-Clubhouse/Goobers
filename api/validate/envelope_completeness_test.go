@@ -360,8 +360,9 @@ func completeJournalEvent() journal.Event {
 		}),
 		NotificationReceipt: pointer(apiv1.NotificationReceipt{
 			Schema: apiv1.NotificationReceiptSchema, NotificationID: "notice-1",
-			IdempotencyKey: "incident-1:opened",
-			Source:         apiv1.NotificationSource{RunID: "run-123", Workflow: "mission-control", Stage: "decide"},
+			IdempotencyKey:    "incident-1:opened",
+			IdempotencyDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Source:            apiv1.NotificationSource{RunID: "run-123", Workflow: "mission-control", Stage: "decide"},
 			Evidence: []apiv1.NotificationEvidenceRef{{
 				Kind: "artifact", ID: "build-log",
 				Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -369,7 +370,8 @@ func completeJournalEvent() journal.Event {
 			Sink:    apiv1.NotificationSinkRef{Kind: "terminal", Version: "v1"},
 			Attempt: 1, StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			CompletedAt: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC),
-			Status:      apiv1.NotificationDelivered, ExternalReference: "delivery-1", Error: "none",
+			Status:      apiv1.NotificationDelivered, Unresolved: true,
+			ExternalReference: "delivery-1", Error: "none",
 		}),
 		Parallel:     "fanout",
 		BranchName:   "east",

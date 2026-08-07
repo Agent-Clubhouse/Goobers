@@ -4,6 +4,7 @@ package notification
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,12 +35,22 @@ type Sink interface {
 	Deliver(context.Context, apiv1.NotificationRequest) (externalReference string, err error)
 }
 
-// Recorder is the durable request/receipt boundary. Delivered is queried before
-// dispatch so a process retry cannot repeat an already successful delivery.
+// RecordedDeliveryState describes the durable outcome relevant to a retry.
+type RecordedDeliveryState uint8
+
+const (
+	DeliveryAvailable RecordedDeliveryState = iota
+	DeliveryUnresolved
+	DeliveryComplete
+)
+
+// Recorder is the durable request/receipt boundary. DeliveryState is queried
+// before dispatch so a process retry cannot repeat a successful or unresolved
+// delivery.
 type Recorder interface {
 	RecordRequest(context.Context, apiv1.NotificationRequest) error
 	RecordReceipt(context.Context, apiv1.NotificationReceipt) error
-	Delivered(context.Context, string, string) (apiv1.NotificationReceipt, bool, error)
+	DeliveryState(context.Context, string, string) (apiv1.NotificationReceipt, RecordedDeliveryState, error)
 }
 
 // Registry owns sink implementations independently of workflow definitions.
@@ -121,7 +132,7 @@ func (p Policy) normalized() (Policy, error) {
 	return p, nil
 }
 
-// Result contains every durable receipt produced by Dispatch.
+// Result contains the outcome receipt returned for each dispatch attempt or suppression.
 type Result struct {
 	Receipts []apiv1.NotificationReceipt
 }
@@ -198,16 +209,22 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		receipt, _ = d.persist(ctx, receipt)
 		return []apiv1.NotificationReceipt{receipt}, false
 	}
-	previous, found, err := d.recorder.Delivered(context.WithoutCancel(ctx), request.IdempotencyKey, kind)
+	digest := idempotencyDigest(request.IdempotencyKey)
+	previous, state, err := d.recorder.DeliveryState(context.WithoutCancel(ctx), digest, kind)
 	if err != nil {
 		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationFailed, "", fmt.Errorf("check idempotency: %w", err))
 		receipt, _ = d.persist(ctx, receipt)
 		return []apiv1.NotificationReceipt{receipt}, false
 	}
-	if found {
+	if state == DeliveryComplete {
 		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, previous.ExternalReference, nil)
 		receipt, recordErr := d.persist(ctx, receipt)
 		return []apiv1.NotificationReceipt{receipt}, recordErr == nil
+	}
+	if state == DeliveryUnresolved {
+		receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
+		receipt, _ = d.persist(ctx, receipt)
+		return []apiv1.NotificationReceipt{receipt}, false
 	}
 	key := deliveryKey{idempotencyKey: request.IdempotencyKey, sinkKind: kind}
 	if _, pending := d.pending[key]; pending {
@@ -233,6 +250,12 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 		if request.ExpiresAt.Before(deadline) {
 			deadline = request.ExpiresAt
 		}
+		pending := d.receipt(request, sinkRef(sink), attempt, started, started, apiv1.NotificationPending, "", nil)
+		var err error
+		if pending, err = d.persist(ctx, pending); err != nil {
+			receipts = append(receipts, pending)
+			return receipts, false
+		}
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
 		delivery := startDelivery(attemptCtx, sink, request)
 		d.pending[key] = delivery
@@ -250,6 +273,7 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 			deliverErr = fmt.Errorf("external reference exceeds %d characters and was omitted", MaxExternalRefRunes)
 		}
 		receipt := d.receipt(request, sinkRef(sink), attempt, started, d.now().UTC(), status, externalRef, deliverErr)
+		receipt.Unresolved = !resolved
 		var recordErr error
 		receipt, recordErr = d.persist(ctx, receipt)
 		receipts = append(receipts, receipt)
@@ -357,10 +381,15 @@ func (d *Dispatcher) resolvePending(key deliveryKey, delivery *deliveryAttempt, 
 func (d *Dispatcher) receipt(request apiv1.NotificationRequest, sink apiv1.NotificationSinkRef, attempt int, started, completed time.Time, status apiv1.NotificationDeliveryStatus, externalRef string, err error) apiv1.NotificationReceipt {
 	return apiv1.NotificationReceipt{
 		Schema: apiv1.NotificationReceiptSchema, NotificationID: request.NotificationID,
-		IdempotencyKey: request.IdempotencyKey, Source: request.Source, Evidence: request.Evidence,
+		IdempotencyKey: request.IdempotencyKey, IdempotencyDigest: idempotencyDigest(request.IdempotencyKey),
+		Source: request.Source, Evidence: request.Evidence,
 		Sink: sink, Attempt: attempt, StartedAt: started.UTC(), CompletedAt: completed.UTC(),
 		Status: status, ExternalReference: externalRef, Error: d.sanitizeError(err),
 	}
+}
+
+func idempotencyDigest(key string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(key)))
 }
 
 func sinkRef(sink Sink) apiv1.NotificationSinkRef {

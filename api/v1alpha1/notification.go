@@ -63,6 +63,7 @@ type NotificationRequest struct {
 type NotificationDeliveryStatus string
 
 const (
+	NotificationPending   NotificationDeliveryStatus = "pending"
 	NotificationDelivered NotificationDeliveryStatus = "delivered"
 	NotificationFailed    NotificationDeliveryStatus = "failed"
 	NotificationSkipped   NotificationDeliveryStatus = "skipped"
@@ -79,6 +80,7 @@ type NotificationReceipt struct {
 	Schema            string                     `json:"schema"`
 	NotificationID    string                     `json:"notificationId"`
 	IdempotencyKey    string                     `json:"idempotencyKey"`
+	IdempotencyDigest string                     `json:"idempotencyDigest"`
 	Source            NotificationSource         `json:"source"`
 	Evidence          []NotificationEvidenceRef  `json:"evidence,omitempty"`
 	Sink              NotificationSinkRef        `json:"sink"`
@@ -86,6 +88,7 @@ type NotificationReceipt struct {
 	StartedAt         time.Time                  `json:"startedAt"`
 	CompletedAt       time.Time                  `json:"completedAt"`
 	Status            NotificationDeliveryStatus `json:"status"`
+	Unresolved        bool                       `json:"unresolved,omitempty"`
 	ExternalReference string                     `json:"externalReference,omitempty"`
 	Error             string                     `json:"error,omitempty"`
 }
