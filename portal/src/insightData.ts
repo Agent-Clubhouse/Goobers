@@ -43,6 +43,24 @@ export interface InsightCostTrendSnapshot {
   window: InsightWindow;
 }
 
+export interface InsightGaggleSpend {
+  gaggle: string;
+  usage?: TelemetryUsageStats;
+}
+
+export interface InsightCostRollupSnapshot {
+  filters: TelemetryStatsOptions;
+  /** Undefined when no model reported a measured cost in this window. */
+  totalCostUSD?: number;
+  totalCostSamples: number;
+  /** Descending by estimated spend (P50 cost × cost samples) — the wire
+   * contract totals cost per model, not per gaggle, so a gaggle's own total
+   * is not directly queryable; this ranks gaggles the same way the rest of
+   * Insight already reports cost, by percentile. */
+  byGaggle: InsightGaggleSpend[];
+  window: InsightWindow;
+}
+
 export function useInsightStats(
   client: DaemonClient,
   window: InsightWindow,
