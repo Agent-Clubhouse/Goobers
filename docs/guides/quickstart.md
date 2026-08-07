@@ -211,12 +211,20 @@ heartbeat while retaining startup and shutdown messages.
 
 `instance.yaml` is read once, at startup — editing it while `up` is running
 (a new repo, a `runConditions` change, etc.) has no effect until you restart
-the daemon. Definitions under `config/` can be watched and reloaded live with
-the opt-in `goobers up --watch-config` flag (off by default): after a valid edit
-the new definitions swap in atomically, and an invalid edit leaves the
-last-known-good definitions active. Without the flag, `config/` is also read once
-at startup. (Live watch is experimental and will be superseded by the Workflow CD
-config source, #453.)
+the daemon. How definitions reach the materialized `config/` directory depends
+on the configured source:
+
+- With the default instance-local config, `config/` is also read once at
+  startup. Pass the opt-in `goobers up --watch-config` flag to watch direct
+  edits to that directory. Valid edits swap in atomically; invalid edits leave
+  the last-known-good definitions active.
+- A Git `workflowSource` continuously reconciles its tracked ref without
+  `--watch-config`. Periodic fetch-and-compare polling is always active, local
+  Git ref changes wake reconciliation immediately, and authenticated GitHub
+  push deliveries also wake it when `webhook.secret` is configured. Invalid
+  revisions are rejected while the last-known-good definitions keep running.
+
+In-flight runs stay pinned to the definitions they started with in either mode.
 
 To trigger one workflow manually instead of starting the daemon, use the other
 command from the guided banner:
