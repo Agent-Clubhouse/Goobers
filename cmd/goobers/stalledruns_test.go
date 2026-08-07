@@ -189,8 +189,8 @@ func TestDaemonRunnerRegistryRetainsOverlappingLeases(t *testing.T) {
 	second := &runner.Runner{}
 	registry := newDaemonRunnerRegistry()
 
-	original := registry.Track("run-overlap", first)
-	overlapping := registry.Track("run-overlap", first)
+	original := registry.Track("run-overlap", "", first)
+	overlapping := registry.Track("run-overlap", "", first)
 	original()
 	original()
 	if owner, live := registry.Resolve("run-overlap", "", nil); !live || owner != first {
@@ -201,8 +201,8 @@ func TestDaemonRunnerRegistryRetainsOverlappingLeases(t *testing.T) {
 		t.Fatalf("owner after final release = (%p, %t), want no live owner", owner, live)
 	}
 
-	oldGeneration := registry.Track("run-replaced", first)
-	newGeneration := registry.Track("run-replaced", second)
+	oldGeneration := registry.Track("run-replaced", "", first)
+	newGeneration := registry.Track("run-replaced", "", second)
 	oldGeneration()
 	if owner, live := registry.Resolve("run-replaced", "", nil); !live || owner != second {
 		t.Fatalf("owner after stale release = (%p, %t), want replacement owner live", owner, live)
@@ -214,7 +214,7 @@ func TestDaemonRunnerRegistryRefusesIncompatibleInterventionOwner(t *testing.T) 
 	first := &runner.Runner{}
 	reloaded := &runner.Runner{}
 	registry := newDaemonRunnerRegistry()
-	release := registry.Track("run-live", first)
+	release := registry.Track("run-live", "", first)
 	defer release()
 	registry.Replace(map[string]*runner.Runner{"example": reloaded})
 

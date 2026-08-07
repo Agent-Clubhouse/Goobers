@@ -1067,7 +1067,7 @@ func TestRunInterventionResolvePrefersLiveOwnerAcrossReload(t *testing.T) {
 	snapshot.runners = map[string]*runner.Runner{"example": reloaded}
 	service.definitions.Replace(snapshot)
 	service.runnerRegistry.Replace(snapshot.runners)
-	untrack := service.runnerRegistry.Track("run-live-owner", original)
+	untrack := service.runnerRegistry.Track("run-live-owner", "", original)
 	defer untrack()
 
 	resolved, err := service.resolve("run-live-owner")
