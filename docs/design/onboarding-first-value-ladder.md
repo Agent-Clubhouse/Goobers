@@ -399,25 +399,29 @@ never a merge gate.
 defaults (PR #2524), #2514 (PR #2523), #2508 + #2512 (PR #2526), stale design
 headers (PR alongside this doc).
 
-**Wave B — decision-free, filed now (goobers:approved, assigned):**
-- Guided-init resume/replace for partial targets (consult EventInitCompleted).
-- Harness preflight truthing batch: #2515 stderr, #2516 USER/envPassthrough,
-  #2517 Keychain seeding, #2070 adapterFor envPassthrough.
-- Guided init emits requiredCapabilities + runner.capabilities from detected
-  stack; CI-detection runs against the target repo (or labels its guess).
-- Placeholder lint + post-init validate in bare/demo/template modes.
-- Gaggle↔instance repo join check with did-you-mean.
-- FlagSet↔completion↔synopsis reflection parity test (interim #2445 guard).
-- `goobers help <topic>` routing + glossary completions + usage footer
+**Wave B — decision-free, filed 2026-08-07 (goobers:approved, assigned):**
+- #2541 guided-init resume/replace for partial targets (EventInitCompleted).
+- #2515/#2516/#2517/#2070 harness preflight truthing batch (approved+assigned
+  as a unit).
+- #2542 guided init emits requiredCapabilities + runner.capabilities from the
+  detected stack; CI-detection against the target repo (or labeled as a
+  cwd guess); Cargo.toml detection.
+- #2543 placeholder lint + post-init validate in bare/demo/template modes.
+- #2544 gaggle↔instance repo join check with did-you-mean.
+- #2545 FlagSet↔completion↔synopsis reflection parity test (interim #2445
+  guard, child of #2430).
+- #2546 `goobers help <topic>` routing + glossary completions + usage footer
   pointers.
-- Markdown link/anchor checker in CI.
-- Agent-toolkit truth-guard batch (evaluator kinds, harness names, digest-pin
-  extensions, link-integrity walk) + claude-code documented across assets.
-- Demo-tour flake fix (#1557) + wall-clock assert removal (gate hygiene).
-- Quickstart local-ci stage wired to sample localCI (or field dropped) — also
-  most of #2171's proof.
-- stack-support.md parity test; config-examples 'make ci' literal guard.
-- Stage-code hardcoded-name lint (#2490 class).
+- #2547 markdown link/anchor checker in CI.
+- #2548 agent-toolkit truth-guard batch (evaluator kinds, harness names,
+  digest-pin extensions, link-integrity walk) + claude-code documented across
+  assets.
+- #1557 demo-tour flake fix + wall-clock assert removal (gate hygiene,
+  approved+assigned).
+- #2549 quickstart local-ci stage wired to sample localCI (or field dropped) —
+  also most of #2171's proof.
+- #2550 stack-support.md parity test; config-examples 'make ci' literal guard.
+- #2551 stage-code hardcoded-name lint (#2490 class).
 
 **Wave C — review-gated on §7 rulings:** release cut + installer rework
 (7.1/7.2); starter PR stages (7.3); preview-gate removal (7.4); `goobers
