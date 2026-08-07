@@ -114,7 +114,7 @@ func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
 		if fs != nil {
 			fs.VisitAll(func(f *flag.Flag) {
 				boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
-				actual[f.Name] = !(isBool && boolFlag.IsBoolFlag())
+				actual[f.Name] = !isBool || !boolFlag.IsBoolFlag()
 			})
 		}
 		annotated := make(map[string]bool)
