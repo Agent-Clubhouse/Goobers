@@ -385,7 +385,7 @@ func findTemplatePlaceholders(root, configFile, configDir string) ([]placeholder
 		}
 		var found []string
 		for _, marker := range templateMarkers {
-			if bytes.Contains(data, []byte(marker)) {
+			if containsTemplateMarker(data, marker) {
 				found = append(found, marker)
 			}
 		}
@@ -401,6 +401,32 @@ func findTemplatePlaceholders(root, configFile, configDir string) ([]placeholder
 		})
 	}
 	return findings, nil
+}
+
+func containsTemplateMarker(data []byte, marker string) bool {
+	target := []byte(marker)
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], target)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		beforeBoundary := index == 0 || !isRepositoryCoordinateByte(data[index-1])
+		after := index + len(target)
+		afterBoundary := after == len(data) || !isRepositoryCoordinateByte(data[after])
+		if beforeBoundary && afterBoundary {
+			return true
+		}
+		offset = index + len(target)
+	}
+	return false
+}
+
+func isRepositoryCoordinateByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '-' || value == '_' || value == '.'
 }
 
 func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {

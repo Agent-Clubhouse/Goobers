@@ -323,6 +323,29 @@ func TestValidateTemplatePlaceholdersClearAfterEditing(t *testing.T) {
 	}
 }
 
+func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitDemo(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, `repos:
+  - provider: github
+    owner: your-organization
+    name: your-repository
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, placeholderFindingCode) {
+		t.Fatalf("edited repository coordinates produced placeholder findings:\n%s", stdout)
+	}
+}
+
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
 	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
