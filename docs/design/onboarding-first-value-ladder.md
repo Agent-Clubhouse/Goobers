@@ -359,7 +359,14 @@ flake (#1557 leaked global OTLP provider) and delete its wall-clock assert
 real-agent variant (GHCP PAT exists in CI) mirrors ghcp-echo.yml — optional,
 never a merge gate.
 
-## 7. Decisions needed (each with a recommendation)
+## 7. Decisions (recommendations adopted as rulings)
+
+PO delegation 2026-08-07: "approved to self merge, i will not be reviewing any
+of your stuff, if its quality and you need it, merge it." Accordingly the
+recommendations below are adopted as the rulings of record; each still lists
+its reasoning so a later human can revisit. Sequencing note for 7.1: the
+first-ever release is cut only after 7.2 (installer rework) lands, so the
+first published installer is never the guided-forcing one.
 
 1. **Cut a v0.x pre-release.** The install rung is fiction until one tag
    exists; the entire machinery is release-tested. *Recommend: yes — tag a
