@@ -13,6 +13,7 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
@@ -1284,6 +1285,18 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 
 ~~~console
 $ goobers gather-sibling-context
+~~~
+
+## `goobers help`
+
+show command or concept help
+
+~~~text
+Usage: goobers help [all|stages|COMMAND|CONCEPT]
+
+Show core command help with no topic, the complete or workflow-stage command
+list with all or stages, a command's full help, or one of these concepts:
+instance, gaggle, goober, workflow, stage, gate, harness, capability.
 ~~~
 
 ## `goobers init`
