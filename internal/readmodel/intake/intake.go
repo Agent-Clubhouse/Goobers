@@ -48,7 +48,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	sqlite "modernc.org/sqlite"
 )
 
 // FileName is the intake store's name inside the instance directory.
@@ -56,10 +56,11 @@ const FileName = "intake.db"
 
 // dsnParams configures every connection.
 //
-// No _txlock=immediate here, unlike read.db: intake has no single owner, so
-// taking a write lock on every transaction would serialize unrelated processes
-// that are only recording a hint.
-const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+// _txlock=immediate makes each explicit write transaction acquire its lock at
+// BEGIN, avoiding the non-waitable read-to-write upgrade race between processes.
+const dsnParams = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+
+const busyRetryMaxAttempts = 12
 
 // timeFormat matches read.db's, so the two stores' timestamps are comparable
 // without conversion when a human is reading both.
@@ -108,11 +109,13 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("intake: open %s: %w", path, err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	db.SetMaxOpenConns(1)
+	store := &Store{db: db, path: path}
+	if _, err := store.execWriteWithBusyRetry(context.Background(), schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("intake: initialise schema in %s: %w", path, err)
 	}
-	return &Store{db: db, path: path}, nil
+	return store, nil
 }
 
 // Path reports the file backing this store.
@@ -145,7 +148,7 @@ func (s *Store) Close() error {
 // `>=` rather than `>`: an equal sequence still clears stale removal intent,
 // which matters when retention marked a run that had already stopped advancing.
 func (s *Store) Observed(ctx context.Context, runID string, journalSeq uint64) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWriteWithBusyRetry(ctx, `
 		INSERT INTO run_intake (run_id, source_seq, removing, observed_at)
 		VALUES (?, ?, 0, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
@@ -171,7 +174,7 @@ func (s *Store) Observed(ctx context.Context, runID string, journalSeq uint64) e
 // It does NOT clear the source sequence. The sequence is what a later Observed
 // compares against to decide the intent is stale.
 func (s *Store) Removing(ctx context.Context, runID string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWriteWithBusyRetry(ctx, `
 		INSERT INTO run_intake (run_id, source_seq, removing, observed_at)
 		VALUES (?, 0, 1, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
@@ -250,7 +253,7 @@ const defaultPendingLimit = 512
 // It reports whether the marker was actually removed, so a caller can tell
 // "acknowledged" from "superseded while I was working" without a second query.
 func (s *Store) Ack(ctx context.Context, runID string, projectedSeq uint64) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.execWriteWithBusyRetry(ctx, `
 		DELETE FROM run_intake
 		WHERE run_id = ? AND source_seq <= ? AND removing = 0`,
 		runID, projectedSeq)
@@ -274,11 +277,57 @@ func (s *Store) Ack(ctx context.Context, runID string, projectedSeq uint64) (boo
 // `removing` when a newer sequence proves the intent stale, so a marker that is
 // still `removing = 1` at this point has not been contradicted.
 func (s *Store) AckRemoval(ctx context.Context, runID string) error {
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := s.execWriteWithBusyRetry(ctx,
 		`DELETE FROM run_intake WHERE run_id = ? AND removing = 1`, runID); err != nil {
 		return fmt.Errorf("intake: ack removal of %s: %w", runID, err)
 	}
 	return nil
+}
+
+// execWriteWithBusyRetry runs a mutation in an immediate transaction and
+// retries the whole transaction when SQLite reports resolvable contention.
+func (s *Store) execWriteWithBusyRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		var result sql.Result
+		result, err = s.execWriteOnce(ctx, query, args...)
+		if err == nil || !isSQLiteBusy(err) {
+			return result, err
+		}
+		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, err
+}
+
+func (s *Store) execWriteOnce(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func isSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xFF
+	return code == 5 || code == 6
 }
 
 // Get returns one run's marker, if any.
