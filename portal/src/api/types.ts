@@ -680,6 +680,10 @@ export interface TelemetryRunStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  // How many of totalRuns hung and were later aborted (the watchdog's
+  // max-duration expiry), excluded from avg/min/maxDurationMs — disclosed
+  // rather than silently dropped (#2534, #1439).
+  stuckAbortedRuns: number;
 }
 
 export interface TelemetryStageStats {
@@ -707,6 +711,11 @@ export interface TelemetryStageStats {
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
+  // How many of totalAttempts belong to a run that hung and was later
+  // aborted (the watchdog's max-duration expiry), excluded from
+  // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
+  // silently dropped (#2534, #1439).
+  stuckAbortedAttempts: number;
 }
 
 export interface TelemetryUsageStats {

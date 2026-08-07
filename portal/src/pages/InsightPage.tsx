@@ -951,7 +951,7 @@ function StageDistributions({
       </div>
       {stages.map((stage) => (
         <a
-          aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}`}
+          aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
           className="stage-distribution-row"
           href={routeHash({
             page: "runs",
@@ -970,6 +970,15 @@ function StageDistributions({
             <strong>{stage.stage}</strong>
             <small>
               {stage.gaggle} / {stage.workflow} · {stage.durationSamples} samples
+              {stage.stuckAbortedAttempts > 0 && (
+                <span
+                  className="distribution-excluded"
+                  title="Attempts whose run hung and was later aborted (max-duration expiry) are excluded from these duration stats so they don't skew the range."
+                >
+                  {" "}
+                  · {stage.stuckAbortedAttempts} stuck-aborted excluded
+                </span>
+              )}
             </small>
           </span>
           <DistributionPlot scaleMax={scaleMax} stage={stage} />

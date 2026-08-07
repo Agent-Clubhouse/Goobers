@@ -725,7 +725,8 @@ export const goWireFixtures = {
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
-        "maxDurationMs": 140001
+        "maxDurationMs": 140001,
+        "stuckAbortedRuns": 1
       }
     ],
     "stages": [
@@ -752,7 +753,8 @@ export const goWireFixtures = {
         "retryWasteAttempts": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75
+        "retryWasteCostUSD": 0.75,
+        "stuckAbortedAttempts": 1
       }
     ],
     "usage": [
