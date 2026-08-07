@@ -26,7 +26,8 @@ const selectSourceHelp = "Usage: goobers select-source [path]\n\n" +
 	"disposition (#415), resolves the oldest eligible one's claimed parent issue,\n" +
 	"and — if it is still open, maintainer-approved, not already claimed or\n" +
 	"decomposed — claims it in the local claim ledger and writes the immutable\n" +
-	"selection artifact to the declared result file.\n\n" +
+	"selection artifact to the declared result file. The maintainer approval\n" +
+	"label is configured by the required trustLabel input (SEC-047).\n\n" +
 	"Exit codes: 0 = a source was selected (or none was eligible — a no-work\n" +
 	"result, not an error) / 1 = business error (provider/credential/config\n" +
 	"error) / 2 = usage/IO error.\n"
@@ -52,6 +53,11 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	trustLabel := strings.TrimSpace(providerInput("trustLabel", ""))
+	if trustLabel == "" {
+		pln(stderr, "error: trustLabel is required for decomposition selection (SEC-047)")
 		return 1
 	}
 
@@ -140,7 +146,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			// run touched it; skip it rather than fail the whole scan.
 			continue
 		}
-		if !parentEligibleForDecomposition(item) {
+		if !parentEligibleForDecomposition(item, trustLabel) {
 			continue
 		}
 		comments, commentsErr := issueProvider.ListComments(ctx, repo, item.ID)
@@ -264,11 +270,11 @@ func releaseSelectSourceParent(ledger *localscheduler.ClaimLedger, key localsche
 // independently of whatever it looked like when the source run claimed it
 // (design doc §2.1's fail-closed list): open, maintainer-approved, and not
 // already mid-implementation review.
-func parentEligibleForDecomposition(item providers.WorkItem) bool {
+func parentEligibleForDecomposition(item providers.WorkItem, trustLabel string) bool {
 	if item.State != "" && !strings.EqualFold(item.State, "open") {
 		return false
 	}
-	if !item.HasLabel(providers.LabelApproved) {
+	if !item.HasLabel(trustLabel) {
 		return false
 	}
 	if item.HasLabel(inReviewStatusLabel) {
