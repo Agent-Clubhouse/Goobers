@@ -11,9 +11,20 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
 )
+
+type guidedInitCallbackWriter struct {
+	bytes.Buffer
+	onWrite func(string)
+}
+
+func (w *guidedInitCallbackWriter) Write(p []byte) (int, error) {
+	if w.onWrite != nil {
+		w.onWrite(string(p))
+	}
+	return w.Buffer.Write(p)
+}
 
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "widget-instance")
@@ -409,26 +420,40 @@ func TestGuidedInitRerunAfterInterruptedMaterializationGivesRecovery(t *testing.
 	if _, err := instance.SeedGuidedConfigSource(sourceRoot, opts); err != nil {
 		t.Fatalf("seed guided source: %v", err)
 	}
-	cfg, err := instance.LoadGuidedSourceConfig(sourceRoot)
-	if err != nil {
-		t.Fatalf("load guided source: %v", err)
+	var mutationErr error
+	mutated := false
+	firstStdout := &guidedInitCallbackWriter{onWrite: func(output string) {
+		if mutated || !strings.Contains(output, "initialized instance at") {
+			return
+		}
+		mutated = true
+		mutationErr = os.WriteFile(
+			filepath.Join(root, instance.ConfigDirName, "manifest.yaml"),
+			[]byte("not: valid: yaml\n"),
+			0o644,
+		)
+	}}
+	firstInput := strings.NewReader(strings.Join([]string{
+		guidedSourceExistingLocal,
+		sourceRoot,
+		"",
+		"yes",
+	}, "\n") + "\n")
+	var firstStderr bytes.Buffer
+	code := runInitWithInput([]string{"--guided", root}, firstInput, firstStdout, &firstStderr)
+	if mutationErr != nil {
+		t.Fatalf("invalidate materialized config: %v", mutationErr)
 	}
-	if _, err := instance.InitGuidedFromSource(root, sourceRoot, cfg); err != nil {
-		t.Fatalf("materialize guided instance: %v", err)
+	if !mutated {
+		t.Fatalf("guided init did not reach materialization: stdout = %q, stderr = %q", firstStdout.String(), firstStderr.String())
 	}
-	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
-	if err != nil {
-		t.Fatalf("read instance journal: %v", err)
-	}
-	if slices.ContainsFunc(events, func(event journal.Event) bool {
-		return event.Type == journal.EventInitCompleted
-	}) {
-		t.Fatal("interrupted guided setup unexpectedly has an init.completed marker")
+	if code == 0 || !strings.Contains(firstStderr.String(), "guided setup did not produce a valid instance") {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, firstStdout.String(), firstStderr.String())
 	}
 
 	input := strings.NewReader("acme/replacement\n")
 	var stdout, stderr bytes.Buffer
-	code := runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
+	code = runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("guided rerun code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
