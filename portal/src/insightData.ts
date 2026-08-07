@@ -6,6 +6,7 @@ import type {
   TelemetryErrorSignaturesResult,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TelemetryUsageStats,
 } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
@@ -22,6 +23,24 @@ export interface InsightErrorSignaturesSnapshot {
   filters: TelemetryErrorSignaturesOptions;
   requestKey: string;
   result: TelemetryErrorSignaturesResult;
+}
+
+/** A single point in the cost/token trend line: one bucket's usage rollups. */
+export interface InsightCostTrendPeriod {
+  since: string;
+  until: string;
+  usage: TelemetryUsageStats[];
+}
+
+export interface InsightCostTrendSnapshot {
+  /** Ascending, oldest to newest. Empty when `window` is "all" — there is no
+   * fixed length to divide into buckets or to compare against a preceding
+   * period of the same length. */
+  buckets: InsightCostTrendPeriod[];
+  /** The window of the same length immediately preceding the selected one.
+   * Undefined for "all", for the same reason `buckets` is empty. */
+  previous?: InsightCostTrendPeriod;
+  window: InsightWindow;
 }
 
 export function useInsightStats(
@@ -87,6 +106,164 @@ export function useInsightStats(
       ["run"],
       (_models, reason) => {
         const current = reason === "initial" ? cache.get<InsightSnapshot>(cacheKey) : undefined;
+        if (current) {
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
+          return true;
+        }
+        return refresh();
+      },
+      { gaggle, workflow },
+    );
+    return () => {
+      unsubscribe();
+      request.current?.abort();
+    };
+  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
+
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  const retry = useCallback(() => {
+    cache.remove(cacheKey);
+    return refresh();
+  }, [cache, cacheKey, refresh]);
+  return { retry, state };
+}
+
+const TREND_BUCKET_COUNTS: Record<Exclude<InsightWindow, "all">, number> = {
+  "24h": 8,
+  "7d": 7,
+  "30d": 10,
+};
+
+/**
+ * Splits the current window into evenly-sized buckets, oldest first.
+ *
+ * Bucket counts are fixed per window rather than one-bucket-per-hour/day,
+ * because each bucket costs a network round trip (there is no bucketed
+ * telemetry endpoint) — 8/7/10 buckets keeps 24h/7d/30d all readable as a
+ * sparkline without firing dozens of requests.
+ */
+export function insightTrendBuckets(
+  window: InsightWindow,
+  now = new Date(),
+): { since: string; until: string }[] {
+  if (window === "all") {
+    return [];
+  }
+  const totalMs = WINDOW_MILLISECONDS[window];
+  const bucketCount = TREND_BUCKET_COUNTS[window];
+  const bucketMs = totalMs / bucketCount;
+  const end = now.getTime();
+  const start = end - totalMs;
+  return Array.from({ length: bucketCount }, (_, index) => {
+    const bucketStart = start + index * bucketMs;
+    const bucketEnd = index === bucketCount - 1 ? end : bucketStart + bucketMs;
+    return { since: new Date(bucketStart).toISOString(), until: new Date(bucketEnd).toISOString() };
+  });
+}
+
+/** The window of the same length immediately preceding the selected one. Undefined for "all". */
+export function insightPreviousWindowFilters(
+  window: InsightWindow,
+  now = new Date(),
+): { since: string; until: string } | undefined {
+  if (window === "all") {
+    return undefined;
+  }
+  const totalMs = WINDOW_MILLISECONDS[window];
+  const currentSince = now.getTime() - totalMs;
+  return {
+    since: new Date(currentSince - totalMs).toISOString(),
+    until: new Date(currentSince).toISOString(),
+  };
+}
+
+export function useInsightCostTrend(
+  client: DaemonClient,
+  window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+): {
+  retry: () => void;
+  state: QueryState<InsightCostTrendSnapshot>;
+} {
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? "");
+  const [state, setState] = useState<QueryState<InsightCostTrendSnapshot>>(() => {
+    const cached = cache.get<InsightCostTrendSnapshot>(cacheKey);
+    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  });
+  const request = useRef<AbortController | undefined>(undefined);
+
+  const refresh = useCallback(() => {
+    request.current?.abort();
+    const dependencies = insightDependencies(gaggle, workflow);
+    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
+    const controller = new AbortController();
+    request.current = controller;
+    const bucketRanges = insightTrendBuckets(window);
+    const previousRange = insightPreviousWindowFilters(window);
+    setState((current) =>
+      (current.status === "ready" || current.status === "stale") &&
+      current.data.window === window
+        ? { status: "stale", data: current.data }
+        : { status: "loading" },
+    );
+
+    const fetchPeriod = (range: { since: string; until: string }) =>
+      client
+        .getTelemetryStats({ ...range, gaggle, workflow }, { signal: controller.signal })
+        .then((stats) => ({ since: range.since, until: range.until, usage: stats.usage }));
+
+    return Promise.all([
+      Promise.all(bucketRanges.map(fetchPeriod)),
+      previousRange ? fetchPeriod(previousRange) : Promise.resolve(undefined),
+    ]).then(
+      ([buckets, previous]) => {
+        if (controller.signal.aborted) {
+          return true;
+        }
+        const data: InsightCostTrendSnapshot = { buckets, previous, window };
+        cache.set(cacheKey, data, dependencies, cacheRevision);
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+        return true;
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted) {
+          const queryError =
+            error instanceof Error ? error : new Error("Unable to read the cost trend.");
+          setState((current) =>
+            (current.status === "ready" || current.status === "stale") &&
+            current.data.window === window
+              ? { status: "stale", data: current.data, error: queryError }
+              : { status: "error", error: queryError },
+          );
+        }
+        return false;
+      },
+    );
+  }, [cache, cacheKey, client, gaggle, isFresh, window, workflow]);
+
+  useEffect(() => {
+    const cached = cache.get<InsightCostTrendSnapshot>(cacheKey);
+    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
+    const unsubscribe = subscribe(
+      ["run"],
+      (_models, reason) => {
+        const current =
+          reason === "initial" ? cache.get<InsightCostTrendSnapshot>(cacheKey) : undefined;
         if (current) {
           setState(
             isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
@@ -235,20 +412,21 @@ function insightDependencies(
   return [{ model: "run", gaggle, workflow }];
 }
 
+const WINDOW_MILLISECONDS: Record<Exclude<InsightWindow, "all">, number> = {
+  "24h": 24 * 60 * 60 * 1_000,
+  "7d": 7 * 24 * 60 * 60 * 1_000,
+  "30d": 30 * 24 * 60 * 60 * 1_000,
+};
+
 export function insightWindowFilters(
   window: InsightWindow,
   now = new Date(),
 ): TelemetryStatsOptions {
-  const milliseconds: Record<Exclude<InsightWindow, "all">, number> = {
-    "24h": 24 * 60 * 60 * 1_000,
-    "7d": 7 * 24 * 60 * 60 * 1_000,
-    "30d": 30 * 24 * 60 * 60 * 1_000,
-  };
   const until = now.toISOString();
   return window === "all"
     ? { until }
     : {
-        since: new Date(now.getTime() - milliseconds[window]).toISOString(),
+        since: new Date(now.getTime() - WINDOW_MILLISECONDS[window]).toISOString(),
         until,
       };
 }

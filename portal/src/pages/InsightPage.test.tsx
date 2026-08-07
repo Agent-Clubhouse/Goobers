@@ -263,6 +263,39 @@ describe("Insight page", () => {
     );
   });
 
+  it("shows a cost trend and a same-length prior-period comparison for the selected scope", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Cost over time" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /AI cost trend by bucket/ })).toBeInTheDocument();
+    expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
+
+    await waitFor(() => {
+      const ranges = getTelemetryStats.mock.calls.map(([request]) => ({
+        since: request?.since,
+        until: request?.until,
+      }));
+      // One call per trend bucket (7 for the default 7d window), plus one for
+      // the immediately preceding 7-day period, plus the page's own snapshot
+      // fetch for the selected window.
+      expect(ranges.length).toBeGreaterThanOrEqual(9);
+      const uniqueRanges = new Set(ranges.map((range) => `${range.since}:${range.until}`));
+      expect(uniqueRanges.size).toBeGreaterThanOrEqual(8);
+    });
+
+    await user.selectOptions(screen.getByLabelText("Time window"), "all");
+    expect(
+      await screen.findByText(
+        "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("drills into every matching run error while keeping the selected filters", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");

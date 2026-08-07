@@ -14,9 +14,11 @@ import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { ScopeStrip } from "../components/ScopeStrip";
 import {
+  type InsightCostTrendSnapshot,
   type InsightErrorSignaturesSnapshot,
   type InsightSnapshot,
   type InsightWindow,
+  useInsightCostTrend,
   useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
@@ -75,6 +77,7 @@ export function InsightPage({
     errorScope.workflow,
     errorScope.stage,
   );
+  const costTrend = useInsightCostTrend(client, window, errorScope.gaggle, errorScope.workflow);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -151,6 +154,8 @@ export function InsightPage({
       )}
 
       <InsightContent
+        costTrend={costTrend.state}
+        costTrendRetry={costTrend.retry}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
         scope={requestedScope}
@@ -161,11 +166,15 @@ export function InsightPage({
 }
 
 function InsightContent({
+  costTrend,
+  costTrendRetry,
   errorSignatures,
   errorSignaturesRetry,
   scope,
   snapshot,
 }: {
+  costTrend: QueryState<InsightCostTrendSnapshot>;
+  costTrendRetry: () => void;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
   scope: InsightScope;
@@ -267,6 +276,13 @@ function InsightContent({
             report usage remain unmeasured.
           </p>
           <UsageAnalytics filters={snapshot.filters} usage={usage} />
+          <CostTrend
+            costTrend={costTrend}
+            currentUsage={usage}
+            retry={costTrendRetry}
+            scope={scope}
+            window={snapshot.window}
+          />
         </section>
       )}
 
@@ -720,6 +736,189 @@ function RetryWasteMetric({
       )}
     </a>
   );
+}
+
+function CostTrend({
+  costTrend,
+  currentUsage,
+  retry,
+  scope,
+  window,
+}: {
+  costTrend: QueryState<InsightCostTrendSnapshot>;
+  currentUsage: TelemetryUsageStats;
+  retry: () => void;
+  scope: InsightScope;
+  window: InsightWindow;
+}) {
+  if (window === "all") {
+    return (
+      <p className="usage-trend-note">
+        Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.
+      </p>
+    );
+  }
+  if (costTrend.status === "loading") {
+    return <p className="usage-trend-note">Loading cost trend…</p>;
+  }
+  if (costTrend.status === "error") {
+    return (
+      <div className="insight-inline-error">
+        <span>Unable to load the cost trend.</span>
+        <button onClick={retry} type="button">
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (costTrend.status !== "ready" && costTrend.status !== "stale") {
+    return null;
+  }
+  const data = costTrend.data;
+  const points = data.buckets.map((bucket) => ({
+    since: bucket.since,
+    until: bucket.until,
+    usage: usageForScope(scope, bucket.usage),
+  }));
+  const hasSamples = points.some((point) => (point.usage?.costSamples ?? 0) > 0);
+  const previousUsage = data.previous ? usageForScope(scope, data.previous.usage) : undefined;
+
+  return (
+    <div className="usage-trend">
+      {costTrend.status === "stale" && costTrend.error && (
+        <div className="insight-inline-error">
+          <span>Cost trend refresh failed. Showing the last successful read.</span>
+          <button onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      )}
+      <div className="usage-trend-heading">
+        <p className="section-kicker">Trend</p>
+        <h3>Cost over time</h3>
+      </div>
+      {hasSamples ? (
+        <CostTrendSparkline points={points} />
+      ) : (
+        <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
+      )}
+      <CostTrendComparison current={currentUsage} previous={previousUsage} window={window} />
+    </div>
+  );
+}
+
+function CostTrendSparkline({
+  points,
+}: {
+  points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
+}) {
+  const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  return (
+    <div className="usage-trend-sparkline" role="img" aria-label={sparklineAriaLabel(points)}>
+      {points.map((point) => {
+        const p50 = point.usage?.p50CostUSD;
+        const p95 = point.usage?.p95CostUSD;
+        const p50Height = `${Math.min(100, ((p50 ?? 0) / scaleMax) * 100)}%`;
+        const p95Height = `${Math.min(100, ((p95 ?? 0) / scaleMax) * 100)}%`;
+        return (
+          <span
+            className="usage-trend-bar"
+            key={point.since}
+            title={`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(p50)}, P95 ${formatMeasuredCost(p95)}`}
+          >
+            <span className="usage-trend-bar-track">
+              <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
+              <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
+            </span>
+            <small>{formatBucketTick(point.since)}</small>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function sparklineAriaLabel(
+  points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[],
+): string {
+  const summary = points
+    .map(
+      (point) =>
+        `${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.usage?.p50CostUSD)}`,
+    )
+    .join("; ");
+  return `AI cost trend by bucket. ${summary}`;
+}
+
+function formatBucketLabel(since: string, until: string): string {
+  return `${formatTimestamp(since)} to ${formatTimestamp(until)}`;
+}
+
+function formatBucketTick(since: string): string {
+  const date = new Date(since);
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function CostTrendComparison({
+  current,
+  previous,
+  window,
+}: {
+  current: TelemetryUsageStats;
+  previous: TelemetryUsageStats | undefined;
+  window: InsightWindow;
+}) {
+  const duration = windowDurationLabel(window);
+  if (!previous || previous.costSamples === 0) {
+    return <p className="usage-trend-note">No prior {duration} to compare against in this scope.</p>;
+  }
+  return (
+    <dl className="usage-trend-comparison">
+      <div>
+        <dt>AI cost vs. previous {duration}</dt>
+        <dd>
+          {formatMeasuredCost(current.p50CostUSD)}
+          <DeltaBadge current={current.p50CostUSD} previous={previous.p50CostUSD} />
+        </dd>
+      </div>
+      <div>
+        <dt>Tokens vs. previous {duration}</dt>
+        <dd>
+          {formatMeasuredTokens(current.p50Tokens)}
+          <DeltaBadge current={current.p50Tokens} previous={previous.p50Tokens} />
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+function windowDurationLabel(window: InsightWindow): string {
+  switch (window) {
+    case "24h":
+      return "24 hours";
+    case "7d":
+      return "7 days";
+    case "30d":
+      return "30 days";
+    case "all":
+      return "all time";
+  }
+}
+
+function DeltaBadge({
+  current,
+  previous,
+}: {
+  current: number | undefined;
+  previous: number | undefined;
+}) {
+  if (current === undefined || previous === undefined || previous === 0) {
+    return <span className="usage-trend-delta usage-trend-delta-flat">Unmeasured</span>;
+  }
+  const change = (current - previous) / previous;
+  const direction = change > 0 ? "up" : change < 0 ? "down" : "flat";
+  const label = `${change > 0 ? "+" : ""}${(change * 100).toFixed(1)}%`;
+  return <span className={`usage-trend-delta usage-trend-delta-${direction}`}>{label}</span>;
 }
 
 function StageDistributions({
