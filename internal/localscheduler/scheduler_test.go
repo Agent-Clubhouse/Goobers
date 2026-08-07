@@ -155,6 +155,102 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	}
 }
 
+func TestReserveContinuationHoldsConcurrencyUntilReleased(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	release, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	sameRunRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("same run could not retain its reservation: %s", reason)
+	}
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok || reason != ReasonMaxParallel {
+		t.Fatalf("second reservation = (%v, %q), want max-parallel refusal", ok, reason)
+	}
+	sameRunRelease()
+	release()
+	release()
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); !ok {
+		t.Fatalf("reservation after release refused: %s", reason)
+	}
+}
+
+func TestReserveContinuationRetainsSlotAfterDispatchRelease(t *testing.T) {
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseEscalated}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	runID, err := scheduler.Trigger(context.Background(), "implement", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, starter.count, 1)
+	releaseContinuation, ok, reason := scheduler.ReserveContinuation(runID, "alpha", "implement")
+	if !ok {
+		t.Fatalf("continuation reservation refused: %s", reason)
+	}
+
+	close(block)
+	scheduler.Wait()
+	if release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement"); ok {
+		release()
+		t.Fatal("dispatch release removed the continuation reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	releaseContinuation()
+	release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after continuation release refused: %s", reason)
+	}
+	release()
+}
+
+func TestStaleContinuationReleaseDoesNotReleaseNewGeneration(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	staleRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	scheduler.ReleaseRun("run-a", "implement")
+	currentRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("replacement reservation refused: %s", reason)
+	}
+
+	staleRelease()
+	if release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok {
+		release()
+		t.Fatal("stale release removed the replacement reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	currentRelease()
+	release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after current release refused: %s", reason)
+	}
+	release()
+}
+
 func TestTickDispatchesWhenTriggerStatePersistenceFails(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{

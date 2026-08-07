@@ -1,53 +1,209 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/goobers/goobers/internal/apicontract"
 )
 
-// registerMutationRoutes wires the tier-2 human-intervention actions
-// (approve/override/rerun — HITL-7/#469) through the exact same
-// Authenticate-then-Authorize seam every read route already passes through:
-// Router.Handle applies both unconditionally, before any handler runs, so
-// registering a route here is sufficient to gate it — no separate mutation
-// auth path exists or is needed.
-//
-// Each handler body is a deliberate stub. The real primitives this seam will
-// eventually front are split across other issues: rerun-with-addendum and
-// resume-from-terminal already exist internally (#465/#467,
-// internal/runner.RerunStage and friends) but nothing outside internal/runner
-// calls them yet, and gate force-pass/override (#468) is entirely unbuilt —
-// internal/gate/evaluate.go still refuses apiv1.EvaluatorHuman outright.
-// Landing the route surface now, ungated by those, means #466 (CLI
-// intervention surface) and #468 only ever fill in a handler body — neither
-// ever touches auth wiring.
-func registerMutationRoutes(router *Router) {
-	router.Handle(apicontract.RouteApproveStage, stageMutationStub("approve"))
-	router.Handle(apicontract.RouteOverrideStage, stageMutationStub("override"))
-	router.Handle(apicontract.RouteRerunStage, stageMutationStub("rerun"))
+const maxInterventionBody = 1 << 20
+
+// InterventionRequest is the transport-neutral input shared by the CLI and
+// dashboard mutation adapters. RunID and Stage come from the route path.
+type InterventionRequest struct {
+	RunID               string `json:"-"`
+	Stage               string `json:"-"`
+	IdempotencyKey      string `json:"-"`
+	Actor               string `json:"actor,omitempty"`
+	Decision            string `json:"decision,omitempty"`
+	Rationale           string `json:"rationale,omitempty"`
+	InstructionAddendum string `json:"instructionAddendum,omitempty"`
 }
 
-// stageMutationStub proves a tier-2 action is reachable only through the
-// access-control seam while its real behavior is still unimplemented
-// (#466/#468). A request that passes Authenticate+Authorize reaches here and
-// gets a clear, typed 501 — never a silent 404 (as if the route did not
-// exist) and never a fake 200 (implying a mutation happened when none did).
-func stageMutationStub(capability string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		// The idempotency precondition is NOT enforced here, deliberately.
-		//
-		// `requireIdempotencyKey` exists and is tested (mutability.go, #1934),
-		// but wiring it into a stub that returns 501 would enforce a
-		// precondition on a route that does nothing — and it would break #469's
-		// acceptance criterion, which is that a tier-2 mutation REACHES its stub
-		// rather than 404ing or being refused before auth. Those tests encode a
-		// real property about the access-control seam, and a 400 in front of the
-		// 501 makes them assert something else.
-		//
-		// The check is wired when the mutation becomes real, which is where
-		// duplication can actually occur.
-		writeError(w, http.StatusNotImplemented, "not_implemented",
-			capability+" is not implemented yet (tracked separately from the access-control seam, HITL-7/#469)")
+// InterventionResult reports the durable run position after an action.
+type InterventionResult struct {
+	Phase      string `json:"phase"`
+	State      string `json:"state,omitempty"`
+	JournalSeq uint64 `json:"journalSeq"`
+}
+
+// InterventionService separates bounded request admission from daemon-owned
+// execution. Methods return only after the action has a durable handoff.
+type InterventionService interface {
+	AcceptApprove(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
+	AcceptOverride(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
+	AcceptRerunStage(admission, execution context.Context, input InterventionRequest) (InterventionResult, error)
+}
+
+// InterventionError is a safe, typed action refusal returned to API clients.
+type InterventionError struct {
+	Status  int
+	Code    string
+	Message string
+	Err     error
+}
+
+func (e *InterventionError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
 	}
+	return e.Message
+}
+
+func (e *InterventionError) Unwrap() error { return e.Err }
+
+// NewInterventionError constructs a safe action error for an adapter service.
+func NewInterventionError(status int, code, message string, err error) error {
+	return &InterventionError{Status: status, Code: code, Message: message, Err: err}
+}
+
+func registerMutationRoutes(router *Router, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteApproveStage, stageMutationHandler("approve", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteOverrideStage, stageMutationHandler("override", interventions, lifecycle, errorLog))
+	router.Handle(apicontract.RouteRerunStage, stageMutationHandler("rerun", interventions, lifecycle, errorLog))
+}
+
+func stageMutationHandler(action string, interventions InterventionService, lifecycle context.Context, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if interventions == nil {
+			writeError(w, http.StatusServiceUnavailable, "interventions_unavailable", "run interventions are not available from this server")
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		key, ok := requireIdempotencyKey(w, request)
+		if !ok {
+			return
+		}
+		input, err := decodeInterventionRequest(request)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if principal, ok := PrincipalFromRequest(request); ok {
+			input.Actor = principal.Subject
+		}
+		if strings.TrimSpace(input.Actor) == "" {
+			writeError(w, http.StatusBadRequest, "actor_required", "actor is required")
+			return
+		}
+		input.IdempotencyKey = key
+		var result InterventionResult
+		switch action {
+		case "approve":
+			result, err = interventions.AcceptApprove(request.Context(), lifecycle, input)
+		case "override":
+			result, err = interventions.AcceptOverride(request.Context(), lifecycle, input)
+		case "rerun":
+			result, err = interventions.AcceptRerunStage(request.Context(), lifecycle, input)
+		default:
+			panic("unknown intervention action " + action)
+		}
+		if err != nil {
+			if budgetExceeded(w, err) {
+				return
+			}
+			var interventionErr *InterventionError
+			if errors.As(err, &interventionErr) {
+				status := interventionErr.Status
+				if status < 400 || status > 599 {
+					status = http.StatusInternalServerError
+				}
+				if status >= http.StatusInternalServerError {
+					errorLog.Printf("%s run intervention failed: %v", action, err)
+				}
+				code := interventionErr.Code
+				if code == "" {
+					code = "intervention_failed"
+				}
+				message := interventionErr.Message
+				if message == "" {
+					message = "run intervention failed"
+				}
+				writeError(w, status, code, message)
+				return
+			}
+			errorLog.Printf("%s run intervention failed: %v", action, err)
+			writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention failed")
+			return
+		}
+		if result.JournalSeq == 0 {
+			errorLog.Printf("%s run intervention returned no journal position", action)
+			writeError(w, http.StatusInternalServerError, "intervention_failed", "run intervention returned no journal position")
+			return
+		}
+		w.Header().Set(HeaderSourceApplied, fmt.Sprintf("%s:%d", input.RunID, result.JournalSeq))
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func validateMutationTransport(request *http.Request) (int, string, string) {
+	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json"
+	}
+	if origin := strings.TrimSpace(request.Header.Get("Origin")); origin != "" {
+		parsed, parseErr := url.Parse(origin)
+		if parseErr != nil ||
+			parsed.User != nil ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Host == "" ||
+			parsed.Path != "" ||
+			parsed.RawQuery != "" ||
+			parsed.Fragment != "" ||
+			!isLoopbackAuthority(parsed.Host) ||
+			!isLoopbackAuthority(request.Host) ||
+			!strings.EqualFold(parsed.Host, request.Host) {
+			return http.StatusForbidden, "origin_forbidden", "cross-origin mutation requests are forbidden"
+		}
+	}
+	return 0, "", ""
+}
+
+func isLoopbackAuthority(authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func decodeInterventionRequest(request *http.Request) (InterventionRequest, error) {
+	defer func() { _ = request.Body.Close() }()
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxInterventionBody))
+	decoder.DisallowUnknownFields()
+	var input InterventionRequest
+	if err := decoder.Decode(&input); err != nil {
+		if errors.Is(err, io.EOF) {
+			return InterventionRequest{}, errors.New("JSON request body is required")
+		}
+		return InterventionRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return InterventionRequest{}, errors.New("request body must contain one JSON object")
+		}
+		return InterventionRequest{}, fmt.Errorf("invalid JSON request body: %w", err)
+	}
+	input.RunID = request.PathValue("run")
+	input.Stage = request.PathValue("stage")
+	return input, nil
 }

@@ -38,6 +38,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
 | [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply`](#goobers-apply) | reconcile a live daemon's workflow definitions now |
+| [`goobers approve`](#goobers-approve) | approve a paused or escalated gate |
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
@@ -65,13 +66,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
+| [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
+| [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
-| [`goobers run approve`](#goobers-run-approve) | approve an escalated gate (not yet implemented, HITL-7/#469) |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
-| [`goobers run override`](#goobers-run-override) | force-pass a nondeterministic gate (not yet implemented, HITL-7/#469) |
-| [`goobers run rerun`](#goobers-run-rerun) | rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469) |
 | [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
 | [`goobers runs du`](#goobers-runs-du) | report per-run journal and artifact bytes |
 | [`goobers runs list`](#goobers-runs-list) | alias for the status run table (same flags, no --watch) |
@@ -292,6 +292,26 @@ voided), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers apply-verdict
+~~~
+
+## `goobers approve`
+
+approve a paused or escalated gate
+
+~~~text
+Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Approve a paused human gate or an escalated human/reviewer gate. The daemon
+records the authenticated actor, decision, and resulting resume in the run
+journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers approve <run-id> <gate>
 ~~~
 
 ## `goobers backlog-assignment`
@@ -1623,6 +1643,27 @@ Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 $ goobers open-pr
 ~~~
 
+## `goobers override`
+
+override a nondeterministic gate with a rationale
+
+~~~text
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Override a nondeterministic gate on an escalated or failed run and continue
+from the selected configured branch. The rationale and authenticated actor
+are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token
+when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers override --rationale="accepted risk" <run-id> <gate>
+~~~
+
 ## `goobers post-merge`
 
 post-merge fan-out + close the referenced issue (a workflow stage)
@@ -1938,6 +1979,27 @@ Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
 $ goobers report-pr-status
 ~~~
 
+## `goobers rerun-stage`
+
+rerun a stage with a recorded instruction addendum
+
+~~~text
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+
+Rerun one agentic task or reviewer gate on an escalated run with a one-off
+instruction addendum. The actor, addendum, target, and human attempt are
+recorded in the run journal; the workflow definition is not changed.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>
+~~~
+
 ## `goobers reset-rate-limit`
 
 clear the hourly run-rate budget without deleting runs/
@@ -2047,27 +2109,6 @@ run.finished(status=aborted) event to its own journal (default path
 $ goobers run abort <run-id>
 ~~~
 
-## `goobers run approve`
-
-approve an escalated gate (not yet implemented, HITL-7/#469)
-
-~~~text
-Usage: goobers run approve <run-id> <stage> [path]
-
-Approve an escalated human/reviewer gate, unblocking the run past it.
-Not yet implemented (HITL-4/#466) — this command is registered now so the
-CLI surface, the daemon API route, and the access-control seam (HITL-7/
-#469) are all in place before the real behavior lands.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers run approve <run-id> <stage>
-~~~
-
 ## `goobers run cancel`
 
 cancel a live in-flight run via the daemon
@@ -2089,51 +2130,6 @@ no daemon to cancel it), 2 = usage/IO error (unknown run).
 
 ~~~console
 $ goobers run cancel <run-id>
-~~~
-
-## `goobers run override`
-
-force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
-
-~~~text
-Usage: goobers run override <run-id> <stage> [path]
-
-Force-pass a nondeterministic gate with an operator-supplied rationale,
-overriding its own verdict. Not yet implemented (HITL-6/#468) — this
-command is registered now so the CLI surface, the daemon API route, and
-the access-control seam (HITL-7/#469) are all in place before the real
-behavior lands.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers run override <run-id> <stage>
-~~~
-
-## `goobers run rerun`
-
-rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
-
-~~~text
-Usage: goobers run rerun <run-id> <stage> [path]
-
-Re-enter an escalated run at one agentic task or reviewer gate with a
-one-off recorded instruction addendum. The underlying primitive already
-exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing
-outside the runner package calls it yet — this command is registered now
-so the CLI surface, the daemon API route, and the access-control seam
-(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers run rerun <run-id> <stage>
 ~~~
 
 ## `goobers runs`

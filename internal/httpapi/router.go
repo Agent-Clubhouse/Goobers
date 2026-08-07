@@ -167,7 +167,7 @@ type ErrorEnvelope = apicontract.ErrorEnvelope
 // APIError is a stable machine code and safe human-readable message.
 type APIError = apicontract.APIError
 
-// Router registers read-only routes behind an Authorizer.
+// Router registers versioned contract routes behind an Authorizer.
 type Router struct {
 	mux           *http.ServeMux
 	authenticator Authenticator
@@ -187,9 +187,11 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events        eventSource
-	authenticator Authenticator
-	runRevealer   func(context.Context, string) error
+	events              eventSource
+	authenticator       Authenticator
+	interventions       InterventionService
+	interventionContext context.Context
+	runRevealer         func(context.Context, string) error
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -218,6 +220,29 @@ func WithAuthenticator(authenticator Authenticator) HandlerOption {
 			return errors.New("http API authenticator is required")
 		}
 		config.authenticator = authenticator
+		return nil
+	}
+}
+
+// WithInterventions enables the human-intervention mutation handlers.
+func WithInterventions(interventions InterventionService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if interventions == nil {
+			return errors.New("http API intervention service is required")
+		}
+		config.interventions = interventions
+		return nil
+	}
+}
+
+// WithInterventionContext binds accepted mutations to the daemon lifecycle
+// rather than the requesting client's connection lifetime.
+func WithInterventionContext(ctx context.Context) HandlerOption {
+	return func(config *handlerConfig) error {
+		if ctx == nil {
+			return errors.New("http API intervention context is required")
+		}
+		config.interventionContext = ctx
 		return nil
 	}
 }
@@ -346,7 +371,10 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if errorLog == nil {
 		return nil, errors.New("http API error logger is required")
 	}
-	config := handlerConfig{authenticator: NullAuthenticator{}}
+	config := handlerConfig{
+		authenticator:       NullAuthenticator{},
+		interventionContext: context.Background(),
+	}
 	for _, opt := range opts {
 		if err := opt(&config); err != nil {
 			return nil, err
@@ -398,7 +426,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	registerMutationRoutes(router)
+	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 }
 

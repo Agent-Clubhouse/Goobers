@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -99,7 +100,37 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		)
 	}
 
-	reloadedWorkflow := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reloaded-implement", 1)
+	reloadedWorkflow := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: reloaded-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: local-ci
+  tasks:
+    - name: local-ci
+      type: deterministic
+      goal: run a no-op local command
+      run:
+        command: ["true"]
+      next: approval
+    - name: finish
+      type: deterministic
+      goal: finish after approval
+      run:
+        command: ["true"]
+  gates:
+    - name: approval
+      evaluator: human
+      human: {}
+      branches:
+        pass: finish
+        fail: "@abort"
+`
 	if err := os.WriteFile(workflowPath, []byte(reloadedWorkflow), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +141,39 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	// without it this test fails on loaded runners with
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
-	waitForRunnableWorkflow(t, root, "reloaded-implement")
+	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
+	runID := runIDFromRunStdout(t, stdout)
+	runDir := filepath.Join(layout.ForGaggle("example").RunsDir(), runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, readErr := reader.Events()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			paused := false
+			for _, event := range events {
+				if event.Type == journal.EventGatePaused && event.Gate == "approval" {
+					paused = true
+					break
+				}
+			}
+			if paused {
+				break
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("post-reload run %s did not pause at approval", runID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	code, stdout, stderr := runArgs(t, "approve", "--actor=config-reloader", runID, "approval", root)
+	if code != 0 {
+		t.Fatalf("approve post-reload run: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -120,7 +183,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
 
-	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
+	code, stdout, stderr = runArgs(t, "run", "--no-wait", "reloaded-implement", root)
 	if code != 0 {
 		t.Fatalf("last-known-good workflow unavailable after rejected edit: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -699,17 +762,17 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 // the "unknown workflow" stderr is retried: any other non-zero exit fails
 // immediately, so a genuine regression still surfaces rather than being spun on
 // until the deadline.
-func waitForRunnableWorkflow(t *testing.T, root, workflow string) {
+func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 	t.Helper()
-	waitForConfigValue(t, workflow+" to become runnable", func() (struct{}, bool) {
-		code, stdout, stderr := runArgs(t, "run", workflow, root)
+	return waitForConfigValue(t, workflow+" to become runnable", func() (string, bool) {
+		code, stdout, stderr := runArgs(t, "run", "--no-wait", workflow, root)
 		if code == 0 {
-			return struct{}{}, true
+			return stdout, true
 		}
 		if !strings.Contains(stderr, "unknown workflow") {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
-		return struct{}{}, false
+		return "", false
 	})
 }
 

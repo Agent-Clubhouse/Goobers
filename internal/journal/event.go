@@ -213,6 +213,12 @@ type Event struct {
 	// Actor identifies the human principal that requested an intervention.
 	// Normative.
 	Actor string `json:"actor,omitempty"`
+	// Action identifies the human intervention recorded by run.resumed.
+	// Normative.
+	Action string `json:"action,omitempty"`
+	// Decision is the configured gate branch selected by a run.resumed
+	// intervention. Normative.
+	Decision string `json:"decision,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
@@ -227,6 +233,9 @@ type Event struct {
 	// Target is the branch/state a gate selected or a run.resumed action chose.
 	// Normative.
 	Target string `json:"target,omitempty"`
+	// Complete marks a run.resumed intervention that selected the workflow's
+	// terminal completion branch. Normative.
+	Complete bool `json:"complete,omitempty"`
 	// Escalated reports that gate evaluation selected its escalation control
 	// branch. Normative.
 	Escalated bool `json:"escalated,omitempty"`

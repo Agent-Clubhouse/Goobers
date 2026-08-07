@@ -434,6 +434,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
+	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	apiHandlerOpts = append(apiHandlerOpts,
+		httpapi.WithInterventions(interventions),
+		httpapi.WithInterventionContext(ctx),
+	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
@@ -480,7 +485,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -589,6 +594,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		default:
 		}
 	}
+	interventions.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {

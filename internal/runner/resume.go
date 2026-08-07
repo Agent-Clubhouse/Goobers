@@ -16,6 +16,10 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 )
 
+// ErrTerminalGenerationChanged means an intervention was validated against an
+// earlier terminal segment than the one currently recorded in the journal.
+var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
+
 // ResumeInput identifies an interrupted run to pick back up. Everything
 // recoverable from the journal is read from it (Gaggle, Trigger, the
 // snapshotted Item); RepoRef and Machine are NOT journaled — RunIdentity
@@ -65,7 +69,15 @@ type ResumeFromTerminalInput struct {
 	GooberDigest string
 	RepoRef      apiv1.RepoRef
 	Target       string
+	Complete     bool
 	Actor        string
+	Action       string
+	Gate         string
+	Decision     string
+	Rationale    string
+	// ExpectedTerminalSeq binds the action to the run.finished event observed
+	// when the intervention was validated.
+	ExpectedTerminalSeq uint64
 }
 
 // Resume reopens an interrupted run's journal (journal.Recover — replays the
@@ -163,13 +175,23 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 	in.Target = strings.TrimSpace(in.Target)
-	if in.Target == "" {
+	if in.Target == "" && !in.Complete {
 		return Result{}, fmt.Errorf("runner: terminal resume target is required")
+	}
+	if in.Target != "" && in.Complete {
+		return Result{}, fmt.Errorf("runner: terminal resume cannot target a state and completion together")
 	}
 	in.Actor = strings.TrimSpace(in.Actor)
 	if in.Actor == "" {
 		return Result{}, fmt.Errorf("runner: terminal resume actor is required")
 	}
+	if in.ExpectedTerminalSeq == 0 {
+		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
+	}
+	in.Action = strings.TrimSpace(in.Action)
+	in.Gate = strings.TrimSpace(in.Gate)
+	in.Decision = strings.TrimSpace(in.Decision)
+	in.Rationale = strings.TrimSpace(in.Rationale)
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
@@ -195,6 +217,13 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 		if phase != journal.PhaseEscalated && phase != journal.PhaseFailed {
 			return Result{}, fmt.Errorf("runner: run %q is %s; only escalated or failed runs can be resumed by a human", in.RunID, phase)
 		}
+		events, err := rd.Events()
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: read events for run %q terminal resume: %w", in.RunID, err)
+		}
+		if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
+			return Result{}, err
+		}
 		if id.WorkflowDigest == "" {
 			return Result{}, fmt.Errorf("runner: run %q has no pinned workflow digest, refusing terminal resume (WF-016)", in.RunID)
 		}
@@ -208,27 +237,61 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 				in.Machine.Def.Name, in.Machine.Def.Version, in.Machine.Digest(), in.GooberDigest,
 			)
 		}
-		if _, task := in.Machine.Task(in.Target); !task {
-			if _, gate := in.Machine.Gate(in.Target); !gate {
-				return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
+		if !in.Complete {
+			if in.Target == workflow.TargetJoin {
+				if _, _, ok := interventionParallelContext(events, in.Machine, in.Gate); !ok {
+					return Result{}, fmt.Errorf("runner: terminal resume target %q has no parallel branch context", in.Target)
+				}
+			} else if _, task := in.Machine.Task(in.Target); !task {
+				if _, gate := in.Machine.Gate(in.Target); !gate {
+					return Result{}, fmt.Errorf("runner: terminal resume target %q is not a workflow state", in.Target)
+				}
 			}
 		}
 
-		if err := jr.Append(journal.Event{
+		resumed := journal.Event{
 			Type:            journal.EventRunResumed,
 			Status:          string(phase),
 			Target:          in.Target,
 			Actor:           in.Actor,
+			Action:          in.Action,
+			Gate:            in.Gate,
+			Decision:        in.Decision,
+			Rationale:       in.Rationale,
+			Complete:        in.Complete,
 			WorkflowVersion: id.WorkflowVersion,
 			WorkflowDigest:  id.WorkflowDigest,
-		}); err != nil {
+		}
+		if in.Target == workflow.TargetJoin {
+			resumed.Parallel, resumed.Branch, _ = interventionParallelContext(events, in.Machine, in.Gate)
+		}
+		if err := jr.Append(resumed); err != nil {
 			return Result{}, fmt.Errorf("runner: journal terminal resume for run %q: %w", in.RunID, err)
+		}
+		if in.Complete {
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, "", 0)
 		}
 
 		return r.resumeOwned(ctx, ResumeInput{
 			RunID: in.RunID, Machine: in.Machine, GooberDigest: in.GooberDigest, RepoRef: in.RepoRef,
 		}, jr, registrar, dir)
 	})
+}
+
+func validateTerminalGeneration(runID string, events []journal.Event, expected uint64) error {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != journal.EventRunFinished {
+			continue
+		}
+		if events[i].Seq != expected {
+			return fmt.Errorf(
+				"runner: run %q terminal sequence changed from %d to %d: %w",
+				runID, expected, events[i].Seq, ErrTerminalGenerationChanged,
+			)
+		}
+		return nil
+	}
+	return fmt.Errorf("runner: run %q has no terminal journal event", runID)
 }
 
 func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Run, registrar SecretRegistrar, dir string) (result Result, retErr error) {
@@ -307,10 +370,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			return r.finish(in.RunID, jr, journal.PhaseEscalated, override.Gate, 0)
 		}
 	}
-	if resumed, ok := latestRunResume(events); ok &&
-		(resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest) {
-		return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
-			fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
+	if resumed, ok := latestRunResume(events); ok {
+		if resumed.WorkflowVersion != id.WorkflowVersion || resumed.WorkflowDigest != id.WorkflowDigest {
+			return r.refuseResume(jr, in.RunID, "resume_refused_intervention_pin_mismatch",
+				fmt.Sprintf("run %q terminal-resume pin does not match run.yaml (WF-016)", in.RunID))
+		}
+		// Runner metadata is accepted only for journals emitted by the
+		// pre-normative intervention implementation. New events always use the
+		// top-level Complete field above.
+		legacyComplete, _ := resumed.Runner["interventionComplete"].(bool)
+		if resumed.Complete || legacyComplete {
+			return r.finish(in.RunID, jr, journal.PhaseCompleted, "", 0)
+		}
 	}
 	humanProgress := latestHumanGateProgress(events, in.Machine)
 	if in.HumanDecision == nil && humanProgress.waiting {
@@ -1008,7 +1079,19 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 				start = -1
 			}
 		case journal.EventRunResumed:
-			start = -1
+			if event.Target == workflow.TargetJoin {
+				if parallel, _, ok := interventionParallelContext(events[:i], machine, event.Gate); ok {
+					for candidate := i - 1; candidate >= 0; candidate-- {
+						if events[candidate].Type == journal.EventParallelStarted &&
+							events[candidate].Parallel == parallel {
+							start = candidate
+							break
+						}
+					}
+				}
+			} else {
+				start = -1
+			}
 		}
 	}
 	if start < 0 {
@@ -1122,9 +1205,58 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 			branch.machine = ""
 			branch.status = event.BranchStatus
 			branch.settled = true
+		case journal.EventRunResumed:
+			if event.Target != workflow.TargetJoin || branch == nil {
+				continue
+			}
+			par.active = branchIndex
+			branch.machine = workflow.TargetJoin
+			branch.status = ""
+			branch.failed = false
+			branch.noOutput = false
+			branch.settled = false
+			for i := branchIndex + 1; i < len(par.branches); i++ {
+				if par.branches[i].status != journal.BranchCancelled {
+					continue
+				}
+				par.branches[i].machine = par.branches[i].start
+				par.branches[i].status = ""
+				par.branches[i].failed = false
+				par.branches[i].noOutput = false
+				par.branches[i].started = false
+				par.branches[i].settled = false
+			}
 		}
 	}
 	return par, start
+}
+
+func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
+	gateIndex := -1
+	branch := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventGateEvaluated && events[i].Gate == gateName && events[i].Branch > 0 {
+			gateIndex = i
+			branch = events[i].Branch
+			break
+		}
+	}
+	if gateIndex < 0 {
+		return "", 0, false
+	}
+	for i := gateIndex - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventParallelStarted {
+			continue
+		}
+		spec, ok := machine.Parallel(event.Parallel)
+		if !ok || branch > len(spec.Branches) ||
+			!branchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			continue
+		}
+		return spec.Name, branch, true
+	}
+	return "", 0, false
 }
 
 func branchContainsState(machine *workflow.Machine, start, state string) bool {

@@ -153,13 +153,21 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 		started, journal.Trigger{Kind: journal.TriggerManual}, true,
 	)
 	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+		Actor: "operator@example.test", InstructionAddendum: "reuse the parser",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 		t.Fatal(err)
 	}
 	clock.advance(time.Second)
 	if err := run.Append(journal.Event{
 		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Target: "implement",
-		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		Actor: "operator@example.test", Action: "override", Gate: "review",
+		Decision: "pass", Rationale: "accepted risk", WorkflowVersion: machine.Def.Version,
 		WorkflowDigest: machine.Digest(),
 	}); err != nil {
 		t.Fatal(err)
@@ -184,9 +192,60 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	resumed := ledger.Events[len(ledger.Events)-1]
 	if resumed.Type != journal.EventRunResumed ||
 		resumed.Actor != "operator@example.test" ||
+		resumed.Action != "override" ||
+		resumed.Gate != "review" ||
+		resumed.Decision != "pass" ||
+		resumed.Rationale != "accepted risk" ||
 		resumed.WorkflowVersion != machine.Def.Version ||
 		resumed.WorkflowDigest != machine.Digest() {
 		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+	var rerun RunEvent
+	for _, event := range ledger.Events {
+		if event.Type == journal.EventStageRerunRequested {
+			rerun = event
+			break
+		}
+	}
+	if rerun.Actor != "operator@example.test" || rerun.InstructionAddendum != "reuse the parser" {
+		t.Fatalf("projected stage.rerun.requested = %+v", rerun)
+	}
+}
+
+func TestRunEventsProjectsCompletionIntervention(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-human-completed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Complete: true,
+		Actor: "operator@example.test", Action: "approve", Gate: "review", Decision: "pass",
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := service.RunEvents(context.Background(), "run-human-completed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := ledger.Events[len(ledger.Events)-2]
+	if resumed.Type != journal.EventRunResumed || !resumed.Complete || resumed.Action != "approve" {
+		t.Fatalf("projected completion run.resumed = %+v", resumed)
 	}
 }
 

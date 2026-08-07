@@ -22,20 +22,28 @@ type stalledTerminalPreparer func(instance.Layout) (runner.TerminalPreparer, err
 // daemonRunnerRegistry retains each live run's owning Runner while atomically
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
-	mu           sync.RWMutex
-	current      map[string]*runner.Runner
-	owners       map[string]trackedRun
-	hardStopping bool
+	mu             sync.RWMutex
+	current        map[string]*runner.Runner
+	owners         map[string]trackedRun
+	nextGeneration uint64
+	hardStopping   bool
 }
 
 func newDaemonRunnerRegistry() *daemonRunnerRegistry {
 	return &daemonRunnerRegistry{owners: make(map[string]trackedRun)}
 }
 
+// trackedRun is a lease on a live run's owning Runner. generation/leases make
+// Track/TrackCompatible reentrant-safe: concurrent trackers of the same run
+// share one lease, and untracking only deletes the entry once every tracker
+// bracketing that same generation has released it (a stale untrack closure
+// from a superseded generation is a no-op).
 type trackedRun struct {
-	RunID    string
-	Workflow string
-	owner    *runner.Runner
+	RunID      string
+	Workflow   string
+	owner      *runner.Runner
+	generation uint64
+	leases     int
 }
 
 func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
@@ -59,22 +67,34 @@ func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runne
 	if r.owners == nil {
 		r.owners = make(map[string]trackedRun)
 	}
-	if _, exists := r.owners[runID]; exists {
-		r.mu.Unlock()
-		return func() {}
+	lease := r.owners[runID]
+	if lease.owner == owner {
+		lease.leases++
+	} else {
+		r.nextGeneration++
+		lease = trackedRun{RunID: runID, Workflow: workflow, owner: owner, generation: r.nextGeneration, leases: 1}
 	}
-	r.owners[runID] = trackedRun{RunID: runID, Workflow: workflow, owner: owner}
+	r.owners[runID] = lease
 	hardStopping := r.hardStopping
 	r.mu.Unlock()
 	if hardStopping {
 		owner.HardStopRunWhenStarted(runID)
 	}
+	var once sync.Once
 	return func() {
-		r.mu.Lock()
-		if tracked, ok := r.owners[runID]; ok && tracked.owner == owner {
-			delete(r.owners, runID)
-		}
-		r.mu.Unlock()
+		once.Do(func() {
+			r.mu.Lock()
+			current := r.owners[runID]
+			if current.generation == lease.generation {
+				current.leases--
+				if current.leases == 0 {
+					delete(r.owners, runID)
+				} else {
+					r.owners[runID] = current
+				}
+			}
+			r.mu.Unlock()
+		})
 	}
 }
 
@@ -96,6 +116,55 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// TrackCompatible is Track's reentrant-safe counterpart for the intervention
+// path: it attaches only if the run is untracked or already owned by owner,
+// so an in-flight intervention can never steal or clobber another tracker's
+// lease. Track's own hardStopping propagation applies here too, since a run
+// that becomes reachable mid-shutdown must still be stopped.
+func (r *daemonRunnerRegistry) TrackCompatible(runID string, owner *runner.Runner) (func(), bool) {
+	if r == nil || owner == nil {
+		return func() {}, false
+	}
+	r.mu.Lock()
+	if r.owners == nil {
+		r.owners = make(map[string]trackedRun)
+	}
+	lease := r.owners[runID]
+	if lease.owner != nil && lease.owner != owner {
+		r.mu.Unlock()
+		return func() {}, false
+	}
+	if lease.owner == owner {
+		lease.leases++
+	} else {
+		r.nextGeneration++
+		lease = trackedRun{RunID: runID, owner: owner, generation: r.nextGeneration, leases: 1}
+	}
+	r.owners[runID] = lease
+	hardStopping := r.hardStopping
+	r.mu.Unlock()
+	if hardStopping {
+		owner.HardStopRunWhenStarted(runID)
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			current := r.owners[runID]
+			if current.generation == lease.generation {
+				current.leases--
+				if current.leases == 0 {
+					delete(r.owners, runID)
+				} else {
+					r.owners[runID] = current
+				}
+			}
+			r.mu.Unlock()
+		})
+	}, true
 }
 
 func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {

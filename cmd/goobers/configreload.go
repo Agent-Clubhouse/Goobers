@@ -214,8 +214,16 @@ func (r *configReloader) poll(now time.Time) error {
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
+	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
+	r.setup.Definitions = definitions.Set
+	r.setup.Validation = definitions.Validation
+	r.setup.Entries = definitions.Entries
+	r.setup.Machines = definitions.Machines
+	r.setup.GooberDigests = definitions.GooberDigests
+	r.setup.RepoRefs = definitions.RepoRefs
+	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)

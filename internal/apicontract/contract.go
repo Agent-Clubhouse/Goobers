@@ -39,11 +39,8 @@ const (
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
 	EventsPath                   = V1Prefix + "/events"
 
-	// Tier-2 human-intervention mutation routes (HITL-7/#469). Handler bodies
-	// are deliberate stubs today: the real gate-resolution and rerun
-	// primitives are #466/#468's scope. Landing the route surface now, wired
-	// through the same access-control seam every read route already uses,
-	// means #466/#468 only ever fill in a handler body later.
+	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
+	// same API-first surface, behind the shared access-control seam.
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"

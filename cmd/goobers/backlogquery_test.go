@@ -1261,20 +1261,17 @@ func TestBacklogQueryReleaseReleasesAllClaims(t *testing.T) {
 		t.Fatalf("stdout = %q, want every released item", stdout)
 	}
 
-	data, err := os.ReadFile(ledgerPath)
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
-		t.Fatalf("read claim ledger: %v", err)
+		t.Fatalf("reopen claim ledger: %v", err)
 	}
-	var entries map[string]localscheduler.ClaimEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		t.Fatalf("unmarshal claim ledger: %v", err)
-	}
-	for itemID, entry := range entries {
+	entries := reopened.Snapshot()
+	for _, entry := range entries {
 		if entry.RunID == "curation-run" {
-			t.Fatalf("claim %s leaked for curation-run: %+v", itemID, entry)
+			t.Fatalf("claim %s leaked for curation-run: %+v", entry.ItemID, entry)
 		}
 	}
-	if len(entries) != 1 || entries["10"].RunID != "other-run" {
+	if len(entries) != 1 || entries[0].ItemID != "10" || entries[0].RunID != "other-run" {
 		t.Fatalf("claim ledger = %+v, want only item 10 held by other-run", entries)
 	}
 	server.mu.Lock()

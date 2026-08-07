@@ -142,9 +142,9 @@ Advanced operator commands:
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
-  goobers run approve <run-id> <stage> [path]  approve an escalated gate (not yet implemented, #469)
-  goobers run override <run-id> <stage> [path]  force-pass a nondeterministic gate (not yet implemented, #469)
-  goobers run rerun <run-id> <stage> [path]  rerun a stage with an instruction addendum (not yet implemented, #469)
+  goobers approve <run-id> <gate> [path]  approve a paused or escalated gate
+  goobers override --rationale=<text> <run-id> <gate> [path]  override a nondeterministic gate
+  goobers rerun-stage --addendum=<text> <run-id> <stage> [path]  rerun a stage with an instruction addendum
   goobers runs list [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
                                 alias for the status run table (same flags, no --watch)
   goobers runs du [--json] [path]       report per-run journal and artifact bytes
@@ -351,6 +351,15 @@ cycle's work is simply moot, not an error — merge-review re-reviews
 next tick). Requires selectedNumber, selectedHeadSha, and
 selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
+
+### approve
+Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Approve a paused human gate or an escalated human/reviewer gate. The daemon
+records the authenticated actor, decision, and resulting resume in the run
+journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 
 ### backlog-assignment
 Usage: goobers backlog-assignment [path]
@@ -1101,6 +1110,16 @@ across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
 Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 
+### override
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Override a nondeterministic gate on an escalated or failed run and continue
+from the selected configured branch. The rationale and authenticated actor
+are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token
+when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+
 ### post-merge
 Usage: goobers post-merge [path]
 
@@ -1280,6 +1299,16 @@ state (succeeded|failed|pending, default succeeded), description,
 targetUrl (default the PR url), resultFile (default status-result.json).
 Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
 
+### rerun-stage
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+
+Rerun one agentic task or reviewer gate on an escalated run with a one-off
+instruction addendum. The actor, addendum, target, and human attempt are
+recorded in the run journal; the workflow definition is not changed.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+
 ### reset-rate-limit
 Usage: goobers reset-rate-limit [path]
 
@@ -1344,16 +1373,6 @@ run.finished(status=aborted) event to its own journal (default path
 "."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 
-### run approve
-Usage: goobers run approve <run-id> <stage> [path]
-
-Approve an escalated human/reviewer gate, unblocking the run past it.
-Not yet implemented (HITL-4/#466) — this command is registered now so the
-CLI surface, the daemon API route, and the access-control seam (HITL-7/
-#469) are all in place before the real behavior lands.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
-
 ### run cancel
 Usage: goobers run cancel <run-id> [path]
 
@@ -1365,29 +1384,6 @@ journal behind its back. Use `run abort` instead when no daemon is running
 (that path finalizes a stuck run's journal directly). Exit codes: 0 =
 cancelled, 1 = business error (already terminal, not currently running, or
 no daemon to cancel it), 2 = usage/IO error (unknown run).
-
-### run override
-Usage: goobers run override <run-id> <stage> [path]
-
-Force-pass a nondeterministic gate with an operator-supplied rationale,
-overriding its own verdict. Not yet implemented (HITL-6/#468) — this
-command is registered now so the CLI surface, the daemon API route, and
-the access-control seam (HITL-7/#469) are all in place before the real
-behavior lands.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
-
-### run rerun
-Usage: goobers run rerun <run-id> <stage> [path]
-
-Re-enter an escalated run at one agentic task or reviewer gate with a
-one-off recorded instruction addendum. The underlying primitive already
-exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing
-outside the runner package calls it yet — this command is registered now
-so the CLI surface, the daemon API route, and the access-control seam
-(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.
-
-Exit codes: 1 = not yet implemented, 2 = usage error.
 
 ### runs
 Usage: goobers runs <command> [flags] [path]

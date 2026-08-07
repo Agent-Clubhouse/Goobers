@@ -86,7 +86,12 @@ func renewLiveClaims(l instance.Layout, runIDs []string, leaseDuration time.Dura
 
 // recoverClaims releases expired leases and leases whose owning run is already
 // terminal. The latter retries claim cleanup deferred by a claims-lock timeout.
-func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) ([]localscheduler.ClaimEntry, error) {
+func recoverClaims(
+	l instance.Layout,
+	log *journal.InstanceLog,
+	now time.Time,
+	interventionActive func(string) bool,
+) ([]localscheduler.ClaimEntry, error) {
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	snapshot, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
@@ -147,8 +152,19 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		}
 		released = append(released, expired...)
 		for _, entry := range terminalEntries {
+			if interventionActive != nil && interventionActive(entry.RunID) {
+				continue
+			}
 			current, held := currentClaimEntry(ledger, entry)
 			if !held || current.RunID != entry.RunID {
+				continue
+			}
+			terminal, err := claimHolderTerminal(l.Root, current)
+			if err != nil {
+				recordTerminalClaimInspectionError(log, current, err)
+				continue
+			}
+			if !terminal {
 				continue
 			}
 			if err := ledger.ReleaseEntry(current, current.RunID); err != nil {

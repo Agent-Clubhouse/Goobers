@@ -87,7 +87,6 @@ github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-recor
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
 github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
 github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
-github.com/goobers/goobers/cmd/goobers.runtimeCommand # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
@@ -212,6 +211,4 @@ github.com/goobers/goobers/internal/httpapi.requireSourceApplied # If-Source-App
 github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit detection for definition edits (#1934).
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
-github.com/goobers/goobers/internal/httpapi.idempotencyKey # Validates a durably-recorded key (#1934).
-github.com/goobers/goobers/internal/httpapi.requireIdempotencyKey # Idempotency precondition, wired when mutations become real (#1934); its test is _test.go, which this gate does not count.
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.

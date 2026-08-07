@@ -87,6 +87,7 @@ const (
 	claimLockOperationMigration            = "claim-ledger.migrate"
 	claimLockOperationAdminList            = "claims.list"
 	claimLockOperationAdminRelease         = "claims.release"
+	claimLockOperationIntervention         = "intervention.reacquire"
 
 	claimLockSlowThreshold = 5 * time.Second
 	claimLockRetryInterval = 10 * time.Millisecond

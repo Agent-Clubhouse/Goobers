@@ -497,8 +497,16 @@ export interface RunEvent {
   gate?: string;
   verdict?: string;
   target?: string;
+  complete?: boolean;
   escalated?: boolean;
   status?: RunPhase | StageAttemptStatus;
+  actor?: string;
+  action?: string;
+  decision?: string;
+  rationale?: string;
+  instructionAddendum?: string;
+  workflowVersion?: number;
+  workflowDigest?: string;
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];
   artifact?: ArtifactMetadata;

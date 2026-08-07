@@ -55,3 +55,27 @@ func TestClaimLedgerJournalsTransitions(t *testing.T) {
 		t.Errorf("claim.force_released not journaled correctly: %+v", events[3])
 	}
 }
+
+func TestScopedClaimJournalRetainsReacquisitionIdentity(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(filepath.Join(dir, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	ledger, err := OpenClaimLedger(filepath.Join(dir, "claims.json"), WithInstanceLog(log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
+	if ok, _, err := ledger.ClaimScoped(key, "run-a", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
+	}
+	events, err := journal.ReadInstanceLog(filepath.Join(dir, "scheduler"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := events[0].Runner; got["claimProvider"] != "github" || got["claimExternalId"] != "466" {
+		t.Fatalf("claim identity metadata = %+v", got)
+	}
+}

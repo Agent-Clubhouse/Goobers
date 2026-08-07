@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RERUN STAGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers rerun-stage \- rerun a stage with a recorded instruction addendum
+.SH SYNOPSIS
+\fBgoobers rerun-stage\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+
+Rerun one agentic task or reviewer gate on an escalated run with a one-off
+instruction addendum. The actor, addendum, target, and human attempt are
+recorded in the run journal; the workflow definition is not changed.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+.fi
+.SH EXAMPLES
+.nf
+goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
