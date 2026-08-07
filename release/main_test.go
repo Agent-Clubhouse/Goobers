@@ -146,7 +146,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"bundled with release `v1.2.3`",
 		"goobers-v1.2.3 --version",
 		"Linux or macOS with mock providers",
-		"The release installer already ran guided setup at the requested instance path",
+		"The release installer installs the binary and documentation only",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
@@ -165,7 +165,7 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
 	}
-	if strings.Contains(string(readme), "installer already ran guided setup for `./my-instance`") {
+	if strings.Contains(string(readme), "installer configured `./my-instance`") {
 		t.Errorf("README.md claims the installer initialized the direct-archive example path:\n%s", readme)
 	}
 	if got := strings.Count(string(readme), "goobers-v1.2.3 init --guided ./my-instance"); got != 1 {
@@ -176,7 +176,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"bundled README onboarding",
 		string(readme),
 		"goobers-v1.2.3 --version",
-		"The release installer already ran guided setup at the requested instance path",
+		"The release installer installs the binary and documentation only",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
@@ -203,7 +203,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"GOOBERS_GITHUB_ISSUES_TOKEN",
 		"[`config-examples` reference layout](../../onboarding/templates/canonical/README.md)",
 		"[`implementation` workflow](../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml)",
-		"requested instance path",
+		"installs the binary and documentation only",
+		"opted in with `--guided [instance-path]`",
 		"default `./goobers-instance`",
 		"replace `./my-instance` with that same path",
 		"quoting it if needed",
