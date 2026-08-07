@@ -414,6 +414,71 @@ func TestCanonicalConfigIsGAWithoutPreviewOptIn(t *testing.T) {
 	}
 }
 
+func TestGagglePreviewFeatureRequiresExplicitOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		annotation   string
+		wantBlocking bool
+	}{
+		{name: "default off", wantBlocking: true},
+		{name: "explicit opt-in", annotation: "\n  annotations:\n    goobers.dev/allow-preview-features: \"true\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: preview-test%s
+spec:
+  instance:
+    name: preview-test
+    environment: dev
+  gaggles:
+    - preview-test
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: preview-test
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-preview-test
+  sandbox:
+    agentic: enforced
+`, tc.annotation)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var preview *Issue
+			for i := range report.Issues {
+				issue := &report.Issues[i]
+				if issue.Code == WarningPreviewFeature && issue.Kind == "Gaggle" {
+					preview = issue
+					break
+				}
+			}
+			if preview == nil {
+				t.Fatalf("missing Gaggle preview diagnostic:\n%s", joinIssues(report))
+			}
+			if gotBlocking := preview.Severity == Error; gotBlocking != tc.wantBlocking {
+				t.Fatalf("preview diagnostic severity = %s, want blocking %v: %s", preview.Severity, tc.wantBlocking, preview.Message)
+			}
+		})
+	}
+}
+
 func TestGooberAssetsAreOpaqueToConfigValidation(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {

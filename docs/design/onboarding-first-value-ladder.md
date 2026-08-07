@@ -381,10 +381,9 @@ first published installer is never the guided-forcing one.
    pair), keeping the agentic stage scoped to implementation. *Recommend: yes
    — the PO's stated hello-world outcome is a PR in your repo; the alternative
    (re-scoping docs to local-only) contradicts it.*
-4. **#2046 preview gate**: every shipped manifest and template writes
-   allow-preview-features:"true"; the refusal branches are dead. *Recommend:
-   delete the annotation and gate (one less concept to onboard); revisit a
-   real gate at GA when a non-preview DSL exists.*
+4. **#2046 preview gate**: resolved default-off. Generated manifests omit
+   allow-preview-features, while configurations that deliberately use preview
+   DSL must explicitly opt in.
 5. **Swift/stretch stacks**: guided detection suggests `swift test` with no
    prober behind it. *Recommend: add the swift prober + Cargo.toml detection
    (small), defer Android (#742 stays the stretch).*
