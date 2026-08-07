@@ -8,6 +8,23 @@ github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory r
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
+github.com/goobers/goobers/internal/missioncontrol.EvaluateMetric # Versioned mission-control metric contract entry point retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-control artifact builder retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
+github.com/goobers/goobers/internal/missioncontrol.compare # Mission-control criterion evaluator reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.Artifact.Validate # Versioned mission-control artifact validator retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateMetric # Mission-control metric validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateAggregation # Mission-control aggregate validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateMembers # Mission-control membership validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.uniqueID # Mission-control identifier validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.criterionFinite # Mission-control finite-criterion guard reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validCriterionShape # Mission-control criterion-shape guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.finite # Mission-control finite-number guard reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validVerdict # Mission-control verdict enum guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validReasonCode # Mission-control reason-code enum guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.canonicalize # Mission-control deterministic ordering helper reachable through the retained artifact builder (#1449).
+github.com/goobers/goobers/internal/missioncontrol.RenderFacts # Exact mission-control facts renderer retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-control criterion renderer reachable through the retained exact-facts renderer (#1449).
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
