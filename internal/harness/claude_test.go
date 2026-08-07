@@ -472,6 +472,91 @@ func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 	}
 }
 
+func TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing(t *testing.T) {
+	destination := t.TempDir()
+	var gotService string
+	err := seedClaudeCredentialsForPlatform(
+		context.Background(),
+		[]string{"HOME=" + t.TempDir()},
+		destination,
+		"darwin",
+		func(_ context.Context, service string) ([]byte, error) {
+			gotService = service
+			return []byte("  {\"claudeAiOauth\":\"keychain-login\"}\n"), nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
+	}
+	if gotService != claudeCodeKeychainService {
+		t.Fatalf("Keychain service = %q, want %q", gotService, claudeCodeKeychainService)
+	}
+	target := filepath.Join(destination, ".credentials.json")
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read seeded credentials: %v", err)
+	}
+	if want := `{"claudeAiOauth":"keychain-login"}`; string(got) != want {
+		t.Fatalf("seeded credentials = %q, want %q", got, want)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat seeded credentials: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("seeded credential mode = %o, want 600", got)
+	}
+}
+
+func TestSeedClaudeCredentialsKeychainFailuresFailClosed(t *testing.T) {
+	keychainErr := errors.New("item not found")
+	err := seedClaudeCredentialsForPlatform(
+		context.Background(),
+		nil,
+		t.TempDir(),
+		"darwin",
+		func(context.Context, string) ([]byte, error) {
+			return nil, keychainErr
+		},
+	)
+	if !errors.Is(err, keychainErr) || !strings.Contains(err.Error(), claudeCodeKeychainService) {
+		t.Fatalf("keychain read error = %v, want wrapped error naming service", err)
+	}
+
+	err = seedClaudeCredentialsForPlatform(
+		context.Background(),
+		nil,
+		t.TempDir(),
+		"darwin",
+		func(context.Context, string) ([]byte, error) {
+			return []byte(" \n"), nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "empty Claude Code credentials") {
+		t.Fatalf("empty keychain error = %v", err)
+	}
+}
+
+func TestSeedClaudeCredentialsMissingFileRemainsOptionalOutsideMacOS(t *testing.T) {
+	called := false
+	err := seedClaudeCredentialsForPlatform(
+		context.Background(),
+		[]string{"HOME=" + t.TempDir()},
+		t.TempDir(),
+		"linux",
+		func(context.Context, string) ([]byte, error) {
+			called = true
+			return nil, errors.New("unexpected keychain read")
+		},
+	)
+	if err != nil {
+		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
+	}
+	if called {
+		t.Fatal("Keychain reader called outside macOS")
+	}
+}
+
 func TestClaudeAdapterRejectsSymlinkedSandboxRuntime(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()
