@@ -545,6 +545,12 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		MCPServers:  []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
 		ScaleFactor: 2, Workflows: []string{"all-features"},
 	}
+	gaggle := apiv1.GaggleSpec{
+		Project: apiv1.RepoRef{
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"src"}},
+		},
+		Sandbox: &apiv1.GaggleSandbox{Agentic: "enforced"},
+	}
 
 	workflowFeatures, err := FeaturesForWorkflow(def)
 	if err != nil {
@@ -562,19 +568,19 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FeaturesForGoober (claude-code): %v", err)
 	}
-	got := featureIDs(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...))
-	want := expectedCurrentDSLFeatureIDs()
+	gaggleFeatures, err := FeaturesForGaggle(gaggle)
+	if err != nil {
+		t.Fatalf("FeaturesForGaggle: %v", err)
+	}
+	got := featureIDs(append(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...), gaggleFeatures...))
+	want := append(expectedCurrentDSLFeatureIDs(), gaggleOnlyFeatureIDs()...)
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
 	}
-	// Gaggle-scoped features are registered (they appear in `goobers features`
-	// and the feature matrix) but have no workflow/goober resolution path, so
-	// only the registered comparison includes them.
-	wantRegistered := append(want, gaggleOnlyFeatureIDs()...)
-	slices.Sort(wantRegistered)
 	registered := featureIDs(AllFeatures())
-	if !slices.Equal(registered, wantRegistered) {
-		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(wantRegistered, registered), difference(registered, wantRegistered))
+	if !slices.Equal(registered, want) {
+		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
 	}
 }
 
@@ -825,8 +831,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 	return ids
 }
 
-// gaggleOnlyFeatureIDs are registered DSL features declared on Gaggle objects,
-// which FeaturesForWorkflow/FeaturesForGoober cannot resolve.
+// gaggleOnlyFeatureIDs are DSL features declared on Gaggle objects.
 func gaggleOnlyFeatureIDs() []FeatureID {
 	return []FeatureID{featureGaggleSandbox, featureGaggleCheckoutSparse}
 }

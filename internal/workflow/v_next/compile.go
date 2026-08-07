@@ -121,6 +121,15 @@ func CheckWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDia
 	return CheckFeatureSupport(features, allowPreview)
 }
 
+// CheckGaggleFeatureSupport resolves a gaggle and applies support policy.
+func CheckGaggleFeatureSupport(spec apiv1.GaggleSpec, allowPreview bool) []FeatureDiagnostic {
+	features, err := FeaturesForGaggle(spec)
+	if err != nil {
+		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
+	}
+	return CheckFeatureSupport(features, allowPreview)
+}
+
 // CheckGooberFeatureSupport resolves a goober and applies support policy.
 func CheckGooberFeatureSupport(spec apiv1.GooberSpec, allowPreview bool) []FeatureDiagnostic {
 	features, err := FeaturesForGoober(spec)
