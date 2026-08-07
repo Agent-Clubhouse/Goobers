@@ -108,6 +108,164 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	}
 }
 
+func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceTree bool
+		noRepos    bool
+		mutate     func(t *testing.T, path string)
+		want       string
+	}{
+		{
+			name: "instance project",
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "    name: your-repo", "    name: your-rep")
+			},
+			want: `spec.project repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+		{
+			name:       "source tree additional repo",
+			sourceTree: true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: your-org
+      name: your-rep
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+		{
+			name:    "instance project without configured repos",
+			noRepos: true,
+			mutate:  func(t *testing.T, path string) {},
+			want:    `spec.project repository your-org/your-repo matches no instance repos[] entry`,
+		},
+		{
+			name:       "source tree additional repo without configured repos",
+			sourceTree: true,
+			noRepos:    true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: extra-org
+      name: extra-repo
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository extra-org/extra-repo matches no instance repos[] entry`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			instancePath := filepath.Join(root, "instance.yaml")
+			if tc.sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+				instancePath = filepath.Join(root, instance.GuidedSourceInstanceFile)
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			if tc.noRepos {
+				replaceInFile(t, instancePath, `repos:
+- name: your-repo
+  owner: your-org
+  provider: github
+  token:
+    env: GOOBERS_GITHUB_TOKEN`, "repos: []")
+			}
+			tc.mutate(t, gagglePath)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("validate stdout missing %q:\n%s", tc.want, stdout)
+			}
+		})
+	}
+}
+
+func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
+	for _, sourceTree := range []bool{false, true} {
+		name := "instance"
+		if sourceTree {
+			name = "source tree"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			if sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			replaceInFile(t, gagglePath, "    owner: your-org", `    owner: ""`)
+			replaceInFile(t, gagglePath, "    name: your-repo", `    name: ""`)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			want := "INFO Gaggle/example: empty spec.project binds to instance repos[0] your-org/your-repo"
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+			}
+
+			jsonArgs := append([]string{"validate", "--json"}, args[1:]...)
+			code, stdout, stderr = runArgs(t, jsonArgs...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate --json code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			envelope := decodeDiagnosticsEnvelope(t, stdout)
+			assertDiagnosticsSchema(t, stdout)
+			if envelope.Counts.Infos != 1 {
+				t.Fatalf("validate --json info count=%d, want 1; findings=%+v", envelope.Counts.Infos, envelope.Findings)
+			}
+			var fallback *diagnosticFinding
+			for i := range envelope.Findings {
+				if envelope.Findings[i].Code == "REPO003" {
+					fallback = &envelope.Findings[i]
+					break
+				}
+			}
+			if fallback == nil {
+				t.Fatalf("validate --json missing REPO003 fallback finding: %+v", envelope.Findings)
+			}
+			if fallback.Severity != diagnosticSeverityInfo || fallback.Path != "/spec/project" ||
+				fallback.Message != "empty spec.project binds to instance repos[0] your-org/your-repo" {
+				t.Fatalf("validate --json fallback finding = %+v", *fallback)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
+		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 // TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
 // becomes a GitHub Actions ::error/::warning workflow command anchored to its
 // file, written to stderr so it composes cleanly with --json (stdout stays a
