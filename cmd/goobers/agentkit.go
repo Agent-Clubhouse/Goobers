@@ -61,7 +61,7 @@ func runAgentKit(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit install", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	harness := fs.String("harness", "generic", "harness adapter: copilot, claude, or generic")
 	fs.Usage = helpUsage(stderr, "agent-kit install")
@@ -119,7 +119,7 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitCheck(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit check", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "agent-kit check")
 	if err := fs.Parse(args); err != nil {
@@ -153,7 +153,7 @@ func runAgentKitCheck(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitUpdate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit update", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "show the update diff without writing")
 	write := fs.Bool("write", false, "apply the displayed product-owned changes")

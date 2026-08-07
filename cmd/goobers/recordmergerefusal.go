@@ -36,7 +36,7 @@ const recordMergeRefusalHelp = "Usage: goobers record-merge-refusal [path]\n\n" 
 // it. The demotion self-heals the moment the PR's head advances (a new commit),
 // so a fixed PR is never permanently sidelined.
 func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("record-merge-refusal", flag.ContinueOnError)
+	fs := newCLIFlagSet("record-merge-refusal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "record-merge-refusal")
 	if err := fs.Parse(args); err != nil {

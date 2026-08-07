@@ -28,7 +28,7 @@ const versionsHelp = "Usage: goobers versions [--json]\n\n" +
 // supportmatrix.Report. It mirrors `goobers version`'s --json shape (#1098) so
 // the two version surfaces feel the same.
 func runVersions(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("versions", flag.ContinueOnError)
+	fs := newCLIFlagSet("versions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit structured JSON instead of the human-readable table")
 	fs.Usage = helpUsage(stderr, "versions")

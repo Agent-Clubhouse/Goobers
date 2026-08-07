@@ -14,6 +14,12 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
+        version)
+            flags+=" --json"
+            ;;
+        versions)
+            flags+=" --json"
+            ;;
         init)
             flags+=" --demo --insecure --guided --template --source-tree --json"
             ;;
@@ -71,6 +77,11 @@ _goobers_completion()
         self-update)
             flags+=" --policy --branch --target --health-ticks --health-timeout"
             ;;
+        service)
+            case "${COMP_WORDS[2]:-}" in
+                status) flags+=" --json" ;;
+            esac
+            ;;
         worker)
             flags+=" --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
@@ -82,6 +93,15 @@ _goobers_completion()
             ;;
         run)
             flags+=" --no-wait"
+            ;;
+        approve)
+            flags+=" --decision --actor"
+            ;;
+        override)
+            flags+=" --rationale --decision --actor"
+            ;;
+        rerun-stage)
+            flags+=" --addendum --actor"
             ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
@@ -141,17 +161,29 @@ _goobers_completion()
                 redact) flags+=" --run --path --reason --secret-file" ;;
             esac
             ;;
+        backlog-health)
+            flags+=" --feedback"
+            ;;
         backlog-query)
-            flags+=" --claim --release"
+            flags+=" --claim --release --read-only --reconcile"
             ;;
         reconcile-branches)
             flags+=" --delete --max --min-age --after"
             ;;
+        set-milestone)
+            flags+=" --item --milestone"
+            ;;
+        reconcile-post-merge)
+            flags+=" --max --lookback"
+            ;;
         telemetry-query)
-            flags+=" --window --aggregate --threshold --format"
+            flags+=" --window --aggregate --threshold --format --workflow"
             ;;
         docs-churn)
             flags+=" --repo --workflow --gaggle --since --buffer-multiplier --format"
+            ;;
+        ios-simulator-test)
+            flags+=" --project --workspace --scheme --device --runtime --only-testing --result-bundle"
             ;;
         gather-sibling-context)
             flags+=" --no-cache --no-verdict-cache"
@@ -162,8 +194,17 @@ _goobers_completion()
         elect-lander)
             flags+=" --gate"
             ;;
+        pr-claim)
+            flags+=" --release"
+            ;;
         remediation-checkpoint)
-            flags+=" --budget --escalate"
+            flags+=" --budget --escalate --escalation-outcome"
+            ;;
+        respond-to-findings)
+            flags+=" --check"
+            ;;
+        mcp-io)
+            flags+=" --config"
             ;;
     esac
     if [[ "${cur}" == -* ]]; then

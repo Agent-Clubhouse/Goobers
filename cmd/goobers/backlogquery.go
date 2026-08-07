@@ -163,7 +163,7 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | 
 // The barrier lets the blocked-record race regression pause immediately before
 // the lock-protected reconciliation and claim transaction.
 func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
-	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")

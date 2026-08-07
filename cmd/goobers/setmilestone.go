@@ -28,7 +28,7 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 		milestoneDefault = number
 	}
 
-	fs := flag.NewFlagSet("set-milestone", flag.ContinueOnError)
+	fs := newCLIFlagSet("set-milestone", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	itemID := fs.String("item", providerInput("itemID", ""), "issue identifier")
 	milestone := fs.Int("milestone", milestoneDefault, "existing milestone number")

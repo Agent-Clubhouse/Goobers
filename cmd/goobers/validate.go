@@ -104,7 +104,7 @@ func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 // checks and exit codes — there is exactly one validation path, never a weaker
 // second one that could disagree (the #252 footgun this closes for good).
 func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs := newCLIFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
 	githubAnnotations := fs.Bool("github-annotations", false, "also write each finding to stderr as a GitHub Actions file annotation (#687)")
@@ -113,7 +113,6 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
 	fs.Usage = helpUsage(stderr, name)
-	observeCLIFlagSet(name, fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

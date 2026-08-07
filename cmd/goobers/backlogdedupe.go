@@ -89,7 +89,7 @@ type dedupeCandidateArtifact struct {
 }
 
 func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("backlog-dedupe", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-dedupe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "backlog-dedupe")
 	if err := fs.Parse(args); err != nil {

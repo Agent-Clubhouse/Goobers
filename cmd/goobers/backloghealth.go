@@ -68,7 +68,7 @@ type repositoryLabelTransitionProvider interface {
 }
 
 func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("backlog-health", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-health", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	feedback := fs.Bool("feedback", false, "route chronically failing ready items back to curation")
 	fs.Usage = helpUsage(stderr, "backlog-health")

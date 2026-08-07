@@ -258,7 +258,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		<-parentBridgeDone
 	}()
 
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs := newCLIFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
@@ -270,7 +270,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
 	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
-	observeCLIFlagSet("up", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

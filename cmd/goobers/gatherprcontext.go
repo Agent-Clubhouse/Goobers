@@ -65,7 +65,7 @@ const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 // PR-thread comments + whether the base has advanced since this PR branched, as
 // context for the stages that follow (#363's rebase + finding-driven routing).
 func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-pr-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-pr-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-pr-context")
 	if err := fs.Parse(args); err != nil {

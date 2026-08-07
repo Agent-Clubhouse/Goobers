@@ -35,7 +35,7 @@ type reportPRStatusPublisher interface {
 }
 
 func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("report-pr-status", flag.ContinueOnError)
+	fs := newCLIFlagSet("report-pr-status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "report-pr-status")
 	if err := fs.Parse(args); err != nil {

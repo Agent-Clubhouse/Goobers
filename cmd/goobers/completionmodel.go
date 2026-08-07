@@ -77,6 +77,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"version": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"versions": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"init": {
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
@@ -169,6 +175,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "health-ticks", takesArg: true, desc: "Required clean heartbeat ticks"},
 		{name: "health-timeout", takesArg: true, desc: "Candidate health window"},
 	},
+	"service status": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"worker": {
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
@@ -194,6 +203,19 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"run": {
 		{name: "no-wait", desc: "Return after the run is dispatched"},
+	},
+	"approve": {
+		{name: "decision", takesArg: true, desc: "Gate decision"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+	},
+	"override": {
+		{name: "rationale", takesArg: true, desc: "Override rationale"},
+		{name: "decision", takesArg: true, desc: "Gate decision"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+	},
+	"rerun-stage": {
+		{name: "addendum", takesArg: true, desc: "Instruction addendum"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
 	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
@@ -306,9 +328,22 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
 	},
+	"backlog-health": {
+		{name: "feedback", desc: "Include backlog feedback"},
+	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
 		{name: "release", desc: "Release this run's claim leases early"},
+		{name: "read-only", desc: "Query without mutating provider state"},
+		{name: "reconcile", desc: "Reconcile claim state"},
+	},
+	"set-milestone": {
+		{name: "item", takesArg: true, desc: "Issue item id"},
+		{name: "milestone", takesArg: true, desc: "Milestone number"},
+	},
+	"reconcile-post-merge": {
+		{name: "max", takesArg: true, desc: "Maximum pull requests to reconcile"},
+		{name: "lookback", takesArg: true, desc: "Merge lookback duration"},
 	},
 	"reconcile-branches": {
 		{name: "delete", desc: "Delete eligible branches (opt-in; default dry-run)"},
@@ -321,6 +356,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "gate-noise"}, desc: "Aggregate to detect"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
 		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},
 	"docs-churn": {
 		{name: "repo", takesArg: true, desc: "Git repository/worktree to scan"},
@@ -329,6 +365,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "First-run window and minimum buffer floor"},
 		{name: "buffer-multiplier", takesArg: true, desc: "Buffer multiplier over observed churn"},
 		{name: "format", takesArg: true, values: []string{"churn-digest"}, desc: "Artifact format"},
+	},
+	"ios-simulator-test": {
+		{name: "project", takesArg: true, desc: "Xcode project path"},
+		{name: "workspace", takesArg: true, desc: "Xcode workspace path"},
+		{name: "scheme", takesArg: true, desc: "Xcode scheme"},
+		{name: "device", takesArg: true, desc: "Simulator device"},
+		{name: "runtime", takesArg: true, desc: "Simulator runtime"},
+		{name: "only-testing", takesArg: true, desc: "Test target filter"},
+		{name: "result-bundle", takesArg: true, desc: "Result bundle path"},
 	},
 	"gather-sibling-context": {
 		{name: "no-cache", desc: "Bypass the sibling-context cache"},
@@ -340,9 +385,19 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"elect-lander": {
 		{name: "gate", takesArg: true, desc: "Gate name whose verdict to read"},
 	},
+	"pr-claim": {
+		{name: "release", desc: "Release the remediation claim"},
+	},
 	"remediation-checkpoint": {
 		{name: "budget", takesArg: true, desc: "Per-PR repass-cycle budget before escalating"},
 		{name: "escalate", takesArg: true, desc: "Escalate unconditionally with this reason"},
+		{name: "escalation-outcome", takesArg: true, desc: "Recorded escalation outcome"},
+	},
+	"respond-to-findings": {
+		{name: "check", desc: "Validate without publishing responses"},
+	},
+	"mcp-io": {
+		{name: "config", takesArg: true, desc: "MCP server configuration path"},
 	},
 }
 

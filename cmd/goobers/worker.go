@@ -63,7 +63,7 @@ func (f *repeatableFlag) Set(v string) error {
 }
 
 func runWorker(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs := newCLIFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var queues repeatableFlag
 	fs.Var(&queues, "task-queue", "task queue to serve (repeatable)")
@@ -72,7 +72,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	fs.Usage = helpUsage(stderr, "worker")
-	observeCLIFlagSet("worker", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

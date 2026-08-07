@@ -24,7 +24,7 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"on-main builds the configured branch. Config is never changed.\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("self-update", flag.ContinueOnError)
+	fs := newCLIFlagSet("self-update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")
@@ -32,7 +32,6 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	healthTicks := fs.Int("health-ticks", selfupdate.DefaultHealthTicks, "required clean heartbeat ticks")
 	healthTimeout := fs.Duration("health-timeout", 0, "bounded candidate health window (derived from daemon liveness when omitted)")
 	fs.Usage = helpUsage(stderr, "self-update")
-	observeCLIFlagSet("self-update", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

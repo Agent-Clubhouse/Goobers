@@ -68,7 +68,7 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runPRSelect(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("pr-select", flag.ContinueOnError)
+	fs := newCLIFlagSet("pr-select", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "pr-select")
 	if err := fs.Parse(args); err != nil {

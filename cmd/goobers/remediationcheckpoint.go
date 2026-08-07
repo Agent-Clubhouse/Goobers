@@ -512,7 +512,7 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"error, 2 = usage/IO error.\n"
 
 func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("remediation-checkpoint", flag.ContinueOnError)
+	fs := newCLIFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "remediation-checkpoint")
 	budgetOverride := fs.Int("budget", 0, "override every DSL-declared per-cause budget (standalone diagnostics)")

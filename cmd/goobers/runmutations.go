@@ -28,7 +28,7 @@ const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runApprove(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+	fs := newCLIFlagSet("approve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "approve")
 	decision := fs.String("decision", "pass", "configured gate decision to approve")
@@ -51,7 +51,7 @@ const overrideHelp = "Usage: goobers override --rationale=<text> [--decision=pas
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runOverride(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("override", flag.ContinueOnError)
+	fs := newCLIFlagSet("override", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "override")
 	decision := fs.String("decision", "pass", "configured gate decision to force")
@@ -80,7 +80,7 @@ const rerunStageHelp = "Usage: goobers rerun-stage --addendum=<text> [--actor=<i
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runRerunStage(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("rerun-stage", flag.ContinueOnError)
+	fs := newCLIFlagSet("rerun-stage", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "rerun-stage")
 	addendum := fs.String("addendum", "", "required one-off instruction addendum")

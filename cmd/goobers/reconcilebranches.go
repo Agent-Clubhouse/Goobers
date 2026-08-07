@@ -93,7 +93,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fs := flag.NewFlagSet("reconcile-branches", flag.ContinueOnError)
+	fs := newCLIFlagSet("reconcile-branches", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	deleteBranches := fs.Bool("delete", deleteDefault, "delete eligible branches (opt-in; default is dry-run)")
 	limit := fs.Int("max", limitDefault, "maximum candidates inspected in one sweep (1-100)")

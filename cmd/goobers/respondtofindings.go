@@ -61,7 +61,7 @@ type remediationResponseResult struct {
 }
 
 func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("respond-to-findings", flag.ContinueOnError)
+	fs := newCLIFlagSet("respond-to-findings", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "respond-to-findings")
 	checkOnly := fs.Bool("check", false, "validate the finding account without requiring publication or posting")

@@ -129,7 +129,7 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"2 = usage/IO error.\n"
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-sibling-context")
 	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")

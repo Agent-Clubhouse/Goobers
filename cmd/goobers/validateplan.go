@@ -35,7 +35,7 @@ type validatePlanResult struct {
 }
 
 func runValidatePlan(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("validate-plan", flag.ContinueOnError)
+	fs := newCLIFlagSet("validate-plan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "validate-plan")
 	if err := fs.Parse(args); err != nil {

@@ -58,11 +58,10 @@ func runTelemetryPrune(args []string, stdout, stderr io.Writer) int {
 }
 
 func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time) int {
-	fs := flag.NewFlagSet("telemetry prune", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry prune", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "report eligible terminal runs without deleting them")
 	fs.Usage = helpUsage(stderr, "telemetry prune")
-	observeCLIFlagSet("telemetry prune", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -120,12 +119,11 @@ func runTelemetryExportWithExporter(
 	stdout, stderr io.Writer,
 	export func([]string, time.Time, time.Time, io.Writer) error,
 ) int {
-	fs := flag.NewFlagSet("telemetry export", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sinceValue := fs.String("since", "", "inclusive RFC3339 span-start lower bound (required)")
 	untilValue := fs.String("until", "", "exclusive RFC3339 span-start upper bound")
 	fs.Usage = helpUsage(stderr, "telemetry export")
-	observeCLIFlagSet("telemetry export", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -345,7 +343,7 @@ func (g *telemetryGroupBy) Set(value string) error {
 }
 
 func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
@@ -359,7 +357,6 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = helpUsage(stderr, "telemetry stats")
-	observeCLIFlagSet("telemetry stats", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -530,7 +527,7 @@ const telemetryErrorsHelp = "Usage: goobers telemetry errors [--json] [--workflo
 	"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n"
 
 func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry errors", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry errors", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit recent errors as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
@@ -541,7 +538,6 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	untilValue := fs.String("until", "", "include errors at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = helpUsage(stderr, "telemetry errors")
-	observeCLIFlagSet("telemetry errors", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

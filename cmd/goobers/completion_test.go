@@ -3,6 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -70,7 +73,7 @@ func TestCompletionModelCoversRegistry(t *testing.T) {
 func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 	registry := registryCommandIDs()
 	for id := range completionFlagSpecs {
-		if !registry[id] {
+		if id != "version" && !registry[id] {
 			t.Errorf("completionFlagSpecs key %q is not a registry command id", id)
 		}
 	}
@@ -87,19 +90,10 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 }
 
 func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
-	reflected := map[string]bool{
-		"init": true, "validate": true, "lint": true, "fix": true,
-		"doctor": true, "up": true, "self-update": true, "worker": true,
-		"telemetry stats": true, "telemetry errors": true,
-		"telemetry export": true, "telemetry prune": true,
-		"telemetry prune-orphans": true, "telemetry compact": true,
-	}
-	observed := make(map[string]*flag.FlagSet, len(reflected))
+	observed := make(map[string]*flag.FlagSet)
 	cliFlagSetObserverMu.Lock()
 	cliFlagSetObserver = func(id string, fs *flag.FlagSet) {
-		if reflected[id] {
-			observed[id] = fs
-		}
+		observed[id] = fs
 	}
 	cliFlagSetObserverMu.Unlock()
 	defer func() {
@@ -110,25 +104,18 @@ func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
 
 	nodes := collectAuditNodes(cliCommands, nil)
 	for _, node := range nodes {
-		if reflected[node.id] {
-			node.cmd.run([]string{"-h"}, io.Discard, io.Discard)
-		}
+		node.cmd.run([]string{"-h"}, io.Discard, io.Discard)
 	}
 
 	for _, node := range nodes {
-		if !reflected[node.id] {
-			continue
-		}
 		fs := observed[node.id]
-		if fs == nil {
-			t.Errorf("%s: handler did not expose its FlagSet", node.id)
-			continue
-		}
 		actual := make(map[string]bool)
-		fs.VisitAll(func(f *flag.Flag) {
-			boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
-			actual[f.Name] = !(isBool && boolFlag.IsBoolFlag())
-		})
+		if fs != nil {
+			fs.VisitAll(func(f *flag.Flag) {
+				boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
+				actual[f.Name] = !(isBool && boolFlag.IsBoolFlag())
+			})
+		}
 		annotated := make(map[string]bool)
 		for _, spec := range completionFlagSpecs[node.id] {
 			annotated[spec.name] = spec.takesArg
@@ -146,6 +133,37 @@ func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
 				t.Errorf("%s: synopsis usage line omits --%s", node.id, name)
 			}
 		}
+	}
+}
+
+func TestCLIHandlersUseObservableFlagSetConstructor(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") || path == "runtime_capabilities.go" {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "NewFlagSet" {
+				return true
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			if ok && pkg.Name == "flag" {
+				t.Errorf("%s: use newCLIFlagSet so registry parity audits the handler flags", path)
+			}
+			return true
+		})
 	}
 }
 

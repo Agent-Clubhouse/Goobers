@@ -65,7 +65,7 @@ func scaffoldUsage(w io.Writer) {
 }
 
 func runScaffoldKind(kind string, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("scaffold "+kind, flag.ContinueOnError)
+	fs := newCLIFlagSet("scaffold "+kind, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	force := fs.Bool("force", false, "replace generated files that already exist")
 	fs.Usage = func() { scaffoldUsage(stderr) }

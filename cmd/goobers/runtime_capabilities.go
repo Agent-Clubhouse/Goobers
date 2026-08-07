@@ -27,6 +27,12 @@ func observeCLIFlagSet(id string, fs *flag.FlagSet) {
 	}
 }
 
+func newCLIFlagSet(id string, errorHandling flag.ErrorHandling) *flag.FlagSet {
+	fs := flag.NewFlagSet(id, errorHandling)
+	observeCLIFlagSet(id, fs)
+	return fs
+}
+
 type cliCommandTier uint8
 
 const (

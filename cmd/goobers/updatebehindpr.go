@@ -34,7 +34,7 @@ const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 // workflow after updating a mechanically stale PR, or routes every non-trivial
 // candidate into the existing worktree-backed gather/rebase/agentic path.
 func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("update-behind-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("update-behind-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "update-behind-pr")
 	if err := fs.Parse(args); err != nil {

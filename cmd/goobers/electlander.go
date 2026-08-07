@@ -176,7 +176,7 @@ const electLanderHelp = "Usage: goobers elect-lander [--gate name] [path]\n\n" +
 // decision are threaded through as outputs so apply-verdict resolves its
 // single-hop inputsFrom on this branch.
 func runElectLander(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("elect-lander", flag.ContinueOnError)
+	fs := newCLIFlagSet("elect-lander", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gateName := fs.String("gate", "review", "the gate name whose verdict to read")
 	fs.Usage = helpUsage(stderr, "elect-lander")

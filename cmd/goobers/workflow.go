@@ -43,7 +43,7 @@ const workflowShowHelp = "Usage: goobers workflow show [--dot] <name> [path]\n\n
 	"(default path \".\").\n"
 
 func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("workflow show", flag.ContinueOnError)
+	fs := newCLIFlagSet("workflow show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "workflow show")
 	dot := fs.Bool("dot", false, "emit Graphviz DOT")

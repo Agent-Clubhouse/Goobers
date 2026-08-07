@@ -65,7 +65,7 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
 	fs.Usage = helpUsage(stderr, "run")
@@ -281,7 +281,7 @@ const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"2 = usage/IO error (unknown run).\n"
 
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run abort", flag.ContinueOnError)
+	fs := newCLIFlagSet("run abort", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run abort")
 	if err := fs.Parse(args); err != nil {
@@ -491,7 +491,7 @@ const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
 	"no daemon to cancel it), 2 = usage/IO error (unknown run).\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run cancel", flag.ContinueOnError)
+	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run cancel")
 	if err := fs.Parse(args); err != nil {

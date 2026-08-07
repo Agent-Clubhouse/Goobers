@@ -36,7 +36,7 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
 func runPushBranch(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("push-branch", flag.ContinueOnError)
+	fs := newCLIFlagSet("push-branch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-branch")
 	if err := fs.Parse(args); err != nil {

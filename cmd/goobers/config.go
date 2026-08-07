@@ -76,7 +76,7 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 
 // runConfigShow renders the effective instance config with secrets redacted.
 func runConfigShow(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("config show", flag.ContinueOnError)
+	fs := newCLIFlagSet("config show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render the config as JSON instead of YAML")
 	fs.Usage = helpUsage(stderr, "config show")
@@ -133,7 +133,7 @@ func runConfigShow(args []string, stdout, stderr io.Writer) int {
 }
 
 func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("config materialize", flag.ContinueOnError)
+	fs := newCLIFlagSet("config materialize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "config materialize")
 	if err := fs.Parse(args); err != nil {
@@ -180,7 +180,7 @@ func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
 }
 
 func runConfigDiff(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("config diff", flag.ContinueOnError)
+	fs := newCLIFlagSet("config diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	against := fs.String("against", "reference-workflows", "canonical config source root")
 	fs.Usage = helpUsage(stderr, "config diff")

@@ -29,12 +29,11 @@ const fixHelp = "Usage: goobers fix --to <version> [--write] [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runFix(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("fix", flag.ContinueOnError)
+	fs := newCLIFlagSet("fix", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "target dslVersion to migrate every workflow to (required)")
 	write := fs.Bool("write", false, "apply the migration to each file in place (default: print a diff only)")
 	fs.Usage = helpUsage(stderr, "fix")
-	observeCLIFlagSet("fix", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

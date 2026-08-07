@@ -66,7 +66,7 @@ func runTraceWithFactories(
 	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
 	newFollowContext func() (context.Context, func()),
 ) int {
-	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
+	fs := newCLIFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
 	follow := fs.Bool("follow", false, "stream events until the run reaches a terminal phase")

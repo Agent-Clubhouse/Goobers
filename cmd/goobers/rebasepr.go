@@ -66,7 +66,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
-	fs := flag.NewFlagSet("rebase-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("rebase-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "rebase-pr")
 	if err := fs.Parse(args); err != nil {
