@@ -4,11 +4,11 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-07-28 · Descriptive/prescriptive status annotated 2026-07-23:
+> Last updated: 2026-08-07 · Descriptive/prescriptive status annotated 2026-07-23:
 > §4–§7 (as amended) describe shipped, verified behavior of the local runner,
 > except the capability namespace rule in §5, which is prescriptive pending its
-> atomic migration; §3.2, §10, and the V1/V2 parts of §12 are prescriptive
-> roadmap — mandated, not yet built.
+> atomic migration; §3.2, §10, the remaining V1 work identified in §12, and V2
+> are prescriptive roadmap — mandated, not yet built.
 
 ## 1. One system, three deployment tiers
 
@@ -425,22 +425,27 @@ Definition of done: feed issues into the backlog and watch them get curated, sco
 and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
-then closed the PR loop: the `reference-workflows/` reference config now defines **six**
-workflows (backlog curation, work nomination, implementation, merge-review,
-pr-remediation, Tutor) proven to curate, implement, review, and **merge PRs
-autonomously** — a ratified product decision (G2 in
+then closed and expanded the PR loop: the `reference-workflows/` reference config
+now defines **nine** workflows: backlog curation, docs updater, implementation,
+merge review, PR remediation, quality sprint, self update, Tutor, and work
+nomination. Together they provide the canonical patterns for curating and
+implementing work, reviewing, remediating, and **merging PRs autonomously**, and
+maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
 `docs/design/sibling-pr-sequencing.md`). `reference-workflows/` is the canonical, tested
-pattern this capability is built against — not a live mirror of any specific
-deployment's actual running config, which is maintained separately and can
-drift from what's checked in here.
+reference configuration these capabilities are built against. It is not a live
+instance or a synced mirror of any deployment's running config; operators maintain
+deployed config separately, and it can drift from the checked-in reference.
 
-### V1 — Arbitrary repos, teams, hardening
+### V1 — Teams and remaining hardening
 
-Everything V0 does, deployable over arbitrary tier-1/tier-2 repos; **Azure DevOps**
-provider (issues + PRs); packaging/install story; sandboxing + credential injection
-for agentic stages; portal reads run journals; optional team auth (OIDC); **Tutor**
-workflow if it needs more than the standard primitives.
+Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
+prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
+are shipped, alongside the Azure DevOps provider, packaged-install machinery, the
+journal-backed portal, capability-scoped and per-goober credential injection,
+optional OIDC, and a narrow Tutor workflow. The remaining V1 roadmap is team and
+hardening work: sandboxed stage execution and expansion of the packaged-install,
+authentication, and Tutor surfaces beyond their current slices.
 
 ### V2 — Cloud scale
 
