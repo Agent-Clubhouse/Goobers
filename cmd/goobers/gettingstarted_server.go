@@ -1,0 +1,639 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goobers/goobers/internal/instance"
+)
+
+// The guided endpoints are thin process wrappers over the documented CLI
+// actions (docs/design/v1/cli-surface-and-manpages.md §5): every write action
+// execs this same binary with the same argv a shell user would type, and the
+// portal renders the parsed result. Nothing here copies templates, seeds
+// provider items, or invents a portal-only result shape.
+
+const (
+	guidedStateVersion    = 1
+	guidedMaxBodyBytes    = 1 << 20
+	guidedOutputRingLines = 500
+	guidedRunIDMarker     = "created run "
+	guidedJobKindRun      = "run"
+)
+
+var (
+	// guidedExecCommand is the subprocess seam: tests stub it to assert exact
+	// argv construction and to fake CLI output without spawning the real binary.
+	guidedExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, name, args...)
+	}
+	guidedSyncActionTimeout = 90 * time.Second
+	guidedRunJobTimeout     = 10 * time.Minute
+)
+
+type guidedServer struct {
+	workdir      string
+	samplePath   string
+	instancePath string
+	executable   string
+	errorLog     *log.Logger
+
+	mu       sync.Mutex
+	job      *guidedJob
+	api      http.Handler
+	apiClose func() error
+}
+
+func newGuidedServer(workdir string, errorLog *log.Logger) (*guidedServer, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve own executable: %w", err)
+	}
+	return &guidedServer{
+		workdir:      workdir,
+		samplePath:   filepath.Join(workdir, gettingStartedSampleDirName),
+		instancePath: filepath.Join(workdir, gettingStartedInstanceDirName),
+		executable:   executable,
+		errorLog:     errorLog,
+	}, nil
+}
+
+func (s *guidedServer) close() error {
+	s.mu.Lock()
+	job := s.job
+	apiClose := s.apiClose
+	s.apiClose = nil
+	s.mu.Unlock()
+	if job != nil {
+		job.stop()
+	}
+	if apiClose != nil {
+		return apiClose()
+	}
+	return nil
+}
+
+// serveAPI serves the SAME standalone read-only API `goobers dashboard` builds,
+// rooted at the tutorial instance, constructed lazily once instance.yaml
+// exists. Until then every /api/ request is a 503 that tells the guide (and the
+// user) what is missing.
+func (s *guidedServer) serveAPI(w http.ResponseWriter, r *http.Request) {
+	handler := s.apiHandler()
+	if handler == nil {
+		writeGuidedJSON(w, http.StatusServiceUnavailable, guidedErrorBody{
+			Code:    "guided_no_instance",
+			Message: "initialize the tutorial instance first",
+		})
+		return
+	}
+	handler.ServeHTTP(w, r)
+}
+
+func (s *guidedServer) apiHandler() http.Handler {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.api != nil {
+		return s.api
+	}
+	layout := instance.NewLayout(s.instancePath)
+	if _, err := os.Stat(layout.ConfigFile()); err != nil {
+		return nil
+	}
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		s.errorLog.Printf("guided API: invalid tutorial instance.yaml: %v", err)
+		return nil
+	}
+	api, err := standaloneDashboardAPI(layout, config, s.errorLog)
+	if err != nil {
+		s.errorLog.Printf("guided API: initialize standalone read API: %v", err)
+		return nil
+	}
+	s.api = api.handler
+	s.apiClose = api.close
+	return s.api
+}
+
+func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
+	if !guidedOriginAllowed(r) {
+		writeGuidedJSON(w, http.StatusForbidden, guidedErrorBody{
+			Code:    "origin_forbidden",
+			Message: "cross-origin guided requests are forbidden",
+		})
+		return
+	}
+	switch {
+	case r.URL.Path == "/guided/state":
+		s.handleState(w, r)
+	case r.URL.Path == "/guided/status":
+		s.handleStatus(w, r)
+	case r.URL.Path == "/guided/actions/stub-sample":
+		s.handleStubSample(w, r)
+	case r.URL.Path == "/guided/actions/init-instance":
+		s.handleInitInstance(w, r)
+	case r.URL.Path == "/guided/actions/validate":
+		s.handleValidate(w, r)
+	case r.URL.Path == "/guided/actions/run":
+		s.handleRun(w, r)
+	case strings.HasPrefix(r.URL.Path, "/guided/jobs/"):
+		s.handleJob(w, r)
+	default:
+		writeGuidedJSON(w, http.StatusNotFound, guidedErrorBody{
+			Code:    "not_found",
+			Message: "unknown guided endpoint",
+		})
+	}
+}
+
+type guidedErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type guidedEnvState struct {
+	GoobersGithubToken       bool `json:"goobersGithubToken"`
+	GoobersGithubIssuesToken bool `json:"goobersGithubIssuesToken"`
+}
+
+type guidedJobSummary struct {
+	ID       string  `json:"id"`
+	Kind     string  `json:"kind"`
+	Done     bool    `json:"done"`
+	ExitCode *int    `json:"exitCode"`
+	RunID    *string `json:"runId"`
+}
+
+type guidedJobDetail struct {
+	guidedJobSummary
+	Output []string `json:"output"`
+}
+
+type guidedStateBody struct {
+	Version        int               `json:"version"`
+	Workdir        string            `json:"workdir"`
+	SamplePath     string            `json:"samplePath"`
+	InstancePath   string            `json:"instancePath"`
+	SampleExists   bool              `json:"sampleExists"`
+	InstanceExists bool              `json:"instanceExists"`
+	Env            guidedEnvState    `json:"env"`
+	Job            *guidedJobSummary `json:"job"`
+	APIReady       bool              `json:"apiReady"`
+}
+
+type guidedEnvelopeBody struct {
+	ExitCode int             `json:"exitCode"`
+	Envelope json.RawMessage `json:"envelope"`
+	Stderr   string          `json:"stderr"`
+}
+
+type guidedInitBody struct {
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	sampleExists := false
+	if info, err := os.Stat(s.samplePath); err == nil && info.IsDir() {
+		sampleExists = true
+	}
+	instanceExists := false
+	if _, err := os.Stat(instance.NewLayout(s.instancePath).ConfigFile()); err == nil {
+		instanceExists = true
+	}
+	s.mu.Lock()
+	var job *guidedJobSummary
+	if s.job != nil {
+		summary := s.job.summary()
+		job = &summary
+	}
+	apiReady := s.api != nil
+	s.mu.Unlock()
+	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
+		Version:        guidedStateVersion,
+		Workdir:        s.workdir,
+		SamplePath:     s.samplePath,
+		InstancePath:   s.instancePath,
+		SampleExists:   sampleExists,
+		InstanceExists: instanceExists,
+		Env: guidedEnvState{
+			// Presence only — the values themselves never cross this API.
+			GoobersGithubToken:       os.Getenv("GOOBERS_GITHUB_TOKEN") != "",
+			GoobersGithubIssuesToken: os.Getenv(defaultWorkTrackingTokenEnv) != "",
+		},
+		Job:      job,
+		APIReady: apiReady,
+	})
+}
+
+type guidedStubSampleRequest struct {
+	WorkTracking string `json:"workTracking"`
+	TokenEnv     string `json:"tokenEnv"`
+	Force        bool   `json:"force"`
+}
+
+func (s *guidedServer) handleStubSample(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedStubSampleRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	argv := []string{"onboarding", "stub-sample", "--destination", s.samplePath, "--json"}
+	if input.WorkTracking != "" {
+		argv = append(argv, "--work-tracking", input.WorkTracking)
+	}
+	if input.TokenEnv != "" {
+		argv = append(argv, "--token-env", input.TokenEnv)
+	}
+	if input.Force {
+		argv = append(argv, "--force")
+	}
+	s.respondEnvelope(w, r, argv)
+}
+
+func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input struct{}
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	result, err := s.execSync(r.Context(), "init", "--template=quickstart", s.instancePath)
+	if err != nil {
+		writeGuidedExecFailure(w, err)
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
+		ExitCode: result.exitCode,
+		Stdout:   result.stdout,
+		Stderr:   result.stderr,
+	})
+}
+
+type guidedValidateRequest struct {
+	CheckHarness bool `json:"checkHarness"`
+	CheckRepos   bool `json:"checkRepos"`
+}
+
+func (s *guidedServer) handleValidate(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedValidateRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	argv := []string{"validate", "--json"}
+	if input.CheckHarness {
+		argv = append(argv, "--check-harness")
+	}
+	if input.CheckRepos {
+		argv = append(argv, "--check-repos")
+	}
+	argv = append(argv, s.instancePath)
+	s.respondEnvelope(w, r, argv)
+}
+
+func (s *guidedServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	s.respondEnvelope(w, r, []string{"status", "--json", s.instancePath})
+}
+
+func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input struct{}
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	s.mu.Lock()
+	if s.job != nil && !s.job.isDone() {
+		s.mu.Unlock()
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "job_running",
+			Message: "a guided job is already running",
+		})
+		return
+	}
+	job := newGuidedJob(guidedJobKindRun)
+	s.job = job
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), guidedRunJobTimeout)
+	job.cancel = cancel
+	command := guidedExecCommand(ctx, s.executable, "run", "quickstart", s.instancePath)
+	// stdout and stderr interleave into the job's bounded ring, exactly as a
+	// terminal user would see them.
+	command.Stdout = job
+	command.Stderr = job
+	// The subprocess inherits this process's environment — that is how the
+	// exported tokens reach it, same as any shell invocation.
+	command.Env = os.Environ()
+	go func() {
+		defer cancel()
+		err := command.Run()
+		code := 0
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else {
+				code = -1
+				_, _ = io.WriteString(job, "error: "+err.Error()+"\n")
+			}
+		}
+		job.finish(code)
+	}()
+	writeGuidedJSON(w, http.StatusAccepted, map[string]string{"jobId": job.id})
+}
+
+func (s *guidedServer) handleJob(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/guided/jobs/")
+	s.mu.Lock()
+	job := s.job
+	s.mu.Unlock()
+	if job == nil || id == "" || job.id != id {
+		writeGuidedJSON(w, http.StatusNotFound, guidedErrorBody{
+			Code:    "job_not_found",
+			Message: "no guided job with that id",
+		})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, job.detail())
+}
+
+type guidedExecResult struct {
+	exitCode int
+	stdout   string
+	stderr   string
+}
+
+// execSync runs one synchronous CLI action with the shared timeout. The
+// returned error is a start failure only; a nonzero exit is a normal result.
+func (s *guidedServer) execSync(parent context.Context, argv ...string) (guidedExecResult, error) {
+	ctx, cancel := context.WithTimeout(parent, guidedSyncActionTimeout)
+	defer cancel()
+	command := guidedExecCommand(ctx, s.executable, argv...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	command.Env = os.Environ()
+	err := command.Run()
+	result := guidedExecResult{stdout: stdout.String(), stderr: stderr.String()}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return guidedExecResult{}, err
+		}
+		result.exitCode = exitErr.ExitCode()
+	}
+	return result, nil
+}
+
+func (s *guidedServer) respondEnvelope(w http.ResponseWriter, r *http.Request, argv []string) {
+	result, err := s.execSync(r.Context(), argv...)
+	if err != nil {
+		writeGuidedExecFailure(w, err)
+		return
+	}
+	envelope := json.RawMessage("null")
+	if trimmed := bytes.TrimSpace([]byte(result.stdout)); len(trimmed) > 0 && json.Valid(trimmed) {
+		envelope = json.RawMessage(trimmed)
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedEnvelopeBody{
+		ExitCode: result.exitCode,
+		Envelope: envelope,
+		Stderr:   result.stderr,
+	})
+}
+
+func writeGuidedExecFailure(w http.ResponseWriter, err error) {
+	writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
+		Code:    "exec_failed",
+		Message: err.Error(),
+	})
+}
+
+// guidedJob is the single-slot async job. Its Write method is the interleaved
+// stdout+stderr sink: a bounded ring of whole lines, scanned for the CLI's
+// "created run <id>" marker.
+type guidedJob struct {
+	id     string
+	kind   string
+	cancel context.CancelFunc
+
+	mu       sync.Mutex
+	lines    []string
+	partial  []byte
+	done     bool
+	exitCode *int
+	runID    *string
+}
+
+func newGuidedJob(kind string) *guidedJob {
+	raw := make([]byte, 8)
+	_, _ = rand.Read(raw)
+	return &guidedJob{id: hex.EncodeToString(raw), kind: kind}
+}
+
+func (j *guidedJob) Write(data []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.partial = append(j.partial, data...)
+	for {
+		newline := bytes.IndexByte(j.partial, '\n')
+		if newline < 0 {
+			break
+		}
+		line := strings.TrimRight(string(j.partial[:newline]), "\r")
+		j.partial = j.partial[newline+1:]
+		j.appendLineLocked(line)
+	}
+	return len(data), nil
+}
+
+func (j *guidedJob) appendLineLocked(line string) {
+	j.lines = append(j.lines, line)
+	if len(j.lines) > guidedOutputRingLines {
+		j.lines = j.lines[len(j.lines)-guidedOutputRingLines:]
+	}
+	if j.runID == nil && strings.HasPrefix(line, guidedRunIDMarker) {
+		fields := strings.Fields(strings.TrimPrefix(line, guidedRunIDMarker))
+		if len(fields) > 0 {
+			runID := fields[0]
+			j.runID = &runID
+		}
+	}
+}
+
+func (j *guidedJob) finish(exitCode int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.partial) > 0 {
+		j.appendLineLocked(string(j.partial))
+		j.partial = nil
+	}
+	j.exitCode = &exitCode
+	j.done = true
+}
+
+func (j *guidedJob) stop() {
+	if j.cancel != nil {
+		j.cancel()
+	}
+}
+
+func (j *guidedJob) isDone() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.done
+}
+
+func (j *guidedJob) summary() guidedJobSummary {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.summaryLocked()
+}
+
+func (j *guidedJob) summaryLocked() guidedJobSummary {
+	summary := guidedJobSummary{ID: j.id, Kind: j.kind, Done: j.done}
+	if j.exitCode != nil {
+		code := *j.exitCode
+		summary.ExitCode = &code
+	}
+	if j.runID != nil {
+		runID := *j.runID
+		summary.RunID = &runID
+	}
+	return summary
+}
+
+func (j *guidedJob) detail() guidedJobDetail {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	output := make([]string, len(j.lines))
+	copy(output, j.lines)
+	return guidedJobDetail{guidedJobSummary: j.summaryLocked(), Output: output}
+}
+
+func requireGuidedMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		w.Header().Set("Allow", method)
+		writeGuidedJSON(w, http.StatusMethodNotAllowed, guidedErrorBody{
+			Code:    "method_not_allowed",
+			Message: "method not allowed",
+		})
+		return false
+	}
+	return true
+}
+
+// decodeGuidedBody enforces the POST transport rules — Content-Type
+// application/json, a 1MB body cap, and DisallowUnknownFields — mirroring
+// internal/httpapi's mutation transport. An empty body decodes as the zero
+// request.
+func decodeGuidedBody(w http.ResponseWriter, r *http.Request, into any) bool {
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		writeGuidedJSON(w, http.StatusUnsupportedMediaType, guidedErrorBody{
+			Code:    "unsupported_media_type",
+			Message: "Content-Type must be application/json",
+		})
+		return false
+	}
+	defer func() { _ = r.Body.Close() }()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, guidedMaxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_body",
+			Message: "invalid JSON request body: " + err.Error(),
+		})
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_body",
+			Message: "request body must be a single JSON value",
+		})
+		return false
+	}
+	return true
+}
+
+// guidedOriginAllowed mirrors internal/httpapi/mutations.go's origin check:
+// when an Origin header is present it must be a bare loopback http(s) origin
+// matching the request's own loopback host.
+func guidedOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil ||
+		parsed.User != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" ||
+		parsed.Path != "" ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" ||
+		!guidedLoopbackAuthority(parsed.Host) ||
+		!guidedLoopbackAuthority(r.Host) ||
+		!strings.EqualFold(parsed.Host, r.Host) {
+		return false
+	}
+	return true
+}
+
+func guidedLoopbackAuthority(authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func writeGuidedJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}

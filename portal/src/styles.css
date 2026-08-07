@@ -5420,3 +5420,304 @@ a.telemetry-error-row:hover {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* Getting Started guided walkthrough (#437). All classes are guided-prefixed;
+   layout reuses page-heading / content-section / recovery-action / data-table /
+   code-block, and colors come from tokens.css variables only. */
+
+.guided-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.guided-step {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-top: 22px;
+  padding: 22px 24px;
+}
+
+.guided-step[data-state="active"] {
+  border-color: var(--accent);
+}
+
+.guided-step[data-state="failed"] {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
+
+.guided-step[data-state="pending"] {
+  opacity: 0.72;
+}
+
+.guided-step-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.guided-step-header h2 {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.guided-step-index {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 50%;
+  color: var(--accent-ink);
+  display: inline-flex;
+  flex: none;
+  font-size: 12px;
+  font-weight: 760;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.guided-step[data-state="done"] .guided-step-index {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.guided-manual-mark {
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  text-transform: uppercase;
+}
+
+.guided-step-state {
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  margin-left: auto;
+  text-transform: uppercase;
+}
+
+.guided-step-state-pending {
+  color: var(--muted);
+}
+
+.guided-step-state-active {
+  color: var(--accent-ink);
+}
+
+.guided-step-state-done {
+  color: var(--success);
+}
+
+.guided-step-state-failed {
+  color: var(--danger);
+}
+
+.guided-step-body {
+  margin-top: 12px;
+}
+
+.guided-step-body > p {
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 0 0 10px;
+  max-width: 720px;
+}
+
+.guided-step-body code,
+.guided-checklist code,
+.guided-commands code {
+  background: var(--canvas, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+}
+
+.guided-checklist {
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.guided-commands {
+  color: var(--muted-strong);
+  display: grid;
+  font-size: 12px;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.guided-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.guided-badge {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 680;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.guided-badge-set {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line));
+  color: var(--success);
+}
+
+.guided-badge-missing {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--line));
+  color: var(--warning-ink);
+}
+
+.guided-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+  max-width: 720px;
+}
+
+.guided-failed-note {
+  color: var(--danger);
+}
+
+.guided-fields {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  max-width: 560px;
+}
+
+.guided-field {
+  display: grid;
+  gap: 5px;
+}
+
+.guided-field > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.guided-field input {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 10px;
+}
+
+.guided-check {
+  align-items: baseline;
+  color: var(--muted-strong);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.guided-result {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.guided-entry-list {
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.guided-pending {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.guided-pending-reason {
+  color: var(--warning-ink);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.guided-all-clear p {
+  color: var(--success);
+  font-size: 13px;
+  margin: 0;
+}
+
+.guided-findings-row {
+  grid-template-columns: 90px 110px minmax(140px, 1fr) minmax(220px, 2fr);
+}
+
+.guided-findings .data-row {
+  cursor: default;
+  min-height: 0;
+}
+
+.guided-output {
+  font-size: 10px;
+  max-height: 260px;
+}
+
+.guided-stage-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.guided-stage {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  padding: 3px 9px;
+}
+
+.guided-stage-running {
+  border-color: var(--active);
+  color: var(--active);
+}
+
+.guided-stage-done {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 40%, var(--line));
+  color: var(--success);
+}
+
+.guided-run-link a {
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.guided-action-error {
+  margin-bottom: 18px;
+  min-height: 0;
+}

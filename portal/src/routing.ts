@@ -3,6 +3,7 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 
 export type Route =
   | { page: "overview" }
+  | { page: "getting-started" }
   | { page: "workflows" }
   | { page: "goobers" }
   | { page: "gaggle"; id: string }
@@ -22,7 +23,13 @@ export interface ErrorRouteFilters extends ScopeFilters {
   errorClass?: string;
 }
 
-export type PrimaryArea = "overview" | "workflows" | "goobers" | "runs" | "insight";
+export type PrimaryArea =
+  | "overview"
+  | "getting-started"
+  | "workflows"
+  | "goobers"
+  | "runs"
+  | "insight";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -41,6 +48,9 @@ export function parseRoute(hash = window.location.hash): Route {
   }
   if (area === "run" && id) {
     return { page: "run", id };
+  }
+  if (area === "getting-started") {
+    return { page: "getting-started" };
   }
   if (area === "workflows") {
     return { page: "workflows" };

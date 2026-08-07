@@ -524,19 +524,26 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, ins
 			serveInstanceAsset(response, request, instanceRoot) {
 			return
 		}
-		name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
-		if name == "" || name == "." || name == "index.html" {
-			serveDashboardIndex(response, request, index)
-			return
-		}
-		info, err := fs.Stat(assets, name)
-		if err == nil && !info.IsDir() {
-			files.ServeHTTP(response, request)
-			return
-		}
-		http.NotFound(response, request)
+		serveDashboardStatic(response, request, assets, files, index)
 	})
 	return handler, nil
+}
+
+// serveDashboardStatic is the shared dispatcher tail for portal-serving
+// commands (`dashboard`, `getting-started`): the rewritten index for root
+// paths, embedded static files when they exist, and 404 otherwise.
+func serveDashboardStatic(response http.ResponseWriter, request *http.Request, assets fs.FS, files http.Handler, index []byte) {
+	name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
+	if name == "" || name == "." || name == "index.html" {
+		serveDashboardIndex(response, request, index)
+		return
+	}
+	info, err := fs.Stat(assets, name)
+	if err == nil && !info.IsDir() {
+		files.ServeHTTP(response, request)
+		return
+	}
+	http.NotFound(response, request)
 }
 
 // serveInstanceAsset serves a co-branding file from the instance's assets/ dir

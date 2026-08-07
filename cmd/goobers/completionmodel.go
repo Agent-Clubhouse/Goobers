@@ -148,6 +148,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 	},
+	"getting-started": {
+		{name: "port", takesArg: true, desc: "Server port, or auto"},
+		{name: "no-open", desc: "Print the URL without opening a browser"},
+		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
+	},
 	"run": {
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
