@@ -49,10 +49,11 @@ const (
 		"`validate` checks `instance.yaml` and every document under `config/` against the\n" +
 		"canonical schemas. Exit codes are `0` for valid configuration, `1` for\n" +
 		"validation errors, and `2` for usage or I/O errors.\n\n"
-	quickstartInstalledInit = "## 3. Use or create a guided instance\n\n" +
-		"The release installer already ran guided setup at the requested instance path\n" +
-		"(default `./goobers-instance`). If you used the installer, do not initialize that\n" +
-		"instance again. In the commands below, replace `./my-instance` with that same path,\n" +
+	quickstartInstalledInit = "## 3. Create a guided instance\n\n" +
+		"The release installer installs the binary and documentation only; it configures\n" +
+		"nothing unless you opted in with `--guided [instance-path]`\n" +
+		"(default `./goobers-instance`). If you opted in, do not initialize that instance\n" +
+		"again — in the commands below, replace `./my-instance` with that same path,\n" +
 		"quoting it if needed.\n\n" +
 		"If you already followed the bundled README and created `./my-instance`, continue\n" +
 		"with step 4 below. Otherwise, create that guided instance now:\n\n" +
@@ -72,13 +73,29 @@ const (
 		"  --json\n" +
 		"```\n\n" +
 		"The action is non-interactive, embeds the release-matched sample, and is safe to\n" +
-		"re-run. It reports every created or skipped file plus the destination and next\n" +
-		"command. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
+		"re-run. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
 		"To also seed the catalog's labels and issues into an existing disposable GitHub\n" +
 		"repository, add `--work-tracking owner/repo`; the command reads\n" +
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
-		"sample without network access. It never creates or pushes a remote.\n\n"
+		"sample without network access. It never creates or pushes a remote.\n\n" +
+		"The `--json` output is a versioned action envelope:\n\n" +
+		"```json\n" +
+		"{\n" +
+		"  \"action\": \"stub-sample\",\n" +
+		"  \"version\": 2,\n" +
+		"  \"created\": [\".github/workflows/ci.yml\", \"package.json\", \"...\"],\n" +
+		"  \"skipped\": [],\n" +
+		"  \"path\": \"/absolute/path/to/getting-started-task-api\",\n" +
+		"  \"nextCommand\": \"goobers init --template=quickstart ./tutorial-instance\"\n" +
+		"}\n" +
+		"```\n\n" +
+		"`created` lists paths written in this run; `skipped` lists paths already\n" +
+		"present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`\n" +
+		"entries appear in `created` when newly seeded and in `skipped` when the label\n" +
+		"or issue already exists. Without a\n" +
+		"configured token, seed entries appear as `issue:<id> (pending: <reason>)` in\n" +
+		"`skipped`. `nextCommand` is the next command to run.\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
@@ -245,9 +262,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"production-oriented definitions under\n"+
 							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
-							"The release installer already ran guided setup at the requested instance path\n"+
-							"(default `./goobers-instance`). If you used the installer, do not initialize that\n"+
-							"instance again. In the commands below, replace `./my-instance` with that same path,\n"+
+							"The release installer installs the binary and documentation only; it configures\n"+
+							"nothing unless you opted in with `--guided [instance-path]`\n"+
+							"(default `./goobers-instance`). If you opted in, do not initialize that instance\n"+
+							"again — in the commands below, replace `./my-instance` with that same path,\n"+
 							"quoting it if needed.\n\n"+
 							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
 							"below with `./goobers` and create the guided instance now:\n\n"+

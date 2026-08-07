@@ -375,10 +375,10 @@ var copilotModelLister harness.CopilotModelLister
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, instanceRoot, selfBin string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
-		Command:         []string{"copilot"},
+		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
 		AuthCheckArgs:   copilotAuthCheckArgs,
 		ModelLister:     copilotModelLister,
 		EnvCapabilities: envCaps,
@@ -399,7 +399,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 	}
 	claudeEnvCaps[string(capability.AgentModel)] = claudeModelEnv
 	claudeAdapter := &harness.ClaudeAdapter{
-		Command:         []string{"claude"},
+		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessClaudeCode), []string{"claude"}),
 		EnvCapabilities: claudeEnvCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
@@ -412,6 +412,19 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, in
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)
 	}
 	return registry, nil
+}
+
+// harnessCommandOrDefault returns the adopter's launcher override for the named
+// harness (RunnerConfig.HarnessCommand), or def when unset. It defensively
+// copies the override so a later mutation of the config map can't reach into
+// the registered adapter, and falls back to def on an empty slice (already
+// rejected at config load, but belt-and-suspenders — an empty argv would fail
+// at exec).
+func harnessCommandOrDefault(overrides map[string][]string, name string, def []string) []string {
+	if command, ok := overrides[name]; ok && len(command) > 0 {
+		return append([]string(nil), command...)
+	}
+	return def
 }
 
 // buildCredentials is the composition root for the secret-resolver seam. It
@@ -2025,7 +2038,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, instanceRoot, selfBin)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -2573,11 +2586,16 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, "", "")
+	// The admission registry resolves harness config (model/options), and model
+	// resolution spawns the configured launcher for model discovery whenever a
+	// goober declares spec.Model — so the launcher override must apply here too,
+	// or admission probes the wrong runtime (bare copilot on a wrapper-only
+	// host, or a divergent bare install beside the wrapper).
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "")
 	if err != nil {
 		return nil, nil, nil, err
 	}

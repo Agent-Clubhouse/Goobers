@@ -51,7 +51,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, firstDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, firstInstructions, nil,
+		configDir, set, goobers, firstInstructions, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, secondDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, secondInstructions, nil,
+		configDir, set, goobers, secondInstructions, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, before, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil,
+		configDir, set, goobers, instructions, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, after, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil,
+		configDir, set, goobers, instructions, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	machines, digests, resolvedGoobers, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, nil,
+		configDir, set, goobers, instructions, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

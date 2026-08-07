@@ -585,7 +585,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 1
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
 	)
 	if err != nil {
 		printValidationWarnings(stderr, report.CLIWarnings())

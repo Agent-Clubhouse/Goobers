@@ -394,7 +394,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -450,6 +450,73 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	}
 	if claude.SelfBin != "/opt/goobers/bin/goobers" {
 		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", claude.SelfBin)
+	}
+}
+
+// TestBuildHarnessRegistryAppliesLauncherOverride pins the #2483 config-driven
+// launcher: RunnerConfig.HarnessCommand replaces the base CLI invocation for a
+// named harness (e.g. pointing Copilot at a contract-compatible wrapper like
+// `agency copilot`) while an unset harness keeps its built-in default, and the
+// registered adapter holds a defensive copy so a later mutation of the config
+// map can't reach into it.
+// The preflight and admission paths look adapters up through adapterFor, one
+// hop above buildHarnessRegistry — pin that the override survives that hop, so
+// a regression re-hardcoding nil at a call site cannot pass silently.
+func TestAdapterForAppliesLauncherOverride(t *testing.T) {
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"agency", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, override)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if got, want := strings.Join(copilot.Command, " "), "agency copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want overridden %q", got, want)
+	}
+}
+
+func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"agency", "copilot"},
+		// claude-code intentionally omitted: it must keep its default launcher.
+	}
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "")
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+
+	copilotAdapter, err := registry.Get(string(apiv1.HarnessCopilot))
+	if err != nil {
+		t.Fatalf("Get(copilot): %v", err)
+	}
+	copilot, ok := copilotAdapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.CopilotAdapter", copilotAdapter)
+	}
+	if got, want := strings.Join(copilot.Command, " "), "agency copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want overridden %q", got, want)
+	}
+
+	claudeAdapter, err := registry.Get(string(apiv1.HarnessClaudeCode))
+	if err != nil {
+		t.Fatalf("Get(claude-code): %v", err)
+	}
+	claude, ok := claudeAdapter.(*harness.ClaudeAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.ClaudeAdapter", claudeAdapter)
+	}
+	if got, want := strings.Join(claude.Command, " "), "claude"; got != want {
+		t.Fatalf("claude launcher = %q, want unset-harness default %q", got, want)
+	}
+
+	// Mutating the override map after registration must not reach the adapter.
+	override[string(apiv1.HarnessCopilot)][0] = "tampered"
+	if got := strings.Join(copilot.Command, " "); got != "agency copilot" {
+		t.Fatalf("copilot launcher = %q after caller mutation, want the registered copy to be isolated", got)
 	}
 }
 
@@ -538,6 +605,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -558,6 +626,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 				},
 			},
 		},
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -608,6 +677,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 			},
 		},
 		[]string{"COPILOT_HOME"},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1690,7 +1760,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
