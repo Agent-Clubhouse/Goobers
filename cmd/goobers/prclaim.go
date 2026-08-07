@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,42 @@ func claimEligiblePullRequestInOrder(root string, eligible []providers.PullReque
 		return nil, err
 	}
 	return claimPullRequestInOrder(root, eligible, runID, workflow, leaseDuration)
+}
+
+func claimFirstMatchingPullRequest(
+	root string,
+	candidates []providers.PullRequestSummary,
+	matches func(*providers.PullRequestSummary) (bool, error),
+) (*providers.PullRequestSummary, error) {
+	remaining := candidates
+	for len(remaining) > 0 {
+		claimed, err := claimEligiblePullRequestInOrder(root, remaining)
+		if err != nil || claimed == nil {
+			return claimed, err
+		}
+
+		matched, matchErr := matches(claimed)
+		if matched && matchErr == nil {
+			return claimed, nil
+		}
+
+		runID, _, contextErr := providerRunContext()
+		var releaseErr error
+		if contextErr == nil {
+			releaseErr = releasePullRequestClaimsForRun(layoutFor(root), nil, runID)
+		}
+		if err := errors.Join(matchErr, contextErr, releaseErr); err != nil {
+			return nil, err
+		}
+
+		for i := range remaining {
+			if remaining[i].Number == claimed.Number {
+				remaining = remaining[i+1:]
+				break
+			}
+		}
+	}
+	return nil, nil
 }
 
 func pullRequestClaimParameters() (runID, workflow string, leaseDuration time.Duration, err error) {

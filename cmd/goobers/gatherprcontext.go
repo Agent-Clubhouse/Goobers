@@ -216,30 +216,32 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
+	var claimed *providers.PullRequestSummary
+	if hasPinnedCandidate {
+		claimed, err = claimEligiblePullRequestInOrder(root, candidates)
+	} else {
+		claimed, err = claimFirstMatchingPullRequest(root, candidates, func(candidate *providers.PullRequestSummary) (bool, error) {
+			if err := resolveRemediationCheckState(ctx, provider, repo, candidate); err != nil {
+				return false, fmt.Errorf("check state for PR #%d: %w", candidate.Number, err)
+			}
+			if remediationPriorityFor(*candidate) != remediationPriorityNone {
+				return true, nil
+			}
+			if blockedDependents[candidate.Number] == 0 {
+				return false, nil
+			}
+			return behindBase(*candidate)
+		})
+	}
 	if err != nil {
-		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "select and claim eligible PR", err, remediationBriefResultFile)
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writeNoWorkResult(stdout, stderr, "no unclaimed PR needs remediation this cycle")
 	}
 	selected := *claimed
 	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
-	}
-	if !hasPinnedCandidate && remediationPriorityFor(selected) == remediationPriorityNone {
-		if blockedDependents[selected.Number] == 0 {
-			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
-		}
-		behind, err := behindBase(selected)
-		if err != nil {
-			pf(stderr, "error: determine remediation eligibility: %v\n", err)
-			return 1
-		}
-		if !behind {
-			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
-		}
 	}
 
 	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {

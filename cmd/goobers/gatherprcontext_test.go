@@ -26,17 +26,18 @@ import (
 // gather-pr-context's tests: one open PR, its check state, and a fixed set of
 // comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
-	owner, repo        string
-	authenticatedLogin string
-	prNumber           int
-	head, base         string
-	headSHA            string
-	baseSHA            string
-	body               string
-	checkState         string
-	labels             []string
-	comments           []map[string]interface{}
-	includeUnselected  bool
+	owner, repo           string
+	authenticatedLogin    string
+	prNumber              int
+	head, base            string
+	headSHA               string
+	baseSHA               string
+	body                  string
+	checkState            string
+	labels                []string
+	comments              []map[string]interface{}
+	includeUnselected     bool
+	includeEarlierPassing bool
 }
 
 func TestDeferredRemediationCandidatesPreserveMixedTierClaimFallthrough(t *testing.T) {
@@ -100,6 +101,14 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 				"labels":   labelObjs,
 			},
 		}
+		if s.includeEarlierPassing {
+			prs = append([]map[string]interface{}{{
+				"number": s.prNumber - 1, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber-1),
+				"head":     map[string]interface{}{"ref": "goobers/impl/earlier-passing", "sha": "earlier-passing-sha"},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+			}}, prs...)
+		}
 		if s.includeUnselected {
 			prs = append(prs, map[string]interface{}{
 				"number": s.prNumber + 1, "draft": false,
@@ -124,6 +133,12 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/status", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
 	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
@@ -963,7 +978,7 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 		owner: "your-org", repo: "your-repo",
 		prNumber: 56, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA, checkState: "failure",
-		includeUnselected: true,
+		includeUnselected: true, includeEarlierPassing: true,
 	}
 	server := srv.start(t)
 

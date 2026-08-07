@@ -21,15 +21,16 @@ const (
 )
 
 type updateBehindServer struct {
-	mergeable         *bool
-	labels            []string
-	comments          []map[string]interface{}
-	checkState        string
-	updateCalls       int
-	updateStatus      int
-	current           bool
-	failLabelDelete   bool
-	includeUnselected bool
+	mergeable             *bool
+	labels                []string
+	comments              []map[string]interface{}
+	checkState            string
+	updateCalls           int
+	updateStatus          int
+	current               bool
+	failLabelDelete       bool
+	includeUnselected     bool
+	includeEarlierPassing bool
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -54,6 +55,13 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
 			"labels": labelsJSON(s.labels),
 		}}
+		if s.includeEarlierPassing {
+			prs = append([]map[string]interface{}{{
+				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54",
+				"head": map[string]string{"ref": "goobers/implementation/run-54", "sha": "earlier-passing-sha"},
+				"base": map[string]string{"ref": "main", "sha": "opening-base-sha"},
+			}}, prs...)
+		}
 		if s.includeUnselected {
 			prs = append(prs, map[string]interface{}{
 				"number": 56, "state": "open", "html_url": "https://github.test/pulls/56",
@@ -77,6 +85,12 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 		})
 	})
 	mux.HandleFunc(prefix+"/commits/"+headSHA+"/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/check-runs", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
 	})
 	mux.HandleFunc(prefix+"/commits/unselected-head-sha/", func(w http.ResponseWriter, r *http.Request) {
@@ -288,9 +302,10 @@ func TestUpdateBehindPRDispatchesToGitea(t *testing.T) {
 
 func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
 	state := &updateBehindServer{
-		checkState:        "failure",
-		current:           true,
-		includeUnselected: true,
+		checkState:            "failure",
+		current:               true,
+		includeUnselected:     true,
+		includeEarlierPassing: true,
 	}
 	stdout, _, result := runUpdateBehindPRTest(t, state)
 

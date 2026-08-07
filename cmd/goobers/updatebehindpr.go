@@ -112,30 +112,25 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
+	claimed, err := claimFirstMatchingPullRequest(root, candidates, func(candidate *providers.PullRequestSummary) (bool, error) {
+		if err := resolveRemediationCheckState(ctx, provider, repo, candidate); err != nil {
+			return false, fmt.Errorf("check state for PR #%d: %w", candidate.Number, err)
+		}
+		if remediationPriorityFor(*candidate) != remediationPriorityNone {
+			return true, nil
+		}
+		if blockedDependents[candidate.Number] == 0 {
+			return false, nil
+		}
+		return behindBase(*candidate)
+	})
 	if err != nil {
-		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "select and claim eligible PR", err, "update-behind-result.json")
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writeNoWorkResult(stdout, stderr, "no unclaimed PR needs remediation this cycle")
 	}
 	candidate := *claimed
-	if err := resolveRemediationCheckState(ctx, provider, repo, &candidate); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", candidate.Number), err, "update-behind-result.json")
-	}
-	if remediationPriorityFor(candidate) == remediationPriorityNone {
-		if blockedDependents[candidate.Number] == 0 {
-			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
-		}
-		behind, err := behindBase(candidate)
-		if err != nil {
-			return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
-		}
-		if !behind {
-			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
-		}
-	}
 	minSeverity := resolveMinSeverity(stderr)
 	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)
 	if err != nil {
