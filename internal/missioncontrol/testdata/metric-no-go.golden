@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "goobers.dev/mission-control-verdict/v1alpha1",
+  "generatedAt": "2026-08-07T07:00:00Z",
+  "evidence": [
+    {
+      "id": "query.latency",
+      "uri": "artifacts/latency.json",
+      "digest": "sha256:latency"
+    }
+  ],
+  "metrics": [
+    {
+      "id": "latency",
+      "displayName": "Latency",
+      "subsystemId": "api",
+      "requirement": "required",
+      "evidenceId": "query.latency",
+      "value": {
+        "type": "number",
+        "number": 150,
+        "unit": "ms"
+      },
+      "criterion": {
+        "comparator": "lt",
+        "unit": "ms",
+        "threshold": 100
+      },
+      "displayPrecision": 1,
+      "observationWindow": {
+        "start": "2026-08-07T06:55:00Z",
+        "end": "2026-08-07T07:00:00Z"
+      },
+      "dataAsOf": "2026-08-07T06:59:00Z",
+      "requiredFreshness": "5m0s",
+      "age": "1m0s",
+      "verdict": "no-go",
+      "reasonCode": "threshold-violated"
+    }
+  ],
+  "subsystems": [
+    {
+      "id": "api",
+      "displayName": "API",
+      "requirement": "required",
+      "policy": {
+        "unknown": "block"
+      },
+      "requiredMetricIds": [
+        "latency"
+      ],
+      "advisoryMetricIds": [],
+      "verdict": "no-go",
+      "reasonCode": "required-no-go"
+    }
+  ],
+  "overall": {
+    "policy": {
+      "unknown": "block"
+    },
+    "requiredSubsystemIds": [
+      "api"
+    ],
+    "advisorySubsystemIds": [],
+    "verdict": "no-go",
+    "reasonCode": "required-no-go"
+  }
+}
+--- FACTS ---
+MISSION CONTROL: NO-GO (required-no-go)
+SUBSYSTEM API [required]: NO-GO (required-no-go)
+  METRIC Latency [required]: value=150.0 ms; criterion=lt 100.0 ms; freshness=age 1m0s, required 5m0s, data-as-of 2026-08-07T06:59:00Z; window=2026-08-07T06:55:00Z to 2026-08-07T07:00:00Z; NO-GO (threshold-violated)

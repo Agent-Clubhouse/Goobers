@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/version"
 
 	"github.com/goobers/goobers/api/schemas"
@@ -385,17 +386,21 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		return instance.GuidedOptions{}, err
 	}
 	var ciCommand []string
+	var requiredCapabilities []string
 	for _, workflow := range workflows {
 		if workflow != instance.GuidedWorkflowImplementation {
 			continue
 		}
-		cwd, _ := os.Getwd()
-		stack, detected := detectCICommandDefault(cwd)
+		cwd, getwdErr := os.Getwd()
+		if getwdErr != nil {
+			return instance.GuidedOptions{}, fmt.Errorf("resolve current directory for CI detection: %w", getwdErr)
+		}
+		stack, detected, detectedCapability := detectCICommandDefault(cwd)
 		defaultCI := strings.Join(detected, " ")
 		if stack != "" {
-			pf(stdout, "Detected %s build manifest in %s — defaulting the local CI command to `%s`.\n", stack, cwd, defaultCI)
+			pf(stdout, "Guessed %s from a build manifest in the current directory %s; confirm the target repository's local CI command and toolchain capability below.\n", stack, cwd)
 		} else {
-			pln(stdout, "No recognized build manifest (Makefile, go.mod, *.csproj/*.sln, package.json, pom.xml, build.gradle(.kts), Package.swift, pyproject.toml/setup.py/requirements.txt) found; enter the local CI command explicitly.")
+			pln(stdout, "No recognized build manifest (Makefile, go.mod, *.csproj/*.sln, package.json, pom.xml, build.gradle(.kts), Cargo.toml, Package.swift, pyproject.toml/setup.py/requirements.txt) found in the current directory; enter the target repository's local CI command and toolchain capability explicitly.")
 		}
 		ciText, promptErr := p.ask("Local CI command (space-separated argv or JSON array)", defaultCI, validCommand)
 		if promptErr != nil {
@@ -405,6 +410,11 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		if err != nil {
 			return instance.GuidedOptions{}, err
 		}
+		capabilityText, promptErr := p.ask("Required toolchain capability", detectedCapability, runnercap.ValidToken)
+		if promptErr != nil {
+			return instance.GuidedOptions{}, promptErr
+		}
+		requiredCapabilities = []string{capabilityText}
 		break
 	}
 
@@ -471,6 +481,7 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		CopilotTokenEnv:      copilotTokenEnv,
 		Workflows:            workflows,
 		CICommand:            ciCommand,
+		RequiredCapabilities: requiredCapabilities,
 	}, nil
 }
 

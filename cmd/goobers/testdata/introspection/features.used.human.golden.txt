@@ -1,4 +1,5 @@
 FEATURE                                    DSL VERSION  FEATURE SUPPORT  VERSION SUPPORT  SINCE
+goober.spec.capabilities                   1.4          ga               supported        dev
 goober.spec.displayName                    1.4          ga               supported        dev
 goober.spec.gaggle                         1.4          ga               supported        dev
 goober.spec.harness.copilot                1.4          ga               supported        dev
@@ -35,4 +36,4 @@ workflow.spec.tasks                        1.4          ga               support
 workflow.spec.triggers                     1.4          ga               supported        dev
 workflow.terminal.complete                 1.4          ga               supported        dev
 
-35 feature/version row(s)
+36 feature/version row(s)

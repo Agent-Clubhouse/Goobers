@@ -93,6 +93,11 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	return interpreter.featuresForWorkflow(def)
 }
 
+// FeaturesForGaggle resolves features used by a gaggle definition.
+func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
+	return vcurrent.FeaturesForGaggle(spec)
+}
+
 // FeaturesForGoober resolves features used by a goober definition.
 func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 	return vcurrent.FeaturesForGoober(spec)
@@ -110,6 +115,11 @@ func CheckWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDia
 		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
 	}
 	return interpreter.checkWorkflowFeatureSupport(def, allowPreview)
+}
+
+// CheckGaggleFeatureSupport resolves a gaggle and applies support policy.
+func CheckGaggleFeatureSupport(spec apiv1.GaggleSpec, allowPreview bool) []FeatureDiagnostic {
+	return vcurrent.CheckGaggleFeatureSupport(spec, allowPreview)
 }
 
 // CheckGooberFeatureSupport resolves a goober and applies support policy.

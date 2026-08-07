@@ -436,6 +436,38 @@ describe("Insight page", () => {
     expect(screen.queryByRole("heading", { name: "Success and failure" })).not.toBeInTheDocument();
   });
 
+  it("pre-selects the scope and time window from a deep link (#2528)", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation&window=24h";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+    expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
+    expect(screen.getByRole("link", { name: "Clear filters" })).toHaveAttribute(
+      "href",
+      "#/insight?window=24h",
+    );
+  });
+
+  it("keeps a gaggle/workflow scope when navigating to Runs and back via the primary nav (#2528)", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByLabelText("Scope");
+    await user.click(screen.getByRole("button", { name: "Runs" }));
+
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByText("core / implementation")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Insight" }));
+
+    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+  });
+
   it("distinguishes a never-recorded writer from an empty window and from measured data", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");

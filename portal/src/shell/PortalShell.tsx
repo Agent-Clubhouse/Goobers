@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { useCobrand } from "../cobrand";
 import { useLiveData, type DataFreshness, type LiveFreshness } from "../liveData";
 import type { Navigate, PrimaryArea } from "../routing";
+import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
 import { Icon } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
@@ -9,6 +10,7 @@ import { SupportFooter } from "./SupportFooter";
 interface PortalShellProps {
   activeArea: PrimaryArea;
   children: React.ReactNode;
+  currentScope: Pick<ScopeFilters, "gaggle" | "workflow" | "stage">;
   navigate: Navigate;
   standalone: boolean;
   theme: Theme;
@@ -18,11 +20,17 @@ interface PortalShellProps {
 export function PortalShell({
   activeArea,
   children,
+  currentScope,
   navigate,
   standalone,
   theme,
   toggleTheme,
 }: PortalShellProps) {
+  // Navigating between Runs and Insight while a gaggle/workflow/stage scope
+  // is active preserves it instead of resetting to "all" (#2528 acceptance
+  // criterion 4) — outcome/population/window are page-specific refinements
+  // and intentionally do not carry across views.
+  const scopedFilters = hasScopeIdentity(currentScope) ? currentScope : undefined;
   const { config } = useCobrand();
   const { dataFreshness, freshness } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
@@ -73,10 +81,20 @@ export function PortalShell({
             <span className="nav-label">Workflows</span>
           </button>
           <button
+            aria-current={activeArea === "goobers" ? "page" : undefined}
+            aria-label="Goobers"
+            className={activeArea === "goobers" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "goobers" })}
+            type="button"
+          >
+            <Icon name="goober" />
+            <span className="nav-label">Goobers</span>
+          </button>
+          <button
             aria-current={activeArea === "runs" ? "page" : undefined}
             aria-label="Runs"
             className={activeArea === "runs" ? "nav-item nav-item-active" : "nav-item"}
-            onClick={() => navigate({ page: "runs" })}
+            onClick={() => navigate({ page: "runs", filters: scopedFilters })}
             type="button"
           >
             <Icon name="run" />
@@ -86,7 +104,7 @@ export function PortalShell({
             aria-current={activeArea === "insight" ? "page" : undefined}
             aria-label="Insight"
             className={activeArea === "insight" ? "nav-item nav-item-active" : "nav-item"}
-            onClick={() => navigate({ page: "insight" })}
+            onClick={() => navigate({ page: "insight", filters: scopedFilters })}
             type="button"
           >
             <Icon name="insight" />

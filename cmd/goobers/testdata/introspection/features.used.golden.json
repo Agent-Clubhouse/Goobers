@@ -5,6 +5,12 @@
   "dslVersion": "all",
   "features": [
     {
+      "name": "goober.spec.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
       "name": "goober.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev",

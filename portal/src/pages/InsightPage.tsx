@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -13,6 +12,7 @@ import type {
 } from "../api/types";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { ScopeStrip } from "../components/ScopeStrip";
 import {
   type InsightErrorSignaturesSnapshot,
   type InsightSnapshot,
@@ -20,7 +20,8 @@ import {
   useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
-import { routeHash, type ErrorRouteFilters, type RunRouteFilters } from "../routing";
+import { routeHash, type ErrorRouteFilters, type Navigate, type RunRouteFilters } from "../routing";
+import { hasScopeFilters, type ScopeFilters } from "../scope";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
@@ -50,14 +51,21 @@ const WINDOWS: readonly { label: string; value: InsightWindow }[] = [
 
 export function InsightPage({
   client,
+  filters,
+  navigate,
   standalone,
 }: {
   client: DaemonClient;
+  filters?: ScopeFilters;
+  navigate: Navigate;
   standalone: boolean;
 }) {
-  const [window, setWindow] = useState<InsightWindow>("7d");
-  const [scopeKey, setScopeKey] = useState(scopeToKey({ kind: "instance" }));
-  const requestedScope = scopeFromKey(scopeKey);
+  const window = filters?.window ?? "7d";
+  const requestedScope = scopeFromFilters(filters);
+  const setScope = (nextScope: InsightScope) =>
+    navigate({ page: "insight", filters: insightRouteFilters(nextScope, window) });
+  const setWindow = (nextWindow: InsightWindow) =>
+    navigate({ page: "insight", filters: insightRouteFilters(requestedScope, nextWindow) });
   const errorScope = errorSignatureScope(requestedScope);
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const errorSignatures = useInsightErrorSignatures(
@@ -99,7 +107,7 @@ export function InsightPage({
           <span>Scope</span>
           <select
             aria-label="Scope"
-            onChange={(event) => setScopeKey(event.target.value)}
+            onChange={(event) => setScope(scopeFromKey(event.target.value))}
             value={scopeToKey(requestedScope)}
           >
             {scopes.map((option) => (
@@ -124,6 +132,17 @@ export function InsightPage({
           </select>
         </label>
       </div>
+
+      {requestedScope.kind !== "instance" && (
+        <ScopeStrip
+          ariaLabel="Insight scope"
+          clearHref={routeHash({
+            page: "insight",
+            filters: insightRouteFilters({ kind: "instance" }, window),
+          })}
+          filters={errorScope}
+        />
+      )}
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-stale-error" role="alert">
@@ -1138,6 +1157,28 @@ function scopeFromKey(key: string): InsightScope {
     return { kind: "instance" };
   }
   return { kind: "instance" };
+}
+
+// Derives the scope select's value from the shared ScopeFilters model
+// (#2528) — the URL, not local component state, is the source of truth for
+// which gaggle/workflow/stage is selected, so a scope chosen on Insight
+// survives a reload and a scope carried in from Runs pre-selects here.
+function scopeFromFilters(filters: ScopeFilters | undefined): InsightScope {
+  if (filters?.gaggle && filters.workflow && filters.stage) {
+    return { kind: "stage", gaggle: filters.gaggle, workflow: filters.workflow, stage: filters.stage };
+  }
+  if (filters?.gaggle && filters.workflow) {
+    return { kind: "workflow", gaggle: filters.gaggle, workflow: filters.workflow };
+  }
+  if (filters?.gaggle) {
+    return { kind: "gaggle", gaggle: filters.gaggle };
+  }
+  return { kind: "instance" };
+}
+
+function insightRouteFilters(scope: InsightScope, window: InsightWindow): ScopeFilters | undefined {
+  const filters: ScopeFilters = { ...errorSignatureScope(scope), window };
+  return hasScopeFilters(filters) ? filters : undefined;
 }
 
 function formatRate(value: number | undefined): string {

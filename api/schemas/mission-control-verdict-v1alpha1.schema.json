@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/mission-control-verdict-v1alpha1.schema.json",
+  "title": "MissionControlVerdictV1Alpha1",
+  "description": "Provider-neutral metric, subsystem, and overall launch verdict artifact. Go means fresh valid evidence satisfies a criterion; no-go means fresh valid evidence violates it; unknown means evidence is missing, stale, malformed, errored, or insufficient.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "evidence", "metrics", "subsystems", "overall"],
+  "properties": {
+    "schemaVersion": {
+      "const": "goobers.dev/mission-control-verdict/v1alpha1",
+      "description": "Immutable wire-version identifier, independent of telemetry providers."
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time at which the deterministic verdict artifact was generated."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"},
+      "description": "Bounded references to raw query artifacts; raw result rows are not copied here."
+    },
+    "metrics": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/metric"},
+      "description": "Metric verdicts. Required and advisory observations remain explicitly distinguished."
+    },
+    "subsystems": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/subsystem"},
+      "description": "Deterministic subsystem aggregates over their required metric IDs."
+    },
+    "overall": {
+      "$ref": "#/$defs/overall",
+      "description": "Overall launch status aggregated only from required subsystems."
+    }
+  },
+  "$defs": {
+    "verdict": {
+      "type": "string",
+      "enum": ["go", "no-go", "unknown"],
+      "description": "Exhaustive status: go satisfies criteria, no-go violates criteria, and unknown lacks sufficient valid fresh evidence."
+    },
+    "requirement": {
+      "type": "string",
+      "enum": ["required", "advisory"],
+      "description": "Whether the check can affect its parent aggregate; advisory checks never affect launch status."
+    },
+    "reasonCode": {
+      "type": "string",
+      "enum": [
+        "satisfied",
+        "threshold-violated",
+        "missing",
+        "stale",
+        "query-error",
+        "schema-error",
+        "unit-error",
+        "insufficient-evidence",
+        "required-no-go",
+        "required-unknown",
+        "all-required-go",
+        "unknown-allowed"
+      ],
+      "description": "Exhaustive machine reason. Metric go uses satisfied; metric no-go uses threshold-violated; metric unknown uses missing, stale, query-error, schema-error, unit-error, or insufficient-evidence. Aggregate reasons describe required-member outcomes."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uri", "digest"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Artifact-local stable evidence identifier."
+        },
+        "uri": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bounded artifact pointer or durable reference to the raw query result."
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content digest that makes the referenced evidence tamper-evident."
+        }
+      }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9.-]{0,127}$",
+      "description": "Stable lowercase contract identifier."
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "number", "unit"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["number", "integer"],
+          "description": "Normalized numeric observation type."
+        },
+        "number": {
+          "type": "number",
+          "description": "Finite observed numeric value."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical unit, which must exactly match the criterion unit."
+        }
+      }
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comparator", "unit"],
+      "properties": {
+        "comparator": {
+          "type": "string",
+          "enum": ["gt", "gte", "lt", "lte", "range-inclusive"],
+          "description": "Comparison operation; range-inclusive includes both minimum and maximum."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical unit required for both observations and thresholds."
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Finite scalar threshold required by gt, gte, lt, and lte."
+        },
+        "minimum": {
+          "type": "number",
+          "description": "Finite inclusive lower bound required by range-inclusive."
+        },
+        "maximum": {
+          "type": "number",
+          "description": "Finite inclusive upper bound required by range-inclusive."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"comparator": {"const": "range-inclusive"}}},
+          "then": {"required": ["minimum", "maximum"], "not": {"required": ["threshold"]}},
+          "else": {"required": ["threshold"], "not": {"anyOf": [{"required": ["minimum"]}, {"required": ["maximum"]}]}}
+        }
+      ]
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Inclusive start of the observation query window."
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Exclusive end of the observation query window."
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "subsystemId",
+        "requirement",
+        "criterion",
+        "displayPrecision",
+        "observationWindow",
+        "requiredFreshness",
+        "verdict",
+        "reasonCode"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Stable metric or check identifier."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable metric name used by exact facts rendering."
+        },
+        "subsystemId": {
+          "$ref": "#/$defs/id",
+          "description": "Stable identifier of the subsystem that owns this metric."
+        },
+        "requirement": {
+          "$ref": "#/$defs/requirement",
+          "description": "Explicit required or advisory aggregation role."
+        },
+        "evidenceId": {
+          "$ref": "#/$defs/id",
+          "description": "Reference to one entry in the top-level evidence array."
+        },
+        "value": {
+          "$ref": "#/$defs/value",
+          "description": "Valid normalized observation; malformed and incompatible-unit inputs omit it and fail closed."
+        },
+        "criterion": {
+          "$ref": "#/$defs/criterion",
+          "description": "Typed threshold and comparator evaluated for this metric."
+        },
+        "displayPrecision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Number of decimal places used by deterministic facts rendering."
+        },
+        "observationWindow": {
+          "$ref": "#/$defs/window",
+          "description": "Time range represented by the observation."
+        },
+        "dataAsOf": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Source watermark used to calculate freshness."
+        },
+        "requiredFreshness": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "examples": ["5m"],
+          "description": "Positive Go-duration freshness requirement."
+        },
+        "age": {
+          "type": "string",
+          "pattern": "^(0|([0-9]+(ns|us|µs|ms|s|m|h))+)$",
+          "examples": ["1m"],
+          "description": "Calculated non-negative age at artifact generation."
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict",
+          "description": "Authoritative metric verdict."
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/reasonCode",
+          "description": "Machine-readable reason consistent with the metric verdict."
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown"],
+      "properties": {
+        "unknown": {
+          "type": "string",
+          "enum": ["block", "allow"],
+          "description": "Whether a required unknown prevents go; required no-go always yields no-go."
+        }
+      }
+    },
+    "subsystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "requirement", "policy", "requiredMetricIds", "advisoryMetricIds", "verdict", "reasonCode"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id",
+          "description": "Stable subsystem identifier."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable subsystem name."
+        },
+        "requirement": {
+          "$ref": "#/$defs/requirement",
+          "description": "Explicit required or advisory role in overall aggregation."
+        },
+        "policy": {
+          "$ref": "#/$defs/policy",
+          "description": "Explicit handling of unknown required metrics."
+        },
+        "requiredMetricIds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/id"},
+          "description": "Metric IDs whose verdicts determine this subsystem verdict."
+        },
+        "advisoryMetricIds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/id"},
+          "description": "Metric IDs retained for context but excluded from this subsystem verdict."
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict",
+          "description": "Authoritative subsystem verdict."
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/reasonCode",
+          "description": "Machine-readable aggregation reason."
+        }
+      }
+    },
+    "overall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "requiredSubsystemIds", "advisorySubsystemIds", "verdict", "reasonCode"],
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/policy",
+          "description": "Explicit handling of unknown required subsystems."
+        },
+        "requiredSubsystemIds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/id"},
+          "description": "Subsystem IDs whose verdicts determine overall launch status."
+        },
+        "advisorySubsystemIds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/id"},
+          "description": "Subsystem IDs retained for context but excluded from overall launch status."
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict",
+          "description": "Authoritative overall go, no-go, or unknown status."
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/reasonCode",
+          "description": "Machine-readable overall aggregation reason."
+        }
+      }
+    }
+  }
+}

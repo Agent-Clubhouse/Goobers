@@ -2,8 +2,10 @@ package intake
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -15,6 +17,34 @@ func openTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestConcurrentFirstOpenSucceeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			store, err := Open(path)
+			if err != nil {
+				errs <- fmt.Errorf("open %d: %w", i, err)
+				return
+			}
+			defer func() { _ = store.Close() }()
+			if err := store.Observed(context.Background(), fmt.Sprintf("run-%d", i), uint64(i+1)); err != nil {
+				errs <- fmt.Errorf("observe %d: %w", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }
 
 // TestAdvancingRunCancelsStaleRemovalIntent is #1922's first named fixture:

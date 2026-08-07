@@ -149,6 +149,24 @@ describe("runs history page", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps a gaggle/workflow scope when navigating to Insight via the primary nav (#2528)", async () => {
+    window.location.hash = "#/runs?gaggle=core&workflow=implementation";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Insight" }));
+
+    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Runs" }));
+
+    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+  });
+
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "listRuns").mockRejectedValue(new DaemonUnavailableError());

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -56,6 +57,7 @@ func TestInitFresh(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(l.ConfigDir(), "manifest.yaml")); err != nil {
 		t.Fatalf("expected seeded config/manifest.yaml: %v", err)
 	}
+	assertPreviewFeaturesDefaultOff(t, l.ConfigDir())
 
 	set, report, err := LoadConfigDir(l.ConfigDir())
 	if err != nil {
@@ -77,6 +79,7 @@ func TestInitDemoFresh(t *testing.T) {
 	}
 
 	l := NewLayout(root)
+	assertPreviewFeaturesDefaultOff(t, l.ConfigDir())
 	cfg, err := LoadConfig(l.ConfigFile())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -124,25 +127,42 @@ func TestInitQuickstartFresh(t *testing.T) {
 		t.Fatalf("fresh quickstart init skipped entries: %v", res.Skipped)
 	}
 
-	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	configDir := NewLayout(root).ConfigDir()
+	assertPreviewFeaturesDefaultOff(t, configDir)
+	set, report, err := LoadConfigDir(configDir)
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
+
 	if len(set.Gaggles) != 1 || len(set.Goobers) != 2 || len(set.Workflows) != 1 {
 		t.Fatalf("unexpected quickstart config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
-	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
+	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 6 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
+	}
+	if got, want := set.Gaggles[0].Spec.CICommand, []string{"npm", "run", "ci"}; !slices.Equal(got, want) {
+		t.Fatalf("quickstart ciCommand = %v, want %v", got, want)
 	}
 	if len(workflow.Spec.Triggers) != 1 || workflow.Spec.Triggers[0].Type != apiv1.TriggerManual {
 		t.Fatalf("quickstart trigger = %+v, want manual-only", workflow.Spec.Triggers)
 	}
-	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
+	wantTasks := []string{"query-backlog", "implement", "review", "local-ci", "push-branch", "open-pr"}
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
 			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
 		}
+	}
+}
+
+func assertPreviewFeaturesDefaultOff(t *testing.T, configDir string) {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(configDir, "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "goobers.dev/allow-preview-features") {
+		t.Fatalf("generated manifest enables preview features by default:\n%s", manifest)
 	}
 }
 

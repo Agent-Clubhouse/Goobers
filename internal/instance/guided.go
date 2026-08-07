@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -17,7 +18,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	configexamples "github.com/goobers/goobers/config-examples"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 const (
@@ -70,6 +73,7 @@ type GuidedOptions struct {
 	CopilotTokenEnv      string
 	Workflows            []string
 	CICommand            []string
+	RequiredCapabilities []string
 }
 
 // SeedGuidedConfigSource applies prompt-selected guided configuration through
@@ -393,6 +397,17 @@ func copyGuidedSourcePath(destination, source, name string) error {
 func CheckGuidedInitTarget(root string) error {
 	layout := NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err == nil {
+		events, readErr := journal.ReadInstanceLog(layout.SchedulerDir())
+		if readErr != nil {
+			return fmt.Errorf("inspect guided init completion journal: %w", readErr)
+		}
+		if !slices.ContainsFunc(events, func(event journal.Event) bool {
+			return event.Type == journal.EventInitCompleted
+		}) {
+			abs := absPath(root)
+			quoted := strconv.Quote(abs)
+			return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s, but its instance journal has no %s marker; this may be an incomplete guided setup. To replace it, delete %s and rerun `goobers init --guided %s`. To recover the existing setup, run `goobers validate %s` and then `goobers config materialize %s`", ConfigFileName, abs, journal.EventInitCompleted, quoted, quoted, quoted, quoted)
+		}
 		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigFileName, absPath(root))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
@@ -468,8 +483,16 @@ func validateGuidedOptions(opts GuidedOptions) error {
 				return fmt.Errorf("local CI command arguments must not be empty")
 			}
 		}
-	} else if len(opts.CICommand) > 0 {
-		return fmt.Errorf("local CI command requires the implementation workflow")
+		if len(opts.RequiredCapabilities) == 0 {
+			return fmt.Errorf("at least one required toolchain capability is required when selecting the implementation workflow")
+		}
+		for i, required := range opts.RequiredCapabilities {
+			if err := runnercap.ValidateToken(required); err != nil {
+				return fmt.Errorf("required toolchain capability %d: %w", i, err)
+			}
+		}
+	} else if len(opts.CICommand) > 0 || len(opts.RequiredCapabilities) > 0 {
+		return fmt.Errorf("local CI command and required toolchain capabilities require the implementation workflow")
 	}
 	type guidedTokenEnv struct {
 		label string
@@ -566,6 +589,7 @@ func guidedConfig(opts GuidedOptions) *Config {
 		}},
 		Credentials:   credentials,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
+		Runner:        RunnerConfig{Capabilities: append([]string(nil), opts.RequiredCapabilities...)},
 	}
 	return cfg
 }
@@ -734,9 +758,6 @@ func guidedManifest(opts GuidedOptions) []byte {
 kind: Manifest
 metadata:
   name: %s
-  # The pre-GA DSL is preview and must be acknowledged at instance scope.
-  annotations:
-    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: %s
@@ -760,6 +781,7 @@ spec:
 
 func guidedGaggle(opts GuidedOptions) []byte {
 	ciCommand := ""
+	requiredCapabilities := ""
 	if len(opts.CICommand) > 0 {
 		// #2071: this line and the `local-ci` stage in this gaggle's
 		// implementation.yaml (MGV-1/#1009) must be edited together — the
@@ -768,6 +790,9 @@ func guidedGaggle(opts GuidedOptions) []byte {
 		ciCommand = "  # Overrides the `local-ci` stage's declared command in this gaggle's\n" +
 			"  # implementation.yaml (MGV-1/#1009); edit both together.\n" +
 			"  ciCommand: " + yamlStringList(opts.CICommand) + "\n"
+	}
+	if len(opts.RequiredCapabilities) > 0 {
+		requiredCapabilities = "  requiredCapabilities: " + yamlStringList(opts.RequiredCapabilities) + "\n"
 	}
 	return []byte(fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
@@ -787,11 +812,11 @@ spec:
     labels:
       - goobers
     connectionRef: %s
-%s  isolation:
+%s%s  isolation:
     namespace: %s
 `, yamlScalar(opts.GaggleName), yamlScalar(opts.DisplayName), yamlScalar(opts.RepoOwner),
 		yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch), guidedRepositoryConnectionName,
-		yamlScalar(opts.RepoOwner+"/"+opts.RepoName), guidedBacklogConnectionName, ciCommand,
+		yamlScalar(opts.RepoOwner+"/"+opts.RepoName), guidedBacklogConnectionName, ciCommand, requiredCapabilities,
 		yamlScalar("gaggle-"+opts.GaggleName)))
 }
 

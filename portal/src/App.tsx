@@ -16,6 +16,7 @@ import {
 } from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
+import { GoobersPage } from "./pages/GoobersPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -24,6 +25,7 @@ import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
+import { scopeIdentity } from "./scope";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
@@ -156,6 +158,15 @@ function Portal({
     revealRun: (runId: string) => client.revealRun(runId),
   });
 
+  // The gaggle/workflow/stage identity behind the current route, independent
+  // of any page-specific refinement (outcome, population, window). Carried
+  // forward by the primary-nav Runs/Insight buttons so switching views does
+  // not reset an active scope back to "all" (#2528 acceptance criterion 4).
+  const currentScope =
+    (route.page === "runs" || route.page === "insight" || route.page === "errors") && route.filters
+      ? scopeIdentity(route.filters)
+      : {};
+
   let warningSource: ConfigurationWarningSource = { kind: "none" };
   let warningFixtures = noWarnings;
   if (route.page === "overview") {
@@ -178,6 +189,7 @@ function Portal({
     <CobrandContext.Provider value={{ config, loading }}>
       <PortalShell
         activeArea={activeArea(route)}
+        currentScope={currentScope}
         navigate={navigate}
         standalone={standalone}
         theme={theme}
@@ -191,6 +203,7 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}
@@ -202,7 +215,14 @@ function Portal({
         {route.page === "runs" && (
           <RunsPage client={client} filters={route.filters} standalone={standalone} />
         )}
-        {route.page === "insight" && <InsightPage client={client} standalone={standalone} />}
+        {route.page === "insight" && (
+          <InsightPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
         {route.page === "errors" && (
           <ErrorsPage
             client={client}

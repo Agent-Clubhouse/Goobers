@@ -632,18 +632,8 @@ func init() {
 			"help",
 			[]string{"-h", "--help", "help"},
 			apicontract.ActionReadOnlyNavigation,
-			func(args []string, stdout, _ io.Writer) int {
-				switch {
-				case len(args) == 1 && args[0] == "all":
-					usageAll(stdout)
-				case len(args) == 1 && args[0] == "stages":
-					usageStages(stdout)
-				default:
-					usage(stdout)
-				}
-				return 0
-			},
-		),
+			runHelpCommand,
+		).withHelp("show command or concept help", helpHelp),
 	}
 }
 
