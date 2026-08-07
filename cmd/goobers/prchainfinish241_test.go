@@ -40,7 +40,7 @@ func TestOpenPRDerivesTitleAndFixesFromClaimedIssue(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const runID = "run-1"
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
 	seedClaimedIssueJournal(t, root, runID, "42", "Fix the flaky login test")
 
 	t.Chdir(t.TempDir())
@@ -87,7 +87,7 @@ func TestOpenPRDerivesTitleAndFixesFromClaimedIssue(t *testing.T) {
 func TestOpenPRFallsBackToGenericWithoutClaimedIssue(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 	// No journal seeded.
 	t.Chdir(t.TempDir())
 	if code, _, stderr := runArgs(t, "open-pr", root); code != 0 {

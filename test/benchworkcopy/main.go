@@ -29,6 +29,8 @@
 //	goos, goarch   string  host platform
 //	gitVersion     string  `git version` output
 //	partialClone   bool    mirrors provisioned with blobless partial clone (#646)
+//	sparse         array   worktree-mode cones (project.checkout.sparse, #649);
+//	                       omitted for a full checkout
 //	repoURL        string  benchmarked repo (fixture file:// URL or -repo)
 //	fixture        object  generation parameters + generateMs + repoBytes
 //	                       (omitted when -repo names an existing repo)
@@ -99,6 +101,7 @@ type report struct {
 	GOARCH                    string         `json:"goarch"`
 	GitVersion                string         `json:"gitVersion"`
 	PartialClone              bool           `json:"partialClone"`
+	Sparse                    []string       `json:"sparse,omitempty"`
 	Mode                      string         `json:"mode"`
 	RepoURL                   string         `json:"repoURL"`
 	Fixture                   *fixtureReport `json:"fixture,omitempty"`
@@ -152,6 +155,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	sharedBlobBytes := fs.Int64("shared-blob-bytes", 0, "override reusable source blob size")
 	cycles := fs.Int("cycles", 3, "worktree add/teardown cycles to measure")
 	partialClone := fs.Bool("partial-clone", false, "provision mirrors as blobless partial clones (#646) for before/after comparison")
+	sparse := fs.String("sparse", "", "comma-separated repo-relative cones (project.checkout.sparse, #649) for before/after comparison; empty is a full checkout")
 	fixtureDir := fs.String("fixture", "", "generate (or reuse, if it already exists) the fixture at this path instead of a temp dir")
 	keepFixture := fs.Bool("keep-fixture", false, "keep the generated fixture instead of deleting it")
 	repo := fs.String("repo", "", "benchmark this existing repo URL instead of generating a fixture")
@@ -218,6 +222,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	var sparseCones []string
+	if *sparse != "" {
+		sparseCones = strings.Split(*sparse, ",")
+	}
 	rep, err := benchmark(context.Background(), benchOptions{
 		spec:            spec,
 		preset:          *preset,
@@ -225,6 +233,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fixtureDir:      *fixtureDir,
 		keepFixture:     *keepFixture,
 		partialClone:    *partialClone,
+		sparse:          sparseCones,
 		mode:            *mode,
 		baseRef:         *baseRef,
 		cycles:          *cycles,
@@ -262,6 +271,7 @@ type benchOptions struct {
 	fixtureDir      string
 	keepFixture     bool
 	partialClone    bool
+	sparse          []string
 	baseRef         string
 	cycles          int
 	mode            string
@@ -277,6 +287,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 		GOARCH:       runtime.GOARCH,
 		GitVersion:   gitVersion(ctx),
 		PartialClone: opts.partialClone,
+		Sparse:       opts.sparse,
 		Mode:         opts.mode,
 	}
 
@@ -386,6 +397,7 @@ func benchmark(ctx context.Context, opts benchOptions, progress io.Writer) (*rep
 			RunID:   fmt.Sprintf("bench-%d", i),
 			BaseRef: opts.baseRef,
 			Branch:  fmt.Sprintf("goobers/bench/run%d", i),
+			Sparse:  opts.sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("worktree add (cycle %d): %w", i, err)

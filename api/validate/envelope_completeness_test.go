@@ -110,6 +110,10 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Name: "reference",
 			Path: "/workspace-reference",
 		}},
+		CheckoutCones: map[string][]string{
+			"":          {"services/web"},
+			"reference": {"docs"},
+		},
 		Item: &apiv1.BacklogItem{
 			ID:        "1704",
 			Provider:  apiv1.ProviderGitHub,

@@ -53,10 +53,16 @@ Each item has one of these curation modes:
   drifted, leave the issue completely untouched: no label churn and no comment.
   If drift requires any mutation, explain it in a comment; remove
   `goobers:ready` when the item is no longer shovel-ready and either resolve the
-  issue under the rules below or add `goobers:needs-human`.
+  issue under the rules below, add `goobers:blocked-on-sibling`, or add
+  `goobers:needs-human`.
 - `curationMode: "read-only"` (also carrying `readOnly: true`) is an in-flight
   item. Inspect it for re-sweep context, but never comment on, label, edit,
   close, or split it. Its active implementation/review owns all mutations.
+- `curationMode: "dependency-recheck"` means the deterministic selector
+  revalidated the item's native named blockers and found that every blocker
+  closed or that an open blocker now carries `goobers:needs-human`. Re-read the
+  blockers and apply §6. Unchanged open implementation dependencies are filtered
+  before claim and never reach this mode.
 
 For each mutable item, in order:
 
@@ -195,8 +201,9 @@ maintenance.
 
 ### 6. Mark the outcome — bias toward `ready`
 
-Every item you finish curating gets **exactly one** of these two labels (a
-tracking parent gets neither — mark its children instead).
+Every item you finish curating gets **exactly one** of these three labels (a
+tracking parent gets neither — mark its children instead):
+`goobers:ready`, `goobers:blocked-on-sibling`, or `goobers:needs-human`.
 
 Mark **`goobers:ready`** when the item is deduped, tagged, and scoped to a
 single change CI can plausibly validate. Crucially, **the following are NOT
@@ -216,13 +223,42 @@ reasons to withhold `ready`** — resolve them yourself and mark ready:
   implementer's call. Mark ready and note the recommended approach in the body.
 - **Dedupe/ownership housekeeping** (see §1) — you make that call.
 
+Mark **`goobers:blocked-on-sibling`** when a named, still-open sibling issue or
+PR is only an implementation prerequisite. Sequencing is not a human decision:
+remove `goobers:ready` and `goobers:needs-human`, name the blocker in the
+explanatory comment, register each blocker as a native GitHub blocked-by
+dependency, and leave the item open to self-clear on a later pass. Do not apply
+the label unless the native dependency is present: the deterministic selector
+uses that relationship to revalidate the blocker without claiming the item.
+
+Before assigning any dependency disposition, re-read every named blocker and
+its linked PRs from the provider; never rely on an earlier curation comment or
+the claimed-items snapshot for current state. Apply these cases:
+
+- **Open implementation dependency:** use `goobers:blocked-on-sibling`, never
+  `goobers:needs-human`.
+- **Closed issue or merged PR:** the gate is satisfied; remove
+  `goobers:blocked-on-sibling` and mark the item `goobers:ready` when no other
+  gate remains.
+- **Open sibling decision:** use `goobers:needs-human` only when the sibling's
+  current body or comments identify a specific unresolved human decision. Name
+  both the sibling and that decision.
+
+Read the claimed item's comments before applying `goobers:needs-human`. If a
+human or prior curator comment cleared or refuted the same needs-human
+rationale, do not reapply it on a repeated pass. Reapply only when evidence
+recorded after that clearing comment establishes a new unresolved human
+decision, and cite that newer evidence. An unchanged open dependency remains
+`goobers:blocked-on-sibling` without another comment or label mutation.
+
 Mark **`goobers:needs-human`** only for a genuine decision a person must make:
 choosing among **materially divergent product/design contracts**; a **breaking
 change** to an existing contract; **provisioning an external resource or
 credential** you cannot create; a **destructive or irreversible default**
 (deletion, pruning, force-release, a security posture); a **product /
 user-facing policy default**; a **priority / whether-to-do-at-all** call; or a
-dependency on a **still-open sibling decision** (name the blocking issue).
+dependency on a **still-open sibling decision** under the evidence rule above
+(name the blocking issue).
 
 ## For the human — every escalation must be immediately actionable
 
@@ -251,8 +287,10 @@ An already-ready item is mutable only when it is explicitly marked
 its invariant still holds. An item carrying `goobers:needs-human` should not
 have been selected; skip it without modification. A human who wants one
 re-evaluated removes that label, returning it to the forward pool. A claimed
-tracking parent is the exception: perform only the §5 roadmap and checklist
-maintenance, then leave its outcome labels absent.
+item carrying `goobers:blocked-on-sibling` is intentionally revisited: re-read
+each named blocker and apply §6, making no mutation when its state is unchanged.
+A claimed tracking parent is the exception: perform only the §5 roadmap and
+checklist maintenance, then leave its outcome labels absent.
 
 ## Explain every action
 

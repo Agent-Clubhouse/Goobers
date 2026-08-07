@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha7` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha8` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -114,7 +114,8 @@ The runner hands the stage an `InvocationEnvelope`:
 - `instructionAddendum` — an optional operator-supplied instruction appended to
   the agent's configured instructions for one explicit rerun invocation. It is
   journaled with the intervention and never written to the workflow definition.
-- `inputs` — the stage's own static config from its definition.
+- `inputs` — the stage's own static config from its definition. Agentic harnesses
+  render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
@@ -122,6 +123,14 @@ The runner hands the stage an `InvocationEnvelope`:
   fields only: config-side declarations such as `project.checkout` (B2, #649)
   are consumed by the runner before a stage runs and never ride the envelope
   (`RepoRef.EnvelopeRef`).
+- `checkoutCones` — present only when the runner honored a
+  `project.checkout.sparse` declaration (#649): the repo-relative path cones
+  actually materialized, keyed by workspace identity (`""` for the primary
+  `workspace`, else the matching `additionalWorkspaces[i].name`). Absent (the
+  common case) means every workspace has a full checkout. This is how a
+  partial checkout is declared to a stage — deliberately a sibling of
+  `repoRef` rather than a field on it, so `repoRef`'s own shape never changes
+  regardless of checkout config.
 
 ## Where a stage writes its output
 
@@ -779,7 +788,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha7` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha8` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -790,7 +799,9 @@ from the diff alone.
   pointers used at parallel joins; `v1alpha6` admits the optional `repoRef.project`
   invocation field for Azure DevOps repository identity; `v1alpha7` adds
   input-integrity grades to invocation items, context pointers, and artifact
-  pointers, plus the stage's declared minimum.
+  pointers, plus the stage's declared minimum; `v1alpha8` adds the optional
+  `checkoutCones` invocation field declaring a stage's sparse-checkout cones
+  (project.checkout.sparse, #649).
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

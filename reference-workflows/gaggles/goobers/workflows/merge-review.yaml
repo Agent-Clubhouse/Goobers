@@ -98,7 +98,40 @@ spec:
         - head
         - base
         - advisoryMode
-      next: gather-sibling-context
+      next: check-issue-staleness
+
+    # #2340: re-fetch the PR's pinned linked issue and compare its live
+    # updatedAt against the implementation-time snapshot BEFORE the expensive
+    # agentic review gate runs (same altitude as open-pr's #947 mid-flight
+    # staleness re-check, one stage earlier in implementation.yaml). A PR
+    # whose issue changed materially since implementation began is routed to
+    # remediation here instead of being reviewed against stale copied
+    # criteria; #2238's goobers:run-aborted label only covers the narrower
+    # case of the implementation run itself being cancelled.
+    - name: check-issue-staleness
+      type: deterministic
+      goal: Refuse to review a PR against a stale issue snapshot.
+      run:
+        command: ["goobers", "check-issue-staleness"]
+      inputsFrom:
+        pullNumber: number
+        head: head
+        base: base
+        advisoryMode: advisoryMode
+      inputs:
+        resultFile: "issue-staleness-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      policyActions:
+        - route-verdict
+      expectedOutputs:
+        - number
+        - head
+        - base
+        - advisoryMode
+        - issueStale
+      next: issue-staleness-gate
 
     # The cross-PR value stage (design doc §3): "this is where the cross-PR
     # value lives; without it the review degrades back to single-diff and
@@ -193,11 +226,11 @@ spec:
         # A test pins that the two stages agree on identical inputs.
         electionPolicy: "fifo"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
         - github:pr:review
       policyActions:
         - publish-review
-        - route-verdict
+        - route-provider-verdict
         - close-pr
       expectedOutputs:
         - selectedNumber
@@ -281,7 +314,7 @@ spec:
         pullNumber: selectedNumber
         headSha: selectedHeadSha
         baseSha: selectedBaseSha
-        # apply-verdict resolves this with its github:pr:write credential, the
+        # apply-verdict resolves this with its provider:pr:write credential, the
         # identity that actually owns the sticky verdict. Keep merge-pr scoped
         # to github:pr:merge instead of injecting the broader posting token.
         verdictAuthor: verdictAuthor
@@ -428,6 +461,21 @@ spec:
       # Terminal — the demotion label + sticky comment are the durable output.
 
   gates:
+    # #2340: check-issue-staleness re-fetches the pinned linked issue and
+    # emits issueStale before the expensive agentic review gate runs. A
+    # materially-changed issue routes here to a terminal stop (the stage
+    # itself already labeled/commented the PR) instead of into review.
+    - name: issue-staleness-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: issueStale
+          equals: "false"
+      branches:
+        pass: gather-sibling-context
+        fail: ""
+
     # Scope gate (#1313/#1814): gather-sibling-context reconciles the label and
     # computes scopeGateParked before review. The value is carried through
     # verdict publication and checked only here, immediately before merge, so

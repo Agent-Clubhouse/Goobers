@@ -13,5 +13,8 @@
   "rerun": {
     "class": "runtime-mutation",
     "capability": "rerun"
+  },
+  "revealRun": {
+    "class": "maintenance"
   }
 }

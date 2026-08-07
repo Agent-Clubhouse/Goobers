@@ -28,6 +28,7 @@ var (
 	errStalledRun          = errors.New("runner: stalled run escalation requested")
 	errCanceledRun         = errors.New("runner: run cancellation requested")
 	errRunDurationExceeded = errors.New("runner: maximum run duration exceeded")
+	errHardShutdown        = errors.New("runner: hard shutdown requested")
 )
 
 // interruptKind distinguishes why a live run's active attempt was interrupted,
@@ -40,6 +41,7 @@ const (
 	interruptStalled interruptKind = iota
 	interruptCancel
 	interruptDurationExceeded
+	interruptHardShutdown
 )
 
 // stalledRequest is a pending interrupt of a live run's active attempt. now is
@@ -88,8 +90,9 @@ type activeRun struct {
 }
 
 type activeRunSet struct {
-	mu   sync.Mutex
-	runs map[string]*activeRun
+	mu        sync.Mutex
+	runs      map[string]*activeRun
+	hardStops map[string]struct{}
 }
 
 type activeRunContextKey struct{}
@@ -123,7 +126,12 @@ func (r *Runner) withActiveRunCleanup(ctx context.Context, runID string, jr *jou
 		return Result{}, err
 	}
 	r.active.runs[runID] = active
+	_, hardStop := r.active.hardStops[runID]
+	delete(r.active.hardStops, runID)
 	r.active.mu.Unlock()
+	if hardStop {
+		active.requestHardShutdown()
+	}
 
 	// Keep the public Start/Resume owner outside the workflow goroutine so a
 	// watchdog takeover can return even if an invocation ignores cancellation.
@@ -234,6 +242,48 @@ func (r *activeRun) requestCancel(now time.Time) (requested bool) {
 		phase: journal.PhaseAborted,
 		cause: errCanceledRun,
 	})
+}
+
+func (r *activeRun) requestHardShutdown() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false
+	}
+	request := stalledRequest{
+		kind:  interruptHardShutdown,
+		cause: errHardShutdown,
+	}
+	r.request = &request
+	r.cancel(request.cause)
+	return true
+}
+
+// HardStopRun interrupts an owned in-flight stage without terminalizing its
+// run. The owner checkpoints the current machine state so startup can resume it.
+func (r *Runner) HardStopRun(runID string) bool {
+	active := r.activeRun(runID)
+	if active == nil {
+		return false
+	}
+	return active.requestHardShutdown()
+}
+
+// HardStopRunWhenStarted interrupts runID now or as soon as its active run
+// context is registered.
+func (r *Runner) HardStopRunWhenStarted(runID string) {
+	r.active.mu.Lock()
+	active := r.active.runs[runID]
+	if active == nil {
+		if r.active.hardStops == nil {
+			r.active.hardStops = make(map[string]struct{})
+		}
+		r.active.hardStops[runID] = struct{}{}
+		r.active.mu.Unlock()
+		return
+	}
+	r.active.mu.Unlock()
+	active.requestHardShutdown()
 }
 
 func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {
@@ -439,7 +489,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover stalled run %q: %w", runID, err)
 	}
@@ -591,7 +641,7 @@ func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover expired run %q: %w", runID, err)
 	}
@@ -693,6 +743,13 @@ func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *jou
 	request, ok := stalledRequestFromContext(ctx)
 	if !ok {
 		return Result{}, false, nil
+	}
+	if request.kind == interruptHardShutdown {
+		jr.SetMachineState(finalState)
+		if err := jr.Checkpoint(); err != nil {
+			return Result{}, true, fmt.Errorf("runner: checkpoint hard-stopped run %q at %q: %w", runID, finalState, err)
+		}
+		return Result{Phase: journal.PhaseRunning, FinalState: finalState, Steps: steps}, true, nil
 	}
 	active, activeOK := ctx.Value(activeRunContextKey{}).(*activeRun)
 	if activeOK {

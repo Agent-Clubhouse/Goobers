@@ -151,7 +151,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
@@ -195,7 +195,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
@@ -569,9 +569,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:   startState,
-				attempt: attempt,
-				class:   startedAttemptClass(segment, startState, attempt),
+				stage:                startState,
+				attempt:              attempt,
+				class:                startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
@@ -1543,6 +1544,18 @@ func startedAttemptClass(events []journal.Event, stageName string, attempt int) 
 		}
 	}
 	return ""
+}
+
+func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, attempt int) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventError || event.Stage != stageName || event.Attempt != attempt {
+			continue
+		}
+		committed, _ := event.Runner[infraCommittedWorkKey].(bool)
+		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
+	}
+	return false
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

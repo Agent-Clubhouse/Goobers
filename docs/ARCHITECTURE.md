@@ -390,7 +390,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
-| Config delivery | Local `config/` directory watched by daemon | **ArgoCD** sync → CRDs → **Goobers operator** |
+| Config delivery | Startup-loaded local `config/`; opt-in `--watch-config` for direct edits; or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
 | Run telemetry store | Journal spans + SQLite | **ADX** via OTLP |
 | Secrets | Env/file | **Azure Key Vault** |
 | AuthN | None / optional OIDC | **Entra ID** |

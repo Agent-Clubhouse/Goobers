@@ -215,7 +215,7 @@ spec:
         confineToActionRoots: "true"
         actionRoots: "reference-workflows/gaggles/goobers,skills"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:

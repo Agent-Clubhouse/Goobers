@@ -29,6 +29,7 @@ const (
 	WorkflowDetailPath           = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
 	RunsPath                     = V1Prefix + "/runs"
 	RunDetailPath                = V1Prefix + "/runs/{run}"
+	RunRevealPath                = V1Prefix + "/runs/{run}/reveal"
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
@@ -60,6 +61,7 @@ const (
 	RouteWorkflowDetail           RouteID = "workflowDetail"
 	RouteRuns                     RouteID = "runs"
 	RouteRunDetail                RouteID = "runDetail"
+	RouteRunReveal                RouteID = "runReveal"
 	RouteRunEvents                RouteID = "runEvents"
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
@@ -154,6 +156,7 @@ var v1Routes = []Route{
 	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
+	{ID: RouteRunReveal, Method: http.MethodPost, Path: RunRevealPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
@@ -248,6 +251,16 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 			}
 			return nil, fmt.Errorf(
 				"%s route %q uses method %q for a runtime mutation",
+				name,
+				route.ID,
+				route.Method,
+			)
+		case ActionMaintenance:
+			if route.Method != http.MethodGet && route.Method != http.MethodHead {
+				break
+			}
+			return nil, fmt.Errorf(
+				"%s route %q uses method %q for a maintenance action",
 				name,
 				route.ID,
 				route.Method,

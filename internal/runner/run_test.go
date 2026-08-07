@@ -219,12 +219,14 @@ type infrastructureFlakyDeterministic struct {
 }
 
 type sequencedDeterministic struct {
-	failures []error
-	calls    int
+	failures  []error
+	calls     int
+	callTimes []time.Time
 }
 
 func (s *sequencedDeterministic) Run(_ context.Context, _ apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	s.calls++
+	s.callTimes = append(s.callTimes, time.Now())
 	if s.calls <= len(s.failures) {
 		return apiv1.ResultEnvelope{}, s.failures[s.calls-1]
 	}
@@ -1440,6 +1442,110 @@ func TestRunnerKeepsCheckoutOffTheStageWire(t *testing.T) {
 	}
 	if auto.env.RepoRef.Checkout != nil {
 		t.Fatalf("gate envelope RepoRef.Checkout = %+v, want stripped", auto.env.RepoRef.Checkout)
+	}
+}
+
+// TestRunnerDeclaresCheckoutConesOnTheStageWire is #649's counterpart to
+// TestRunnerKeepsCheckoutOffTheStageWire: RepoRef.Checkout itself stays off
+// the wire, but the sparse cones it declared are surfaced through the
+// separate, additive CheckoutCones envelope field so a stage can tell its
+// checkout is partial. A workflow with no checkout override gets no field at
+// all — the key-absent, regression-identical case.
+func TestRunnerDeclaresCheckoutConesOnTheStageWire(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "quality",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "quality",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{gate.OutcomePass: workflow.TerminalComplete, gate.OutcomeFail: workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, &envelopeCapturingAutomated{})
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"services/web"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	taskEnv, ok := det.received["run-cones:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	want := map[string][]string{"": {"services/web"}}
+	if !reflect.DeepEqual(taskEnv.CheckoutCones, want) {
+		t.Fatalf("task envelope CheckoutCones = %+v, want %+v", taskEnv.CheckoutCones, want)
+	}
+}
+
+// TestRunnerOmitsCheckoutConesForFullCheckout is the key-absent counterpart:
+// a workflow that never declares project.checkout gets no CheckoutCones
+// field at all, not an empty-but-present map.
+func TestRunnerOmitsCheckoutConesForFullCheckout(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "build",
+		Tasks: []apiv1.Task{{
+			Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+			Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "checkout-cones-absent-fixture", Version: 1, Spec: spec})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-cones-absent:build": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, nil)
+
+	if _, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-cones-absent",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	taskEnv, ok := det.received["run-cones-absent:build"]
+	if !ok {
+		t.Fatal("build never dispatched")
+	}
+	if taskEnv.CheckoutCones != nil {
+		t.Fatalf("task envelope CheckoutCones = %+v, want nil (no checkout override declared)", taskEnv.CheckoutCones)
 	}
 }
 
@@ -3030,6 +3136,34 @@ func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
 	}
 	if starts[0].AttemptClass != "" || starts[1].AttemptClass != journal.AttemptInfra {
 		t.Fatalf("attempt classes = [%q %q], want [empty infra]", starts[0].AttemptClass, starts[1].AttemptClass)
+	}
+}
+
+func TestRunnerWaitsForRateLimitResetBeforeInfrastructureRetry(t *testing.T) {
+	machine := retryFixtureMachine(t, 1)
+	resetAt := time.Now().Add(100 * time.Millisecond)
+	deterministic := &sequencedDeterministic{failures: []error{
+		invoke.InfrastructureFailureUntil(errors.New("github rate limited"), resetAt),
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return deterministic, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-rate-limit-reset",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted || len(deterministic.callTimes) != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed after 2 attempts", res, len(deterministic.callTimes))
+	}
+	if deterministic.callTimes[1].Before(resetAt) {
+		t.Fatalf("retry started at %v before reset %v", deterministic.callTimes[1], resetAt)
 	}
 }
 
@@ -5862,7 +5996,7 @@ func TestRunnerRoutesNonRetryableFailureThroughGateEscalationBranch(t *testing.T
 // TestRunnerFastFailsEmptyDiffFromAgenticStage is #415's reviewer sibling,
 // driven end to end: an AGENTIC implement stage that returns success but
 // commits nothing (an empty diff) reaching an agentic review gate fast-`fail`s
-// on review-1 — terminal `aborted` via the gate's fail branch — without ever
+// on review-1 and routes through the mechanical escalation branch without ever
 // invoking the reviewer. Exercises the runner wiring the gate-package unit test
 // can't: evaluateGate detecting the empty diff from recordReviewerDiff's nil
 // pointer AND confirming the subject stage is agentic before passing
@@ -5903,8 +6037,8 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Phase != journal.PhaseAborted {
-		t.Fatalf("phase = %q, want aborted (an agentic stage's empty diff fast-fails to the gate's fail→@abort branch on review-1)", res.Phase)
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated (an agentic stage's empty diff routes to remediation rather than the reviewer fail branch)", res.Phase)
 	}
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")

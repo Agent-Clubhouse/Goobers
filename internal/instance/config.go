@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -131,6 +132,9 @@ type Config struct {
 
 // WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
 type WorkcopiesConfig struct {
+	// Root is an optional absolute base path for managed mirrors and worktrees.
+	// Gaggle names are appended beneath it to preserve workforce isolation.
+	Root string `json:"root,omitempty" yaml:"root,omitempty"`
 	// PartialClone opts newly created mirrors into blobless partial clones
 	// with a heads+tags-narrowed refresh refspec (#646, design §3 B1): blobs
 	// are fetched on demand when a stage worktree first materializes them,
@@ -140,12 +144,46 @@ type WorkcopiesConfig struct {
 	// byte-identical to previous releases; existing mirrors are never
 	// migrated in either direction.
 	PartialClone bool `json:"partialClone,omitempty" yaml:"partialClone,omitempty"`
+	// ObjectCache opts newly created mirrors into borrowing objects from a
+	// shared, node-level object cache via git alternates (#654, design §3
+	// B3): one bare mirror clone per repo URL, shared by every gaggle
+	// Manager on the node targeting that repo, instead of each gaggle
+	// paying for its own full clone. False — the default — keeps mirror
+	// creation byte-identical to previous releases; no `_objects` cache
+	// directory is ever created. See worktree.WithObjectCache.
+	ObjectCache bool `json:"objectCache,omitempty" yaml:"objectCache,omitempty"`
 }
 
 // PartialCloneEnabled reports whether newly created mirrors should be
 // blobless partial clones (workcopies.partialClone, defaults to false).
 func (c *Config) PartialCloneEnabled() bool {
 	return c.Workcopies != nil && c.Workcopies.PartialClone
+}
+
+// ObjectCacheEnabled reports whether newly created mirrors should reference
+// a shared node-level object cache (workcopies.objectCache, defaults to
+// false).
+func (c *Config) ObjectCacheEnabled() bool {
+	return c.Workcopies != nil && c.Workcopies.ObjectCache
+}
+
+// EffectiveWorkcopiesLayout applies the gaggle override, then the instance
+// override, to layout. An empty root preserves the instance-local default.
+func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (Layout, error) {
+	root := ""
+	if c != nil && c.Workcopies != nil {
+		root = c.Workcopies.Root
+	}
+	if gaggle != nil && gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
+		root = gaggle.Spec.Workcopies.Root
+	}
+	if root == "" {
+		return layout, nil
+	}
+	if !filepath.IsAbs(root) {
+		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
+	}
+	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
 }
 
 // EffectiveSelfIdentity returns the provider login configured for gaggle,
@@ -1276,6 +1314,9 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
+	if c.Workcopies != nil && c.Workcopies.Root != "" && !filepath.IsAbs(c.Workcopies.Root) {
+		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Workcopies.Root)
+	}
 	if err := c.validateAPIConfig(); err != nil {
 		return err
 	}
@@ -2230,6 +2271,12 @@ func validateLoopbackListenAddress(address string) error {
 		return fmt.Errorf("port %q must be a number from 0 through 65535", port)
 	}
 	return nil
+}
+
+// IsLoopbackListenAddress reports whether address is a valid loopback
+// host:port listener.
+func IsLoopbackListenAddress(address string) bool {
+	return validateLoopbackListenAddress(address) == nil
 }
 
 // WriteConfig marshals cfg as YAML and writes it to path.

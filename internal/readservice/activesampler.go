@@ -79,9 +79,12 @@ type activeRunSampler struct {
 	// mitigation into a load generator.
 	sampling sync.Mutex
 
-	stop     chan struct{}
-	stopOnce sync.Once
-	done     chan struct{}
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	stop        chan struct{}
+	done        chan struct{}
+	doneOnce    sync.Once
 }
 
 // defaultActiveSampleInterval is how often the sampler refreshes.
@@ -111,12 +114,20 @@ func newActiveRunSampler(layout instance.Layout, interval time.Duration, now fun
 	}
 }
 
-// Start begins sampling in the background. The first sample is taken
-// immediately, so a daemon that has been up for one interval is not still
-// reporting "unavailable".
+// Start begins sampling in the background. Repeated calls are idempotent. The
+// first sample is taken immediately, so a daemon that has been up for one
+// interval is not still reporting "unavailable".
 func (a *activeRunSampler) Start() {
+	a.lifecycleMu.Lock()
+	if a.started || a.stopped {
+		a.lifecycleMu.Unlock()
+		return
+	}
+	a.started = true
+	a.lifecycleMu.Unlock()
+
 	go func() {
-		defer close(a.done)
+		defer a.doneOnce.Do(func() { close(a.done) })
 		a.refresh()
 		ticker := time.NewTicker(a.interval)
 		defer ticker.Stop()
@@ -131,9 +142,19 @@ func (a *activeRunSampler) Start() {
 	}()
 }
 
-// Stop halts sampling and waits for the in-flight walk to finish.
+// Stop halts sampling and waits for the in-flight walk to finish. Repeated
+// calls are safe, including before Start or concurrently with Start.
 func (a *activeRunSampler) Stop() {
-	a.stopOnce.Do(func() { close(a.stop) })
+	a.lifecycleMu.Lock()
+	if !a.stopped {
+		a.stopped = true
+		close(a.stop)
+	}
+	if !a.started {
+		a.doneOnce.Do(func() { close(a.done) })
+	}
+	a.lifecycleMu.Unlock()
+
 	<-a.done
 }
 

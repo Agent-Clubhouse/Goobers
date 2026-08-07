@@ -326,7 +326,19 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
+	wantCompiled := []string{
+		"start: query",
+		"query[deterministic] -> analyze",
+		"security[deterministic] -> implement",
+		"performance[deterministic] -> implement",
+		"implement[agentic] -> review",
+		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
+		"analyze[parallel](branch security -> security, branch performance -> performance, branch-failed -> abort)",
+	}
+	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, wantCompiled) {
+		t.Errorf("compiled graph = %v, want %v", got, wantCompiled)
+	}
+	wantDocument := []string{
 		"start: query",
 		"query[deterministic] -> analyze",
 		"security[deterministic] -> @join",
@@ -335,11 +347,8 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
 		"analyze[parallel](branch security -> security, branch performance -> performance, join -> implement, branch-failed -> abort)",
 	}
-	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, want) {
-		t.Errorf("compiled graph = %v, want %v", got, want)
-	}
-	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, want) {
-		t.Errorf("document graph = %v, want %v", got, want)
+	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, wantDocument) {
+		t.Errorf("document graph = %v, want %v", got, wantDocument)
 	}
 }
 
@@ -646,6 +655,11 @@ func loadFixtureConfig(
 	root := filepath.Join(t.TempDir(), "instance")
 	if _, err := instance.Init(root); err != nil {
 		t.Fatal(err)
+	}
+	for _, skill := range []string{"implement", "run-tests"} {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
 	if err := os.Remove(filepath.Join(workflowDir, "default-implement.yaml")); err != nil {

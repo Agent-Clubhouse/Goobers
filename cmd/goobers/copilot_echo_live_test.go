@@ -26,6 +26,7 @@ func TestIntegrationCopilotEchoWorkflow(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(profile, ".local", "share"))
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "ghp_copilot_echo_fixture_dummy_token")
 	root := initDemo(t)
+	preserveCopilotEchoEvidence(t, root)
 	installCopilotEchoFixture(t, root)
 
 	fixtureRepo := newDaemonFixtureRepo(t)
@@ -73,6 +74,32 @@ func TestIntegrationCopilotEchoWorkflow(t *testing.T) {
 	if runMatches != 1 {
 		t.Fatalf("matching completed run.finished events = %d, want 1", runMatches)
 	}
+}
+
+func preserveCopilotEchoEvidence(t *testing.T, root string) {
+	t.Helper()
+
+	evidenceDir := os.Getenv("GOOBERS_COPILOT_EVIDENCE_DIR")
+	if evidenceDir == "" {
+		return
+	}
+	t.Cleanup(func() {
+		runsDir := filepath.Join(root, "runs")
+		if _, err := os.Stat(runsDir); err != nil {
+			if os.IsNotExist(err) {
+				return
+			}
+			t.Errorf("stat Copilot echo runs: %v", err)
+			return
+		}
+		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+			t.Errorf("create Copilot echo evidence directory: %v", err)
+			return
+		}
+		if err := os.CopyFS(filepath.Join(evidenceDir, "runs"), os.DirFS(runsDir)); err != nil {
+			t.Errorf("preserve Copilot echo runs: %v", err)
+		}
+	})
 }
 
 func installCopilotEchoFixture(t *testing.T, root string) {

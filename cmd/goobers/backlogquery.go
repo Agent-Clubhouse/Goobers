@@ -89,11 +89,18 @@ var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOpti
 	return localscheduler.OpenClaimLedger(path, opts...)
 }
 
+func backlogQueryToken(readOnly bool) (string, error) {
+	if readOnly {
+		return providerToken(capability.GitHubIssuesRead)
+	}
+	return providerToken(capability.GitHubIssuesWrite)
+}
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -104,7 +111,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
 	"provider-visible marker, and writes it to the declared result file.\n" +
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
-	"a plain list (no --claim) does not require it.\n\n" +
+	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
+	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
+	"and uses only the github:issues:read capability.\n\n" +
 	"With --release, removes the provider-visible claim marker and then releases\n" +
 	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
 	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
@@ -156,6 +165,7 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--claim | --reconcile | 
 func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, beforeClaimTransaction func()) int {
 	fs := flag.NewFlagSet("backlog-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
@@ -167,7 +177,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		fs.Usage()
 		return 2
 	}
-	if boolCount(*claim, *reconcile, *release) > 1 {
+	if boolCount(*readOnly, *claim, *reconcile, *release) > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -211,24 +221,32 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		issueProvider = adoProvider
 	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		var opts []func(*providers.GiteaProvider)
+		if !*readOnly {
+			opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, opts...)
 		if gerr != nil {
 			pf(stderr, "error: %v\n", gerr)
 			return 1
 		}
 		issueProvider = giteaProvider
 	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
+		token, terr := backlogQueryToken(*readOnly)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if *readOnly {
+			ghIssueProvider = newGitHubProvider(token)
+		} else {
+			ghIssueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		}
 		issueProvider = ghIssueProvider
 	default:
 		pf(stderr, "error: backlog-query does not support repository provider %q\n", repo.Provider)
@@ -281,16 +299,6 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	// is no separate null-mode branch to get wrong.
 	respectAssignee := providerInput("respectAssignee", "") == "true"
 	assignedTo := providerInput("assignedTo", "")
-	curationRun := *claim && os.Getenv("GOOBERS_WORKFLOW") == "backlog-curation"
-	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
-	var stalenessPolicy backlogStalenessPolicy
-	if reconcileBeforeClaim || *reconcile {
-		stalenessPolicy, err = readBacklogStalenessPolicy()
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-	}
 
 	// maxItems caps how many eligible items one --claim run claims (#236): it was
 	// a dead input everywhere (the query hardcoded a limit and --claim took
@@ -304,6 +312,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			return 1
 		}
 		maxItems = n
+	}
+	curationRun := *claim && providerInput("curation", "false") == "true"
+	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
+	var stalenessPolicy backlogStalenessPolicy
+	if reconcileBeforeClaim || *reconcile {
+		stalenessPolicy, err = readBacklogStalenessPolicy()
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	resweepPolicy, resweepEnabled, err := readBacklogResweepPolicy(maxItems)
 	if err != nil {
@@ -354,6 +372,22 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	if *readOnly {
+		return runReadOnlyBacklogQuery(
+			ctx,
+			issueProvider,
+			backlogRepo,
+			trustLabel,
+			labelFilter,
+			fieldFilter,
+			fieldOrder,
+			selectionPriority,
+			respectAssignee,
+			assignedTo,
+			stdout,
+			stderr,
+		)
+	}
 	observedAt := time.Now().UTC()
 
 	if curationRun || *reconcile {
@@ -366,6 +400,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			if *reconcile {
 				resultFile = "backlog-reconciliation.json"
 			}
+
 			return failProviderStage(stderr, "reconcile backlog metadata", fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog"), resultFile)
 		}
 		reconciled, reconcileErr := reconcileBacklogMetadata(
@@ -579,7 +614,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 
 	var (
 		readOnlyResweep      []providers.WorkItem
-		resweepModeByID      map[string]string
+		curationModeByID     map[string]string
 		resweepState         backlogResweepState
 		resweepStatePath     string
 		resweepStateObserved uint64
@@ -597,6 +632,75 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		}
 		resweepStateObserved = resweepState.Generation
 		if backlogResweepDue(resweepState, observedAt, resweepPolicy.interval) {
+			curationModeByID = make(map[string]string)
+			blockedCandidates, nextBlockedCursor, listErr := listBacklogScanWindow(
+				ctx,
+				issueProvider,
+				repo,
+				compactLabels(trustLabel, blockedOnSiblingLabel),
+				"",
+				fieldFilter,
+				backlogScanCeiling,
+				backlogScanCursor{Cursor: resweepState.BlockedCursor},
+				false,
+			)
+			if listErr != nil {
+				return failProviderStage(stderr, "list blocked items for dependency recheck", listErr, "claimed-items.json")
+			}
+			filteredBlocked := blockedCandidates[:0]
+			for _, item := range blockedCandidates {
+				if !item.HasLabel(trustLabel) ||
+					!item.HasLabel(blockedOnSiblingLabel) ||
+					item.HasLabel(providers.LabelNeedsHuman) ||
+					(item.State != "" && !strings.EqualFold(item.State, "open")) {
+					continue
+				}
+				item.Integrity = providers.IntegrityForLabels(item.Labels, trustLabel)
+				filteredBlocked = append(filteredBlocked, item)
+			}
+			blockedCandidates = filteredBlocked
+			if err := sortBacklogResweepCandidates(
+				blockedCandidates,
+				selectionPriority,
+				fieldOrder,
+				resweepState.LastSweptAt,
+			); err != nil {
+				pf(stderr, "error: order blocked dependency rechecks: %v\n", err)
+				return 1
+			}
+			if len(blockedCandidates) > resweepPolicy.maxItems {
+				blockedCandidates = blockedCandidates[:resweepPolicy.maxItems]
+			}
+			selectedResweepItems = append(selectedResweepItems, blockedCandidates...)
+			dependencyRecheckBudget := maxItems - len(eligible)
+			for _, item := range blockedCandidates {
+				blockers, blockerErr := ghIssueProvider.ListWorkItemBlockers(ctx, repo, item.ID)
+				if blockerErr != nil {
+					pf(stderr, "warning: dependency recheck item %s: %v\n", item.ID, blockerErr)
+					continue
+				}
+				if len(blockers) == 0 {
+					pf(stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
+					continue
+				}
+				actionable := true
+				for _, blocker := range blockers {
+					if blocker.State != "" && strings.EqualFold(blocker.State, "open") {
+						if blocker.HasLabel(providers.LabelNeedsHuman) {
+							continue
+						}
+						actionable = false
+						break
+					}
+				}
+				if actionable && dependencyRecheckBudget > 0 {
+					eligible = append(eligible, item)
+					curationModeByID[item.ID] = "dependency-recheck"
+					dependencyRecheckBudget--
+				}
+			}
+			resweepState.BlockedCursor = nextBlockedCursor.Cursor
+
 			resweepCandidates, nextResweepCursor, listErr := listBacklogScanWindow(
 				ctx,
 				issueProvider,
@@ -647,17 +751,16 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 				resweepCandidates = resweepCandidates[:resweepBudget]
 			}
 			selectedResweepItems = append(selectedResweepItems, resweepCandidates...)
-			resweepModeByID = make(map[string]string, len(resweepCandidates))
 			for _, item := range resweepCandidates {
 				if item.HasLabel(inReviewStatusLabel) ||
 					item.HasLabel(providers.LabelClaimed) ||
 					openIssues[item.ID] {
 					readOnlyResweep = append(readOnlyResweep, item)
-					resweepModeByID[item.ID] = "read-only"
+					curationModeByID[item.ID] = "read-only"
 					continue
 				}
 				eligible = append(eligible, item)
-				resweepModeByID[item.ID] = "resweep"
+				curationModeByID[item.ID] = "resweep"
 			}
 			resweepState = recordBacklogResweep(
 				resweepState,
@@ -1031,7 +1134,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 			return failProviderStage(stderr, "compute claimed-item staleness", err, "claimed-items.json")
 		}
 		for i := range curationItems {
-			curationItems[i].CurationMode = resweepModeByID[curationItems[i].ID]
+			curationItems[i].CurationMode = curationModeByID[curationItems[i].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
 			ctx,
@@ -1127,6 +1230,80 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 		return 1
 	}
 	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
+	return 0
+}
+
+func runReadOnlyBacklogQuery(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	trustLabel string,
+	labelFilter *labelpredicate.Predicate,
+	fieldFilter *fieldpredicate.Predicate,
+	fieldOrder fieldpredicate.Order,
+	selectionPriority []string,
+	respectAssignee bool,
+	assignedTo string,
+	stdout, stderr io.Writer,
+) int {
+	labels := compactLabels(trustLabel)
+	labels = append(labels, labelFilter.RequiredLabels()...)
+	queryAssignee := ""
+	if respectAssignee && assignedTo != "" {
+		queryAssignee = assignedTo
+	}
+	items, _, err := listBacklogScanWindow(
+		ctx,
+		provider,
+		repo,
+		labels,
+		queryAssignee,
+		fieldFilter,
+		backlogScanCeiling,
+		backlogScanCursor{},
+		false,
+	)
+	if err != nil {
+		return failProviderStage(stderr, "list work items", err, "claimed-item.json")
+	}
+
+	eligible := items[:0]
+	for _, item := range items {
+		if trustLabel != "" && !item.HasLabel(trustLabel) {
+			continue
+		}
+		if respectAssignee && item.Assignee != assignedTo {
+			continue
+		}
+		matched, matchErr := labelFilter.Matches(item.Labels)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate labelPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched {
+			continue
+		}
+		matched, matchErr = fieldFilter.Matches(item.Fields)
+		if matchErr != nil {
+			pf(stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
+			return 1
+		}
+		if !matched || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		eligible = append(eligible, item)
+	}
+	if err := sortEligibleByFields(eligible, selectionPriority, fieldOrder); err != nil {
+		pf(stderr, "error: apply fieldOrder: %v\n", err)
+		return 1
+	}
+	if len(eligible) == 0 {
+		pln(stdout, "no eligible items")
+		return 0
+	}
+	for _, item := range eligible {
+		pf(stdout, "%s\t%s\n", item.ID, item.Title)
+	}
 	return 0
 }
 

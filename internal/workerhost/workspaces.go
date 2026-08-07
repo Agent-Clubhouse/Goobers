@@ -76,6 +76,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			BaseRef:    baseRef,
 			Branch:     branch,
 			SyncBase:   req.SyncBase,
+			Sparse:     sparseCones(req.RepoRef.Checkout),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workerhost: create worktree for stage %q: %w", req.Stage, err)
@@ -84,6 +85,17 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 	default:
 		return nil, fmt.Errorf("workerhost: unknown workspace mode %q for stage %q", req.Mode, req.Stage)
 	}
+}
+
+// sparseCones returns spec's declared cones, or nil for a full checkout
+// (mirrors internal/runner's own copy — a 4-line helper duplicated rather
+// than shared, the same tradeoff internal/worktree's doc.go already accepts
+// for validRunID).
+func sparseCones(spec *apiv1.CheckoutSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	return spec.Sparse
 }
 
 type scratchWorkspace string

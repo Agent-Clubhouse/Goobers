@@ -58,7 +58,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
-		string(capability.GitHubPRWrite):     "WIDGET_PR_TOKEN",
+		string(capability.ProviderPRWrite):   "WIDGET_PR_TOKEN",
 		string(capability.RepoPush):          "WIDGET_PUSH_TOKEN",
 		string(capability.AgentModel):        "WIDGET_COPILOT_TOKEN",
 	}
@@ -256,7 +256,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 				string(capability.AgentModel):        "MODEL_TOKEN",
 			}
 			if workflow == GuidedWorkflowImplementation || workflow == GuidedWorkflowBacklogCuration {
-				wantCredentials[string(capability.GitHubPRWrite)] = "PR_TOKEN"
+				wantCredentials[string(capability.ProviderPRWrite)] = "PR_TOKEN"
 			}
 			if workflow == GuidedWorkflowImplementation {
 				wantCredentials[string(capability.RepoPush)] = "PUSH_TOKEN"

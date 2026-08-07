@@ -116,6 +116,7 @@ type State struct {
 	ProjectionFloor *time.Time
 	LastSweepAt     *time.Time
 	BuiltAt         time.Time
+	Ready           bool
 }
 
 // Open opens (creating if needed) read.db at path and applies pending
@@ -232,15 +233,17 @@ func (s *Store) State(ctx context.Context) (State, error) {
 	}
 	defer release()
 	row := db.QueryRowContext(ctx, `
-		SELECT schema_version, epoch, min_change_seq, projection_floor, last_sweep_at, built_at
+		SELECT schema_version, epoch, min_change_seq, projection_floor, last_sweep_at, built_at, ready
 		FROM projection_state WHERE id = 1`)
 	var (
 		st                  State
 		floor, sweep, built sql.NullString
+		ready               int
 	)
-	if err := row.Scan(&st.SchemaVersion, &st.Epoch, &st.MinChangeSeq, &floor, &sweep, &built); err != nil {
+	if err := row.Scan(&st.SchemaVersion, &st.Epoch, &st.MinChangeSeq, &floor, &sweep, &built, &ready); err != nil {
 		return State{}, fmt.Errorf("readmodel: read projection state: %w", err)
 	}
+	st.Ready = ready != 0
 	if st.ProjectionFloor, err = optionalTime(floor); err != nil {
 		return State{}, err
 	}
@@ -253,6 +256,20 @@ func (s *Store) State(ctx context.Context) (State, error) {
 		}
 	}
 	return st, nil
+}
+
+// MarkReady records that a whole-journal build completed successfully.
+func (s *Store) MarkReady(ctx context.Context) error {
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := db.ExecContext(ctx,
+		`UPDATE projection_state SET ready = 1 WHERE id = 1`); err != nil {
+		return fmt.Errorf("readmodel: mark projection ready: %w", err)
+	}
+	return nil
 }
 
 // migrateOnce reads the schema version and applies every pending migration

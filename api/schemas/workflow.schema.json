@@ -242,6 +242,7 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",
@@ -313,6 +314,7 @@
               "respond-to-findings",
               "rework-pr",
               "route-queue-outcome",
+              "route-provider-verdict",
               "route-verdict",
               "unpark-resolved-siblings",
               "update-issue",

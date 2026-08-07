@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,123 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 )
+
+func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
+	configRoot := filepath.Join("..", "..", "reference-workflows")
+	definitionRoot := filepath.Join(configRoot, "gaggles", "goobers")
+	readmeRaw, err := os.ReadFile(filepath.Join(configRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read reference workflow guide: %v", err)
+	}
+	readme := string(readmeRaw)
+
+	gooberEntries, err := os.ReadDir(filepath.Join(definitionRoot, "goobers"))
+	if err != nil {
+		t.Fatalf("read goober definitions: %v", err)
+	}
+	var roles []string
+	for _, entry := range gooberEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(definitionRoot, "goobers", entry.Name(), "goober.yaml"))
+		if err != nil {
+			t.Fatalf("read %s goober: %v", entry.Name(), err)
+		}
+		var goober apiv1.Goober
+		if err := yaml.Unmarshal(raw, &goober); err != nil {
+			t.Fatalf("unmarshal %s goober: %v", entry.Name(), err)
+		}
+		roles = append(roles, goober.Spec.Role)
+	}
+
+	workflowEntries, err := os.ReadDir(filepath.Join(definitionRoot, "workflows"))
+	if err != nil {
+		t.Fatalf("read workflow definitions: %v", err)
+	}
+	var workflows []apiv1.Workflow
+	for _, entry := range workflowEntries {
+		if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yaml" && filepath.Ext(entry.Name()) != ".yml") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(definitionRoot, "workflows", entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s workflow: %v", entry.Name(), err)
+		}
+		var workflow apiv1.Workflow
+		if err := yaml.Unmarshal(raw, &workflow); err != nil {
+			t.Fatalf("unmarshal %s workflow: %v", entry.Name(), err)
+		}
+		workflows = append(workflows, workflow)
+	}
+
+	inventoryMarker := fmt.Sprintf("<!-- reference-inventory: goobers=%d workflows=%d -->", len(roles), len(workflows))
+	if !strings.Contains(readme, inventoryMarker) {
+		t.Errorf("README inventory marker does not match loaded definitions; want %q", inventoryMarker)
+	}
+	validationOutput := fmt.Sprintf("config/ valid (1 gaggle(s), %d goober(s), %d workflow(s))", len(roles), len(workflows))
+	if !strings.Contains(readme, validationOutput) {
+		t.Errorf("README validation sample does not match loaded definitions; want %q", validationOutput)
+	}
+	for _, role := range roles {
+		if !strings.Contains(readme, "`"+role+"`") {
+			t.Errorf("README inventory omits goober role %q", role)
+		}
+	}
+	for _, definition := range workflows {
+		if !strings.Contains(readme, "`"+definition.Name+"`") {
+			t.Errorf("README inventory omits workflow %q", definition.Name)
+		}
+	}
+	for _, credential := range []string{
+		"GOOBERS_GITHUB_TOKEN",
+		"GOOBERS_GITHUB_REVIEW_TOKEN",
+		"GOOBERS_COPILOT_TOKEN",
+	} {
+		if !strings.Contains(readme, "`"+credential+"`") {
+			t.Errorf("README credential inventory omits %s", credential)
+		}
+	}
+
+	var mergeReview *apiv1.Workflow
+	for i := range workflows {
+		if workflows[i].Name == "merge-review" {
+			mergeReview = &workflows[i]
+			break
+		}
+	}
+	if mergeReview == nil {
+		t.Fatal("loaded workflows have no merge-review definition")
+	}
+	var mergeTask *apiv1.Task
+	for i := range mergeReview.Spec.Tasks {
+		task := &mergeReview.Spec.Tasks[i]
+		if task.Name == "merge-pr" {
+			mergeTask = task
+			break
+		}
+	}
+	if mergeTask == nil || mergeTask.Run == nil || !slices.Equal(mergeTask.Run.Command, []string{"goobers", "merge-pr"}) {
+		t.Fatalf("merge-review merge authority = %+v, want deterministic goobers merge-pr task", mergeTask)
+	}
+	if !containsString(mergeTask.Capabilities, string(capability.GitHubPRMerge)) {
+		t.Fatalf("merge-pr capabilities = %v, want %s opt-in", mergeTask.Capabilities, capability.GitHubPRMerge)
+	}
+	for _, gate := range mergeReview.Spec.Gates {
+		if !strings.Contains(readme, "`"+gate.Name+"`") {
+			t.Errorf("README merge posture omits gate %q", gate.Name)
+		}
+	}
+	for _, claim := range []string{
+		"explicit, fail-closed opt-in",
+		"Removing that task/grant",
+		"independently re-checks",
+	} {
+		if !strings.Contains(readme, claim) {
+			t.Errorf("README merge posture omits %q", claim)
+		}
+	}
+}
 
 // TestReferenceWorkflowsCompile is #124's divergence guard: it compiles the
 // REAL reference-workflows/ definitions (this repo's own dogfood config) directly,
@@ -58,6 +176,45 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReferenceImplementationHandlesProviderMutationsOnlyWithEvidence(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
+
+	raw, err := os.ReadFile(filepath.Join(root, "workflows", "implementation.yaml"))
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	foundImplement := false
+	for _, task := range workflow.Spec.Tasks {
+		if task.Name == "implement" {
+			foundImplement = true
+			if !strings.Contains(task.Goal, "only when attached context proves") ||
+				!strings.Contains(task.Goal, "PROVIDER_ACTION_REQUIRED") ||
+				!strings.Contains(task.Goal, "rather than attempting the mutation") {
+				t.Fatalf("implement goal does not require evidence or an explicit provider-action failure: %q", task.Goal)
+			}
+			break
+		}
+	}
+	if !foundImplement {
+		t.Fatal("implement task not found")
+	}
+
+	raw, err = os.ReadFile(filepath.Join(root, "goobers", "implementer", "instructions.md"))
+	if err != nil {
+		t.Fatalf("read implementer instructions: %v", err)
+	}
+	instructions := strings.Join(strings.Fields(string(raw)), " ")
+	if !strings.Contains(instructions, "attached context explicitly proves") ||
+		!strings.Contains(instructions, "`error.code: PROVIDER_ACTION_REQUIRED`") ||
+		!strings.Contains(instructions, "never assume or silently claim") {
+		t.Fatalf("implementer instructions do not require proof or explicitly fail outstanding provider mutations")
 	}
 }
 
@@ -244,6 +401,55 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 		t.Fatalf("ci-poll task %q capabilities = %v, want %s", task.Name, task.Capabilities, capability.ProviderPRWrite)
 	}
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
+}
+
+func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	var localCI *apiv1.Task
+	for i := range w.Spec.Tasks {
+		task := &w.Spec.Tasks[i]
+		if task.Name != "local-ci" {
+			continue
+		}
+		localCI = task
+		break
+	}
+	if localCI == nil {
+		t.Fatal("implementation workflow has no local-ci task")
+	}
+	wantCommand := []string{"make", "ci", "test-integration-strict"}
+	if localCI.Run == nil || !slices.Equal(localCI.Run.Command, wantCommand) {
+		t.Fatalf("local-ci command = %v, want %v", localCI.Run, wantCommand)
+	}
+	if !localCI.Run.SyncBase {
+		t.Fatal("local-ci syncBase = false, want true")
+	}
+	if localCI.TimeoutSeconds != 1500 {
+		t.Fatalf("local-ci timeoutSeconds = %d, want 1500", localCI.TimeoutSeconds)
+	}
+	if localCI.Retry == nil || localCI.Retry.MaxAttempts != 1 {
+		t.Fatalf("local-ci retry = %+v, want maxAttempts 1", localCI.Retry)
+	}
+	if localCI.Next != "local-gate" {
+		t.Fatalf("local-ci next = %q, want local-gate", localCI.Next)
+	}
+	for _, workflowGate := range w.Spec.Gates {
+		if workflowGate.Name == localCI.Next {
+			if got := workflowGate.Branches["pass"]; got != "push-branch" {
+				t.Fatalf("local-gate pass branch = %q, want push-branch", got)
+			}
+			return
+		}
+	}
+	t.Fatal("implementation workflow has no local-gate")
 }
 
 // TestReferenceWorkflowsAgentModelDeclarations guards model-token admission for every

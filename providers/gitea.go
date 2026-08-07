@@ -756,6 +756,24 @@ func (p *GiteaProvider) getPull(ctx context.Context, repo RepositoryRef, pullID 
 	return pr, nil
 }
 
+// PullRequestMergeable resolves pullID's current Gitea-computed mergeability.
+func (p *GiteaProvider) PullRequestMergeable(ctx context.Context, repo RepositoryRef, pullID string) (*bool, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, fmt.Errorf("pull id is required")
+	}
+	pr, err := p.getPull(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	return pr.Mergeable, nil
+}
+
 // reviewDecision aggregates a Gitea PR's reviews into a single decision: the
 // latest review per reviewer wins, and any outstanding REQUEST_CHANGES beats
 // any APPROVED.

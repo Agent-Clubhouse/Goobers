@@ -31,10 +31,16 @@ compiles into a step-machine, and executes when a trigger is admitted.
 | Recovery is whatever the script implements. | The runtime checkpoints progress and resumes from the append-only run journal. |
 | Editing runtime files can change later behavior. | Behavior changes originate in the definitions under `config/`. |
 
-At tiers 1-2, `goobers up` loads and validates `config/` at startup. The optional
-`--watch-config` mode can atomically reload valid edits. In either mode,
-in-flight runs remain pinned to the workflow version they started with; a
-definition change affects new runs, not the meaning of recorded history. At
+At tiers 1-2, `goobers up` materializes, validates, and loads definitions into
+`config/`. With the default local source, it reads that directory at startup;
+the optional `--watch-config` mode watches direct edits and atomically reloads
+valid changes. A Git `workflowSource` instead continuously reconciles its
+tracked ref without `--watch-config`: periodic fetch-and-compare polling is
+always active, local ref changes wake the loop immediately, and authenticated
+GitHub push deliveries wake it when `webhook.secret` is configured. Invalid
+edits or revisions leave the last-known-good definitions running. In every
+mode, in-flight runs remain pinned to the workflow version they started with;
+a definition change affects new runs, not the meaning of recorded history. At
 tier 3, Argo CD and the operator occupy the config-delivery seam, but the
 definitions keep the same shape.
 

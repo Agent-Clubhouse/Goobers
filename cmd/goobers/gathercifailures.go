@@ -41,12 +41,9 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
-	runID, workflow, err := providerRunContext()
+	runID, _, err := providerRunContext()
 	if err != nil {
 		return failProviderStage(stderr, "resolve run context", err, remediationBriefResultFile)
-	}
-	if workflow != "pr-remediation" {
-		return failProviderStage(stderr, "resolve run context", fmt.Errorf("workflow is %q, want pr-remediation", workflow), remediationBriefResultFile)
 	}
 
 	brief, err := readRemediationBriefArtifact(root, runID, "gather-pr-context")

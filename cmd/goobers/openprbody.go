@@ -70,11 +70,12 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 	}
 
 	var (
-		artifacts  []journalArtifact
-		issueBody  string
-		reviews    []prBodyReview
-		latestCI   *journal.Event
-		latestDiff []byte
+		artifacts      []journalArtifact
+		issueBody      string
+		issueUpdatedAt string
+		reviews        []prBodyReview
+		latestCI       *journal.Event
+		latestDiff     []byte
 	)
 	for i := range events {
 		ev := &events[i]
@@ -84,6 +85,13 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 		if issueBody == "" && ev.Type == journal.EventStageFinished && ev.Outputs != nil {
 			if id, ok := ev.Outputs["id"].(string); ok && id == issueID {
 				issueBody, _ = ev.Outputs["body"].(string)
+				// updatedAt (#2340): the claimed WorkItem's UpdatedAt, flattened
+				// into this same stage-output event by mergeResultFileOutputs
+				// (a *time.Time marshals to a JSON string). Pinned into the PR
+				// body below so merge-review's check-issue-staleness stage can
+				// later compare it against a fresh GetWorkItem, independent of
+				// whether this run is ever cancelled.
+				issueUpdatedAt, _ = ev.Outputs["updatedAt"].(string)
 			}
 		}
 		if ev.Type == journal.EventStageFinished && ev.Stage == "local-ci" {
@@ -138,7 +146,7 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 		}
 	}
 
-	return formatStructuredPRBody(issueID, issueTitle, issueBody, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
+	return formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
 }
 
 func artifactByDigest(artifacts []journalArtifact, digest string) (journal.Ref, bool) {
@@ -161,7 +169,7 @@ func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, n
 	return journal.Ref{}, false
 }
 
-func formatStructuredPRBody(issueID, issueTitle, issueBody, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
+func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
 	var b strings.Builder
 	latest := prBodyReview{}
 	if len(reviews) > 0 {
@@ -269,6 +277,10 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, workflowDigest strin
 			b.WriteString("  \n")
 		}
 		fmt.Fprintf(&b, "%s: `%s`", label, html.EscapeString(digest))
+	}
+	if pin := formatIssueSpecPin(issueID, issueUpdatedAt, issueTitle, issueBody); pin != "" {
+		b.WriteString("\n")
+		b.WriteString(pin)
 	}
 
 	return strings.TrimSpace(b.String())

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -15,7 +14,7 @@ func SurfaceActions() []apicontract.SurfaceAction {
 		authenticator: NullAuthenticator{},
 		authorizer:    AllowAll,
 	}
-	registerV1Routes(router, nil, nil, context.Background(), nil)
+	registerV1Routes(router, nil, nil, handlerConfig{})
 	// The events route is part of the versioned surface even though its stream
 	// is optional wiring. Only the registration is probed here — the handler
 	// closure is never invoked — so a nil stream is safe.

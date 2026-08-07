@@ -14,6 +14,14 @@ import (
 // finalizeTerminalRun performs every instance-level terminal cleanup action.
 // It is idempotent because both worktree finalization and claim release are.
 func finalizeTerminalRun(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string) error {
+	return finalizeTerminalRunWithClaimRelease(l, log, wtMgr, runID, releaseClaimsForRun)
+}
+
+func finalizeTerminalRunForRecovery(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string) error {
+	return finalizeTerminalRunWithClaimRelease(l, log, wtMgr, runID, releaseClaimsForRunWithDefaultTimeout)
+}
+
+func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string, release func(instance.Layout, *journal.InstanceLog, string) error) error {
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
 
 	var annotationErr error
@@ -55,11 +63,17 @@ func finalizeTerminalRun(l instance.Layout, log *journal.InstanceLog, wtMgr *wor
 		annotationErr = errors.Join(annotationErr, annotationLog.Close())
 	}
 
-	claimErr := releaseClaimsForRun(l, log, runID)
+	noOpErr := recordPRRemediationNoop(l, runID)
+	var claimErr error
+	if noOpErr == nil {
+		claimErr = release(l, log, runID)
+	} else if isJournaledClaimsLockTimeout(noOpErr) {
+		noOpErr = nil
+	}
 	if isJournaledClaimsLockTimeout(claimErr) {
 		claimErr = nil
 	}
-	return errors.Join(worktreeErr, annotationErr, claimErr)
+	return errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
 }
 
 func keptWorktreeJournaled(schedulerDir, runID, worktreeID string) (bool, error) {

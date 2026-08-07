@@ -351,6 +351,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// JournalAdvanced reports each durable journal append to derived readers.
+	// Optional; the callback owns failure reporting and must not fail the run.
+	JournalAdvanced func(runID string, seq uint64)
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
@@ -614,7 +617,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		Gaggle:          in.Gaggle,
 		RunControls:     &pinnedControls,
 		Trigger:         in.Trigger,
-	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
@@ -801,10 +804,11 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // recorded is true after a second crash finds that closure already journaled
 // but the replacement attempt not yet started.
 type resumeContext struct {
-	stage    string
-	attempt  int
-	class    journal.AttemptClass
-	recorded bool
+	stage                string
+	attempt              int
+	class                journal.AttemptClass
+	recorded             bool
+	committedWorkOnInfra bool
 }
 
 // BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
@@ -817,6 +821,7 @@ const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
 	retryFailureClassKey        = "retryFailureClass"
+	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
 	retryDecisionKind           = "stage.retry.decision"
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
@@ -1277,6 +1282,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			var instructionAddendum string
 			var taskRerun *rerunContext
 			var resumedResult *apiv1.ResultEnvelope
+			var infraFailedAttemptCommittedWork bool
 			if rerun != nil && rerun.stage == t.Name {
 				taskRerun = rerun
 				startAttempt = int32(rerun.attempt)
@@ -1284,6 +1290,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				instructionAddendum = rerun.instructionAddendum
 			}
 			if resume != nil && resume.stage == t.Name {
+				infraFailedAttemptCommittedWork = resume.committedWorkOnInfra
 				interruptedClass := journal.AttemptInfra
 				if rerun != nil && rerun.stage == t.Name {
 					interruptedClass = resume.class
@@ -1354,7 +1361,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				if par != nil {
 					upstreamPointers = par.currentPointers(parallelRootPointers)
 				}
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded)
+				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded, infraFailedAttemptCommittedWork)
 			}
 			if rerun != nil && rerun.stage == t.Name {
 				rerun = nil
@@ -2521,7 +2528,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
@@ -2636,7 +2643,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -2687,8 +2694,11 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
-				Runner: map[string]any{retryFailureClassKey: string(failureClass)},
+				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Runner: map[string]any{
+					retryFailureClassKey:  string(failureClass),
+					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
+				},
 			}); aerr != nil {
 				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 				span.Fail(err)
@@ -2696,7 +2706,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			}
 			span.FailWithCode(dispatchErr, "executor_error")
 			if shouldRetry {
-				if backoff > 0 {
+				retryDelay := infrastructureRetryDelay(dispatchErr, backoff, time.Now())
+				if retryDelay > 0 {
 					// Wait on the run-level ctx (not attemptCtx, which never
 					// cancels — the drain contract for an in-flight
 					// dispatch), so a SIGTERM already in progress doesn't
@@ -2710,7 +2721,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 					// pauses BETWEEN stages, per resume.go's interruptedAttempt
 					// doc).
 					select {
-					case <-time.After(backoff):
+					case <-time.After(retryDelay):
 					case <-ctx.Done():
 					case <-attemptCtx.Done():
 					}
@@ -2772,6 +2783,18 @@ func dispatchRetryFailureClass(err error) journal.AttemptClass {
 		return journal.AttemptInfra
 	}
 	return journal.AttemptPolicy
+}
+
+func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
+	retryAt, ok := invoke.InfrastructureRetryAt(err)
+	if !ok {
+		return backoff
+	}
+	until := retryAt.Sub(now)
+	if until > backoff {
+		return until
+	}
+	return backoff
 }
 
 // retryFailureClass identifies command and sync-conflict failures whose
@@ -2943,7 +2966,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -3101,6 +3124,27 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = outboxErr
 			}
 		}
+		if err == nil && class == journal.AttemptInfra && result.Status == apiv1.ResultNoWork &&
+			*infraFailedAttemptCommittedWork && workspace.worktree != nil {
+			baseRef := in.RepoRef.Branch
+			if baseRef == "" {
+				baseRef = "main"
+			}
+			committedWork, inspectErr := workspace.worktree.HasCommitsAheadOf(ctx, baseRef)
+			if inspectErr != nil {
+				err = fmt.Errorf("inspect committed work before accepting infrastructure retry no-work: %w", inspectErr)
+			} else if committedWork {
+				result = preserveCommittedWorkOnInfraRetry(result)
+			}
+		}
+		if err != nil && invoke.IsInfrastructureFailure(err) && workspace.worktree != nil {
+			committedWork, inspectErr := workspace.worktree.HasNewCommits(ctx)
+			if inspectErr != nil {
+				err = errors.Join(err, fmt.Errorf("inspect commits created by infrastructure-failed attempt: %w", inspectErr))
+			} else {
+				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
+			}
+		}
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -3119,6 +3163,18 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+func preserveCommittedWorkOnInfraRetry(result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	outputs := make(map[string]interface{}, len(result.Outputs)+1)
+	for key, value := range result.Outputs {
+		outputs[key] = value
+	}
+	outputs["preservedCommittedWork"] = true
+	result.Status = apiv1.ResultSuccess
+	result.Summary = "preserved committed work from an infrastructure-failed attempt"
+	result.Outputs = outputs
+	return result
 }
 
 func withSalvagedDiagnostics(salvaged, attempt apiv1.ResultEnvelope) apiv1.ResultEnvelope {
@@ -3686,7 +3742,13 @@ type stageWorkspace struct {
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
 	additional []additionalCheckout
-	release    func()
+	// sparse records the repo-relative cones this workspace's checkout was
+	// materialized with (project.checkout.sparse, #649) — empty for a full
+	// checkout. Surfaced to the stage via the invocation envelope's
+	// CheckoutCones so an agentic stage knows the tree is partial instead of
+	// treating a pruned path as unexpectedly deleted.
+	sparse  []string
+	release func()
 }
 
 // additionalWorkspaces projects a stage workspace's provisioned reference
@@ -3705,10 +3767,48 @@ func additionalWorkspaces(w *stageWorkspace) []apiv1.AdditionalWorkspace {
 	return out
 }
 
+// checkoutCones projects a stage workspace's sparse-checkout cones into the
+// invocation envelope's CheckoutCones (project.checkout.sparse, #649): ""
+// for the primary Workspace, else the matching AdditionalWorkspaces[i].Name.
+// A workspace with a full checkout is omitted, so the common (non-sparse)
+// case publishes no field at all.
+func checkoutCones(w *stageWorkspace) map[string][]string {
+	if w == nil {
+		return nil
+	}
+	cones := map[string][]string{}
+	if len(w.sparse) > 0 {
+		cones[""] = w.sparse
+	}
+	for _, a := range w.additional {
+		if len(a.sparse) > 0 {
+			cones[a.name] = a.sparse
+		}
+	}
+	if len(cones) == 0 {
+		return nil
+	}
+	return cones
+}
+
+// sparseCones returns spec's declared cones, or nil for a full checkout
+// (spec nil, or Sparse empty — validation rejects an explicitly empty Sparse
+// list, so an empty result here only ever means no checkout override was
+// declared).
+func sparseCones(spec *apiv1.CheckoutSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	return spec.Sparse
+}
+
 // additionalCheckout is one provisioned read-only reference-repo worktree.
 type additionalCheckout struct {
 	name     string
 	worktree *worktree.Worktree
+	// sparse records the cones this reference checkout was materialized with
+	// (project.checkout.sparse, #649) — empty for a full checkout.
+	sparse []string
 }
 
 func (w *stageWorkspace) ActivateAssetPathGuard() error {
@@ -3784,6 +3884,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
+		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,
 		ContextPointers:      upstream,
 		Capabilities:         capabilities,
@@ -3862,6 +3963,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3870,6 +3972,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// Branch deliberately empty — a detached checkout, the same shape
 			// provisionAdditionalCheckouts already uses for reference repos.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create read-only worktree: %w", err)
@@ -3879,7 +3982,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	case "", apiv1.WorkspaceRepo:
 		if in.pinnedWorkspace != nil {
 			in.pinnedStage.Lock()
@@ -3907,6 +4010,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if workspaceBranch != "" {
 			branch = workspaceBranch
 		}
+		sparse := sparseCones(in.RepoRef.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName,
@@ -3918,6 +4022,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
+			Sparse:                sparse,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
@@ -3929,7 +4034,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
-		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional}, nil
+		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
@@ -4049,6 +4154,7 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 		if baseRef == "" {
 			baseRef = "main"
 		}
+		sparse := sparseCones(repo.Checkout)
 		wt, err := r.cfg.Worktrees.Create(ctx, worktree.CreateOptions{
 			RepoURL:    repoURL,
 			RunID:      in.RunID + "-" + stageName + "-ref-" + sanitizeRefName(repo.Name),
@@ -4056,12 +4162,13 @@ func (r *Runner) provisionAdditionalCheckouts(ctx context.Context, in StartInput
 			BaseRef:    baseRef,
 			// Detached, read-only: no run branch, never pushed.
 			Branch: "",
+			Sparse: sparse,
 		})
 		if err != nil {
 			r.teardownCheckouts(ctx, checkouts)
 			return nil, fmt.Errorf("checkout reference repo %q: %w", repo.Name, err)
 		}
-		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt})
+		checkouts = append(checkouts, additionalCheckout{name: repo.Name, worktree: wt, sparse: sparse})
 	}
 	return checkouts, nil
 }

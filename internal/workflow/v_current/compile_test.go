@@ -776,8 +776,25 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 		}}
 	}
 
-	_, err := compileAcknowledged(definition("missing-eviction-capability", queueTask))
-	want := `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
+	readOnlyTask := apiv1.Task{
+		Name:         "read-backlog",
+		Type:         apiv1.TaskDeterministic,
+		Goal:         "confirm backlog access",
+		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+		Capabilities: []string{string(capability.GitHubIssuesWrite)},
+	}
+	_, err := compileAcknowledged(definition("write-only-backlog-read", readOnlyTask))
+	want := `task "read-backlog" invokes built-in subcommand "backlog-query" but does not declare capability "github:issues:read"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile error = %v, want containing %q", err, want)
+	}
+	readOnlyTask.Capabilities = append(readOnlyTask.Capabilities, string(capability.GitHubIssuesRead))
+	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {
+		t.Fatalf("read-only backlog-query with explicit read capability should compile: %v", err)
+	}
+
+	_, err = compileAcknowledged(definition("missing-eviction-capability", queueTask))
+	want = `task "queue-watch" invokes built-in subcommand "merge-queue-poll" but does not declare capability "github:issues:write"; the capability-scoped credential is not injected, so eviction remediation fails at runtime`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
@@ -898,17 +915,17 @@ func TestCompilePolicyActionsRequireCapabilities(t *testing.T) {
 			Type:          apiv1.TaskDeterministic,
 			Goal:          "apply verdict",
 			Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "apply-verdict"}},
-			PolicyActions: []string{"publish-review", "route-verdict", "close-pr"},
+			PolicyActions: []string{"publish-review", "route-provider-verdict", "close-pr"},
 			Capabilities:  []string{string(capability.GitHubPRReview)},
 		}},
 	}
 
 	_, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec})
-	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "github:pr:write", but the task does not declare it`) {
+	if err == nil || !strings.Contains(err.Error(), `task "apply" policy action "close-pr" requires capability "provider:pr:write", but the task does not declare it`) {
 		t.Fatalf("Compile error = %v, want missing policy-action capability", err)
 	}
 
-	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubPRWrite))
+	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.ProviderPRWrite))
 	if _, err := compileAcknowledged(Definition{Name: "policy", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("policy actions with their capabilities should compile: %v", err)
 	}
@@ -1049,18 +1066,19 @@ func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 
 func TestBacklogQueryReconciliationPolicyActions(t *testing.T) {
 	cases := []struct {
-		name         string
-		workflowName string
-		args         []string
-		inputs       map[string]string
-		inputsFrom   map[string]string
-		want         string
+		name       string
+		args       []string
+		inputs     map[string]string
+		inputsFrom map[string]string
+		want       string
 	}{
 		{name: "direct reconciliation", args: []string{"--reconcile"}, want: "claim-backlog-items,close-issue"},
-		{name: "curation claim defaults to reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, want: "claim-backlog-items,close-issue"},
-		{name: "curation claim conservatively declares reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, inputs: map[string]string{"reconcileMetadata": "false"}, want: "claim-backlog-items,close-issue"},
-		{name: "curation claim has dynamic reconciliation", workflowName: "backlog-curation", args: []string{"--claim"}, inputsFrom: map[string]string{"reconcileMetadata": "enabled"}, want: "claim-backlog-items,close-issue"},
-		{name: "non-curation claim", workflowName: "implementation", args: []string{"--claim"}, want: "claim-backlog-items"},
+		{name: "renamed curation default cardinality", args: []string{"--claim"}, inputs: map[string]string{"curation": "true"}, want: "claim-backlog-items,close-issue"},
+		{name: "renamed curation single item", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "1"}, want: "claim-backlog-items,close-issue"},
+		{name: "renamed curation batch defaults to reconciliation", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "20"}, want: "claim-backlog-items,close-issue"},
+		{name: "curation batch conservatively declares reconciliation", args: []string{"--claim"}, inputs: map[string]string{"curation": "true", "maxItems": "20", "reconcileMetadata": "false"}, want: "claim-backlog-items,close-issue"},
+		{name: "dynamic curation mode conservatively declares reconciliation", args: []string{"--claim"}, inputsFrom: map[string]string{"curation": "curationMode"}, want: "claim-backlog-items,close-issue"},
+		{name: "single-item implementation claim", args: []string{"--claim"}, inputs: map[string]string{"maxItems": "1"}, want: "claim-backlog-items"},
 	}
 
 	for _, tc := range cases {
@@ -1070,7 +1088,7 @@ func TestBacklogQueryReconciliationPolicyActions(t *testing.T) {
 				Inputs:     tc.inputs,
 				InputsFrom: tc.inputsFrom,
 			}
-			got := strings.Join(prescribedCommandPolicyActions(task, tc.workflowName), ",")
+			got := strings.Join(prescribedCommandPolicyActions(task), ",")
 			if got != tc.want {
 				t.Fatalf("policy actions = %q, want %q", got, tc.want)
 			}
@@ -1155,11 +1173,11 @@ func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 		Run:        &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
 		InputsFrom: map[string]string{"deleteBranches": "enabled"},
 	}
-	if got := prescribedCommandPolicyActions(task, ""); len(got) != 1 || got[0] != "delete-branch" {
+	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "delete-branch" {
 		t.Fatalf("dynamic deleteBranches actions = %v, want [delete-branch]", got)
 	}
 	task.Run.Command = append(task.Run.Command, "--delete=false")
-	if got := prescribedCommandPolicyActions(task, ""); len(got) != 0 {
+	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
 		t.Fatalf("explicitly disabled dynamic deleteBranches actions = %v, want none", got)
 	}
 

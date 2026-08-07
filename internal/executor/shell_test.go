@@ -137,6 +137,30 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_DefaultEnvCanBeOverriddenByStage(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	exec.DefaultEnv = map[string]string{"GOOBERS_TEST_DEFAULT": "default"}
+	env := baseEnvelope(t)
+	command := []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`}
+	if runtime.GOOS == "windows" {
+		command = []string{"cmd.exe", "/D", "/S", "/C", `echo|set /p="%GOOBERS_TEST_DEFAULT%"`}
+	}
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: command,
+		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "override" {
+		t.Fatalf("stdout = %q, want stage override", got)
+	}
+}
+
 func TestShellExecutor_RunScript(t *testing.T) {
 	exec, rec := newPortableTestExecutor(t, nil)
 	env := baseEnvelope(t)
@@ -594,7 +618,7 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
-	env.Inputs = map[string]interface{}{InputTimeout: "500ms"}
+	env.Inputs = map[string]interface{}{InputTimeout: "2s"}
 
 	const marker = "__SIGQUIT_DUMP_MARKER__"
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{

@@ -218,6 +218,17 @@ func recordRunIntake(watermarks *intake.Store, l instance.Layout, runID string, 
 	}
 }
 
+func runIntakeObserver(watermarks *intake.Store, log *journal.InstanceLog) func(string, uint64) {
+	if watermarks == nil {
+		return nil
+	}
+	return func(runID string, seq uint64) {
+		if err := watermarks.Observed(context.Background(), runID, seq); err != nil {
+			logIngestFailure(log, runID, "read_model_intake_failed", err)
+		}
+	}
+}
+
 // lastJournalSeq reports the highest sequence in a run's journal.
 //
 // Takes the maximum rather than the last record's sequence: the live instance's
@@ -321,7 +332,7 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
@@ -1948,7 +1959,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 	}
 	workcopiesRoot := l.WorkcopiesDir()
 	if pinned {
-		workcopiesRoot = instance.NewLayout(l.Root).WorkcopiesDir()
+		workcopiesRoot = l.WorkcopiesBaseDir()
 	}
 	absoluteWorkcopiesRoot, err := filepath.Abs(workcopiesRoot)
 	if err != nil {
@@ -1968,7 +1979,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
-			worktree.WithPinnedRoot(instance.NewLayout(l.Root).WorkcopiesDir()),
+			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
@@ -1979,7 +1990,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if cfg.PartialCloneEnabled() {
 			managerOptions = append(managerOptions, worktree.WithPartialClone())
 		}
-		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, l.WorkcopiesDir(), gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
+		if cfg.ObjectCacheEnabled() {
+			managerOptions = append(managerOptions, worktree.WithObjectCache())
+		}
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, workcopiesRoot, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr
 		}
@@ -2073,6 +2087,9 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 			// allowlist (#736) — the executor twin of the harness adapter's
 			// ExtraEnvAllowlist, from the same cfg value so the two never drift.
 			shell.ExtraEnvAllowlist = cfg.Runner.EnvPassthrough
+			if projectConfigured && configuredProject.LargeRepo {
+				shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
+			}
 			// Baseline deadline for a stage that declares no timeoutSeconds
 			// (#1969). Zero leaves executor.DefaultTimeout in force, so an
 			// instance that configures nothing is unchanged.

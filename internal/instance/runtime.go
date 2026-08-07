@@ -84,6 +84,56 @@ func (l Layout) RunDirs() ([]string, error) {
 	return dirs, nil
 }
 
+// WorkcopiesDirs returns every existing managed-working-copy root in
+// deterministic order, the same shape as RunDirs (see its doc): a scoped
+// layout returns only its own root, while an instance layout also includes
+// the legacy flat root when present (skipping it when it is a single-gaggle
+// compatibility symlink, so it is not scanned twice). Used to enumerate
+// every gaggle's mirrors on the node — e.g. the object-cache GC helper's
+// fail-closed dependents scan (#654, design §3 B3), which must check every
+// gaggle's workcopies root, not just one.
+func (l Layout) WorkcopiesDirs() ([]string, error) {
+	if l.gaggle != "" {
+		return []string{l.WorkcopiesDir()}, nil
+	}
+
+	var dirs []string
+	if info, err := os.Lstat(l.WorkcopiesDir()); err == nil {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			// A single-gaggle compatibility alias points at the scoped root,
+			// which is discovered below. Do not scan it twice.
+		case info.IsDir():
+			dirs = append(dirs, l.WorkcopiesDir())
+		default:
+			return nil, fmt.Errorf("read workcopies directory: %s is not a directory", l.WorkcopiesDir())
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("inspect legacy workcopies directory: %w", err)
+	}
+
+	entries, err := os.ReadDir(l.GagglesDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return dirs, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read gaggles directory: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		workcopiesDir := l.ForGaggle(entry.Name()).WorkcopiesDir()
+		if info, err := os.Stat(workcopiesDir); err == nil && info.IsDir() {
+			dirs = append(dirs, workcopiesDir)
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("inspect workcopies directory for gaggle %q: %w", entry.Name(), err)
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
 // FindRunDir resolves runID across scoped and legacy run roots.
 func (l Layout) FindRunDir(runID string) (string, error) {
 	if runID == "" || runID == "." || runID == ".." || filepath.Base(runID) != runID {

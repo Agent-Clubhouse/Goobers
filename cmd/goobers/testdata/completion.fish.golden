@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version versions init preflight onboarding examples scaffold agent-kit validate lint fix doctor config speech up down apply self-update service worker dashboard run approve override rerun-stage signal workflow runs status stats features schema explain reset-rate-limit workspace blocked claims trace escalations completion telemetry journal backlog-dedupe backlog-assignment backlog-health backlog-query select-source validate-plan reconcile-branches push-branch check-fail-first open-pr report-pr-status gate-removal-guard issue-close-out set-milestone merge-pr record-merge-refusal merge-queue-poll reconcile-post-merge post-merge telemetry-query docs-churn ios-simulator-test pr-select gather-sibling-context gather-implement-context apply-verdict elect-lander update-behind-pr pr-claim gather-pr-context gather-review-threads gather-issue-context gather-ci-failures rebase-pr remediation-checkpoint push-remediated respond-to-findings help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -27,7 +27,7 @@ complete -c goobers -n '__fish_seen_subcommand_from scaffold; and test (count (c
 complete -c goobers -n '__fish_seen_subcommand_from agent-kit; and test (count (commandline -opc)) -eq 2' -f -a 'install check update'
 complete -c goobers -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -f -a 'diff materialize show'
 complete -c goobers -n '__fish_seen_subcommand_from speech; and test (count (commandline -opc)) -eq 2' -f -a 'preflight test'
-complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall status'
+complete -c goobers -n '__fish_seen_subcommand_from service; and test (count (commandline -opc)) -eq 2' -f -a 'install uninstall stop start status'
 complete -c goobers -n '__fish_seen_subcommand_from run; and test (count (commandline -opc)) -eq 2' -f -k -a 'abort cancel (__goobers_completion_workflows)'
 complete -c goobers -n '__fish_seen_subcommand_from run; and __fish_seen_subcommand_from abort; and test (count (commandline -opc)) -eq 3' -f -k -a '(__goobers_completion_runs)'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and test (count (commandline -opc)) -eq 2' -f -a 'show'
@@ -42,6 +42,7 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
+complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages'
 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt for repository, credentials, and workflows'
@@ -82,6 +83,7 @@ complete -c goobers -n '__fish_seen_subcommand_from up' -l quiet -d 'Suppress li
 complete -c goobers -n '__fish_seen_subcommand_from up' -l diagnostics -d 'Capture deep per-stage diagnostics for hang debugging'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l notify -d 'Desktop-notify on escalated/failed runs (=all for every outcome)'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l watch-config -d 'Experimental: hot-reload config edits'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l drain-timeout -r -d 'Force shutdown after this graceful-drain duration'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l disable-read-model-reads -d 'Read-model rollback: force journal-derived list paths for this run'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'

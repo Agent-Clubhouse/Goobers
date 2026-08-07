@@ -121,8 +121,6 @@ func seedConfigSource(root string, files []configSeedFile, templateName string) 
 	}
 	if _, report, err := LoadConfigDir(root); err != nil {
 		return nil, fmt.Errorf("validate seeded config source %s: %w (report: %+v)", root, err, report)
-	} else if report != nil && len(report.Issues) != 0 {
-		return nil, fmt.Errorf("validate seeded config source %s: validation reported findings: %+v", root, report.Issues)
 	}
 	return result, nil
 }

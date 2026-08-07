@@ -1,5 +1,5 @@
 FEATURE                                            DSL VERSION  FEATURE SUPPORT  VERSION SUPPORT  SINCE
-gaggle.spec.project.checkout.sparse                1.4          preview          supported        dev
+gaggle.spec.project.checkout.sparse                1.4          ga               supported        dev
 gaggle.spec.sandbox                                1.4          preview          supported        dev
 gate.branch.escalate                               1.4          ga               supported        dev
 gate.branches                                      1.4          ga               supported        dev

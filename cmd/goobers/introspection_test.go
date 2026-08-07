@@ -377,6 +377,7 @@ func initIntrospectionInstance(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code=%d stderr=%q", code, stderr)
 	}
+	createDeclaredSkillPackages(t, root, "implement", "run-tests")
 	replaceInFile(t, defaultWorkflowPath(root),
 		"    - type: manual",
 		"    - type: schedule\n      schedule: \"@hourly\"")

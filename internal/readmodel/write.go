@@ -79,7 +79,7 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 		return fmt.Errorf("readmodel: clear stages for %s: %w", p.Run.RunID, err)
 	}
 	for _, stage := range p.Stages {
-		if err := insertStageRow(ctx, tx, stage, p.Run.Gaggle, p.Run.StartedAt); err != nil {
+		if err := insertStageRow(ctx, tx, stage, p.Run.Gaggle, p.Run.StartedAt, p.Run.Terminal); err != nil {
 			return err
 		}
 	}
@@ -201,18 +201,28 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 // run_stage.started_at is the STAGE's own start, a different clock, so it cannot
 // stand in for run recency. The copies cannot drift because these rows are
 // deleted and rewritten wholesale on every projection of their run.
-func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow, gaggle string, runStartedAt time.Time) error {
+func insertStageRow(
+	ctx context.Context,
+	tx *sql.Tx,
+	stage StageRow,
+	gaggle string,
+	runStartedAt time.Time,
+	runTerminal bool,
+) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_stage (
 			run_id, stage, attempts, last_status, last_attempt_class, started_at, finished_at,
-			gaggle, run_started_at, token_measured, premium_measured, cost_measured, retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			gaggle, run_started_at, token_measured, premium_measured, cost_measured, retry_waste,
+			had_success, had_failure, had_other, run_terminal
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		stage.RunID, stage.Stage, stage.Attempts,
 		nullString(stage.LastStatus), nullString(stage.LastAttemptClass),
 		nullTime(stage.StartedAt), nullTime(stage.FinishedAt),
 		gaggle, formatTime(runStartedAt),
 		boolInt(stage.TokenMeasured), boolInt(stage.PremiumMeasured),
 		boolInt(stage.CostMeasured), boolInt(stage.RetryWaste),
+		boolInt(stage.HadSuccess), boolInt(stage.HadFailure), boolInt(stage.HadOther),
+		boolInt(runTerminal),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)

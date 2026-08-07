@@ -153,7 +153,7 @@ func TestCutoverServesTheSameAnswersWithZeroJournalOpens(t *testing.T) {
 // TestCutoverFallsBackRatherThanRefusing pins that turning the flag on cannot
 // REMOVE an answer the portal can get today.
 //
-// Stage+outcome is outside the closed set, so the read model refuses it. The
+// Workflow+stage is outside the closed set, so the read model refuses it. The
 // service must fall through to the journal-derived path rather than surface the
 // refusal: the cutover is an optimization, and an optimization that makes a
 // working query stop working is a regression.
@@ -178,9 +178,9 @@ func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
 	cutover.EnableReadModelReads()
 
 	options := readservice.RunListOptions{
-		Stage:   instancefixture.StageName(0),
-		Outcome: readservice.OutcomeSuccess,
-		Limit:   50,
+		Workflow: instancefixture.WorkflowName(0),
+		Stage:    instancefixture.StageName(0),
+		Limit:    50,
 	}
 	want := referenceRunIDs(t, ctx, service, options)
 	got := referenceRunIDs(t, ctx, cutover, options)
@@ -313,6 +313,8 @@ func optionsFor(dims []readmodel.Dim, gen GenerateResult) (readservice.RunListOp
 			options.Until = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 		case readmodel.DimStage:
 			options.Stage = instancefixture.StageName(0)
+		case readmodel.DimOutcome:
+			options.Outcome = readservice.OutcomeSuccess
 		case readmodel.DimPopulation:
 			options.StagePopulation = readservice.StagePopulationRetryWaste
 		case readmodel.DimActivity:
@@ -358,6 +360,7 @@ func readModelRunIDs(t *testing.T, ctx context.Context, store *readmodel.Store, 
 		Until:      reference.Until,
 		Limit:      200,
 		Stage:      reference.Stage,
+		Outcome:    readmodel.Outcome(reference.Outcome),
 		Population: readmodel.Population(reference.StagePopulation),
 	}
 	if reference.OrderByActivity {

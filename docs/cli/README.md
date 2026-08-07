@@ -4,7 +4,32 @@
 
 `goobers` is the tier 1-2 local instance CLI. This reference is generated from the CLI command registry, so it always matches the shipped binary.
 
-## Commands
+## Core commands
+
+| Command | Description |
+| --- | --- |
+| [`goobers completion`](#goobers-completion) | generate a shell completion script |
+| [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
+| [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
+| [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
+| [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers init`](#goobers-init) | scaffold an instance root |
+| [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
+| [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
+| [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
+| [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
+| [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
+| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
+| [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
+| [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
+| [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
+| [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
+| [`goobers workflow`](#goobers-workflow) | inspect workflows |
+| [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+
+## Advanced operator commands
+
+Less-common commands for configuration, maintenance, and diagnostics.
 
 | Command | Description |
 | --- | --- |
@@ -13,20 +38,13 @@
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
 | [`goobers agent-kit update`](#goobers-agent-kit-update) | review or explicitly apply an agent toolkit update |
 | [`goobers apply`](#goobers-apply) | reconcile a live daemon's workflow definitions now |
-| [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers approve`](#goobers-approve) | approve a paused or escalated gate |
-| [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
-| [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
-| [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
-| [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
 | [`goobers blocked`](#goobers-blocked) | inspect and clear the learned blocked-item ledger |
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
-| [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
-| [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
 | [`goobers completion fish`](#goobers-completion-fish) | generate a fish completion script |
 | [`goobers completion powershell`](#goobers-completion-powershell) | generate a PowerShell completion script |
@@ -35,19 +53,67 @@
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
-| [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
-| [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
-| [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
-| [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
-| [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
-| [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
+| [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
+| [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
+| [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
+| [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
+| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
+| [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
+| [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
+| [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
+| [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
+| [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
+| [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
+| [`goobers runs du`](#goobers-runs-du) | report per-run journal and artifact bytes |
+| [`goobers runs list`](#goobers-runs-list) | alias for the status run table (same flags, no --watch) |
+| [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
+| [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
+| [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
+| [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
+| [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
+| [`goobers service start`](#goobers-service-start) | resume an installed-but-stopped daemon |
+| [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
+| [`goobers service stop`](#goobers-service-stop) | halt the running daemon without disabling or removing it |
+| [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
+| [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
+| [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
+| [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
+| [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
+| [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
+| [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
+| [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
+| [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
+| [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
+| [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
+| [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
+| [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
+| [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
+
+## Workflow-stage and connector commands
+
+Runner-invoked workflow internals; these remain directly invocable but are not typically run by hand.
+
+| Command | Description |
+| --- | --- |
+| [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
+| [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
+| [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
+| [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
+| [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
+| [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
+| [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
+| [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
+| [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
@@ -55,23 +121,15 @@
 | [`goobers gather-pr-context`](#goobers-gather-pr-context) | pr-remediation entrypoint: select and load a PR's context (a workflow stage) |
 | [`goobers gather-review-threads`](#goobers-gather-review-threads) | add native reviews and anchored inline threads to a remediation brief (a workflow stage) |
 | [`goobers gather-sibling-context`](#goobers-gather-sibling-context) | load other open PRs as review evidence (a workflow stage) |
-| [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers ios-simulator-test`](#goobers-ios-simulator-test) | run XCUITest on an iOS simulator and parse its xcresult (a workflow stage) |
 | [`goobers issue-close-out`](#goobers-issue-close-out) | comment + close out the claimed issue (a workflow stage) |
-| [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
-| [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
-| [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
+| [`goobers mcp-io`](#goobers-mcp-io) | run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage) |
 | [`goobers merge-pr`](#goobers-merge-pr) | conjunctive auto-merge via direct-merge or merge-queue (a workflow stage) |
 | [`goobers merge-queue-poll`](#goobers-merge-queue-poll) | watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage) |
-| [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
-| [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
-| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers open-pr`](#goobers-open-pr) | open or update the run's PR (a workflow stage) |
-| [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
-| [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
@@ -80,52 +138,12 @@
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
-| [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
-| [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
-| [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
-| [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
-| [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
-| [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
-| [`goobers runs du`](#goobers-runs-du) | report per-run journal and artifact bytes |
-| [`goobers runs list`](#goobers-runs-list) | alias for the status run table (same flags, no --watch) |
-| [`goobers scaffold`](#goobers-scaffold) | scaffold a goober or workflow in a gaggle |
-| [`goobers scaffold goober`](#goobers-scaffold-goober) | scaffold a goober in a gaggle |
-| [`goobers scaffold workflow`](#goobers-scaffold-workflow) | scaffold a workflow in a gaggle |
-| [`goobers schema`](#goobers-schema) | emit a JSON Schema embedded in this build |
 | [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
-| [`goobers self-update`](#goobers-self-update) | stage and request a supervised binary update |
-| [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
-| [`goobers service install`](#goobers-service-install) | install, enable, and start the supervised daemon |
-| [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
-| [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
-| [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
-| [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
-| [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
-| [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
-| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers telemetry`](#goobers-telemetry) | query, export, prune, or compact run telemetry |
-| [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
-| [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
-| [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
-| [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
-| [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
-| [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
-| [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
-| [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
-| [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
-| [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
-| [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
-| [`goobers workflow`](#goobers-workflow) | inspect workflows |
-| [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
-| [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
-| [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
 
 ## `goobers agent-kit`
 
@@ -370,7 +388,7 @@ $ goobers backlog-health
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -382,7 +400,9 @@ explicitly. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
 provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
-a plain list (no --claim) does not require it.
+a plain list (no --claim) does not require it. --read-only also bypasses
+claim locks, blocked-record reconciliation, scan cursors, and read caches,
+and uses only the github:issues:read capability.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A
@@ -521,6 +541,32 @@ evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.
 
 ~~~console
 $ goobers check-fail-first
+~~~
+
+## `goobers check-issue-staleness`
+
+route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+
+~~~text
+Usage: goobers check-issue-staleness [path]
+
+Re-fetch the PR's pinned linked issue and compare its title and body
+against the snapshot taken when the PR was opened. If the issue spec
+changed since implementation began, label the PR goobers:needs-
+remediation and post an explanatory comment instead of letting review
+proceed against stale copied criteria. A PR with no pin (predates this
+feature, or its linked issue never resolved an updatedAt) is never
+considered stale — there is nothing to compare against. Declared
+inputs: pullNumber (required), head/base/advisoryMode (passed through
+unchanged for the next stage's inputsFrom). Writes
+issueStale/number/head/base/advisoryMode to the declared result file.
+Exit codes: 0 = evaluated, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers check-issue-staleness
 ~~~
 
 ## `goobers claims`
@@ -1403,6 +1449,34 @@ $ goobers lint --json
 $ goobers lint --check-harness --check-repos
 ~~~
 
+## `goobers mcp-io`
+
+run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
+
+~~~text
+Usage: goobers mcp-io --config <path>
+
+Run the goobers-io MCP server over stdio: publish_output, list_inputs,
+read_input, and grep_input — the generic replacement for writing an
+agentic stage's declared output with a file-editing tool (#2406). Not
+meant to be run interactively — the harness spawns this automatically
+via --additional-mcp-config for any eligible stage (one with a declared
+artifactFile and/or upstream context); nothing in a goober's own YAML
+needs to name it. --config points at the workspace-relative runtime
+config (workspace, declared artifactFile, available inputs) the
+harness writes before invocation — deliberately not $COPILOT_HOME-
+relative, so this works whether or not the invocation has Copilot's
+stored-login auth or any other MCP server configured.
+Exit codes: 0 = the stdio session ended cleanly (stdin closed),
+1 = missing or invalid configuration, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers mcp-io --config .goobers/mcp-io/goobers-io-config.json
+~~~
+
 ## `goobers merge-pr`
 
 conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
@@ -1757,10 +1831,13 @@ selectedNumber/head/base (Task.InputsFrom gather-pr-context's own
 outputs) and hasSubstantiveFindings/hasFailingCI.
 
 remediate (input, default "conflict,substantive,failing-ci,behind-base,
-sibling-overlap") is a comma-separated policy naming which detected
-causes are allowed to trigger remediation; the shipped default is fully
-liberal. behind-base is accepted vocabulary but cannot fire yet (no
-detection reaches this stage's decision today).
+sibling-overlap,human-comment") is a comma-separated policy naming which
+detected causes are allowed to trigger remediation; the shipped default is
+fully liberal. behind-base is accepted vocabulary but cannot fire yet (no
+detection reaches this stage's decision today). human-comment fires when a
+genuinely new human comment postdates the watermark recorded in the sticky
+remediation-state comment; detection runs only when the declared policy
+names human-comment, so an old pinned policy is unaffected.
 
 Exit codes: 0 = routed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -1856,7 +1933,8 @@ the active cause exhausts its DSL-declared budget or on a byte-identical
 repeat, or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
 gather-pr-context's selectedNumber output), remediationCauses, and the
-four per-cause budget inputs. --budget overrides every declared cause
+five per-cause budget inputs (humanCommentBudget defaults to 2 when
+undeclared). --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
 --escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`
@@ -2235,9 +2313,12 @@ and owns validated self-update handoff, health checks, and rollback.
 Subcommands:
   install     install, enable, and start the service
   uninstall   gracefully stop, disable, and remove the service
+  start       resume an installed-but-stopped service
+  stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
-Run `goobers service install -h`, `goobers service uninstall -h`, or
+Run `goobers service install -h`, `goobers service uninstall -h`,
+`goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
 ~~~
 
@@ -2274,6 +2355,28 @@ $ goobers service install
 $ goobers service install ./instance
 ~~~
 
+## `goobers service start`
+
+resume an installed-but-stopped daemon
+
+~~~text
+Usage: goobers service start [path]
+
+Resume an installed-but-stopped goobers daemon (#2073) without
+re-registering it. Starting an already-running service is a successful
+no-op.
+
+Exit codes: 0 = running, 1 = not installed/start error,
+2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service start
+$ goobers service start ./instance
+~~~
+
 ## `goobers service status`
 
 report whether the supervised daemon is installed and running
@@ -2293,6 +2396,30 @@ Exit codes: 0 = running, 1 = stopped/not installed/query error,
 ~~~console
 $ goobers service status
 $ goobers service status --json
+~~~
+
+## `goobers service stop`
+
+halt the running daemon without disabling or removing it
+
+~~~text
+Usage: goobers service stop [path]
+
+Halt the running goobers daemon without disabling or removing its
+supervisor registration (#2073) — distinct from uninstall, which folds
+stop, disable, and removal into one step. `goobers service status` then
+reports "installed, not running"; `goobers service start` resumes it.
+Stopping an already-stopped service is a successful no-op.
+
+Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop
+error, 2 = usage error or not an instance root.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service stop
+$ goobers service stop ./instance
 ~~~
 
 ## `goobers service uninstall`
@@ -2680,12 +2807,15 @@ $ goobers trace --transcripts <run-id>
 run the daemon (scheduler + runner + loopback HTTP API)
 
 ~~~text
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
 listener (default path "."). Blocks
-until interrupted (SIGINT/SIGTERM), then drains in-flight runs before
+until interrupted (SIGINT/SIGTERM), then drains in-flight runs indefinitely
+by default. --drain-timeout forces shutdown after a deadline; a repeated
+signal always forces shutdown without prompting. Interrupted runs resume
+from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 

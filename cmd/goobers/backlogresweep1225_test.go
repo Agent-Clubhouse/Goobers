@@ -16,8 +16,9 @@ import (
 func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems, interval string) {
 	t.Helper()
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
-	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman)
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman+","+blockedOnSiblingLabel)
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", maxItems)
 	t.Setenv("GOOBERS_INPUT_RESWEEPMAXITEMS", resweepMaxItems)
 	t.Setenv("GOOBERS_INPUT_RESWEEPINTERVAL", interval)
@@ -148,6 +149,143 @@ func TestBacklogQueryResweepRateLimitsReadOnlyInFlightContext(t *testing.T) {
 	}
 	if strings.Contains(stdout, "selected 1 read-only") {
 		t.Fatalf("second backlog-query ignored the 24h re-sweep interval: stdout = %q", stdout)
+	}
+}
+
+func TestBacklogQueryDependencyRecheckFiltersBeforeClaim(t *testing.T) {
+	tests := []struct {
+		name          string
+		blockerState  string
+		blockerLabels []string
+		wantClaimed   bool
+	}{
+		{name: "open dependency", blockerState: "open"},
+		{name: "closed dependency", blockerState: "closed", wantClaimed: true},
+		{
+			name:          "open sibling decision",
+			blockerState:  "open",
+			blockerLabels: []string{providers.LabelNeedsHuman},
+			wantClaimed:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(7, "Blocked item", "goobers:approved", blockedOnSiblingLabel)
+			server.addIssue(8, "Named blocker", tt.blockerLabels...)
+			server.setIssueState(8, tt.blockerState)
+			server.setIssueBlockers(7, 8)
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "dependency-run")
+			configureCurationResweep(t, "2", "1", "24h")
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+
+			code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+			if code != 0 {
+				t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, claimed := ledger.Lookup("7")
+			if claimed != tt.wantClaimed {
+				t.Fatalf("blocked item claimed = %t, want %t; stdout = %q", claimed, tt.wantClaimed, stdout)
+			}
+			if !tt.wantClaimed {
+				if got := len(server.issues[7].comments); got != 0 {
+					t.Fatalf("unchanged blocked item comments = %d, want 0", got)
+				}
+				return
+			}
+			items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+			if len(items) != 1 || items[0].ID != "7" || items[0].CurationMode != "dependency-recheck" {
+				t.Fatalf("curation items = %+v, want item 7 in dependency-recheck mode", items)
+			}
+		})
+	}
+}
+
+func TestBacklogQueryUnchangedDependencyDoesNotChurnOrStarve(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "Old blocked item", "goobers:approved", blockedOnSiblingLabel)
+	server.addIssue(2, "Forward item", "goobers:approved")
+	server.addIssue(99, "Open blocker")
+	server.setIssueBlockers(1, 99)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recheck-run-1")
+	configureCurationResweep(t, "2", "1", "24h")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("first backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("first-pass items = %+v, want forward item 2", items)
+	}
+	if got := len(server.issues[1].comments); got != 0 {
+		t.Fatalf("blocked item comments after first pass = %d, want 0", got)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "recheck-run-2")
+	code, _, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("second backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	if got := len(server.issues[1].comments); got != 0 {
+		t.Fatalf("blocked item comments after repeated pass = %d, want 0", got)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, claimed := ledger.Lookup("1"); claimed {
+		t.Fatalf("unchanged blocked item acquired claim: %+v", entry)
+	}
+}
+
+func TestBacklogQueryDependencyRechecksRespectRemainingBatchCapacity(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for number := 1; number <= 19; number++ {
+		server.addIssue(number, "Forward item", "goobers:approved")
+	}
+	for number := 20; number <= 24; number++ {
+		blocker := number + 100
+		server.addIssue(number, "Blocked item", "goobers:approved", blockedOnSiblingLabel)
+		server.addIssue(blocker, "Closed blocker")
+		server.setIssueState(blocker, "closed")
+		server.setIssueBlockers(number, blocker)
+	}
+	server.addIssue(30, "Ready re-sweep item", "goobers:approved", providers.LabelReady)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "capacity-run")
+	configureCurationResweep(t, "20", "20", "24h")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 20 {
+		t.Fatalf("curation items = %d, want batch capped at 20", len(items))
+	}
+	dependencyRechecks := 0
+	for _, item := range items {
+		if item.CurationMode == "dependency-recheck" {
+			dependencyRechecks++
+		}
+	}
+	if dependencyRechecks != 1 {
+		t.Fatalf("dependency rechecks = %d, want remaining batch capacity of 1", dependencyRechecks)
 	}
 }
 

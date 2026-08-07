@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"slices"
 	"strconv"
@@ -190,6 +191,7 @@ type handlerConfig struct {
 	authenticator       Authenticator
 	interventions       InterventionService
 	interventionContext context.Context
+	runRevealer         func(context.Context, string) error
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -241,6 +243,18 @@ func WithInterventionContext(ctx context.Context) HandlerOption {
 			return errors.New("http API intervention context is required")
 		}
 		config.interventionContext = ctx
+		return nil
+	}
+}
+
+// WithRunRevealer enables the local-only action that opens a run directory in
+// the host file browser.
+func WithRunRevealer(reveal func(context.Context, string) error) HandlerOption {
+	return func(config *handlerConfig) error {
+		if reveal == nil {
+			return errors.New("run revealer is required")
+		}
+		config.runRevealer = reveal
 		return nil
 	}
 }
@@ -370,7 +384,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
-	registerV1Routes(router, reader, config.interventions, config.interventionContext, errorLog)
+	registerV1Routes(router, reader, errorLog, config)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -388,7 +402,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
-func registerV1Routes(router *Router, reader readservice.Reader, interventions InterventionService, interventionContext context.Context, errorLog *log.Logger) {
+func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig) {
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
@@ -399,19 +413,40 @@ func registerV1Routes(router *Router, reader readservice.Reader, interventions I
 		writeJSON(w, http.StatusOK, health)
 	})
 	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
-		config, err := reader.PortalConfig(request.Context())
+		portalConfig, err := reader.PortalConfig(request.Context())
 		if err != nil {
 			errorLog.Printf("portal config read failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "read_error", "portal config could not be read")
 			return
 		}
+		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
 		w.Header().Set("Cache-Control", "no-cache")
-		writeJSON(w, http.StatusOK, config)
+		writeJSON(w, http.StatusOK, portalConfig)
 	})
 	registerTelemetryRoutes(router, reader, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
-	registerMutationRoutes(router, interventions, interventionContext, errorLog)
+	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
+	registerRunRevealRoute(router, config.runRevealer, errorLog)
+}
+
+func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteRunReveal, func(w http.ResponseWriter, request *http.Request) {
+		if reveal == nil {
+			writeError(w, http.StatusNotFound, "not_available", "run reveal is not available for this deployment")
+			return
+		}
+		if err := reveal(request.Context(), request.PathValue("run")); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "not_found", "requested run data was not found")
+				return
+			}
+			errorLog.Printf("reveal run failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "reveal_error", "run directory could not be opened")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {

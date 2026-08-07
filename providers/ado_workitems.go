@@ -18,6 +18,7 @@ import (
 
 const (
 	adoCommentPageSize = 200
+	adoWIQLPageSize    = 20000
 	adoClaimRetries    = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
@@ -196,6 +197,65 @@ func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id st
 	return p.mapADOWorkItem(ctx, repo, out)
 }
 
+// FindWorkItemsByMarker reads the project's authoritative work-item IDs and
+// checks each live description for an exact single-line marker.
+func (p *ADOProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	return p.findWorkItemsByMarker(ctx, repo, marker, adoWIQLPageSize)
+}
+
+func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string, pageSize int) ([]WorkItem, error) {
+	if pageSize <= 0 {
+		return nil, fmt.Errorf("ADO WIQL page size must be positive")
+	}
+	project := p.project(repo)
+	endpoint, err := p.workURL(project, "wiql")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(pageSize)}})
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	afterID := 0
+	for {
+		query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+		if afterID > 0 {
+			query += fmt.Sprintf(" AND [System.Id] > %d", afterID)
+		}
+		query += " ORDER BY [System.Id] ASC"
+
+		var result adoWIQLResponse
+		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
+			return nil, err
+		}
+		for _, ref := range result.WorkItems {
+			item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
+			if err != nil {
+				return nil, err
+			}
+			if containsExactLine(item.Body, marker) {
+				matches = append(matches, item)
+			}
+		}
+		if len(result.WorkItems) < pageSize {
+			return matches, nil
+		}
+		nextID := result.WorkItems[len(result.WorkItems)-1].ID
+		if nextID <= afterID {
+			return nil, fmt.Errorf("ADO WIQL marker scan did not advance beyond work item %d", afterID)
+		}
+		afterID = nextID
+	}
+}
+
 // CreateWorkItem creates an Azure Boards work item.
 func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
 	project := p.project(req.Repository)
@@ -372,6 +432,26 @@ func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id s
 		}
 		continuation = next
 	}
+}
+
+// CreateWorkItemComment appends one work-item comment and returns its identity.
+func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return Comment{}, err
+	}
+	if err := validateADOWorkItemID(id); err != nil {
+		return Comment{}, err
+	}
+	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment adoComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	return mapADOComment(comment), nil
 }
 
 // UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
@@ -760,6 +840,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		Provider:   ProviderADO,
 		ID:         strconv.Itoa(item.ID),
 		ExternalID: strconv.Itoa(item.Rev),
+		Revision:   strconv.Itoa(item.Rev),
 		Type:       stringField(item.Fields, "System.WorkItemType"),
 		Title:      stringField(item.Fields, "System.Title"),
 		Body:       stringField(item.Fields, "System.Description"),
@@ -1026,11 +1107,8 @@ func adoTagPatch(tags []string) adoPatchOperation {
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
-	endpoint, err := p.workURLVersion(p.project(repo), "7.1-preview.4", "workItems", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, nil)
+	_, err := p.CreateWorkItemComment(ctx, repo, id, text)
+	return err
 }
 
 // adoClaimTag renders the LEGACY owner tag. Retained only to recognize and

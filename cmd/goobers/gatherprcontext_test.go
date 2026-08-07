@@ -410,7 +410,8 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 
 	providerCmdEnv(t, implementationServer, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", implementationRunID)
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
-	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
+	t.Setenv("GOOBERS_CRED_PROVIDER_PR_WRITE", "test-token")
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
 	t.Chdir(t.TempDir())
 	if code, stdout, stderr := runArgs(t, "issue-close-out", instanceRoot); code != 0 {
 		t.Fatalf("issue-close-out before PR publication: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
@@ -1135,16 +1136,12 @@ func TestGatherPRContextDoesNotReselectEscalatedFailingPR(t *testing.T) {
 	}
 }
 
-// TestGatherPRContextSkipsPRHeldByInFlightWorktree is #872/#1007's regression
-// guard: when a PR's head branch is still checked out by another live worktree
-// — its originating implementation run's ci-poll stage, which holds the branch
-// while polling CI on the PR it just opened — gather-pr-context must skip that
-// PR cleanly (exit 0, no-work, no claim, no checkout) instead of claiming it
-// and colliding on the checkout every retry ("fatal: '<branch>' is already
-// used by worktree at ..."). Once that worktree is gone (the owning run
-// finished), the very next tick proceeds and remediates the PR exactly as
-// normal — proving the guard defers rather than permanently drops the PR.
-func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
+// TestGatherPRContextSkipsPinnedPRHeldByInFlightWorktree is #872/#1007's
+// regression guard: when update-behind-pr pins a PR whose head branch is still
+// checked out by its originating implementation run, gather-pr-context must
+// defer cleanly instead of colliding on checkout. Once that worktree is gone,
+// the same pinned handoff proceeds normally.
+func TestGatherPRContextSkipsPinnedPRHeldByInFlightWorktree(t *testing.T) {
 	const prBranch = "goobers/implementation/owning-run"
 	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
 
@@ -1193,6 +1190,10 @@ func TestGatherPRContextSkipsPRHeldByInFlightWorktree(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Setenv(executor.InputEnvVar("selectedNumber"), "72")
 	t.Chdir(remWT.Path)
 	resultFile := filepath.Join(remWT.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)

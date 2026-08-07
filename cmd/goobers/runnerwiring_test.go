@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -41,6 +43,32 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
+	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	observe := runIntakeObserver(store, nil)
+
+	for index, runID := range []string{"run-a", "run-b", "run-c", "run-d", "run-e"} {
+		observe(runID, uint64(index+2))
+	}
+
+	pending, err := store.Pending(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 5 {
+		t.Fatalf("pending markers = %d, want 5", len(pending))
+	}
+	for index, marker := range pending {
+		if marker.SourceSeq != uint64(index+2) {
+			t.Fatalf("marker %s sequence = %d, want %d", marker.RunID, marker.SourceSeq, index+2)
+		}
+	}
+}
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a
@@ -88,6 +116,25 @@ func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data [
 
 func (r runnerWiringHarnessRecorder) Dir() string {
 	return r.dir
+}
+
+type runnerWiringArtifactRecorder map[string][]byte
+
+func (r runnerWiringArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	r[name] = append([]byte(nil), data...)
+	return journal.ArtifactRef(data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBounded(name string, data []byte, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
+}
+
+func (r runnerWiringArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, _ apiv1.Integrity, _ int) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 func TestResolveOTLPHeaders(t *testing.T) {
@@ -645,8 +692,9 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	}
 }
 
-func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
+func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 	root := t.TempDir()
+	shortRoot := filepath.Join(t.TempDir(), "w")
 	project := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
@@ -663,7 +711,7 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 		},
 	}}}
 	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
+		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
 		instanceConfig,
 		nil,
 		nil,
@@ -684,12 +732,68 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtInstanceScope(t *testing.T) {
 	if !cfg.PinnedWorkspace || cfg.PinnedCleanPolicy != instance.WorkspaceCleanIgnoredSafe {
 		t.Fatalf("pinned runner config = enabled %v, policy %q", cfg.PinnedWorkspace, cfg.PinnedCleanPolicy)
 	}
-	wantRoot, err := filepath.Abs(instance.NewLayout(root).WorkcopiesDir())
+	wantRoot, err := filepath.Abs(filepath.Join(shortRoot, "builders"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manager.Root != wantRoot {
-		t.Fatalf("manager root = %q, want shared instance root %q", manager.Root, wantRoot)
+		t.Fatalf("manager root = %q, want alternate gaggle root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "monolith",
+	}
+	instanceConfig := &instance.Config{Repos: []instance.RepoRef{{
+		Provider:  "github",
+		Owner:     "acme",
+		Name:      "monolith",
+		LargeRepo: true,
+	}}}
+	cfg, _, err := buildRunnerConfig(
+		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		instanceConfig,
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+	recorder := runnerWiringArtifactRecorder{}
+	deterministic, err := cfg.NewDeterministic(recorder, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("NewDeterministic: %v", err)
+	}
+	script := `printf '%s' "$MSBUILDDISABLENODEREUSE"`
+	if runtime.GOOS == "windows" {
+		script = `@echo off
+echo|set /p="%MSBUILDDISABLENODEREUSE%"`
+	}
+	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
+		TaskID:    "build",
+		Workspace: t.TempDir(),
+	}, apiv1.DeterministicRun{Script: script})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("result = %+v, want success", result)
+	}
+	if got := string(recorder["build/stdout.log"]); got != "1" {
+		t.Fatalf("MSBUILDDISABLENODEREUSE = %q, want preset default 1", got)
 	}
 }
 
@@ -1585,6 +1689,29 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
 			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
 		}
+	}
+}
+
+func TestWorkcopyRootClaimsAllowSharedDefaultPinnedRoot(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimWorkcopyRoot(claims, "beta", root, false); err != nil {
+		t.Fatalf("shared default pinned root: %v", err)
+	}
+}
+
+func TestWorkcopyRootClaimsRejectAlternateRootCollision(t *testing.T) {
+	claims := make(map[string]workcopyRootClaim)
+	root := filepath.Join(t.TempDir(), "workcopies")
+	if err := claimWorkcopyRoot(claims, "alpha", root, false); err != nil {
+		t.Fatal(err)
+	}
+	err := claimWorkcopyRoot(claims, "beta", root, true)
+	if err == nil || !strings.Contains(err.Error(), "workcopies path collision") {
+		t.Fatalf("error = %v, want alternate-root collision", err)
 	}
 }
 

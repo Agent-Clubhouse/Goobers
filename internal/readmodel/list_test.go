@@ -394,6 +394,19 @@ func TestStageScopedPlansUseTheirIndexes(t *testing.T) {
 		{"stage", ListOptions{Stage: "build", Limit: 50}, "idx_run_stage_recency"},
 		{"gaggle+stage", ListOptions{Gaggle: "gaggle-000", Stage: "build", Limit: 50},
 			"idx_run_stage_gaggle_recency"},
+		{"stage+success", ListOptions{Stage: "build", Outcome: OutcomeSuccess, Limit: 50},
+			"idx_run_stage_outcome_success"},
+		{"stage+failure", ListOptions{Stage: "build", Outcome: OutcomeFailure, Limit: 50},
+			"idx_run_stage_outcome_failure"},
+		{"stage+other", ListOptions{Stage: "build", Outcome: OutcomeOther, Limit: 50},
+			"idx_run_stage_outcome_other"},
+		{"stage+terminal", ListOptions{Stage: "build", Outcome: OutcomeTerminal, Limit: 50},
+			"idx_run_stage_outcome_terminal"},
+		{"stage+finished", ListOptions{Stage: "build", Outcome: OutcomeFinished, Limit: 50},
+			"idx_run_stage_outcome_finished"},
+		{"gaggle+stage+success", ListOptions{
+			Gaggle: "gaggle-000", Stage: "build", Outcome: OutcomeSuccess, Limit: 50,
+		}, "idx_run_stage_gaggle_outcome_success"},
 		// Each population resolves to its OWN partial index. A composite over the
 		// four booleans would have to be probed with three wildcards, which is a
 		// scan of the stage's whole range.
@@ -460,13 +473,14 @@ func seedProjectedStages(t *testing.T, store *Store, n int) {
 			LastSeq:      uint64(i + 1),
 			Stages:       []string{"build"},
 		}}
-		status := "succeeded"
+		status := "success"
 		if i%3 == 0 {
-			status = "failed"
+			status = "failure"
 		}
 		p.Stages = []StageRow{{
 			RunID: p.Run.RunID, Stage: "build", Attempts: 1,
 			LastStatus: status, StartedAt: &startedAt,
+			HadSuccess: status == "success", HadFailure: status == "failure",
 		}}
 		// A minority measured, which is what makes the partial indexes small and
 		// is the shape they are chosen for.

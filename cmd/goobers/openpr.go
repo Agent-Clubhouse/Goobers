@@ -61,14 +61,14 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	var provider openPRProvider
 	switch repo.Provider {
 	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForStage(root, repo)
+		adoProvider, err := newADOProviderForOpenPR(root, repo)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		provider = adoProvider
 	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubPRWrite)
+		token, err := providerToken(capability.ProviderPRWrite)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
@@ -80,7 +80,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 		provider = giteaProvider
 	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubPRWrite)
+		token, err := providerToken(capability.ProviderPRWrite)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1

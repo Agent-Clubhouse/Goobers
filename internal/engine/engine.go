@@ -462,11 +462,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
 		// the journal ungraded and diverge from the local runner.
-		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
-			var res apiv1.ResultEnvelope
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &res)
-			res.Integrity = produced
-			return res, err
+		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+			var result stageActivityResult
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &result)
+			result.Integrity = produced
+			return result, err
 		})
 	}
 	// Fail closed on an absent or zero-value run (#626/#156): a
@@ -480,11 +480,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 	}
 	run := *t.Run
-	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
-		var res apiv1.ResultEnvelope
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &res)
-		res.Integrity = produced
-		return res, err
+	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+		var result stageActivityResult
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &result)
+		result.Integrity = produced
+		return result, err
 	})
 }
 

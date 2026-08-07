@@ -47,6 +47,10 @@ const DefaultMaxOutputBytes int64 = 1 << 20 // 1 MiB
 // wave).
 const groupKillWaitDelay = 5 * time.Second
 
+// Provider reset timestamps are second-granularity and may be slightly ahead
+// of the runner's clock.
+const providerRateLimitResetSlack = 2 * time.Second
+
 // timeoutDumpGrace bounds how long Run waits, after sending SIGQUIT to a
 // timed-out stage's process group, for the Go processes in it (go test, the
 // goobers CLI, goober-runtime) to write their FULL goroutine traces to the
@@ -178,6 +182,9 @@ type ShellExecutor struct {
 	// whose env var the built-in list does not cover. Empty by default: an
 	// unset caller gets the built-in allowlist unchanged.
 	ExtraEnvAllowlist []string
+	// DefaultEnv supplies runner-owned stage defaults. A stage's explicitly
+	// declared run.env values override matching keys.
+	DefaultEnv map[string]string
 }
 
 type builtinErrorReport struct {
@@ -297,7 +304,14 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	injectRunContext := stageInvokesGoobersCLI(command)
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, run.Env, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
+	for key, value := range e.DefaultEnv {
+		declaredEnv[key] = value
+	}
+	for key, value := range run.Env {
+		declaredEnv[key] = value
+	}
+	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
@@ -600,15 +614,15 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 							message = fmt.Sprintf("command exited %d", exitCode)
 						}
 						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
-							return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
-								"executor: provider stage %q reported %s: %s", command[1], code, message,
-							))
+							return apiv1.ResultEnvelope{}, providerStageInfrastructureFailure(command[1], code, message, result.Outputs)
 						}
+
 						result.Status = apiv1.ResultFailure
 						result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: false}
 						result.Summary = message
 						return result, nil
 					}
+
 					// The file existed and parsed but carried no
 					// OutputErrorCode (the stage self-reported success
 					// shape yet still exited nonzero, or wrote an
@@ -732,6 +746,19 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
+}
+
+func providerStageInfrastructureFailure(stage, code, message string, outputs map[string]interface{}) error {
+	err := fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message)
+	if code != providers.ErrorCodeRateLimited {
+		return invoke.InfrastructureFailure(err)
+	}
+	resetValue, _ := outputs["rateLimitReset"].(string)
+	resetAt, parseErr := time.Parse(time.RFC3339, resetValue)
+	if parseErr != nil {
+		return invoke.InfrastructureFailure(err)
+	}
+	return invoke.InfrastructureFailureUntil(err, resetAt.Add(providerRateLimitResetSlack))
 }
 
 func readBuiltinErrorReport(path string) (*builtinErrorReport, error) {

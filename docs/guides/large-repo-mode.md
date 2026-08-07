@@ -24,6 +24,7 @@ The declaration resolves to:
 | Maximum run duration | `24h` |
 | Path-length preflight | Enabled, 260-character ceiling |
 | Mirror refresh | Heads and tags only |
+| Deterministic stage environment | `MSBUILDDISABLENODEREUSE=1` |
 | Worktree retention | Exempt by construction because the pinned workspace is outside `runs/` |
 
 `goobers validate` prints the resolved values for each enabled repository.
@@ -55,4 +56,10 @@ repos:
 retention exemption, and narrowed pinned-mirror refresh together because those
 properties are structural consequences of pinned execution. Per-stage
 `timeoutSeconds`, gaggle `runControls`, and workflow `runControls` remain more
-specific than the repository defaults.
+specific than the repository defaults. A deterministic stage can override the
+MSBuild setting through its own `run.env`.
+
+Windows operators should also follow the
+[Windows large-repo runbook](windows-large-repo-runbook.md) for Defender/Dev
+Drive setup, build-process cleanup, and the exact environment-isolation
+boundary.

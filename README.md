@@ -113,10 +113,12 @@ first-run path: a credential-free local demo, a disposable GitHub-backed run,
 and then a regular instance using the
 [production-oriented configuration examples](config-examples/README.md).
 
-For deeper context, read the [product vision](docs/VISION.md),
-[architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/), and
-[requirements](docs/requirements/). Those documents include future design;
-this overview deliberately describes the behavior shipped in this tree.
+For deeper context, read the
+[historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
+[architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/),
+and [requirements](docs/requirements/). Those documents include future
+design; this overview deliberately describes the behavior shipped in this
+tree.
 
 ## Engineering reference
 
@@ -177,6 +179,7 @@ ordered first-run flow and CLI walkthrough. Use these focused guides only for
 the differences relevant to your environment:
 
 - [Linux host setup](docs/guides/quickstart-linux.md)
+- [macOS host setup](docs/guides/quickstart-macos.md)
 - [Windows host setup](docs/guides/quickstart-windows.md)
 - [Release installation and verification](docs/guides/releases.md)
 - [Daemon supervision](docs/guides/supervision.md)

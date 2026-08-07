@@ -14,20 +14,34 @@ import (
 // after an explicit workflow release already did the same work.
 func releaseClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
 	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationRunRelease, l.Gaggle(), runID, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(log),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
-		for _, entry := range ledger.ForRunAll(runID) {
-			if err := ledger.ReleaseEntry(entry, runID); err != nil {
-				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
-			}
-		}
-		return nil
+		return releaseClaimsForRunLocked(l, log, runID)
 	})
+}
+
+func releaseClaimsForRunWithDefaultTimeout(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	return withClaimLockBounds(lockPath, claimLockOperationRunRelease, instance.DefaultClaimsLockTimeout, claimLockSlowThreshold, claimLockEventContext{
+		Gaggle: l.Gaggle(),
+		RunID:  runID,
+	}, func() error {
+		return releaseClaimsForRunLocked(l, log, runID)
+	})
+}
+
+func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runID string) error {
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
+		localscheduler.WithInstanceLog(log),
+	)
+	if err != nil {
+		return fmt.Errorf("open claim ledger: %w", err)
+	}
+	for _, entry := range ledger.ForRunAll(runID) {
+		if err := ledger.ReleaseEntry(entry, runID); err != nil {
+			return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
+		}
+	}
+	return nil
 }
 
 // renewLiveClaims re-acquires every claim held by a run this process is
@@ -84,6 +98,7 @@ func recoverClaims(
 		return nil, err
 	}
 	var terminalEntries []localscheduler.ClaimEntry
+	terminalUpdates := make(map[string]remediationNoopUpdate)
 	for _, entry := range snapshot.Snapshot() {
 		terminal, err := claimHolderTerminal(l.Root, entry)
 		if err != nil {
@@ -92,6 +107,15 @@ func recoverClaims(
 		}
 		if terminal {
 			terminalEntries = append(terminalEntries, entry)
+			if _, prepared := terminalUpdates[entry.RunID]; !prepared {
+				update, err := preparePRRemediationNoopUpdate(l, entry.RunID)
+				if err != nil {
+					return nil, err
+				}
+				if update != nil {
+					terminalUpdates[entry.RunID] = *update
+				}
+			}
 		}
 	}
 
@@ -103,6 +127,24 @@ func recoverClaims(
 		)
 		if err != nil {
 			return err
+		}
+		recorded := make(map[string]struct{})
+		for _, entry := range terminalEntries {
+			current, held := currentClaimEntry(ledger, entry)
+			if !held || current.RunID != entry.RunID {
+				continue
+			}
+			update, ok := terminalUpdates[entry.RunID]
+			if !ok {
+				continue
+			}
+			if _, ok := recorded[entry.RunID]; ok {
+				continue
+			}
+			if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
+				return err
+			}
+			recorded[entry.RunID] = struct{}{}
 		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {

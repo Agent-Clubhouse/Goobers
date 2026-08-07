@@ -33,6 +33,7 @@ const (
 	remediationCauseSubstantive    remediationCause = remediateCauseSubstantive
 	remediationCauseFailingCI      remediationCause = remediateCauseFailingCI
 	remediationCauseSiblingOverlap remediationCause = remediateCauseSiblingOverlap
+	remediationCauseHumanComment   remediationCause = remediateCauseHumanComment
 )
 
 type remediationEscalationOutcome string
@@ -49,6 +50,7 @@ var remediationCauseOrder = []remediationCause{
 	remediationCauseSubstantive,
 	remediationCauseFailingCI,
 	remediationCauseSiblingOverlap,
+	remediationCauseHumanComment,
 }
 
 type remediationAttempts struct {
@@ -56,6 +58,7 @@ type remediationAttempts struct {
 	Substantive    int `json:"substantive,omitempty"`
 	FailingCI      int `json:"failing-ci,omitempty"`
 	SiblingOverlap int `json:"sibling-overlap,omitempty"`
+	HumanComment   int `json:"human-comment,omitempty"`
 }
 
 func (a remediationAttempts) forCause(cause remediationCause) int {
@@ -68,6 +71,8 @@ func (a remediationAttempts) forCause(cause remediationCause) int {
 		return a.FailingCI
 	case remediationCauseSiblingOverlap:
 		return a.SiblingOverlap
+	case remediationCauseHumanComment:
+		return a.HumanComment
 	default:
 		return 0
 	}
@@ -83,6 +88,8 @@ func (a *remediationAttempts) increment(cause remediationCause) {
 		a.FailingCI++
 	case remediationCauseSiblingOverlap:
 		a.SiblingOverlap++
+	case remediationCauseHumanComment:
+		a.HumanComment++
 	}
 }
 
@@ -91,6 +98,7 @@ type remediationBudgets struct {
 	Substantive    int
 	FailingCI      int
 	SiblingOverlap int
+	HumanComment   int
 }
 
 func (b remediationBudgets) forCause(cause remediationCause) int {
@@ -103,6 +111,8 @@ func (b remediationBudgets) forCause(cause remediationCause) int {
 		return b.FailingCI
 	case remediationCauseSiblingOverlap:
 		return b.SiblingOverlap
+	case remediationCauseHumanComment:
+		return b.HumanComment
 	default:
 		return 0
 	}
@@ -170,11 +180,20 @@ type remediationState struct {
 	RemediationAttempted bool                         `json:"remediationAttempted"`
 	AttemptedCauses      []remediationCause           `json:"attemptedCauses,omitempty"`
 	// EscalatedHeadSHA / EscalatedBaseSHA are the PR's head/base SHA at the
-	// moment of escalation — the self-heal comparison snapshot (#716).
+	// moment of escalation, or the latest repeat fail — the self-heal
+	// comparison snapshot (#716/#2378).
 	EscalatedHeadSHA           string `json:"escalatedHeadSha,omitempty"`
 	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
 	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
 	StructuralCollisionContext string `json:"structuralCollisionContext,omitempty"`
+	// LastSeenCommentAt is the RFC3339 created-at of the newest issue-level PR
+	// comment observed at the moment this cycle was recorded — the watermark
+	// rebase-pr's human-comment detection (hasNewHumanCommentSince) compares
+	// against so only a comment posted AFTER this cycle retriggers remediation.
+	// Empty on records written before this shipped; hasNewHumanCommentSince
+	// fails closed on an empty watermark so a fleet upgrade never retriggers
+	// every PR that already carries a human comment.
+	LastSeenCommentAt string `json:"lastSeenCommentAt,omitempty"`
 }
 
 // remediationStatePattern matches the machine-readable payload
@@ -387,6 +406,28 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	return true, nil
 }
 
+// refreshEscalationSnapshotAfterRepeatFail closes the one-shot self-heal
+// window after merge-review re-evaluates an already-escalated PR. Without this,
+// a base advance stays different from the original snapshot forever, making an
+// unchanged PR eligible on every subsequent poll (#2378).
+func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment) error {
+	state, commentID, found := latestRemediationState(comments)
+	if !found || commentID == "" {
+		return nil
+	}
+	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
+	if err != nil {
+		return err
+	}
+	if state.Escalated && state.EscalatedHeadSHA == pr.HeadSHA && state.EscalatedBaseSHA == liveBaseTip {
+		return nil
+	}
+	state.Escalated = true
+	state.EscalatedHeadSHA = pr.HeadSHA
+	state.EscalatedBaseSHA = liveBaseTip
+	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
+}
+
 // latestRemediationState scans comments (oldest first, ListComments' own
 // order) for the LAST one carrying an embedded remediation-state payload —
 // only the most recently recorded cycle/escalation is still actionable —
@@ -413,6 +454,28 @@ func latestRemediationStateForPR(body string, comments []providers.Comment) (sta
 	return state, "", found
 }
 
+// latestCommentTimestamp returns the RFC3339 (UTC) created-at of the newest
+// comment that carries one, or "" when none do. This is the human-comment
+// watermark a checkpoint records in remediationState.LastSeenCommentAt so the
+// next rebase-pr cycle only retriggers on a comment posted strictly after it.
+func latestCommentTimestamp(comments []providers.Comment) string {
+	var newest time.Time
+	found := false
+	for _, c := range comments {
+		if c.CreatedAt == nil {
+			continue
+		}
+		if !found || c.CreatedAt.After(newest) {
+			newest = *c.CreatedAt
+			found = true
+		}
+	}
+	if !found {
+		return ""
+	}
+	return newest.UTC().Format(time.RFC3339)
+}
+
 // runRemediationCheckpoint implements `goobers remediation-checkpoint`
 // (issue #364): lifts in-run repass control and same-diff escalation (#316,
 // LastDiffDigest) to PR altitude (design doc §6 D4/D5). Per-cause budgets are
@@ -437,7 +500,8 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"repeat, or record the advanced\n" +
 	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
 	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
-	"four per-cause budget inputs. --budget overrides every declared cause\n" +
+	"five per-cause budget inputs (humanCommentBudget defaults to 2 when\n" +
+	"undeclared). --budget overrides every declared cause\n" +
 	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
 	"--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.\n" +
 	"Escalations persist a machine-readable `escalationOutcome`\n" +
@@ -765,6 +829,41 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			"",
 		)
 	}
+	if !forced && len(causes) > 0 {
+		signature := remediationNoopSignature{
+			HeadSHA: current.HeadSHA,
+			Causes:  normalizeRemediationCauses(providerInput("remediationCauses", "")),
+		}
+		l := layoutFor(root)
+		noOpRecord, err := remediationNoopRecordForSignature(l, selectedNumber, signature)
+		if err != nil {
+			pf(stderr, "error: inspect remediation no-op guard: %v\n", err)
+			return 1
+		}
+		gaggle := l.Gaggle()
+		if gaggle == "" {
+			gaggle = providerGaggle()
+		}
+		key := remediationNoopKey(gaggle, selectedNumber)
+		if noOpRecord.Parked && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+			if err := clearRemediationNoopRecord(l, key); err != nil {
+				pf(stderr, "error: reset operator-cleared remediation no-op guard: %v\n", err)
+				return 1
+			}
+			noOpRecord = remediationNoopRecord{}
+		}
+		if noOpRecord.Attempts >= remediationNoopLimit {
+			if err := markRemediationNoopParked(l, key); err != nil {
+				pf(stderr, "error: park remediation no-op guard: %v\n", err)
+				return 1
+			}
+			escalateReasonValue = fmt.Sprintf(
+				"the implementer reported no-work %d consecutive times for unchanged head %s and remediation cause(s) %s",
+				noOpRecord.Attempts, signature.HeadSHA, signature.Causes,
+			)
+			forced = true
+		}
+	}
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded
 	// checkpoint state is still actionable. Its comment ID (if any) is the
@@ -794,6 +893,16 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
 			selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
 		prior = remediationState{}
+	}
+
+	// Record the human-comment watermark this cycle sees. The refresh loop lists
+	// rawComments unconditionally (even on forced escalations), so the newest
+	// timestamp is always available; when the thread carries no timestamped
+	// comment, carry the prior watermark forward rather than dropping it (which
+	// would fail closed and never retrigger on human-comment again).
+	watermark := latestCommentTimestamp(rawComments)
+	if watermark == "" {
+		watermark = prior.LastSeenCommentAt
 	}
 
 	stalled := remediationStalled(prior, digest, current.BaseSHA)
@@ -880,6 +989,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: escalatedBaseTip,
 			SiblingOverlapContext:      renderSiblingOverlapContext(overlaps),
 			StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
+			LastSeenCommentAt:          watermark,
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,
@@ -906,6 +1016,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	state = remediationState{
 		Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: digest,
 		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+		LastSeenCommentAt: watermark,
 	}
 	// Clear the label before replacing its escalation snapshot. Otherwise a
 	// failed label removal leaves a non-escalated state that fails closed.
@@ -950,7 +1061,7 @@ func parseRemediationCauses(raw string) ([]remediationCause, error) {
 	for _, value := range strings.Split(raw, ",") {
 		cause := remediationCause(strings.TrimSpace(value))
 		switch cause {
-		case remediationCauseConflict, remediationCauseSubstantive, remediationCauseFailingCI, remediationCauseSiblingOverlap:
+		case remediationCauseConflict, remediationCauseSubstantive, remediationCauseFailingCI, remediationCauseSiblingOverlap, remediationCauseHumanComment:
 		default:
 			return nil, fmt.Errorf("unknown remediation cause %q", value)
 		}
@@ -965,11 +1076,19 @@ func parseRemediationCauses(raw string) ([]remediationCause, error) {
 	return causes, nil
 }
 
+// defaultHumanCommentBudget is the per-cycle allowance for the human-comment
+// cause when humanCommentBudget is undeclared. It is a DEFAULT rather than a
+// required input (unlike the four legacy budgets): declaredRemediationBudgets
+// runs whenever any cause fires, so requiring it would fail every already-
+// deployed workflow the moment it upgraded to a binary that reads it.
+const defaultHumanCommentBudget = 2
+
 func declaredRemediationBudgets(override int) (remediationBudgets, error) {
 	if override > 0 {
 		return remediationBudgets{
 			Conflict: override, Substantive: override,
 			FailingCI: override, SiblingOverlap: override,
+			HumanComment: override,
 		}, nil
 	}
 	var budgets remediationBudgets
@@ -989,6 +1108,19 @@ func declaredRemediationBudgets(override int) (remediationBudgets, error) {
 			return remediationBudgets{}, fmt.Errorf("%s must be a positive integer, got %q", value.input, raw)
 		}
 		*value.target = budget
+	}
+	// humanCommentBudget is optional for backward compatibility: an empty input
+	// falls back to defaultHumanCommentBudget so a legacy workflow that predates
+	// the cause keeps working, while a non-empty but invalid value is still a
+	// hard error (a typo must not silently pick up the default).
+	if raw := providerInput("humanCommentBudget", ""); raw == "" {
+		budgets.HumanComment = defaultHumanCommentBudget
+	} else {
+		budget, err := strconv.Atoi(raw)
+		if err != nil || budget <= 0 {
+			return remediationBudgets{}, fmt.Errorf("humanCommentBudget must be a positive integer, got %q", raw)
+		}
+		budgets.HumanComment = budget
 	}
 	return budgets, nil
 }

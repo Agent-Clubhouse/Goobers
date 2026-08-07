@@ -123,12 +123,27 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
+	handoffNumber := providerInput("selectedNumber", "")
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
 		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
 		return 1
 	}
-	if hasExistingClaim {
+	hasPinnedCandidate := hasExistingClaim
+	if handoffNumber != "" {
+		selectedNumber, parseErr := strconv.Atoi(handoffNumber)
+		if parseErr != nil || selectedNumber <= 0 {
+			pf(stderr, "error: selectedNumber input %q must be a positive integer\n", handoffNumber)
+			return 1
+		}
+		if hasExistingClaim && claimedNumber != selectedNumber {
+			pf(stderr, "error: selectedNumber input PR #%d does not match this run's claimed PR #%d\n", selectedNumber, claimedNumber)
+			return 1
+		}
+		claimedNumber = selectedNumber
+		hasPinnedCandidate = true
+	}
+	if hasPinnedCandidate {
 		var claimed []providers.PullRequestSummary
 		for _, pr := range prs {
 			if pr.Number == claimedNumber {
@@ -169,11 +184,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
 	}
 
-	// update-behind-pr already selected and claimed a full-remediation
-	// candidate. Re-running fallback eligibility here against the PR summary's
-	// pinned BaseSHA can drop a PR that was behind the live base tip.
+	// update-behind-pr already selected a full-remediation candidate and threads
+	// its number through the workflow. The claim ledger remains the durable
+	// fallback across retries and resumes.
 	candidates := nonBlocked
-	if !hasExistingClaim {
+	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
 			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)

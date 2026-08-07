@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { RecoveryCommand } from "../components/RecoveryAction";
 import { routeHash, type RunRouteFilters } from "../routing";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
 import { formatDuration, formatTimestamp } from "../runDetailData";
@@ -83,9 +84,43 @@ export function RunsPage({
         </label>
       </div>
 
+      {query.state.status === "stale" && query.state.error && (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Run history may be stale</strong>
+            <small>{query.state.error.message}</small>
+          </span>
+          <button className="text-button" onClick={query.retry} type="button">
+            Try again
+          </button>
+        </div>
+      )}
+
       <section className="content-section">
         {history.runs.length === 0 ? (
-          <p className="inline-empty">No runs match this filter.</p>
+          history.hasAnyRuns ? (
+            <div className="inline-empty inline-empty-recovery">
+              <strong>Filters exclude existing runs</strong>
+              <span>Clear the current filters to return to the complete run history.</span>
+              <a
+                className="text-button"
+                href={routeHash({ page: "runs" })}
+                onClick={() => {
+                  setFilter("all");
+                  setShowNoWork(true);
+                }}
+              >
+                Clear all filters
+              </a>
+              <RecoveryCommand command="goobers status <instance>" />
+            </div>
+          ) : (
+            <div className="inline-empty inline-empty-recovery">
+              <strong>No runs recorded</strong>
+              <span>Start a configured workflow to create the first run journal.</span>
+              <RecoveryCommand command="goobers run <workflow> <instance>" />
+            </div>
+          )
         ) : (
           <>
             <DataList

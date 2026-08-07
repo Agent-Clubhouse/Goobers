@@ -228,6 +228,8 @@ func probeOptionsFor(dims []Dim, limit int) (ListOptions, bool) {
 			options.Phase = "completed"
 		case DimStage:
 			options.Stage = "build"
+		case DimOutcome:
+			options.Outcome = OutcomeSuccess
 		case DimPopulation:
 			options.Population = PopulationCostMeasured
 		case DimActivity:
@@ -271,7 +273,7 @@ func seedProbeCorpus(t *testing.T, store *Store, n int) {
 		}
 		p.Stages = []StageRow{{
 			RunID: p.Run.RunID, Stage: "build", Attempts: 1, LastStatus: "success",
-			StartedAt: &startedAt,
+			StartedAt: &startedAt, HadSuccess: true,
 		}}
 		p.ApplyMeasurement([]StageMeasurement{{
 			Stage: "build", CostMeasured: true, TokenMeasured: true,

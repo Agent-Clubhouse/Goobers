@@ -20,8 +20,10 @@ import (
 // allowlisting all exist precisely so a stage's behavior doesn't depend on
 // host dotfiles).
 const (
-	botGitUserName  = "goobers-bot"
-	botGitUserEmail = "goobers-bot@users.noreply.github.com"
+	botGitUserName           = "goobers-bot"
+	botGitUserEmail          = "goobers-bot@users.noreply.github.com"
+	botIdentityRetryAttempts = 4
+	botIdentityRetryBackoff  = 50 * time.Millisecond
 )
 
 // CreateOptions configures a single per-run worktree.
@@ -66,6 +68,12 @@ type CreateOptions struct {
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
+	// Sparse declares repo-relative path cones (project.checkout.sparse,
+	// #649): when non-empty, Create materializes a cone-mode sparse checkout
+	// containing only these cones plus root-level files, instead of the full
+	// tree. Empty (the default) is a full checkout — byte-identical to Create
+	// without this field.
+	Sparse []string
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -224,7 +232,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// worktree. That is what makes local-ci and the reviewer gate evaluate the
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
+	sparse := len(opts.Sparse) > 0
 	args := []string{"worktree", "add"}
+	if sparse {
+		// Skip materializing the full tree here; sparse-checkout is configured
+		// below, before the explicit checkout that actually populates the
+		// working directory, so only the declared cones are ever written to
+		// disk (#649).
+		args = append(args, "--no-checkout")
+	}
+	checkoutTarget := opts.BaseRef
 	switch {
 	case opts.Branch == "":
 		args = append(args, "--detach", path, opts.BaseRef)
@@ -234,13 +251,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		// branch in two live worktrees, which holds here because stages run
 		// sequentially and each stage's worktree is removed before the next.
 		args = append(args, path, opts.Branch)
+		checkoutTarget = opts.Branch
 	case opts.RequireExistingBranch:
 		// Never silently substitute a fresh branch off BaseRef for a branch
 		// the caller asserted already exists — see RequireExistingBranch.
 		return nil, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
 		// First stage of the run: create the run branch off BaseRef.
-		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
+		// Run continuity comes from the local branch tip, so avoid creating
+		// persistent tracking config that branch retention cannot reap.
+		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
+		checkoutTarget = opts.Branch
 	}
 
 	pid := os.Getpid()
@@ -296,11 +317,36 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// with no --global, so it never touches the managed working copy or the
 	// host's ambient git config) — an agentic stage's commit must not depend
 	// on the daemon host happening to have user.name/user.email set (#237).
-	if err := runGit(ctx, path, "config", "user.name", botGitUserName); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.name", botGitUserName)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
-	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.email", botGitUserEmail)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	}
+	if sparse {
+		// Cone mode only, per the design (path-list "legacy" sparse-checkout
+		// patterns are out of scope, #649): a plain, fast set of directory
+		// prefixes rather than full gitignore-style pattern matching.
+		setArgs := append([]string{"sparse-checkout", "set", "--cone"}, opts.Sparse...)
+		if err := runGit(ctx, path, setArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: configure sparse checkout for run %s: %w", opts.RunID, err)
+		}
+		// The actual materialization: --no-checkout above left the working
+		// directory empty, so this checkout is what populates it — and, with
+		// sparse-checkout already configured, populates only the declared
+		// cones plus root-level files instead of the full tree.
+		checkoutArgs := []string{"checkout", checkoutTarget}
+		if partialMirror {
+			if err := m.runRemoteGit(ctx, opts.RepoURL, path, checkoutArgs...); err != nil {
+				return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+			}
+		} else if err := runGit(ctx, path, checkoutArgs...); err != nil {
+			return nil, fmt.Errorf("worktree: materialize sparse checkout for run %s: %w", opts.RunID, err)
+		}
 	}
 	if opts.SyncBase && existingBranch {
 		mergeArgs := []string{"merge", "--ff", "--no-edit", opts.BaseRef}
@@ -352,6 +398,33 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func retryBotIdentityConfig(ctx context.Context, op func() error) error {
+	var err error
+	for attempt := 0; attempt < botIdentityRetryAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(botIdentityRetryBackoff):
+			}
+		}
+		if err = op(); err == nil || !isGitConfigLockContention(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func isGitConfigLockContention(err error) bool {
+	var gitErr *gitCommandError
+	if !errors.As(err, &gitErr) {
+		return false
+	}
+	message := strings.ToLower(string(gitErr.output))
+	return strings.Contains(message, "could not lock config file") &&
+		strings.Contains(message, "file exists")
 }
 
 func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string, limit PathLengthLimit) error {
@@ -568,6 +641,28 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 		return nil, fmt.Errorf("worktree: git diff %s...HEAD for run %s: %w", baseRef, wt.RunID, err)
 	}
 	return out, nil
+}
+
+// HasCommitsAheadOf reports whether HEAD contains commits not reachable from
+// baseRef.
+func (wt *Worktree) HasCommitsAheadOf(ctx context.Context, baseRef string) (bool, error) {
+	if baseRef == "" {
+		return false, fmt.Errorf("worktree: HasCommitsAheadOf requires a baseRef")
+	}
+	if wt.pinned {
+		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
+	}
+	commit, err := gitOutput(ctx, wt.Path, "rev-list", "--max-count=1", baseRef+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("worktree: inspect commits ahead of %s for run %s: %w", baseRef, wt.RunID, err)
+	}
+	return commit != "", nil
+}
+
+// HasNewCommits reports whether this stage attempt committed work after the
+// HEAD at which its worktree was created.
+func (wt *Worktree) HasNewCommits(ctx context.Context) (bool, error) {
+	return wt.HasCommitsAheadOf(ctx, wt.startRef)
 }
 
 // forceClear tears down whatever is left at path from a previous, never-torn-

@@ -44,6 +44,45 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("reveals the run directory when the local capability is available", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const revealRun = vi.spyOn(client, "revealRun").mockResolvedValue();
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(revealRun).toHaveBeenCalledWith("01JZ441DAEMONAPI");
+  });
+
+  it("hides run reveal when the daemon is not local", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const config = await client.getPortalConfig();
+    vi.spyOn(client, "getPortalConfig").mockResolvedValue({
+      ...config,
+      capabilities: { revealRun: false },
+    });
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await screen.findByRole("heading", { name: "Run 01JZ441DAEMONAPI" });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Reveal run files" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("reports a failure to open the run directory", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "revealRun").mockRejectedValue(new Error("Unable to open run files."));
+    renderRun("01JZ441DAEMONAPI", client);
+
+    await user.click(await screen.findByRole("button", { name: "Reveal run files" }));
+
+    expect(
+      await screen.findByText("Unable to open run files.", { selector: '[role="alert"]' }),
+    ).toBeInTheDocument();
+  });
+
   it("defaults an active run to the latest event and synchronizes click selection", async () => {
     const user = userEvent.setup();
     renderRun("01JZ441DAEMONAPI");
@@ -789,6 +828,84 @@ describe("run detail", () => {
         "aria-current",
         "true",
       ),
+    );
+    client.close();
+  });
+
+  it("pins the view when an earlier attempt is selected (#2464)", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const fixtures = populatedDaemonFixtures();
+    const events = fixtures.runEvents?.[runId];
+    const detail = fixtures.runDetails?.[runId];
+    if (!events || !detail) {
+      throw new Error("Expected active run fixtures.");
+    }
+    fixtures.stageAttempts = {
+      ...fixtures.stageAttempts,
+      [fixtureKey(runId, "review")]: {
+        runId,
+        stage: "review",
+        attempts: [
+          {
+            id: "sta-review-attempt-1",
+            visit: 1,
+            number: 1,
+            class: "initial",
+            status: "failure",
+            startedSeq: 5,
+            finishedSeq: 5,
+            durationMillis: 1_000,
+            artifacts: [],
+          },
+          {
+            id: "sta-review-attempt-2",
+            visit: 1,
+            number: 2,
+            class: "policy",
+            status: "running",
+            startedSeq: 6,
+            durationMillis: 1_000,
+            artifacts: [],
+          },
+        ],
+      },
+    };
+    const client = new LiveFixtureClient(fixtures);
+    renderRun(runId, client);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Visit 1 · Attempt 1" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    events.events.push({
+      schema: "v1",
+      seq: 7,
+      type: "gate.evaluated",
+      branch: 0,
+      time: "2026-07-18T06:00:07Z",
+      knownSchema: true,
+      gate: "review",
+      attempt: 2,
+      attemptClass: "policy",
+      verdict: "needs-changes",
+      target: "implement",
+    });
+    detail.lastSeq = 7;
+    detail.currentStage = "implement";
+    act(() => client.invalidateRun("fixture:attempt-selection"));
+
+    await screen.findByRole("button", { name: /^Select sequence 7:/ });
+    expect(
+      screen.getByRole("button", { name: "review, gate, Running at sequence 6" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Visit 1 · Attempt 1" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Select sequence 7:/ })).not.toHaveAttribute(
+      "aria-current",
     );
     client.close();
   });

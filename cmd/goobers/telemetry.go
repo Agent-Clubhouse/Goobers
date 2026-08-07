@@ -276,6 +276,9 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 	if err != nil {
 		return err
 	}
+	if err := store.MarkReady(ctx); err != nil {
+		return err
+	}
 	// Report what was built. On the live instance 27% of run directories are
 	// unpublished and can never be ingested, so "scanned 40,665, projected
 	// 29,759" is the difference between a healthy rebuild and a broken one — and

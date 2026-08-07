@@ -741,7 +741,6 @@ func TestTerminalScenariosDiscoverConsecutiveGateEscalation(t *testing.T) {
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
-	graph.Edges = resolvedJoinEdges(graph)
 	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
@@ -874,67 +873,6 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 		return path, true
 	}
 	return nil, false
-}
-
-// resolvedJoinEdges returns graph.Edges with each branch-internal edge whose
-// Target is the reserved "@join" marker rewritten to point at its owning
-// parallel's actual join stage instead. model.GraphEdge deliberately keeps
-// "@join" as a literal target ("Target retains the machine target,
-// including... reserved targets") since a portal-style consumer needs to
-// know structurally that an edge is a join edge — but this file's scenario
-// generator walks the graph to find a path to a terminal, and a run never
-// actually settles "at" the literal state "@join" (the runner resolves it
-// to the join stage immediately), so both the path walk and the generated
-// scenario need the real target, not the DSL-only placeholder.
-func resolvedJoinEdges(graph workflow.Graph) []workflow.GraphEdge {
-	bySource := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
-	for _, edge := range graph.Edges {
-		bySource[edge.Source] = append(bySource[edge.Source], edge)
-	}
-
-	branchJoin := map[string]string{} // branch-member state -> real join target
-	for _, node := range graph.Nodes {
-		if node.Kind != workflow.GraphNodeParallel {
-			continue
-		}
-		var joinTarget string
-		var branchStarts []string
-		for _, edge := range bySource[node.ID] {
-			switch {
-			case edge.Outcome == "join":
-				joinTarget = edge.Target
-			case edge.Branch != "":
-				branchStarts = append(branchStarts, edge.Target)
-			}
-		}
-		for _, start := range branchStarts {
-			seen := map[string]bool{}
-			queue := []string{start}
-			for len(queue) > 0 {
-				state := queue[0]
-				queue = queue[1:]
-				if state == "" || state == workflow.TargetJoin || seen[state] {
-					continue
-				}
-				seen[state] = true
-				branchJoin[state] = joinTarget
-				for _, edge := range bySource[state] {
-					queue = append(queue, edge.Target)
-				}
-			}
-		}
-	}
-
-	resolved := make([]workflow.GraphEdge, len(graph.Edges))
-	for i, edge := range graph.Edges {
-		if edge.Target == workflow.TargetJoin {
-			if target, ok := branchJoin[edge.Source]; ok {
-				edge.Target = target
-			}
-		}
-		resolved[i] = edge
-	}
-	return resolved
 }
 
 func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
@@ -1252,7 +1190,7 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			continue
 		}
 		var source, destination any
-		var sourceFound, destinationFound bool
+		var sourceFound, destinationFound, consumerRan bool
 		for _, event := range events {
 			if event.Type != journal.EventStageFinished {
 				continue
@@ -1261,8 +1199,16 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			case contract.producer:
 				source, sourceFound = event.Outputs[contract.producerOutput]
 			case contract.consumer:
+				consumerRan = true
 				destination, destinationFound = event.Outputs[contract.consumerOutput]
 			}
+		}
+		// A terminal scenario that short-circuits before the consumer stage
+		// ever runs (e.g. #2340's issue-staleness-gate routing straight to a
+		// terminal stop) legitimately never exercises this handoff — that is
+		// a different scenario's contract to hold, not this one's to fail.
+		if !consumerRan {
+			continue
 		}
 		if !sourceFound || !destinationFound ||
 			!reflect.DeepEqual(source, contract.expectedValue) ||
@@ -1593,6 +1539,9 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if err := validateThreadedInputs(task, request.Envelope.Inputs); err != nil {
 			return err
 		}
+		if err := writeScriptedArtifactFile(request); err != nil {
+			return err
+		}
 		result := apiv1.ResultEnvelope{
 			Status:  apiv1.ResultSuccess,
 			Summary: "scripted fake-harness completion",
@@ -1860,6 +1809,26 @@ func newFixtureRepository(t *testing.T) string {
 	runGit(t, work, "commit", "-m", "fixture")
 	runGit(t, "", "clone", "--bare", work, bare)
 	return bare
+}
+
+// writeScriptedArtifactFile stands in for a real invocation's publish_output
+// call: a task that declares an artifactFile input (#2406) is now eligible
+// for goobers-io auto-wiring, and the harness's post-hoc liftArtifactFile
+// (internal/harness/executor.go) fails the stage closed if that declared
+// path never gets written — this fake harness has to produce it itself,
+// same as commitAgentChange stands in for whatever else a real invocation
+// would have done to the workspace.
+func writeScriptedArtifactFile(request harness.RunRequest) error {
+	artifactFile, _ := request.Envelope.Inputs[harness.InputArtifactFile].(string)
+	if artifactFile == "" {
+		return nil
+	}
+	path := filepath.Join(request.Workspace, filepath.FromSlash(artifactFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	content := fmt.Sprintf("scripted fake-harness artifact for %s\n", stageName(request.Envelope.TaskID))
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func commitAgentChange(workspace, stage string, call int) error {

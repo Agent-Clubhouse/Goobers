@@ -21,15 +21,34 @@ const (
 		"[production-oriented configuration examples](config-examples/README.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
-	quickstartSourceInit = "## 3. `init` — scaffold a regular instance root\n\n" +
+	quickstartSourceInit = "## 3. `init --guided` — configure a regular instance\n\n" +
 		"```sh\n" +
-		"bin/goobers init ./my-instance\n" +
+		"export PATH=\"$PWD/bin:$PATH\"\n" +
+		"goobers init --guided ./my-instance\n" +
+		"```\n\n"
+	quickstartSourceManualInit = "### Manual/advanced alternative: bare `init`\n\n" +
+		"Use bare init when you intentionally want to scaffold and edit every\n" +
+		"configuration layer yourself:\n\n" +
+		"```sh\n" +
+		"goobers init ./my-instance\n" +
 		"```\n\n" +
-		"Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one\n" +
+		"This creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one\n" +
 		"`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and\n" +
 		"`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each\n" +
-		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —\n" +
-		"existing pieces are left untouched.\n\n"
+		"gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Bare init is safe\n" +
+		"to re-run because existing pieces are left untouched.\n\n" +
+		"Before starting the instance, edit `my-instance/instance.yaml` to point at your\n" +
+		"repository and set the referenced provider token (env var or file, never inline;\n" +
+		"CFG-009/SEC-010). Edit `my-instance/config/` to shape the workforce: the gaggle's\n" +
+		"`project` and `backlog` repo references, the goober's\n" +
+		"`harness`/`skills`/`tools`, and the workflow's `triggers`/`tasks`/`gates`. Then\n" +
+		"validate the manual configuration:\n\n" +
+		"```sh\n" +
+		"goobers validate ./my-instance\n" +
+		"```\n\n" +
+		"`validate` checks `instance.yaml` and every document under `config/` against the\n" +
+		"canonical schemas. Exit codes are `0` for valid configuration, `1` for\n" +
+		"validation errors, and `2` for usage or I/O errors.\n\n"
 	quickstartInstalledInit = "## 3. Use or create a guided instance\n\n" +
 		"The release installer already ran guided setup at the requested instance path\n" +
 		"(default `./goobers-instance`). If you used the installer, do not initialize that\n" +
@@ -60,11 +79,7 @@ const (
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
 		"sample without network access. It never creates or pushes a remote.\n\n"
-	quickstartSourceGraduationWorkflow = "Continue with section 3 to scaffold a regular instance and run its starter\n" +
-		"`default-implement` workflow."
-	quickstartInstalledGraduationWorkflow = "Continue with section 3 to use a regular guided instance and run its\n" +
-		"`implementation` workflow."
-	quickstartSourceRun               = "bin/goobers run default-implement ./my-instance"
+	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
 	linuxQuickstartSourceIntro        = "Use this page for Linux host prerequisites, isolation, credentials, and\n" +
@@ -279,10 +294,6 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					),
 				},
 				{
-					source:    quickstartSourceGraduationWorkflow,
-					installed: quickstartInstalledGraduationWorkflow,
-				},
-				{
 					source:    "../../config-examples/README.md",
 					installed: "../../onboarding/templates/canonical/README.md",
 				},
@@ -300,8 +311,12 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					),
 				},
 				{
+					source:    quickstartSourceManualInit,
+					installed: "",
+				},
+				{
 					source:    quickstartSourceRun,
-					installed: releaseCommand + " run implementation ./my-instance",
+					installed: "```sh\n" + releaseCommand + " run implementation ./my-instance\n```",
 				},
 				{
 					source:    quickstartSourceStatusWorkflow,
