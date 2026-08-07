@@ -18,6 +18,8 @@ payload/.goobers/agent-toolkit/api/schemas/journal-event.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-run.schema.json
 payload/.goobers/agent-toolkit/api/schemas/manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/mission-control-verdict-v1alpha1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/notification-receipt.schema.json
+payload/.goobers/agent-toolkit/api/schemas/notification-request.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v2.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v3.schema.json
