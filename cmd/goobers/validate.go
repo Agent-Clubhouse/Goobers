@@ -392,8 +392,10 @@ func checkGaggleRepositoryBindings(
 		project := gaggle.Spec.Project
 		if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
 			repo := cfg.Repos[0]
-			pf(stdout, "INFO Gaggle/%s: empty spec.project binds to instance repos[0] %s\n",
-				gaggle.Name, instanceRepoName(repo))
+			message := fmt.Sprintf("empty spec.project binds to instance repos[0] %s", instanceRepoName(repo))
+			pf(stdout, "INFO Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				"/spec/project", "REPO003", diagnosticSeverityInfo, message)
 		} else if _, found := configuredRepoForProject(cfg, project); !found {
 			message := unmatchedGaggleRepoMessage("spec.project", project, cfg.Repos)
 			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)

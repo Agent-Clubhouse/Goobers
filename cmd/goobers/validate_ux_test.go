@@ -194,6 +194,31 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 			if !strings.Contains(stdout, want) {
 				t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
 			}
+
+			jsonArgs := append([]string{"validate", "--json"}, args[1:]...)
+			code, stdout, stderr = runArgs(t, jsonArgs...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate --json code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			envelope := decodeDiagnosticsEnvelope(t, stdout)
+			assertDiagnosticsSchema(t, stdout)
+			if envelope.Counts.Infos != 1 {
+				t.Fatalf("validate --json info count=%d, want 1; findings=%+v", envelope.Counts.Infos, envelope.Findings)
+			}
+			var fallback *diagnosticFinding
+			for i := range envelope.Findings {
+				if envelope.Findings[i].Code == "REPO003" {
+					fallback = &envelope.Findings[i]
+					break
+				}
+			}
+			if fallback == nil {
+				t.Fatalf("validate --json missing REPO003 fallback finding: %+v", envelope.Findings)
+			}
+			if fallback.Severity != diagnosticSeverityInfo || fallback.Path != "/spec/project" ||
+				fallback.Message != "empty spec.project binds to instance repos[0] your-org/your-repo" {
+				t.Fatalf("validate --json fallback finding = %+v", *fallback)
+			}
 		})
 	}
 }

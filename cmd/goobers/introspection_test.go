@@ -397,7 +397,7 @@ func decodeDiagnosticsEnvelope(t *testing.T, raw string) diagnosticsEnvelope {
 	if envelope.SchemaVersion != diagnosticsSchemaVersion || envelope.Version == "" || envelope.Commit == "" {
 		t.Fatalf("diagnostics identity is incomplete: %+v", envelope)
 	}
-	if envelope.Counts.Errors+envelope.Counts.Warnings != len(envelope.Findings) {
+	if envelope.Counts.Errors+envelope.Counts.Warnings+envelope.Counts.Infos != len(envelope.Findings) {
 		t.Fatalf("counts %+v do not match %d findings", envelope.Counts, len(envelope.Findings))
 	}
 	return envelope
