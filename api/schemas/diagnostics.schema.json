@@ -18,7 +18,7 @@
       "properties": {
         "errors": { "type": "integer", "minimum": 0 },
         "warnings": { "type": "integer", "minimum": 0 },
-        "infos": { "type": "integer", "minimum": 0 }
+        "infos": { "description": "Number of informational findings.", "type": "integer", "minimum": 0 }
       }
     },
     "findings": {
