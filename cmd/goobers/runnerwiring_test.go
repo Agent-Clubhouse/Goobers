@@ -15,9 +15,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -220,12 +222,16 @@ func (c *runnerWiringOTLPCollector) Export(
 
 type unavailableRunnerWiringOTLPCollector struct {
 	collectortrace.UnimplementedTraceServiceServer
+	available atomic.Bool
 }
 
-func (unavailableRunnerWiringOTLPCollector) Export(
+func (c *unavailableRunnerWiringOTLPCollector) Export(
 	context.Context,
 	*collectortrace.ExportTraceServiceRequest,
 ) (*collectortrace.ExportTraceServiceResponse, error) {
+	if c.available.Load() {
+		return &collectortrace.ExportTraceServiceResponse{}, nil
+	}
 	return nil, status.Error(codes.Unavailable, "collector unavailable")
 }
 
@@ -306,12 +312,16 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 }
 
 func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) {
+	wantTracerProvider := otel.GetTracerProvider()
+	wantMeterProvider := otel.GetMeterProvider()
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	collectortrace.RegisterTraceServiceServer(server, unavailableRunnerWiringOTLPCollector{})
+	collector := &unavailableRunnerWiringOTLPCollector{}
+	collectortrace.RegisterTraceServiceServer(server, collector)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -332,11 +342,21 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	shutdown := false
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-		_ = client.Shutdown(ctx)
+		if !shutdown {
+			collector.available.Store(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = client.Shutdown(ctx)
+		}
 	})
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Fatalf("telemetry.New changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Fatalf("telemetry.New changed the global meter provider: got %v, want %v", got, wantMeterProvider)
+	}
 
 	_, span, err := client.StartRun(context.Background(), telemetry.RunAttributes{
 		Gaggle:     "acme-web",
@@ -360,6 +380,20 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 	}
 	if got := len(journalExporter.Spans()); got != 1 {
 		t.Fatalf("local journal exporter spans = %d, want 1", got)
+	}
+
+	collector.available.Store(true)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown telemetry client: %v", err)
+	}
+	shutdown = true
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Fatalf("client shutdown changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Fatalf("client shutdown changed the global meter provider: got %v, want %v", got, wantMeterProvider)
 	}
 }
 
