@@ -1993,7 +1993,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if cfg.ObjectCacheEnabled() {
 			managerOptions = append(managerOptions, worktree.WithObjectCache())
 		}
-		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, workcopiesRoot, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
+		gitEnv, gitEnvErr := buildWorktreeGitEnv(cfg, absoluteWorkcopiesRoot, gaggleProject, additionalRepos, resolver, grants, cloneURLFn, sharedReg, stores)
 		if gitEnvErr != nil {
 			return runner.Config{}, nil, gitEnvErr
 		}
@@ -2003,7 +2003,7 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		if tel != nil {
 			managerOptions = append(managerOptions, worktree.WithUsageObserver(l.Gaggle(), tel.RecordWorkcopyUsage))
 		}
-		wtMgr, err = worktree.NewManager(workcopiesRoot, managerOptions...)
+		wtMgr, err = worktree.NewManager(absoluteWorkcopiesRoot, managerOptions...)
 		if err != nil {
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
