@@ -14,7 +14,9 @@ set -eu
 repository="Agent-Clubhouse/Goobers"
 
 usage() {
-	printf 'Usage: install.sh vMAJOR.MINOR.PATCH [instance-path]\n' >&2
+	printf 'Usage: install.sh vMAJOR.MINOR.PATCH [--guided [instance-path]]\n' >&2
+	printf 'Installs the binary and documentation. Guided instance setup is opt-in\n' >&2
+	printf 'via --guided; the default install never prompts or configures anything.\n' >&2
 }
 
 fail() {
@@ -26,13 +28,13 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 	usage
 	exit 0
 fi
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+if [ "$#" -lt 1 ]; then
 	usage
 	exit 2
 fi
 
 version=$1
-instance_path=${2:-./goobers-instance}
+shift
 stable_version=${version#v}
 major=${stable_version%%.*}
 remaining=${stable_version#*.}
@@ -53,6 +55,29 @@ for component in "$major" "$minor" "$patch"; do
 			;;
 	esac
 done
+
+run_guided=0
+instance_path=./goobers-instance
+if [ "$#" -gt 0 ]; then
+	case "$1" in
+		--guided)
+			run_guided=1
+			shift
+			if [ "$#" -gt 0 ]; then
+				instance_path=$1
+				shift
+			fi
+			;;
+		*)
+			usage
+			fail "unexpected argument: $1 (guided setup is opt-in: pass --guided [instance-path])"
+			;;
+	esac
+fi
+if [ "$#" -gt 0 ]; then
+	usage
+	fail "too many arguments"
+fi
 
 case "$(uname -s)" in
 	Darwin) os=darwin ;;
@@ -147,8 +172,21 @@ case ":${PATH:-}:" in
 	*":${install_dir}:"*) ;;
 	*) printf 'Add %s to PATH before opening a new shell.\n' "$install_dir" ;;
 esac
-printf 'Starting guided setup for %s...\n\n' "$instance_path"
-"$binary" init --guided "$instance_path"
+if [ "$run_guided" = 1 ]; then
+	printf 'Starting guided setup for %s...\n\n' "$instance_path"
+	if "$binary" init --guided "$instance_path"; then
+		printf '\nGuided setup completed for %s\n' "$instance_path"
+	else
+		setup_status=$?
+		printf '\ninstall: the binary and documentation installed successfully; guided setup exited with status %s\n' "$setup_status" >&2
+		printf 'Re-run guided setup any time with: %s init --guided %s\n' "$binary" "$instance_path" >&2
+		exit "$setup_status"
+	fi
+else
+	printf '\nNext steps (see %s/docs/guides/quickstart.md):\n' "$docs_dir"
+	printf '  Credential-free tour:   %s init --demo ./demo-instance && %s run demo ./demo-instance\n' "$binary" "$binary"
+	printf '  Set up your repository: %s init --guided ./my-instance\n' "$binary"
+fi
 `
 
 func writeInstallScript(outDir string) (string, error) {

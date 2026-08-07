@@ -547,7 +547,7 @@ func buildSchedulerDefinitions(
 		return nil, err
 	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
 	)
 	if err != nil {
 		return nil, err
@@ -555,7 +555,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows)
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.HarnessCommand)
 	if err != nil {
 		return nil, err
 	}

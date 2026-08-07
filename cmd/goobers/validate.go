@@ -219,7 +219,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -300,7 +300,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, diagnostics) {
+		}, cfg.Runner.HarnessCommand, diagnostics) {
 			return 1
 		}
 	}
@@ -754,6 +754,7 @@ func checkHarnessesAtSources(
 	goobers []apiv1.Goober,
 	stdout, stderr io.Writer,
 	sourceFile func(apiv1.Goober) string,
+	harnessCommand map[string][]string,
 	collectors ...*diagnosticCollector,
 ) bool {
 	seen := map[apiv1.Harness]bool{}
@@ -769,7 +770,7 @@ func checkHarnessesAtSources(
 			file = sourceFile(g)
 		}
 
-		adapter, err := harnessAdapterFor(h)
+		adapter, err := harnessAdapterFor(h, harnessCommand)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -809,8 +810,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // presence (#238). Both look the harness up through here, so wiring the probe
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
-func adapterFor(h apiv1.Harness) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, nil, "", "")
+func adapterFor(h apiv1.Harness, harnessCommand map[string][]string) (harness.Adapter, error) {
+	registry, err := buildHarnessRegistry(nil, nil, harnessCommand, "", "")
 	if err != nil {
 		return nil, err
 	}
