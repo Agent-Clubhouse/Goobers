@@ -14,6 +14,14 @@ func contains(env []string, kv string) bool {
 	return false
 }
 
+func TestBaseEnvPassesThroughUser(t *testing.T) {
+	t.Setenv("USER", "operator")
+
+	if env := BaseEnv(); !contains(env, "USER=operator") {
+		t.Fatalf("USER did not pass through BaseEnv(), got %v", env)
+	}
+}
+
 // TestBaseEnvPassesThroughGoToolchainFamily is the regression test for #248:
 // a stage's `local-ci` (`make ci` -> `go build`/`go test`) must see a
 // relocated Go cache/module store/proxy, not silently fall back to

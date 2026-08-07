@@ -14,9 +14,10 @@ import (
 	"strings"
 )
 
-// Vars are the exact ambient env var names carried through: PATH/HOME/TMPDIR
+// Vars are the exact ambient env var names carried through: PATH/HOME/USER/TMPDIR
 // (required for the child, and anything it shells out to, e.g. `make`
-// invoking `go`, to locate its own toolchain); Windows profile paths
+// invoking `go`, to locate its own toolchain and authenticated user config);
+// Windows profile paths
 // (USERPROFILE/APPDATA/LOCALAPPDATA/HOMEDRIVE/HOMEPATH), required by
 // authenticated CLIs such as Copilot to find their existing per-user config;
 // Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
@@ -43,7 +44,7 @@ import (
 // instance config (RunnerConfig.EnvPassthrough) — see BaseEnvWith — never by
 // switching to os.Environ() passthrough.
 var Vars = []string{
-	"PATH", "HOME", "TMPDIR",
+	"PATH", "HOME", "USER", "TMPDIR",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
 	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",

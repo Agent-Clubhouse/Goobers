@@ -33,12 +33,12 @@ import (
 // "still pending" (internal/executor/cipoll.go's ciPollOutcome doc). Only a
 // genuine provider/config error (missing capability, unresolvable repo, a
 // merge attempt that should have succeeded but didn't) is a business error.
-// mergeConflictReason is the refusal text merge-pr records when the forge
-// rejects the merge because the pull request has conflicts (#1751). It is a
-// stable token because record-merge-refusal keys demotion on the refusal
-// sequence at an unchanged head, and merge-review's fail branch threads it
-// verbatim.
-const mergeConflictReason = "merge-conflict"
+const (
+	// These stable refusal tokens are threaded through merge-review's fail
+	// branch and recorded against the unchanged pull request head.
+	mergeConflictReason         = "merge-conflict"
+	requiredStatusPendingReason = "required-status-check-pending"
+)
 
 const (
 	mergeReviewOptOutOutcome = "skipped"
@@ -345,21 +345,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "detect merge policy", policyErr, "merge-result.json")
 	}
 	if mergeErr != nil {
-		// A confirmed merge conflict is a business refusal, not a provider
-		// failure (#1751). Emit the standard refusal envelope so merge-gate's
-		// fail branch can thread selectedNumber/reason/selectedHeadSha into
-		// record-merge-refusal; failProviderStage writes only the generic
-		// error envelope, and record-merge-refusal's inputsFrom then fails
-		// closed before the refusal can be counted, demoted, or routed for
-		// remediation. landOutcome stays absent so merge-gate still takes the
-		// existing fail branch. Any other provider error — including an
-		// unrecognized 405 — keeps the generic behavior.
-		if providers.IsMergeConflictError(mergeErr) {
-			if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, mergepolicy.Result{}, []string{mergeConflictReason}, nil); err != nil {
+		// Confirmed merge conflicts and pending required checks are business
+		// refusals, not provider failures. Emit the standard refusal envelope
+		// so merge-review can record and route them; unrecognized provider
+		// errors retain the generic failure behavior.
+		reason := ""
+		switch {
+		case providers.IsMergeConflictError(mergeErr):
+			reason = mergeConflictReason
+		case providers.IsRequiredStatusCheckPendingError(mergeErr):
+			reason = requiredStatusPendingReason
+		}
+		if reason != "" {
+			if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, mergepolicy.Result{}, []string{reason}, nil); err != nil {
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
-			pf(stdout, "not merged (pr #%s): %s\n", pullNumber, mergeConflictReason)
+			pf(stdout, "not merged (pr #%s): %s\n", pullNumber, reason)
 			return 0
 		}
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")

@@ -133,6 +133,39 @@ func TestIsMergeConflictError(t *testing.T) {
 	}
 }
 
+func TestIsRequiredStatusCheckPendingError(t *testing.T) {
+	respErr := func(status int, body string) error {
+		return &providerResponseError{
+			method:     http.MethodPut,
+			endpoint:   "https://api.github.com/repos/o/r/pulls/9/merge",
+			statusCode: status,
+			body:       body,
+		}
+	}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"github required check 405", respErr(http.StatusMethodNotAllowed, `{"message":"Repository rule violations found\n\nRequired status check \"make ci\" is expected.\n\n"}`), true},
+		{"message whitespace is normalized", respErr(http.StatusMethodNotAllowed, `{"message":"Required\nstatus check \"lint\" is expected."}`), true},
+		{"wrapped still detected", fmt.Errorf("merge pull request: %w", respErr(http.StatusMethodNotAllowed, `{"message":"Required status check \"lint\" is expected."}`)), true},
+		{"merge queue 405", respErr(http.StatusMethodNotAllowed, `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue"}`), false},
+		{"wording outside message", respErr(http.StatusMethodNotAllowed, `{"message":"Repository rule violations found","detail":"Required status check \"lint\" is expected."}`), false},
+		{"required check on non-405 status", respErr(http.StatusConflict, `{"message":"Required status check \"lint\" is expected."}`), false},
+		{"malformed response", respErr(http.StatusMethodNotAllowed, `Required status check "lint" is expected.`), false},
+		{"plain error", errors.New("dial tcp: connection refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRequiredStatusCheckPendingError(tc.err); got != tc.want {
+				t.Fatalf("IsRequiredStatusCheckPendingError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsIdempotentHTTPMethod(t *testing.T) {
 	for method, want := range map[string]bool{
 		http.MethodGet:    true,
