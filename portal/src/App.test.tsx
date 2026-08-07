@@ -70,6 +70,21 @@ describe("portal foundation", () => {
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
   });
 
+  it("defaults an empty hash to the guide in getting-started mode", async () => {
+    const mode = document.createElement("meta");
+    mode.name = "goobers-dashboard-mode";
+    mode.content = "getting-started";
+    document.head.append(mode);
+    window.location.hash = "";
+
+    render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Getting Started" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Getting Started" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+
   it("keeps run loading copy local-read aware in standalone mode", async () => {
     const mode = document.createElement("meta");
     mode.name = "goobers-dashboard-mode";
