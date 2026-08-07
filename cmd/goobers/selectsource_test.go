@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,9 +95,11 @@ func decompositionInstanceEnv(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("GOOBERS_RUN_ID", "decomposition-run-1")
 	t.Setenv("GOOBERS_WORKFLOW", "decomposition")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", providers.LabelApproved)
 }
 
 func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
+	const trustLabel = "acme:maintainer-approved"
 	root := t.TempDir()
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-1",
@@ -108,9 +111,10 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	})
 
 	server := newFakeGitHubServer(t, "acme", "widgets")
-	server.addIssue(501, "A very large issue", providers.LabelApproved)
+	server.addIssue(501, "A very large issue", trustLabel)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
 	decompositionInstanceEnv(t, root)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", trustLabel)
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -148,6 +152,19 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	}
 	if !ok || entry.RunID != "decomposition-run-1" {
 		t.Fatalf("ledger entry for 501 = %+v, ok=%v, want held by decomposition-run-1", entry, ok)
+	}
+}
+
+func TestSelectSourceFailsClosedWithoutTrustLabel(t *testing.T) {
+	root := t.TempDir()
+	providerCmdEnv(t, newFakeGitHubServer(t, "acme", "widgets"), "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_RUN_ID", "decomposition-run-1")
+	t.Setenv("GOOBERS_WORKFLOW", "decomposition")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "select-source", root)
+	if code != 1 || !strings.Contains(stderr, "trustLabel is required") {
+		t.Fatalf("select-source: code = %d, stderr = %q, want missing trustLabel error", code, stderr)
 	}
 }
 
