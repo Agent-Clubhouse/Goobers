@@ -83,8 +83,9 @@ func TestInitDemoFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if len(cfg.Repos) != 0 || len(cfg.Credentials) != 0 {
-		t.Fatalf("demo instance unexpectedly requires connections: %+v", cfg)
+	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "demo" || cfg.Repos[0].Name != "offline" ||
+		cfg.Repos[0].Token.Env != "GOOBERS_DEMO_REPO_TOKEN" || len(cfg.Credentials) != 0 {
+		t.Fatalf("demo instance repository binding is invalid: %+v", cfg)
 	}
 	set, report, err := LoadConfigDir(l.ConfigDir())
 	if err != nil {

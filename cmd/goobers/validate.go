@@ -388,15 +388,12 @@ func checkGaggleRepositoryBindings(
 	stdout io.Writer,
 	diagnostics *diagnosticCollector,
 ) bool {
-	// A repository-free instance has no runtime repository join to validate.
-	// This preserves the credential-free, scratch-only built-in demo.
-	if len(cfg.Repos) == 0 {
-		return true
-	}
 	ok := true
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
-		if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+		if len(cfg.Repos) == 0 && project.Owner == "" && project.Name == "" {
+			// A gaggle without a project can run entirely in scratch workspaces.
+		} else if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
 			repo := cfg.Repos[0]
 			message := fmt.Sprintf("empty spec.project binds to instance repos[0] %s", instanceRepoName(repo))
 			pf(stdout, "INFO Gaggle/%s: %s\n", gaggle.Name, message)

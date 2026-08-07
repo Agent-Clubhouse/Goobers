@@ -112,6 +112,7 @@ func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
 	tests := []struct {
 		name       string
 		sourceTree bool
+		noRepos    bool
 		mutate     func(t *testing.T, path string)
 		want       string
 	}{
@@ -135,6 +136,26 @@ func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
 			},
 			want: `spec.additionalRepos[0] repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
 		},
+		{
+			name:    "instance project without configured repos",
+			noRepos: true,
+			mutate:  func(t *testing.T, path string) {},
+			want:    `spec.project repository your-org/your-repo matches no instance repos[] entry`,
+		},
+		{
+			name:       "source tree additional repo without configured repos",
+			sourceTree: true,
+			noRepos:    true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: extra-org
+      name: extra-repo
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository extra-org/extra-repo matches no instance repos[] entry`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -142,14 +163,24 @@ func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "config")
 			args := []string{"validate", root}
 			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			instancePath := filepath.Join(root, "instance.yaml")
 			if tc.sourceTree {
 				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
 					t.Fatal(err)
 				}
 				args = []string{"validate", "--source-tree", root}
 				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+				instancePath = filepath.Join(root, instance.GuidedSourceInstanceFile)
 			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
 				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			if tc.noRepos {
+				replaceInFile(t, instancePath, `repos:
+- name: your-repo
+  owner: your-org
+  provider: github
+  token:
+    env: GOOBERS_GITHUB_TOKEN`, "repos: []")
 			}
 			tc.mutate(t, gagglePath)
 
