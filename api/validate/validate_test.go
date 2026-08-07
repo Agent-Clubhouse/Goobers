@@ -378,39 +378,33 @@ spec:
 // must validate with NO VER002 preview findings even without the preview
 // opt-in, because every standard field is GA. An earlier placeholder marked
 // every field preview, so guided-init tripped a blocking VER002 on every field
-// ("config directory failed validation"). Stripping the opt-in here proves the
-// surface is genuinely GA, not merely opt-in-tolerated.
+// ("config directory failed validation"). The shipped config omits the opt-in,
+// proving the surface is genuinely GA rather than merely opt-in-tolerated.
 func TestCanonicalConfigIsGAWithoutPreviewOptIn(t *testing.T) {
-	root := t.TempDir()
-	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
-		t.Fatal(err)
-	}
-	manifestPath := filepath.Join(root, "manifest.yaml")
-	manifest, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	needle := "  annotations:\n    " + wf.PreviewFeaturesAnnotation + `: "true"`
-	stripped := strings.Replace(string(manifest), needle, "", 1)
-	if stripped == string(manifest) {
-		t.Fatal("test setup: preview opt-in annotation not found in config-examples manifest")
-	}
-	if err := os.WriteFile(manifestPath, []byte(stripped), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	for _, dir := range []string{"../../config-examples", "../../examples/ios-simulator"} {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			manifest, err := os.ReadFile(filepath.Join(dir, "manifest.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(manifest), wf.PreviewFeaturesAnnotation) {
+				t.Fatalf("GA-only shipped config must not opt in to preview features:\n%s", manifest)
+			}
 
-	report, err := newV(t).ValidateDir(root)
-	if err != nil {
-		t.Fatalf("ValidateDir: %v", err)
-	}
-	for _, issue := range report.Issues {
-		if issue.Code == WarningPreviewFeature {
-			t.Errorf("standard field wrongly flagged preview without opt-in (#1196): %s/%s: %s",
-				issue.Kind, issue.Name, issue.Message)
-		}
-	}
-	if report.HasErrors() {
-		t.Fatalf("canonical config without preview opt-in must validate clean (all standard fields GA), got:\n%s", joinIssues(report))
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			for _, issue := range report.Issues {
+				if issue.Code == WarningPreviewFeature {
+					t.Errorf("standard field wrongly flagged preview without opt-in (#1196): %s/%s: %s",
+						issue.Kind, issue.Name, issue.Message)
+				}
+			}
+			if report.HasErrors() {
+				t.Fatalf("canonical config without preview opt-in must validate clean (all standard fields GA), got:\n%s", joinIssues(report))
+			}
+		})
 	}
 }
 
