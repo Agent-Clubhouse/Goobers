@@ -500,7 +500,7 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, override)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}

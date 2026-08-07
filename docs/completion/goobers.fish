@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -89,6 +89,9 @@ complete -c goobers -n '__fish_seen_subcommand_from up' -l disable-read-model-re
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
+complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l port -r -d 'Server port, or auto'
+complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l no-open -d 'Print the URL without opening a browser'
+complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l workdir -r -d 'Directory holding the tutorial sample and instance'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'
 complete -c goobers -n '__fish_seen_subcommand_from workflow; and __fish_seen_subcommand_from show' -l dot -d 'Emit Graphviz DOT'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'

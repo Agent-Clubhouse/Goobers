@@ -16,6 +16,7 @@ import {
 } from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
+import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
@@ -49,29 +50,55 @@ export function App({
   warningClient?: ConfigurationWarningClient;
   diagnostics?: PortalDiagnostics;
 } = {}) {
-  const standalone =
-    document
-      .querySelector('meta[name="goobers-dashboard-mode"]')
-      ?.getAttribute("content") === "standalone";
+  const mode = dashboardMode();
 
   return (
     <LiveDataProvider client={client} diagnostics={diagnostics}>
-      <Portal client={client} standalone={standalone} warningClient={warningClient} />
+      <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );
 }
 
+// The index's goobers-dashboard-mode marker: "daemon" (default), "standalone"
+// (`goobers dashboard` with no daemon), or "getting-started" (`goobers
+// getting-started`). Getting-started serves the same standalone read-only
+// /api/ once the tutorial instance exists, so its chrome reads as standalone.
+type DashboardMode = "daemon" | "standalone" | "getting-started";
+
+function dashboardMode(): DashboardMode {
+  const content = document
+    .querySelector('meta[name="goobers-dashboard-mode"]')
+    ?.getAttribute("content");
+  if (content === "standalone" || content === "getting-started") {
+    return content;
+  }
+  return "daemon";
+}
+
 function Portal({
   client,
-  standalone,
+  mode,
   warningClient,
 }: {
   client: DaemonClient;
-  standalone: boolean;
+  mode: DashboardMode;
   warningClient: ConfigurationWarningClient;
 }) {
+  const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
-  const [route, setRoute] = useState<Route>(() => parseRoute());
+  // Under `goobers getting-started` an empty hash lands on the guide, not the
+  // overview — the command exists to serve exactly that walkthrough. The hash
+  // is stamped too, so the address bar, later hashchange parses, and the
+  // browser history all agree with the rendered route.
+  const [route, setRoute] = useState<Route>(() => {
+    const hash = window.location.hash;
+    if (mode === "getting-started" && (hash === "" || hash === "#" || hash === "#/")) {
+      const guide: Route = { page: "getting-started" };
+      window.location.hash = routeHash(guide);
+      return guide;
+    }
+    return parseRoute(hash);
+  });
   const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
   const [loading, setLoading] = useState(true);
   const initialRoute = useRef(true);
@@ -202,6 +229,7 @@ function Portal({
             standalone={standalone}
           />
         )}
+        {route.page === "getting-started" && <GettingStartedPage />}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
         {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
         {route.page === "gaggle" && (

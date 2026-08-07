@@ -12,6 +12,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'down'
         'service'
         'dashboard'
+        'getting-started'
         'run'
         'signal'
         'workflow'

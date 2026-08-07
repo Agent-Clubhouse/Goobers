@@ -21,6 +21,7 @@ _goobers_completion()
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
             'service:install and manage the platform-supervised daemon'
             'dashboard:serve and open the local operations portal'
+            'getting-started:serve and open the guided portal Getting Started walkthrough'
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
@@ -88,6 +89,9 @@ _goobers_completion()
             ;;
         dashboard)
             flags+=(--port --no-open --dev-assets)
+            ;;
+        getting-started)
+            flags+=(--port --no-open --workdir)
             ;;
         run)
             flags+=(--no-wait)
