@@ -35,10 +35,11 @@ bin/goobers trace <run-id> ./demo-instance
 ```
 
 The dashboard opens the Portal for the demo instance so you can follow the run
-and inspect its workflow. The run walks through curate -> implement -> review,
-pauses at the `review-verdict` gate, and then produces a merge-preview artifact
-before finishing. `run` prints the run ID used by `trace`; the trace shows the
-complete journal and gate transition.
+and inspect its workflow. The run flows through curate -> implement -> review,
+passes the automated `review-verdict` gate, and produces a merge-preview
+artifact before finishing — fully deterministic and offline, with no pause for
+user input. `run` prints the run ID used by `trace`; the trace shows the
+complete journal, including the gate's recorded verdict.
 
 ## 2. Graduate to the token-bearing quickstart template
 

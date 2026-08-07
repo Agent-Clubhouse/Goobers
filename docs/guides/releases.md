@@ -395,17 +395,20 @@ accident of the release workflow's history.
 ## The Windows gate
 
 Publishing a Windows binary is gated on the Windows CI leg
-([#633](https://github.com/Agent-Clubhouse/Goobers/issues/633)) being green.
-This is not ceremony: today `GOOS=windows go build ./cmd/goobers` **fails to
-compile** — `internal/platform/proc` has no Windows implementation yet (the Job
-Objects rung of the [#620–#627](https://github.com/Agent-Clubhouse/Goobers/issues/623)
-process-control abstraction chain). Releasing binaries for a platform CI does not
-even compile would recreate the false-green trap at distribution scale.
+([#633](https://github.com/Agent-Clubhouse/Goobers/issues/633), delivered and
+closed) staying green — and it is: `GOOS=windows go build ./cmd/goobers`
+compiles (`internal/platform/proc`'s Job Objects implementation landed with the
+[#620–#627](https://github.com/Agent-Clubhouse/Goobers/issues/623)
+process-control abstraction chain), and every change runs the required
+`windows gate (build · vet · runtime smoke)` job on `windows-latest`. Windows is
+a supported, validated target — see the
+[Windows quickstart](quickstart-windows.md) — and `windows/amd64` is in the
+default release matrix, so its `.zip` artifact is built, checksummed, and
+published with every release.
 
-The packaging engine reflects this: by default it **fails** if a requested target
-does not compile (surfacing the real build error), so a release can never
-silently drop or ship-broken the Windows target. `-skip-unbuildable` packages
-only what compiles (for producing the unix artifacts while Windows is pending),
-and prints exactly which targets were skipped. When `internal/platform/proc`'s
-Windows implementation lands and #633 is green, `windows/amd64` builds and
-packages with no further change to the engine.
+The packaging engine still enforces the gate's principle: by default it
+**fails** if a requested target does not compile (surfacing the real build
+error), so a release can never silently drop or ship-broken a target.
+`-skip-unbuildable` packages only what compiles and prints exactly which
+targets were skipped. With the Windows gate green, the default path builds and
+packages `windows/amd64` with no special handling.

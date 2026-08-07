@@ -4,7 +4,7 @@ dslVersion: "2.0"
 metadata:
   name: hello-world
 spec:
-  gaggle: goobers
+  gaggle: example
   displayName: Hello world
   triggers:
     - type: manual
