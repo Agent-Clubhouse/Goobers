@@ -6,7 +6,7 @@ create a regular instance and adopt production-oriented configuration. See
 `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 If declarative systems are new to you, read
-[How Goobers works: desired state, not scripts](../concepts/README.md) first.
+[How Goobers works: desired state, not scripts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md) first.
 It explains the config/runtime split and why agents propose definition changes
 through pull requests.
 
@@ -22,8 +22,8 @@ The hermetic demo uses mock providers and requires no repository, provider
 credentials, model tokens, or network writes. It is supported on Linux and
 macOS, where Goobers enforces network isolation.
 
-For host setup differences, see the [macOS](quickstart-macos.md),
-[Linux](quickstart-linux.md), or [Windows](quickstart-windows.md) guide. Native
+For host setup differences, see the [macOS](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-macos.md),
+[Linux](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-linux.md), or [Windows](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md) guide. Native
 Windows cannot enforce the demo's network isolation; use its documented WSL 2
 path instead.
 
@@ -208,7 +208,7 @@ returns to one gaggle, because mixed historical state cannot be assigned safely.
 Operators may relocate retained journals by their recorded gaggle during a
 maintenance window; retained Git workcopies should stay at their legacy paths.
 
-For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
+For event-driven workflows, see [GitHub webhook triggers](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-webhooks.md).
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
 an operator choice.
 
@@ -316,8 +316,8 @@ scheduler next reconstructs its budget window at startup.
 Every subcommand follows the same convention: `0` = OK, `1` = validation/
 business error (invalid config, unknown workflow), `2` = usage/IO error (bad
 flags, not an instance root, missing run).
-See also: [V0-ACCEPTANCE.md](../V0-ACCEPTANCE.md) — the end-to-end acceptance runbook that assembles these commands into a full live run.
+See also: [V0-ACCEPTANCE.md](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/V0-ACCEPTANCE.md) — the end-to-end acceptance runbook that assembles these commands into a full live run.
 
 For the production-oriented path from a foreign GitHub repository through
 curation and an implementation PR, including multi-gaggle configuration, see
-[Onboard an arbitrary repository](arbitrary-repo-onboarding.md).
+[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).

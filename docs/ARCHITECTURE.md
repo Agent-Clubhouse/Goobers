@@ -77,7 +77,7 @@ execution. Two runners implement the same contract:
   (`CFG-022`, `GAG-010`), and they are not part of the cross-runner conformance
   surface. **Static parallel branches are not** — they are core DSL, implemented by the
   local runner first, and inside the conformance surface
-  ([`design/static-fan-out-fan-in.md`](design/static-fan-out-fan-in.md) §4). Dynamic
+  ([`design/static-fan-out-fan-in.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/static-fan-out-fan-in.md) §4). Dynamic
   (data-driven) branch width remains future work.
 
 ### 3.3 Conformance property
@@ -241,7 +241,7 @@ Contract rules:
   and a stage may not declare both spellings of the same operation. Migrating a
   built-in to provider-neutral behavior updates its contract and bundled
   definitions atomically; workflow-version pinning preserves already-started
-  runs. See [ADR 0002](adr/0002-provider-neutral-capability-namespaces.md).
+  runs. See [ADR 0002](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/adr/0002-provider-neutral-capability-namespaces.md).
 - **Input-integrity admission:** provider reads, immutable snapshots, artifacts,
   and invocation context pointers carry `trusted`, `maintainer`, `unapproved`, or
   `derived` provenance. A task may declare `minimumIntegrity`; the compiler rejects

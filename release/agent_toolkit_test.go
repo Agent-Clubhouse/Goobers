@@ -276,7 +276,7 @@ func assertAgentToolkitRelativeLinksResolve(t *testing.T, entries map[string][]b
 	linkPattern := regexp.MustCompile(`\[[^]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
 	schemePattern := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 	for source, body := range entries {
-		if !isAgentToolkitAuthoredMarkdown(source) {
+		if !strings.HasSuffix(strings.ToLower(source), ".md") {
 			continue
 		}
 		for _, match := range linkPattern.FindAllSubmatch(body, -1) {
@@ -294,19 +294,6 @@ func assertAgentToolkitRelativeLinksResolve(t *testing.T, entries map[string][]b
 			t.Errorf("%s contains relative link %q to an unbundled target", source, string(match[1]))
 		}
 	}
-}
-
-func isAgentToolkitAuthoredMarkdown(source string) bool {
-	root := agentToolkitProductRoot + "/"
-	if source == root+"README.md" {
-		return true
-	}
-	for _, directory := range []string{"adapters/", "instructions/", "skills/"} {
-		if strings.HasPrefix(source, root+directory) && strings.HasSuffix(source, ".md") {
-			return true
-		}
-	}
-	return false
 }
 
 func hasArchivePath(entries map[string][]byte, target string) bool {
