@@ -216,7 +216,7 @@ jq -e -s --arg sentinel "$SENTINEL" '
 ## Fallback and unblock condition
 
 Until preflight can authenticate with a scoped `agent:model` credential, use
-the [operator-run Linux live-smoke](quickstart-linux.md#5-operator-run-linux-live-smoke-real-copilot-cli):
+the [operator-run Linux live-smoke](quickstart-linux.md#4-operator-run-linux-live-smoke-real-copilot-cli):
 run `copilot login` as the same account that runs Goobers, persist that
 account's credential store or `~/.copilot/` fallback, then run the sentinel
 workflow. The successful control above confirms this path reaches the real

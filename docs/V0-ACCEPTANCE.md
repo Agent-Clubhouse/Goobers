@@ -48,7 +48,7 @@ against the responsible issue, per issue #30's scope.
   access to a repo you're willing to have the instance open PRs against —
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
-- The [self-hosting dogfood config](#28) this repo ships — `reference-workflows/` is on
+- The [self-hosting dogfood config](#1-setup) this repo ships — `reference-workflows/` is on
   `main`: as of `e739bd0`, **6 goobers, 4 workflows** (curator, implementer,
   reviewer, nominator, analyst, config-author; backlog-curation, work-nomination,
   implementation, and `tutor.yaml`'s weekly self-improvement loop), with the
@@ -371,7 +371,7 @@ V0-ACCEPTANCE.md", `Fixes #317`, branch
 `docs/guides/quickstart.md` only (zero scope creep — matches #317's
 acceptance criteria exactly), state=OPEN/MERGEABLE at time of writing,
 pending the manual human merge the no-self-merge DoD requires (#30's
-acceptance criteria; see [Known limitations](#known-limitations-v0--later))
+acceptance criteria; see [Known limitations](#historical-v0-limitations))
 — no agent merges to this repo autonomously, so this PR is left for Mason
 to merge directly rather than merged by the operator who opened this
 record.
