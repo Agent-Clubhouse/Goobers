@@ -103,16 +103,26 @@ func TestResolveToolsUsesConfiguredGoExecutable(t *testing.T) {
 	t.Fatal("resolved tools do not contain Go")
 }
 
-func TestPlatformToolSpecsIncludeLinuxCompilerHelpers(t *testing.T) {
-	specs := platformToolSpecs("linux")
-	required := make(map[string]bool, len(specs))
-	for _, spec := range specs {
-		required[spec.name] = spec.required
-	}
-	for _, name := range []string{"as", "ld"} {
-		if !required[name] {
-			t.Errorf("Linux tool %q is not required", name)
-		}
+func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
+	for _, tt := range []struct {
+		goos  string
+		tools []string
+	}{
+		{goos: "linux", tools: []string{"as", "ld", "node", "npm"}},
+		{goos: "darwin", tools: []string{"node", "npm"}},
+		{goos: "windows", tools: []string{"node", "npm.cmd"}},
+	} {
+		t.Run(tt.goos, func(t *testing.T) {
+			required := make(map[string]bool)
+			for _, spec := range platformToolSpecs(tt.goos) {
+				required[spec.name] = spec.required
+			}
+			for _, name := range tt.tools {
+				if !required[name] {
+					t.Errorf("%s tool %q is not required", tt.goos, name)
+				}
+			}
+		})
 	}
 }
 

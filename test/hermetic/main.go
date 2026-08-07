@@ -333,11 +333,15 @@ func platformToolSpecs(goos string) []toolSpec {
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
 			{name: "icacls", required: true},
+			{name: "node", required: true},
+			{name: "npm.cmd", required: true},
 		}
 	}
 
 	specs := []toolSpec{
 		{name: "git", required: true},
+		{name: "node", required: true},
+		{name: "npm", required: true},
 		{name: "sh", required: true},
 		{name: "bash"},
 		{name: "cat", required: true},
