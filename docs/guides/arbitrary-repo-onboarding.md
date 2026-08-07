@@ -489,5 +489,4 @@ After the acceptance cycle works, tailor the workforce definitions in
   inline scripts or in-repo project scripts as deterministic stages, with
   concrete examples from the `config-examples/` reference.
 - **[Needs-human label taxonomy](../design/needs-human-taxonomy.md)** — the
-  full decision-vs-status model, which stage applies which park label, and how
-  `goobers trace` surfaces escalation causes.
+  full decision-vs-status model and which stage applies which park label.

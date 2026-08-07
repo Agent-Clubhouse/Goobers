@@ -67,7 +67,7 @@ The `--json` output is a versioned action envelope:
 {
   "action": "stub-sample",
   "version": 2,
-  "created": ["getting-started-task-api/instance.yaml", "..."],
+  "created": [".github/workflows/ci.yml", "package.json", "..."],
   "skipped": [],
   "path": "/absolute/path/to/getting-started-task-api",
   "nextCommand": "goobers init --template=quickstart ./tutorial-instance"
@@ -75,8 +75,9 @@ The `--json` output is a versioned action envelope:
 ```
 
 `created` lists paths written in this run; `skipped` lists paths already
-present. When `--work-tracking` is supplied, entries of the form `label:<name>`
-and `issue:<id>` appear in `created` or `skipped` respectively. Without a
+present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`
+entries appear in `created` when newly seeded and in `skipped` when the label
+or issue already exists. Without a
 configured token, seed entries appear as `issue:<id> (pending: <reason>)` in
 `skipped`. `nextCommand` is the next command to run.
 

@@ -83,15 +83,16 @@ const (
 		"{\n" +
 		"  \"action\": \"stub-sample\",\n" +
 		"  \"version\": 2,\n" +
-		"  \"created\": [\"getting-started-task-api/instance.yaml\", \"...\"],\n" +
+		"  \"created\": [\".github/workflows/ci.yml\", \"package.json\", \"...\"],\n" +
 		"  \"skipped\": [],\n" +
 		"  \"path\": \"/absolute/path/to/getting-started-task-api\",\n" +
 		"  \"nextCommand\": \"goobers init --template=quickstart ./tutorial-instance\"\n" +
 		"}\n" +
 		"```\n\n" +
 		"`created` lists paths written in this run; `skipped` lists paths already\n" +
-		"present. When `--work-tracking` is supplied, entries of the form `label:<name>`\n" +
-		"and `issue:<id>` appear in `created` or `skipped` respectively. Without a\n" +
+		"present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`\n" +
+		"entries appear in `created` when newly seeded and in `skipped` when the label\n" +
+		"or issue already exists. Without a\n" +
 		"configured token, seed entries appear as `issue:<id> (pending: <reason>)` in\n" +
 		"`skipped`. `nextCommand` is the next command to run.\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
