@@ -92,6 +92,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	egress := fs.String("egress", "", "comma-separated host:port outbound targets that must be reachable")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
+	observeCLIFlagSet("doctor", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

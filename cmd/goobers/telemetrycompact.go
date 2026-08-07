@@ -33,6 +33,7 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "report what would be reclaimed without changing anything")
 	fs.Usage = helpUsage(stderr, "telemetry compact")
+	observeCLIFlagSet("telemetry compact", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -32,6 +32,7 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	healthTicks := fs.Int("health-ticks", selfupdate.DefaultHealthTicks, "required clean heartbeat ticks")
 	healthTimeout := fs.Duration("health-timeout", 0, "bounded candidate health window (derived from daemon liveness when omitted)")
 	fs.Usage = helpUsage(stderr, "self-update")
+	observeCLIFlagSet("self-update", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

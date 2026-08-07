@@ -1,10 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +84,82 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 			t.Errorf("completionPositionalArgValues key %q is not a registry command id", id)
 		}
 	}
+}
+
+func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
+	reflected := map[string]bool{
+		"init": true, "validate": true, "lint": true, "fix": true,
+		"doctor": true, "up": true, "self-update": true, "worker": true,
+		"telemetry stats": true, "telemetry errors": true,
+		"telemetry export": true, "telemetry prune": true,
+		"telemetry prune-orphans": true, "telemetry compact": true,
+	}
+	observed := make(map[string]*flag.FlagSet, len(reflected))
+	cliFlagSetObserverMu.Lock()
+	cliFlagSetObserver = func(id string, fs *flag.FlagSet) {
+		if reflected[id] {
+			observed[id] = fs
+		}
+	}
+	cliFlagSetObserverMu.Unlock()
+	defer func() {
+		cliFlagSetObserverMu.Lock()
+		cliFlagSetObserver = nil
+		cliFlagSetObserverMu.Unlock()
+	}()
+
+	nodes := collectAuditNodes(cliCommands, nil)
+	for _, node := range nodes {
+		if reflected[node.id] {
+			node.cmd.run([]string{"-h"}, io.Discard, io.Discard)
+		}
+	}
+
+	for _, node := range nodes {
+		if !reflected[node.id] {
+			continue
+		}
+		fs := observed[node.id]
+		if fs == nil {
+			t.Errorf("%s: handler did not expose its FlagSet", node.id)
+			continue
+		}
+		actual := make(map[string]bool)
+		fs.VisitAll(func(f *flag.Flag) {
+			boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
+			actual[f.Name] = !(isBool && boolFlag.IsBoolFlag())
+		})
+		annotated := make(map[string]bool)
+		for _, spec := range completionFlagSpecs[node.id] {
+			annotated[spec.name] = spec.takesArg
+		}
+		if !reflect.DeepEqual(actual, annotated) {
+			t.Errorf("%s: handler flags %v, completion flags %v", node.id, sortedFlagKinds(actual), sortedFlagKinds(annotated))
+		}
+
+		synopsis := node.cmd.synopsis
+		if synopsis == "" {
+			synopsis = strings.SplitN(node.cmd.long, "\n\n", 2)[0]
+		}
+		for name := range actual {
+			if !strings.Contains(synopsis, "--"+name) {
+				t.Errorf("%s: synopsis usage line omits --%s", node.id, name)
+			}
+		}
+	}
+}
+
+func sortedFlagKinds(flags map[string]bool) []string {
+	kinds := make([]string, 0, len(flags))
+	for name, takesArg := range flags {
+		suffix := ""
+		if takesArg {
+			suffix = "=<value>"
+		}
+		kinds = append(kinds, "--"+name+suffix)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 func TestCompletionScriptsGolden(t *testing.T) {

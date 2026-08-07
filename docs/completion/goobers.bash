@@ -15,7 +15,7 @@ _goobers_completion()
     flags="-h --help"
     case "${command}" in
         init)
-            flags+=" --demo --guided --template --source-tree --json"
+            flags+=" --demo --insecure --guided --template --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -42,10 +42,16 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
             ;;
         lint)
-            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            ;;
+        fix)
+            flags+=" --to --write"
+            ;;
+        doctor)
+            flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
@@ -60,7 +66,13 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            ;;
+        self-update)
+            flags+=" --policy --branch --target --health-ticks --health-timeout"
+            ;;
+        worker)
+            flags+=" --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
             flags+=" --port --no-open --dev-assets"
@@ -116,9 +128,12 @@ _goobers_completion()
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
-                stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
+                stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
+                export) flags+=" --since --until" ;;
+                prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
+                compact) flags+=" --dry-run" ;;
             esac
             ;;
         journal)

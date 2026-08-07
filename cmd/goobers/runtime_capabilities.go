@@ -1,15 +1,31 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/executor"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
+
+var (
+	cliFlagSetObserverMu sync.RWMutex
+	cliFlagSetObserver   func(string, *flag.FlagSet)
+)
+
+func observeCLIFlagSet(id string, fs *flag.FlagSet) {
+	cliFlagSetObserverMu.RLock()
+	observer := cliFlagSetObserver
+	cliFlagSetObserverMu.RUnlock()
+	if observer != nil {
+		observer(id, fs)
+	}
+}
 
 type cliCommandTier uint8
 

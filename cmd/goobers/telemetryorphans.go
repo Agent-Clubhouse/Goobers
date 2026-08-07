@@ -43,6 +43,7 @@ func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now tim
 	deleteOrphans := fs.Bool("delete", false, "delete eligible orphan directories (opt-in; default is dry-run)")
 	minAge := fs.Duration("min-age", retention.MinimumOrphanAge, "minimum inactivity age (at least 24h)")
 	fs.Usage = helpUsage(stderr, "telemetry prune-orphans")
+	observeCLIFlagSet("telemetry prune-orphans", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

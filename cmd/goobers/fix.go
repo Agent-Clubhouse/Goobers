@@ -34,6 +34,7 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 	to := fs.String("to", "", "target dslVersion to migrate every workflow to (required)")
 	write := fs.Bool("write", false, "apply the migration to each file in place (default: print a diff only)")
 	fs.Usage = helpUsage(stderr, "fix")
+	observeCLIFlagSet("fix", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

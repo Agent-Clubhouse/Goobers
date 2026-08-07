@@ -113,6 +113,7 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
 	fs.Usage = helpUsage(stderr, name)
+	observeCLIFlagSet(name, fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

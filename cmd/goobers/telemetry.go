@@ -62,6 +62,7 @@ func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "report eligible terminal runs without deleting them")
 	fs.Usage = helpUsage(stderr, "telemetry prune")
+	observeCLIFlagSet("telemetry prune", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -124,6 +125,7 @@ func runTelemetryExportWithExporter(
 	sinceValue := fs.String("since", "", "inclusive RFC3339 span-start lower bound (required)")
 	untilValue := fs.String("until", "", "exclusive RFC3339 span-start upper bound")
 	fs.Usage = helpUsage(stderr, "telemetry export")
+	observeCLIFlagSet("telemetry export", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -357,6 +359,7 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	untilValue := fs.String("until", "", "include runs started at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = helpUsage(stderr, "telemetry stats")
+	observeCLIFlagSet("telemetry stats", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -538,6 +541,7 @@ func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
 	untilValue := fs.String("until", "", "include errors at or before this RFC3339 timestamp")
 	rebuild := fs.Bool("rebuild", false, "force a full rebuild from run journals before querying (only needed for runs journaled out-of-band, e.g. hand-repaired or pre-#126)")
 	fs.Usage = helpUsage(stderr, "telemetry errors")
+	observeCLIFlagSet("telemetry errors", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -79,6 +79,7 @@ var completionPositionalArgValues = map[string][]string{
 var completionFlagSpecs = map[string][]completionFlagSpec{
 	"init": {
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
+		{name: "insecure", desc: "Allow an unisolated Windows demo"},
 		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
@@ -122,6 +123,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"validate": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "github-annotations", desc: "Emit GitHub Actions file annotations"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
@@ -129,6 +131,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"lint": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "github-annotations", desc: "Emit GitHub Actions file annotations"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
@@ -138,10 +141,40 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "quiet", desc: "Suppress liveness heartbeats"},
 		{name: "diagnostics", desc: "Capture deep per-stage diagnostics for hang debugging"},
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
+		{name: "skip-preflight", desc: "Start despite config validation errors"},
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
 		{name: "disable-read-model-reads", desc: "Read-model rollback: force journal-derived list paths for this run"},
+	},
+	"fix": {
+		{name: "to", takesArg: true, desc: "Target DSL version"},
+		{name: "write", desc: "Apply migrations in place"},
+	},
+	"doctor": {
+		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
+		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},
+		{name: "context", takesArg: true, desc: "Kubeconfig context"},
+		{name: "report", takesArg: true, values: []string{"text", "json"}, desc: "Report format"},
+		{name: "oidc-issuer", takesArg: true, desc: "OIDC issuer URL"},
+		{name: "registry", takesArg: true, desc: "Container registry host"},
+		{name: "egress", takesArg: true, desc: "Outbound host and port targets"},
+		{name: "timeout", takesArg: true, desc: "Per-probe timeout"},
+	},
+	"self-update": {
+		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
+		{name: "branch", takesArg: true, desc: "Branch tracked by on-main"},
+		{name: "target", takesArg: true, desc: "Manual release tag"},
+		{name: "health-ticks", takesArg: true, desc: "Required clean heartbeat ticks"},
+		{name: "health-timeout", takesArg: true, desc: "Candidate health window"},
+	},
+	"worker": {
+		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
+		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
@@ -235,6 +268,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
 		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "branch", takesArg: true, desc: "Filter by journal branch"},
 		{name: "model", takesArg: true, desc: "Filter by model"},
 		{name: "harness-version", takesArg: true, desc: "Filter by harness version"},
 		{name: "group-by", takesArg: true, desc: "Group by model or harness-version"},
@@ -255,6 +289,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"telemetry prune-orphans": {
 		{name: "delete", desc: "Delete eligible orphan directories (opt-in; default dry-run)"},
 		{name: "min-age", takesArg: true, desc: "Minimum inactivity age (at least 24h)"},
+	},
+	"telemetry prune": {
+		{name: "dry-run", desc: "Report eligible runs without deleting them"},
+	},
+	"telemetry export": {
+		{name: "since", takesArg: true, desc: "Inclusive span-start lower bound"},
+		{name: "until", takesArg: true, desc: "Exclusive span-start upper bound"},
+	},
+	"telemetry compact": {
+		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},

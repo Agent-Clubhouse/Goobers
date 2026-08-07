@@ -78,6 +78,7 @@ func runInitWithInputForOSAndGitHub(
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
+	observeCLIFlagSet("init", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

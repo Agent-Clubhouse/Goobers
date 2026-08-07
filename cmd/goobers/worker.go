@@ -72,6 +72,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	fs.Usage = helpUsage(stderr, "worker")
+	observeCLIFlagSet("worker", fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
