@@ -862,19 +862,71 @@ summary:focus-visible {
   background: var(--danger-soft);
   border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
   border-radius: 11px;
-  cursor: pointer;
   display: grid;
   gap: 14px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 16px;
-  text-align: left;
-  text-decoration: none;
-  color: inherit;
   width: 100%;
 }
 
 .attention-row:hover {
   border-color: var(--danger);
+}
+
+.attention-select {
+  cursor: pointer;
+  height: 16px;
+  width: 16px;
+}
+
+.attention-link {
+  align-items: center;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  text-align: left;
+  text-decoration: none;
+}
+
+.attention-dismiss {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 7px;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.attention-dismiss:hover {
+  border-color: var(--danger);
+}
+
+.attention-actions {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+}
+
+.attention-dismissed-list {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.attention-row-dismissed {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  cursor: default;
+  grid-template-columns: minmax(0, 1fr) auto;
+  opacity: 0.75;
 }
 
 .attention-icon,
