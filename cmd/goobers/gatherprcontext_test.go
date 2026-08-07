@@ -39,6 +39,24 @@ type gatherPRContextServer struct {
 	includeUnselected  bool
 }
 
+func TestDeferredRemediationCandidatesPreserveMixedTierClaimFallthrough(t *testing.T) {
+	prs := []providers.PullRequestSummary{
+		{Number: 30},
+		{Number: 20, CheckState: providers.CheckStateFailing},
+		{Number: 10, Labels: []string{needsRemediationLabel}},
+		{Number: 40, CheckState: providers.CheckStatePassing},
+	}
+	candidates := deferredRemediationCandidates(prs)
+	got := make([]int, len(candidates))
+	for i, candidate := range candidates {
+		got[i] = candidate.Number
+	}
+	want := []int{10, 20, 30}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+}
+
 func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	prefix := "/repos/" + s.owner + "/" + s.repo
@@ -944,8 +962,8 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
 		prNumber: 56, head: prBranch, base: "main",
-		headSHA: headSHA, baseSHA: baseSHA,
-		checkState: "failure",
+		headSHA: headSHA, baseSHA: baseSHA, checkState: "failure",
+		includeUnselected: true,
 	}
 	server := srv.start(t)
 

@@ -188,6 +188,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// its number through the workflow. The claim ledger remains the durable
 	// fallback across retries and resumes.
 	candidates := nonBlocked
+	var behindBase func(providers.PullRequestSummary) (bool, error)
 	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
 			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
@@ -195,13 +196,8 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
 		}
-		if !hasNeedsRemediationCandidate(nonBlocked) {
-			if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
-				return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
-			}
-		}
 		fetchedBases := make(map[string]bool)
-		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
+		behindBase = func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
 				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
 					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
@@ -213,11 +209,8 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
 			}
 			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-		})
-		if err != nil {
-			pf(stderr, "error: determine remediation eligibility: %v\n", err)
-			return 1
 		}
+		candidates = deferredRemediationCandidates(nonBlocked)
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
@@ -234,6 +227,19 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	selected := *claimed
 	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
+	}
+	if !hasPinnedCandidate && remediationPriorityFor(selected) == remediationPriorityNone {
+		if blockedDependents[selected.Number] == 0 {
+			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		}
+		behind, err := behindBase(selected)
+		if err != nil {
+			pf(stderr, "error: determine remediation eligibility: %v\n", err)
+			return 1
+		}
+		if !behind {
+			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		}
 	}
 
 	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
@@ -442,26 +448,6 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 	return remediationPriorityNone
 }
 
-func hasNeedsRemediationCandidate(prs []providers.PullRequestSummary) bool {
-	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
-			return true
-		}
-	}
-	return false
-}
-
-// Failing CI remains a selection signal when no higher-priority label exists,
-// so that fallback must inspect every candidate to preserve claim fallthrough.
-func resolveRemediationCheckStates(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) error {
-	for i := range prs {
-		if err := resolveRemediationCheckState(ctx, provider, repo, &prs[i]); err != nil {
-			return fmt.Errorf("check state for PR #%d: %w", prs[i].Number, err)
-		}
-	}
-	return nil
-}
-
 func resolveRemediationCheckState(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
 	if pr.CheckState != "" {
 		return nil
@@ -472,6 +458,23 @@ func resolveRemediationCheckState(ctx context.Context, provider remediationProvi
 	}
 	pr.CheckState = checkState
 	return nil
+}
+
+// deferredRemediationCandidates preserves strong-signal ordering while keeping
+// unresolved PRs available for atomic claim fallthrough. Their check state is
+// resolved only after one candidate is claimed.
+func deferredRemediationCandidates(prs []providers.PullRequestSummary) []providers.PullRequestSummary {
+	strong, _ := strongRemediationCandidates(prs)
+	unresolved := make([]providers.PullRequestSummary, 0, len(prs))
+	for _, pr := range prs {
+		if remediationPriorityFor(pr) == remediationPriorityNone && pr.CheckState == "" {
+			unresolved = append(unresolved, pr)
+		}
+	}
+	sort.Slice(unresolved, func(i, j int) bool {
+		return unresolved[i].Number < unresolved[j].Number
+	})
+	return append(strong, unresolved...)
 }
 
 // selectRemediationCandidates returns every open PR carrying a strong

@@ -97,11 +97,6 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
 	}
-	if !hasNeedsRemediationCandidate(prs) {
-		if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
-			return failProviderStage(stderr, "resolve remediation check states", err, "update-behind-result.json")
-		}
-	}
 
 	baseTips := map[string]string{}
 	behindByPR := map[int]bool{}
@@ -112,10 +107,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		}
 		return behind, err
 	}
-	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
-	if err != nil {
-		return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
-	}
+	candidates := deferredRemediationCandidates(prs)
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
@@ -131,6 +123,18 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	candidate := *claimed
 	if err := resolveRemediationCheckState(ctx, provider, repo, &candidate); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", candidate.Number), err, "update-behind-result.json")
+	}
+	if remediationPriorityFor(candidate) == remediationPriorityNone {
+		if blockedDependents[candidate.Number] == 0 {
+			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		}
+		behind, err := behindBase(candidate)
+		if err != nil {
+			return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
+		}
+		if !behind {
+			return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		}
 	}
 	minSeverity := resolveMinSeverity(stderr)
 	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)

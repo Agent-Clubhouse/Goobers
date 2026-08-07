@@ -288,8 +288,9 @@ func TestUpdateBehindPRDispatchesToGitea(t *testing.T) {
 
 func TestUpdateBehindPRRoutesFailingCurrentUnlabeledPRToFullRemediation(t *testing.T) {
 	state := &updateBehindServer{
-		checkState: "failure",
-		current:    true,
+		checkState:        "failure",
+		current:           true,
+		includeUnselected: true,
 	}
 	stdout, _, result := runUpdateBehindPRTest(t, state)
 
