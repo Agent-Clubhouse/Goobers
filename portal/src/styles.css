@@ -3637,6 +3637,107 @@ a.telemetry-error-row:hover {
   padding: 18px;
 }
 
+.run-journal-column {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.key-moments-digest {
+  padding: 18px;
+}
+
+.key-moments-digest ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.key-moment-item {
+  border-top: 1px solid var(--line);
+}
+
+.key-moment-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 74px minmax(210px, 1fr) 40px;
+  padding: 10px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.key-moment-button:hover,
+.key-moment-item-active .key-moment-button {
+  background: var(--surface);
+}
+
+.key-moment-kind {
+  border-radius: 4px;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  text-align: center;
+  text-transform: uppercase;
+  width: fit-content;
+}
+
+.key-moment-kind-escalation {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.key-moment-kind-decision {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.key-moment-kind-handoff {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.key-moment-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.key-moment-meta {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.key-moment-copy strong {
+  font-size: 10px;
+}
+
+.key-moment-copy span:not(.key-moment-meta) {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.key-moment-disclosure {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.key-moment-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.key-moment-payload {
+  padding: 0 8px 14px;
+}
+
 .journal-heading-actions {
   align-items: end;
   display: grid;
