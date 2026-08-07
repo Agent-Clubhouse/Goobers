@@ -798,7 +798,7 @@ function CostTrend({
         <h3>Cost over time</h3>
       </div>
       {hasSamples ? (
-        <CostTrendSparkline points={points} />
+        <CostTrendSparkline points={points} window={window} />
       ) : (
         <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
       )}
@@ -809,8 +809,10 @@ function CostTrend({
 
 function CostTrendSparkline({
   points,
+  window,
 }: {
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
+  window: InsightWindow;
 }) {
   const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
   return (
@@ -830,7 +832,7 @@ function CostTrendSparkline({
               <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
               <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
             </span>
-            <small>{formatBucketTick(point.since)}</small>
+            <small>{formatBucketTick(point.since, window)}</small>
           </span>
         );
       })}
@@ -854,9 +856,14 @@ function formatBucketLabel(since: string, until: string): string {
   return `${formatTimestamp(since)} to ${formatTimestamp(until)}`;
 }
 
-function formatBucketTick(since: string): string {
+function formatBucketTick(since: string, window: InsightWindow): string {
   const date = new Date(since);
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  // Buckets for the 24h window are only hours apart, so a date-only tick
+  // (e.g. "Jul 22") renders identically for every bar. Buckets for 7d/30d
+  // are always at least a day apart, where the date is the meaningful axis.
+  return window === "24h"
+    ? date.toLocaleTimeString("en-US", { hour: "numeric" })
+    : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function CostTrendComparison({
