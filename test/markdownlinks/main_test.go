@@ -179,6 +179,26 @@ func TestCheckRepositoryValidatesReferenceTargetsAndHTMLAnchors(t *testing.T) {
 	}
 }
 
+func TestCheckRepositoryDecodesRelativeURLsOnce(t *testing.T) {
+	t.Parallel()
+	root := fixtureRepository(t)
+	writeFixture(t, root, "docs/space name.md", "<a id=\"percent%anchor\"></a>\n")
+	writeFixture(t, root, "docs/literal%20escape.md", "# Literal escape\n")
+	writeFixture(t, root, "README.md", strings.Join([]string{
+		"# Root",
+		"[encoded path and fragment](docs/space%20name.md#percent%25anchor)",
+		"[literal percent escape](docs/literal%2520escape.md)",
+	}, "\n"))
+
+	violations, err := checkRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
 func TestRepositoryMarkdownLinksResolve(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

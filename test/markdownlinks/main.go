@@ -341,16 +341,12 @@ func validateLink(root, source string, current link, documents map[string]docume
 		return nil, nil
 	}
 
-	decodedPath, err := url.PathUnescape(parsed.Path)
-	if err != nil {
-		return &violation{Path: source, Line: current.line, Target: current.target, Reason: "invalid path escape"}, nil
-	}
 	targetPath := source
-	if decodedPath != "" {
-		if strings.HasPrefix(decodedPath, "/") {
-			targetPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimPrefix(decodedPath, "/"))))
+	if parsed.Path != "" {
+		if strings.HasPrefix(parsed.Path, "/") {
+			targetPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimPrefix(parsed.Path, "/"))))
 		} else {
-			targetPath = filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(filepath.FromSlash(source)), filepath.FromSlash(decodedPath))))
+			targetPath = filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(filepath.FromSlash(source)), filepath.FromSlash(parsed.Path))))
 		}
 	}
 	if targetPath == "." || targetPath == ".." || strings.HasPrefix(targetPath, "../") {
@@ -382,11 +378,7 @@ func validateLink(root, source string, current link, documents map[string]docume
 		}
 		documents[targetPath] = targetDocument
 	}
-	fragment, err := url.PathUnescape(parsed.Fragment)
-	if err != nil {
-		return &violation{Path: source, Line: current.line, Target: current.target, Reason: "invalid anchor escape"}, nil
-	}
-	if !targetDocument.anchors[fragment] {
+	if !targetDocument.anchors[parsed.Fragment] {
 		return &violation{Path: source, Line: current.line, Target: current.target, Reason: "anchor does not exist"}, nil
 	}
 	return nil, nil
