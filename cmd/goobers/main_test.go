@@ -106,6 +106,18 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "docs/concepts/README.md") {
 		t.Fatalf("init stdout lacks concepts guide: %q", stdout)
 	}
+	for _, want := range []string{
+		"Post-init validation:",
+		"WARNING PLACEHOLDER001",
+		"Next: edit these files before running a live workflow:",
+		"instance.yaml",
+		"config/gaggles/example/gaggle.yaml",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("init stdout lacks %q: %q", want, stdout)
+		}
+	}
+
 	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {
 		t.Fatalf("read init journal: %v", err)
@@ -140,6 +152,23 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("no-op init appended another completion: %+v", events)
+	}
+}
+
+func TestInitQuickstartReportsPlaceholderEdits(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	code, stdout, stderr := runArgs(t, "init", "--template=quickstart", root)
+	if code != 0 {
+		t.Fatalf("init quickstart: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"Post-init validation:",
+		"WARNING PLACEHOLDER001",
+		"Next: edit these files before running a live workflow:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("quickstart init stdout lacks %q:\n%s", want, stdout)
+		}
 	}
 }
 

@@ -289,13 +289,18 @@ func assertQuickstartSourceValid(t *testing.T, root string) {
 		t.Fatalf("validate source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	var result struct {
-		OK       bool              `json:"ok"`
-		Findings []json.RawMessage `json:"findings"`
+		OK       bool                `json:"ok"`
+		Findings []diagnosticFinding `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode validation result: %v\n%s", err, stdout)
 	}
-	if !result.OK || len(result.Findings) != 0 {
+	if !result.OK || len(result.Findings) != 2 {
 		t.Fatalf("validation result = %s", stdout)
+	}
+	for _, finding := range result.Findings {
+		if finding.Code != placeholderFindingCode || finding.Severity != "warning" {
+			t.Fatalf("quickstart source has non-placeholder finding %+v", finding)
+		}
 	}
 }
