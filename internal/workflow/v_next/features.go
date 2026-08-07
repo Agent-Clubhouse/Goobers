@@ -754,6 +754,18 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	return currentFeatureRegistry.resolve(used.ids())
 }
 
+// FeaturesForGaggle returns registry metadata for the DSL features used by spec.
+func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
+	used := featureSet{}
+	if spec.Sandbox != nil {
+		used.add(featureGaggleSandbox)
+	}
+	if spec.Project.Checkout != nil && spec.Project.Checkout.Sparse != nil {
+		used.add(featureGaggleCheckoutSparse)
+	}
+	return currentFeatureRegistry.resolve(used.ids())
+}
+
 // addParallelFeatures records the GA DSL fields used by a parallel state.
 func addParallelFeatures(used featureSet, parallel apiv1.Parallel) {
 	if parallel.FailurePolicy != "" {

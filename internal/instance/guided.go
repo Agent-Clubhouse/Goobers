@@ -734,9 +734,6 @@ func guidedManifest(opts GuidedOptions) []byte {
 kind: Manifest
 metadata:
   name: %s
-  # The pre-GA DSL is preview and must be acknowledged at instance scope.
-  annotations:
-    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: %s

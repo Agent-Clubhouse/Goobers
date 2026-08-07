@@ -4,7 +4,6 @@ metadata:
   name: quickstart-v1
   annotations:
     goobers.dev/acknowledge-manual-only: "true"
-    goobers.dev/allow-preview-features: "true"
     goobers.dev/template: "quickstart@v1"
 spec:
   instance:

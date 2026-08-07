@@ -861,6 +861,10 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleCheckout(r)
 	ix.checkLabelPredicates(r)
 	ix.checkFieldSelections(r)
+	for name, g := range ix.gaggles {
+		r.addFeatureDiagnostics(ix.gaggleFile[name], name, "Gaggle", name,
+			wf.CheckGaggleFeatureSupport(g.Spec, allowPreview))
+	}
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
