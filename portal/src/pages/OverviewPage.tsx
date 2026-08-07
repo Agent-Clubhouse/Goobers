@@ -82,6 +82,10 @@ function Overview({
   const [showDismissed, setShowDismissed] = useState(false);
   const activeAttention = groups.attention.filter((run) => !dismissedRunIds.has(run.id));
   const dismissedAttention = groups.attention.filter((run) => dismissedRunIds.has(run.id));
+  const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
+  const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
+    activeAttentionIds.has(runId),
+  );
 
   const toggleSelected = (runId: string) => {
     setSelectedRunIds((current) => {
@@ -150,13 +154,13 @@ function Overview({
               <h2>Needs attention</h2>
             </div>
             <div className="attention-actions">
-              {selectedRunIds.size > 0 && (
+              {visibleSelectedRunIds.length > 0 && (
                 <button
                   className="text-button"
-                  onClick={() => dismissRuns([...selectedRunIds])}
+                  onClick={() => dismissRuns(visibleSelectedRunIds)}
                   type="button"
                 >
-                  Dismiss {selectedRunIds.size} selected
+                  Dismiss {visibleSelectedRunIds.length} selected
                 </button>
               )}
               {dismissedAttention.length > 0 && (

@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -12,6 +12,7 @@ import {
 } from "../test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
+const originalLocalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
 
 beforeEach(() => {
   window.location.hash = "#/overview";
@@ -29,6 +30,12 @@ beforeEach(() => {
       setItem: (key: string, value: string) => storedValues.set(key, value),
     } satisfies Storage,
   });
+});
+
+afterEach(() => {
+  if (originalLocalStorage) {
+    Object.defineProperty(window, "localStorage", originalLocalStorage);
+  }
 });
 
 describe("operational overview", () => {
