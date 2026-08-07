@@ -200,6 +200,14 @@ func EvaluateMetric(def MetricDefinition, observation Observation, now time.Time
 	if observation.Value == nil || observation.DataAsOf == nil {
 		return result
 	}
+	if observation.EvidenceID == "" {
+		result.ReasonCode = ReasonInsufficientEvidence
+		return result
+	}
+	if observation.Window.Start.IsZero() || !observation.Window.End.After(observation.Window.Start) {
+		result.ReasonCode = ReasonSchemaError
+		return result
+	}
 	age := now.Sub(*observation.DataAsOf)
 	if age < 0 {
 		result.ReasonCode = ReasonSchemaError

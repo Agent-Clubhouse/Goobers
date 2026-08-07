@@ -100,6 +100,42 @@ func TestEvaluateMetricRejectsMalformedValue(t *testing.T) {
 	}
 }
 
+func TestEvaluateMetricRejectsIncompleteEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Observation)
+		reason ReasonCode
+	}{
+		{
+			name: "empty evidence ID",
+			mutate: func(observation *Observation) {
+				observation.EvidenceID = ""
+			},
+			reason: ReasonInsufficientEvidence,
+		},
+		{
+			name: "invalid observation window",
+			mutate: func(observation *Observation) {
+				observation.Window.End = observation.Window.Start
+			},
+			reason: ReasonSchemaError,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := validObservation(50, "ms")
+			test.mutate(&observation)
+			got := EvaluateMetric(metricDefinition("latency", Required, lessThan(100, "ms")), observation, testNow)
+			if got.Verdict != VerdictUnknown || got.ReasonCode != test.reason {
+				t.Fatalf("EvaluateMetric = %q/%q, want unknown/%s", got.Verdict, got.ReasonCode, test.reason)
+			}
+			if got.Value != nil {
+				t.Fatal("incomplete evidence must not be retained as a canonical value")
+			}
+		})
+	}
+}
+
 func TestUnknownPolicyMustExplicitlyAllowGo(t *testing.T) {
 	metric := metricDefinition("latency", Required, lessThan(100, "ms"))
 	subsystem := SubsystemDefinition{
