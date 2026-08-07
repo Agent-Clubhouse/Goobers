@@ -1940,6 +1940,42 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightReportsScrubbedBoundedProbeOutput(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 36)
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+	}
+	runner.act = func(req ProcessRequest) error {
+		if slices.Contains(req.Command, "auth") {
+			runner.result = ProcessResult{
+				ExitCode:   1,
+				Transcript: []byte("Access denied by policy settings bearer " + secret + "\n" + strings.Repeat("detail ", 1000)),
+			}
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	_, err := adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected auth probe failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "exited 1: Access denied by policy settings") {
+		t.Fatalf("error omitted probe output: %v", err)
+	}
+	if strings.Contains(message, secret) || !strings.Contains(message, journal.Redacted) {
+		t.Fatalf("error did not scrub probe output: %v", err)
+	}
+	if !strings.Contains(message, "truncated") || len(message) > maxPreflightDiagnosticBytes+512 {
+		t.Fatalf("error was not bounded: len=%d error=%v", len(message), err)
+	}
+	if !strings.Contains(message, "if this is an authentication failure") {
+		t.Fatalf("error asserted an authentication failure: %v", err)
+	}
+}
+
 // TestCopilotAdapterPreflightSignedInPasses confirms preflight passes when both
 // --version and the configured auth probe succeed.
 func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {

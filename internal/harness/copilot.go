@@ -426,12 +426,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv(c.ExtraEnvAllowlist)})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v exited %d — check it is installed and signed in", bin, args, res.ExitCode)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q %v", bin, args)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            append([]string{bin}, args...),
+		Env:                baseEnv(c.ExtraEnvAllowlist),
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
 	version := firstOutputLine(res.Transcript)
 	if version == "" {
@@ -453,12 +455,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		if tok := ambientCopilotToken(); tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: authEnv})
-		if err != nil {
-			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
-		}
-		if res.ExitCode != 0 {
-			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) exited %d — the CLI appears signed out; run the Copilot CLI and sign in", bin, c.AuthCheckArgs, res.ExitCode)
+		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
+		res, err := c.runner().Run(ctx, ProcessRequest{
+			Command:            append(command, c.AuthCheckArgs...),
+			Env:                authEnv,
+			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		})
+		if err != nil || res.ExitCode != 0 {
+			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
 		}
 	}
 	return PreflightInfo{Version: version}, nil

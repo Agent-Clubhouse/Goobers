@@ -84,12 +84,14 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	env := baseEnv(c.ExtraEnvAllowlist)
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q did not respond to --version: %w — check it is installed and signed in", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q --version exited %d — check it is installed and signed in", bin, res.ExitCode)
+	versionProbe := fmt.Sprintf("harness: claude-code: %q --version", bin)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            versionCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
 	version := firstOutputLine(res.Transcript)
 	if version == "" {
@@ -97,12 +99,14 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	}
 
 	authCommand := append(append([]string(nil), baseCommand...), "auth", "status")
-	res, err = c.runner().Run(ctx, ProcessRequest{Command: authCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status failed: %w — run `claude auth login`", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status exited %d — run `claude auth login`", bin, res.ExitCode)
+	authProbe := fmt.Sprintf("harness: claude-code: %q auth status", bin)
+	res, err = c.runner().Run(ctx, ProcessRequest{
+		Command:            authCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
 	return PreflightInfo{Version: version}, nil
 }
