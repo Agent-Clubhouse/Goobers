@@ -3127,7 +3127,7 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 inspect workflows
 
 ~~~text
-Usage: goobers workflow show [--dot] <name> [path]
+Usage: goobers workflow show [flags] <name> [path]
 
 Show the named workflow as a text DAG or Graphviz DOT (default path ".").
 
