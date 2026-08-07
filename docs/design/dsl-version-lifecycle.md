@@ -1,6 +1,6 @@
 # Design: DSL Version Lifecycle & Multi-Version Runtime
 
-> Status: **Draft for review — not implemented** · Area prefix: `DVL` (new) · Milestone: **Versioning & Releases** (#12)
+> Status: **Shipped** (epic #860; DVL-1..9 #861–#869 closed — dslVersion pins, SupportMatrix, coexisting interpreters, `goobers versions|fix|features` all live; header refreshed 2026-08-07, see `onboarding-first-value-ladder.md` §2.2) · Area prefix: `DVL` (new) · Milestone: **Versioning & Releases** (#12)
 > Companion to: [`versioning-and-compatibility.md`](./versioning-and-compatibility.md) — **this doc resolves that doc's Open Question §5.2** ("version the DSL independently, or app-SemVer + registry-as-authority?") in favour of an *independently-versioned, per-workflow-pinnable DSL with multiple interpreters coexisting in one binary.*
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §11 (substrate-neutral workflow core)
 > Grounded in: `internal/workflow/{compile,machine}.go`, `api/v1alpha1/`, `api/validate/validate.go`, `internal/configsync/loader.go`, `internal/instance/config.go`
