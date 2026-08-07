@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +53,10 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // plus the auth probe's real API round-trip) so a hung CLI or network can't
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
+
+const placeholderFindingCode = "PLACEHOLDER001"
+
+var templateMarkers = []string{"your-org", "your-repo"}
 
 const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
@@ -198,6 +203,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		pf(stdout, "\nconfig directory failed validation\n")
 		return 1
 	}
+	placeholderFindings, err := findTemplatePlaceholders(root, configFile, configDir)
+	if err != nil {
+		pf(stderr, "error: inspect configuration placeholders: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/", "IO001", string(validate.Error), err.Error())
+		return 2
+	}
+	placeholderSeverity := validate.Warning
+	if options.strict {
+		placeholderSeverity = validate.Error
+	}
+	for _, finding := range placeholderFindings {
+		pf(stdout, "%s %s %s: %s\n",
+			strings.ToUpper(string(placeholderSeverity)), placeholderFindingCode, finding.file, finding.message)
+		diagnostics.add(finding.file, "/", placeholderFindingCode, string(placeholderSeverity), finding.message)
+	}
 
 	// api/validate's cross-reference checks (above) mirror most of
 	// workflow.Compile's own semantic analysis (CheckReachability/
@@ -316,14 +336,97 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		}
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	if options.strict && len(report.Warnings()) > 0 {
-		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
+	warningCount := len(report.Warnings()) + len(placeholderFindings)
+	if options.strict && warningCount > 0 {
+		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1
 	}
 	printResolvedLargeRepoPresets(stdout, cfg.Repos)
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+type placeholderFinding struct {
+	file    string
+	message string
+}
+
+func findTemplatePlaceholders(root, configFile, configDir string) ([]placeholderFinding, error) {
+	paths := []string{configFile}
+	seenPaths := map[string]bool{filepath.Clean(configFile): true}
+	err := filepath.WalkDir(configDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".yaml", ".yml":
+			clean := filepath.Clean(path)
+			if !seenPaths[clean] {
+				seenPaths[clean] = true
+				paths = append(paths, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+
+	var findings []placeholderFinding
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		var found []string
+		for _, marker := range templateMarkers {
+			if containsTemplateMarker(data, marker) {
+				found = append(found, marker)
+			}
+		}
+		if len(found) == 0 {
+			continue
+		}
+		findings = append(findings, placeholderFinding{
+			file: diagnosticFile(root, path),
+			message: fmt.Sprintf(
+				"contains unedited template marker(s) %s; replace them with the target repository coordinates",
+				strings.Join(found, ", "),
+			),
+		})
+	}
+	return findings, nil
+}
+
+func containsTemplateMarker(data []byte, marker string) bool {
+	target := []byte(marker)
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], target)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		beforeBoundary := index == 0 || !isRepositoryCoordinateByte(data[index-1])
+		after := index + len(target)
+		afterBoundary := after == len(data) || !isRepositoryCoordinateByte(data[after])
+		if beforeBoundary && afterBoundary {
+			return true
+		}
+		offset = index + len(target)
+	}
+	return false
+}
+
+func isRepositoryCoordinateByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '-' || value == '_' || value == '.'
 }
 
 func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {

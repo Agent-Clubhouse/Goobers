@@ -177,6 +177,8 @@ func runInitWithInputForOSAndGitHub(
 			if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
 				return code
 			}
+		} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+			return code
 		}
 		if err := ensureInitCompleted(root); err != nil {
 			pf(stderr, "error: record successful init completion: %v\n", err)
@@ -209,10 +211,41 @@ func runInitWithInputForOSAndGitHub(
 		if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
 			return code
 		}
+	} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+		return code
 	}
 	if err := ensureInitCompleted(root); err != nil {
 		pf(stderr, "error: record successful init completion: %v\n", err)
 		return 2
+	}
+	return 0
+}
+
+func finishInitValidation(root string, stdout, stderr io.Writer) int {
+	pln(stdout, "\nPost-init validation:")
+	if code := runValidate([]string{root}, stdout, stderr); code != 0 {
+		pf(stderr, "error: initialized instance did not pass validation\n")
+		return code
+	}
+
+	layout := instance.NewLayout(root)
+	findings, err := findTemplatePlaceholders(root, layout.ConfigFile(), layout.ConfigDir())
+	if err != nil {
+		pf(stderr, "error: inspect initialized configuration placeholders: %v\n", err)
+		return 2
+	}
+	if len(findings) == 0 {
+		pln(stdout, "\nNext: no placeholder edits are required.")
+		return 0
+	}
+	pln(stdout, "\nNext: edit these files before running a live workflow:")
+	seen := make(map[string]bool, len(findings))
+	for _, finding := range findings {
+		if seen[finding.file] {
+			continue
+		}
+		seen[finding.file] = true
+		pf(stdout, "  %s\n", finding.file)
 	}
 	return 0
 }

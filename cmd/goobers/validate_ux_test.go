@@ -227,6 +227,14 @@ func TestValidateCheckRepos(t *testing.T) {
 
 func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n      expectedOutputs:\n        - artifact")
 
@@ -244,11 +252,97 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 	for _, want := range []string{
 		"expectedOutputs is declared but the stage has no inputs.resultFile",
-		"config directory has 1 warning(s); --strict treats warnings as errors",
+		"configuration has 1 warning(s); --strict treats warnings as errors",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestValidateTemplatePlaceholders(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"WARNING PLACEHOLDER001 instance.yaml: contains unedited template marker(s) your-org, your-repo",
+		"WARNING PLACEHOLDER001 config/gaggles/example/gaggle.yaml: contains unedited template marker(s) your-org, your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 1 {
+		t.Fatalf("validate --strict code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Count(stdout, "ERROR PLACEHOLDER001") != 2 {
+		t.Fatalf("strict validate did not promote both placeholder findings:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--json", "--strict", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate --json --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var envelope diagnosticsEnvelope
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Counts.Errors != 2 {
+		t.Fatalf("strict diagnostics counts = %+v, want two errors", envelope.Counts)
+	}
+}
+
+func TestValidateTemplatePlaceholdersClearAfterEditing(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, placeholderFindingCode) {
+		t.Fatalf("edited quickstart still has placeholder findings:\n%s", stdout)
+	}
+}
+
+func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitDemo(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, `repos:
+  - provider: github
+    owner: your-organization
+    name: your-repository
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, placeholderFindingCode) {
+		t.Fatalf("edited repository coordinates produced placeholder findings:\n%s", stdout)
 	}
 }
 
