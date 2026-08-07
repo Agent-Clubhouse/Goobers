@@ -13,6 +13,7 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -1285,6 +1286,38 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 
 ~~~console
 $ goobers gather-sibling-context
+~~~
+
+## `goobers getting-started`
+
+serve and open the guided portal Getting Started walkthrough
+
+~~~text
+Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
+
+Serve and open the portal's guided Getting Started experience: a walkthrough
+from an empty working directory to a first autonomous pull request against
+the disposable getting-started-task-api sample. Every write action the guide
+offers is a thin wrapper over the documented CLI commands — goobers
+onboarding stub-sample, goobers init --template=quickstart, and goobers
+validate --json — it never scaffolds or validates on its own. The manual
+steps stay yours, and the guide states each one explicitly: creating the
+disposable GitHub repository, pushing the sample, editing placeholders, and
+exporting tokens. Time to First PR is computed locally and reported only to
+you; nothing leaves your machine.
+
+--workdir (default ".") holds the sample checkout and the tutorial
+instance; no instance root needs to exist yet. The default --port is auto,
+incrementing from 8081 until a port is available. Blocks until interrupted.
+Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
+usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers getting-started
+$ goobers getting-started --no-open --workdir ~/goobers-tutorial
 ~~~
 
 ## `goobers help`

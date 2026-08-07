@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -61,6 +61,9 @@ _goobers_completion()
             ;;
         dashboard)
             flags+=" --port --no-open --dev-assets"
+            ;;
+        getting-started)
+            flags+=" --port --no-open --workdir"
             ;;
         run)
             flags+=" --no-wait"
