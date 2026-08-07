@@ -21,7 +21,7 @@ func TestRecordPRRemediationNoopCountsDistinctRuns(t *testing.T) {
 	l := layoutFor(root)
 	const runID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
-		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
+		RunID: runID, Workflow: "custom-remediation", Gaggle: "goobers",
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

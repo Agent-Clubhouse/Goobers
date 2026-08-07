@@ -96,7 +96,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
-	readyLabel := providerInput("readyLabel", "goobers:ready")
+	readyLabel := providerInput("readyLabel", providers.LabelReady)
 	var labels []string
 	if trustLabel != "" {
 		labels = []string{trustLabel}

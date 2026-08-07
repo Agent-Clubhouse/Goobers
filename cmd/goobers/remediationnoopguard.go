@@ -79,12 +79,8 @@ func preparePRRemediationNoopUpdate(l instance.Layout, runID string) (*remediati
 	if err != nil {
 		return nil, err
 	}
-	identity, err := reader.Identity()
-	if err != nil {
+	if _, err := reader.Identity(); err != nil {
 		return nil, err
-	}
-	if identity.Workflow != "pr-remediation" {
-		return nil, nil
 	}
 	events, err := reader.Events()
 	if err != nil {
