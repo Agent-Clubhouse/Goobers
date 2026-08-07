@@ -143,11 +143,16 @@ state. The runtime never silently teaches itself a new workflow.
 
 | Goobers term | Familiar mental model |
 | --- | --- |
+| **Instance** | One Goobers installation and its runtime state: instance.yaml, validated config, scheduler journal, telemetry, managed workcopies, and gaggle run journals. |
 | **Gaggle** | A team or bounded workforce: its project/backlog connections, goobers, and workflows. |
 | **Goober** | An agent role or worker definition: instructions, harness, tools, skills, model options, and allowed capabilities. |
 | **Workflow** | A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions. |
 | **Stage** | One unit of work. It is deterministic (a command or built-in operation) or agentic (a harness invocation with an explicit contract). |
 | **Gate** | A decision state that branches a workflow using an automated check, agentic verdict, or human approval. A gate is not a stage. |
+| **Harness** | The adapter that invokes an agentic stage's model and tools, such as GitHub Copilot CLI or Claude Code, behind the same invocation and result contract. |
+| **Capability** | A declared permission for a stage or goober to perform a specific operation. Undeclared capabilities fail closed and receive no credentials. |
+| **Manifest** | The config source's manifest.yaml: the versioned entry point that declares which gaggle definitions the instance loads. |
+| **Tier** | A deployment scale, not a product fork: solo and small-team tiers use the local runner, while cloud scale uses the conforming Temporal runner. |
 | **Backlog** | The external queue of candidate work, such as eligible GitHub issues. It remains a project system of record. |
 | **Claim ledger** | The scheduler's durable coordination record for who holds an item lease, preventing concurrent runs from processing the same work. |
 | **Reconcile** | Bring runtime execution into line with validated definitions: load and compile desired state, admit eligible work, and preserve the declared constraints. |
