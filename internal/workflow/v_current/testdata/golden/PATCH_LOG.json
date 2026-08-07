@@ -10,6 +10,11 @@
       "version": 2,
       "binaryVersion": "unreleased",
       "description": "Correct ci-poll capability admission to the canonical provider-neutral grant required by ADR 0002 without changing stage output semantics (#2213)."
+    },
+    {
+      "version": 3,
+      "binaryVersion": "unreleased",
+      "description": "Apply the existing preview-feature support policy to Gaggle fields so the default-off instance acknowledgement is enforced without changing compiled workflow semantics (#2046)."
     }
   ]
 }
