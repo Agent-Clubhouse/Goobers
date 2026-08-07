@@ -25,8 +25,9 @@ import (
 
 const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
-	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
-	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
+	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
+	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
+	"gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
 	"with instance.yaml or a populated config/ before prompting. It separately\n" +
 	"selects a checked-in config source and target GitHub application repository,\n" +
