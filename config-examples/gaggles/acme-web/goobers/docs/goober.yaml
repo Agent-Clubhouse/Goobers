@@ -7,7 +7,7 @@ spec:
   role: docs
   displayName: Docs updater
   instructions: instructions.md
-  harness: claude-code
+  harness: copilot
   model: auto
   harnessOptions: {}
   capabilities:
