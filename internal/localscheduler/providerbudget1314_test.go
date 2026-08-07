@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,115 @@ func TestTickPacesPollingAfterQuotaReset(t *testing.T) {
 	if resets != 1 {
 		t.Fatalf("provider quota reset events = %d, want 1", resets)
 	}
+}
+
+func TestRunPacesOrdinaryScheduledWorkflowsAfterQuotaReset(t *testing.T) {
+	resetAt := time.Date(2026, time.August, 7, 16, 5, 0, 0, time.UTC)
+	clock := newFakeClock(resetAt)
+	quota := NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 0, resetAt)
+	first := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	second := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:  "first",
+			Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+			RepoRef:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:   first,
+		},
+		{
+			Workflow:  "second",
+			Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+			RepoRef:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:   second,
+		},
+	}, WithProviderQuota(quota), WithClock(clock.Now, clock.After))
+	sched.mu.Lock()
+	for identity, state := range sched.triggers {
+		state.LastEval = resetAt.Add(-time.Hour)
+		sched.triggers[identity] = state
+	}
+	sched.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- sched.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run() error = %v, want context cancellation", err)
+		}
+		sched.Wait()
+	})
+
+	clock.awaitAfterCall(t)
+	waitForCount(t, func() int { return first.count() + second.count() }, 1)
+	if got := first.count() + second.count(); got != 1 {
+		t.Fatalf("dispatches on reset tick = %d, want 1", got)
+	}
+	if waits := clock.durations(); len(waits) == 0 || waits[0] != minPoll {
+		t.Fatalf("first paced wait = %v, want %s", waits, minPoll)
+	}
+
+	clock.advance(resetAt.Add(minPoll))
+	waitForCount(t, func() int { return first.count() + second.count() }, 2)
+	if first.count() != 1 || second.count() != 1 {
+		t.Fatalf("paced dispatches first=%d second=%d, want one each", first.count(), second.count())
+	}
+}
+
+func TestRunWakesForDeferredScheduleDemandPoll(t *testing.T) {
+	resetAt := time.Date(2026, time.August, 7, 16, 5, 0, 0, time.UTC)
+	clock := newFakeClock(resetAt)
+	quota := NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 0, resetAt)
+	firstCounter := &fakeBacklogCounter{count: 1}
+	secondCounter := &fakeBacklogCounter{count: 1}
+	first := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	second := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:              "first",
+			Schedules:             []Schedule{fakeSchedule{d: time.Hour}},
+			ScheduleDemandCounter: firstCounter,
+			PollProvider:          apiv1.ProviderGitHub,
+			RepoRef:               apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:               first,
+		},
+		{
+			Workflow:              "second",
+			Schedules:             []Schedule{fakeSchedule{d: time.Hour}},
+			ScheduleDemandCounter: secondCounter,
+			PollProvider:          apiv1.ProviderGitHub,
+			RepoRef:               apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:               second,
+		},
+	}, WithProviderQuota(quota), WithClock(clock.Now, clock.After))
+	sched.mu.Lock()
+	for identity, state := range sched.triggers {
+		state.LastEval = resetAt.Add(-time.Hour)
+		sched.triggers[identity] = state
+	}
+	sched.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- sched.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run() error = %v, want context cancellation", err)
+		}
+		sched.Wait()
+	})
+
+	clock.awaitAfterCall(t)
+	if got := firstCounter.polls() + secondCounter.polls(); got != 1 {
+		t.Fatalf("demand polls on reset tick = %d, want 1", got)
+	}
+	clock.advance(resetAt.Add(minPoll))
+	waitForCount(t, func() int { return firstCounter.polls() + secondCounter.polls() }, 2)
+	waitForCount(t, func() int { return first.count() + second.count() }, 2)
 }
 
 func TestTickJournalsPaginationBudgetShed(t *testing.T) {

@@ -395,10 +395,15 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		at := last[identity]
 		ts.LastEval = at
 		s.triggers[identity] = ts
-		if outstandingScheduleDemand[identity] && s.workflows[identity].ScheduleDemandCounter != nil {
-			s.pendingScheduleDemand[identity] = scheduledDemand{
-				repoll: true,
+		if outstandingScheduleDemand[identity] {
+			pending := scheduledDemand{
+				schedule:  TickResult{Fire: true, LastEval: ts.LastEval},
+				remaining: 1,
 			}
+			if s.workflows[identity].ScheduleDemandCounter != nil {
+				pending = scheduledDemand{repoll: true}
+			}
+			s.pendingScheduleDemand[identity] = pending
 		}
 	}
 	return nil
@@ -606,8 +611,9 @@ func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release
 func (s *Scheduler) wakeForPendingScheduleDemand() {
 	s.mu.Lock()
 	pending := len(s.pendingScheduleDemand) > 0
+	pacing := len(s.quotaResumePacing) > 0
 	s.mu.Unlock()
-	if !pending {
+	if !pending || pacing {
 		return
 	}
 	select {
@@ -714,6 +720,25 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		entries = append(entries, e)
 	}
 	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].PollPriority != entries[j].PollPriority {
+			return entries[i].PollPriority > entries[j].PollPriority
+		}
+		if entries[i].Workflow != entries[j].Workflow {
+			return entries[i].Workflow < entries[j].Workflow
+		}
+		return entries[i].Gaggle < entries[j].Gaggle
+	})
+	providers := make(map[apiv1.Provider]struct{})
+	for _, entry := range entries {
+		providers[quotaProvider(entry.RepoRef.Provider)] = struct{}{}
+		if entry.BacklogCounter != nil || entry.ScheduleDemandCounter != nil {
+			providers[quotaProvider(entry.PollProvider)] = struct{}{}
+		}
+	}
+	for provider := range providers {
+		s.journalProviderQuotaReset(provider, now)
+	}
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
@@ -775,6 +800,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 
 	s.pollDemandCounters(ctx, allCandidates, now)
+	s.paceQuotaResumedCandidates(allCandidates)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 {
@@ -923,10 +949,8 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		if checked, ok := s.backlogLastCheck[identity]; ok {
 			backlogLastCheck[identity] = checked
 		}
-		if entry.ScheduleDemandCounter != nil {
-			if pending, ok := s.pendingScheduleDemand[identity]; ok {
-				pendingScheduleDemand[identity] = pending
-			}
+		if pending, ok := s.pendingScheduleDemand[identity]; ok {
+			pendingScheduleDemand[identity] = pending
 		}
 		if skips := s.consecutivePoolSkips[identity]; skips > 0 {
 			consecutivePoolSkips[identity] = skips
@@ -1044,11 +1068,9 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		s.journalProviderQuotaReset(provider, now)
 		pacing := s.quotaResumePacingActive(provider)
 		var pacedIdentity WorkflowIdentity
-		uniqueDue := make(map[WorkflowIdentity]struct{})
 		if pacing {
 			for _, poll := range due {
 				identity := entryIdentity(poll.candidate.entry)
-				uniqueDue[identity] = struct{}{}
 				if pacedIdentity == (WorkflowIdentity{}) {
 					pacedIdentity = identity
 				}
@@ -1062,7 +1084,10 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 				}
 				continue
 			}
-			if !poll.schedule {
+			if poll.schedule {
+				poll.candidate.schedulePollDue = false
+			} else {
+				poll.candidate.backlogPollDue = false
 				s.recordBacklogPoll(entry, now)
 			}
 			decision := ProviderPollBudget{Provider: provider, Requested: 1, Allowed: 1}
@@ -1084,22 +1109,87 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			s.applyDemandCount(poll, 0)
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
-		if pacing && len(uniqueDue) <= 1 {
-			s.setQuotaResumePacing(provider, false)
-		}
 	}
 }
 
 func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
 	identity := entryIdentity(candidate.entry)
-	if !s.persistScheduleDemand(identity, true) {
-		return
-	}
+	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
 	s.pendingScheduleDemand[identity] = scheduledDemand{
 		schedule: candidate.schedule,
 		repoll:   true,
 	}
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
+	chosen := make(map[apiv1.Provider]WorkflowIdentity)
+	due := make(map[apiv1.Provider]map[WorkflowIdentity]struct{})
+	for _, candidate := range candidates {
+		identity := entryIdentity(candidate.entry)
+		pollProvider := quotaProvider(candidate.entry.PollProvider)
+		if s.quotaResumePacingActive(pollProvider) &&
+			(candidate.schedulePollDue || candidate.backlogPollDue) {
+			if due[pollProvider] == nil {
+				due[pollProvider] = make(map[WorkflowIdentity]struct{})
+			}
+			due[pollProvider][identity] = struct{}{}
+		}
+		if candidate.scheduleRemaining == 0 && candidate.backlogRemaining == 0 {
+			continue
+		}
+		provider := quotaProvider(candidate.entry.RepoRef.Provider)
+		if !s.quotaResumePacingActive(provider) {
+			continue
+		}
+		if due[provider] == nil {
+			due[provider] = make(map[WorkflowIdentity]struct{})
+		}
+		due[provider][identity] = struct{}{}
+		allowed, ok := chosen[provider]
+		if !ok {
+			chosen[provider] = identity
+			continue
+		}
+		if allowed == identity {
+			continue
+		}
+		if candidate.scheduleRemaining > 0 && !candidate.scheduleDemand {
+			s.deferScheduledDispatch(candidate)
+		}
+		candidate.scheduleRemaining = 0
+		if candidate.backlogRemaining > 0 {
+			s.clearBacklogPoll(candidate.entry)
+			candidate.backlogRemaining = 0
+		}
+	}
+	for provider, identities := range due {
+		if len(identities) <= 1 {
+			s.setQuotaResumePacing(provider, false)
+		}
+	}
+	for provider := range s.activeQuotaResumeProviders() {
+		if len(due[provider]) == 0 {
+			s.setQuotaResumePacing(provider, false)
+		}
+	}
+}
+
+func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	s.persistScheduleDemand(identity, true)
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule:  candidate.schedule,
+		remaining: candidate.scheduleRemaining,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) clearBacklogPoll(entry WorkflowEntry) {
+	s.mu.Lock()
+	delete(s.backlogLastCheck, entryIdentity(entry))
 	s.mu.Unlock()
 }
 
@@ -1245,6 +1335,16 @@ func (s *Scheduler) setQuotaResumePacing(provider apiv1.Provider, active bool) {
 		return
 	}
 	delete(s.quotaResumePacing, provider)
+}
+
+func (s *Scheduler) activeQuotaResumeProviders() map[apiv1.Provider]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	providers := make(map[apiv1.Provider]struct{}, len(s.quotaResumePacing))
+	for provider := range s.quotaResumePacing {
+		providers[provider] = struct{}{}
+	}
+	return providers
 }
 
 func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, remaining int, resetAt time.Time) {
@@ -1681,6 +1781,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if len(s.quotaResumePacing) > 0 {
+		return minPoll
+	}
 	var earliest time.Time
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
