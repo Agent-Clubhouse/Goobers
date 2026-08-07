@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"html"
 	"net/url"
@@ -11,6 +10,11 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/text"
 )
 
 var rootDocuments = []string{
@@ -124,101 +128,70 @@ func documentationPaths(root string) ([]string, error) {
 }
 
 func parseDocument(path, relative string) (document, error) {
-	file, err := os.Open(path)
+	source, err := os.ReadFile(path)
 	if err != nil {
 		return document{}, err
 	}
-	defer file.Close()
 
 	result := document{anchors: make(map[string]bool)}
-	slugCounts := make(map[string]int)
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
-	inFence := false
-	fenceMarker := ""
-	previousLine := ""
-	for scanner.Scan() {
-		lineNumber++
-		lineText := scanner.Text()
-		trimmed := strings.TrimLeft(lineText, " \t")
-		if marker := fenceStart(trimmed); marker != "" {
-			if !inFence {
-				inFence = true
-				fenceMarker = marker
-			} else if marker == fenceMarker {
-				inFence = false
-				fenceMarker = ""
-			}
-			continue
+	headingAnchors := make(map[string]bool)
+	parsed := goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser().Parse(text.NewReader(source))
+	lineStarts := sourceLineStarts(source)
+	err = ast.Walk(parsed, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		if inFence {
-			previousLine = ""
-			continue
+		switch current := node.(type) {
+		case *ast.Heading:
+			addHeadingAnchor(result.anchors, headingAnchors, string(renderedText(current, source)))
+		case *ast.Link:
+			result.links = append(result.links, link{
+				line:   sourceLine(lineStarts, nodeSourceOffset(current)),
+				target: string(current.Destination),
+			})
+		case *ast.Image:
+			result.links = append(result.links, link{
+				line:   sourceLine(lineStarts, nodeSourceOffset(current)),
+				target: string(current.Destination),
+			})
+		case *ast.HTMLBlock:
+			addHTMLAnchors(result.anchors, current.Text(source))
+		case *ast.RawHTML:
+			addHTMLAnchors(result.anchors, current.Text(source))
 		}
-
-		if heading, ok := atxHeading(trimmed); ok {
-			addHeadingAnchor(result.anchors, slugCounts, heading)
-		} else if isSetextUnderline(trimmed) && strings.TrimSpace(previousLine) != "" {
-			addHeadingAnchor(result.anchors, slugCounts, strings.TrimSpace(previousLine))
-		}
-		for _, anchor := range htmlAnchors(lineText) {
-			result.anchors[anchor] = true
-		}
-		for _, target := range markdownTargets(lineText) {
-			result.links = append(result.links, link{line: lineNumber, target: target})
-		}
-		previousLine = lineText
-	}
-	if err := scanner.Err(); err != nil {
-		return document{}, fmt.Errorf("read %s: %w", relative, err)
+		return ast.WalkContinue, nil
+	})
+	if err != nil {
+		return document{}, fmt.Errorf("parse %s: %w", relative, err)
 	}
 	return result, nil
 }
 
-func addHeadingAnchor(anchors map[string]bool, counts map[string]int, heading string) {
+func addHeadingAnchor(anchors, headingAnchors map[string]bool, heading string) {
 	slug := headingSlug(heading)
-	if count := counts[slug]; count != 0 {
-		anchors[fmt.Sprintf("%s-%d", slug, count)] = true
-	} else {
-		anchors[slug] = true
+	candidate := slug
+	for suffix := 1; headingAnchors[candidate]; suffix++ {
+		candidate = fmt.Sprintf("%s-%d", slug, suffix)
 	}
-	counts[slug]++
+	headingAnchors[candidate] = true
+	anchors[candidate] = true
 }
 
-func fenceStart(line string) string {
-	if strings.HasPrefix(line, "```") {
-		return "```"
-	}
-	if strings.HasPrefix(line, "~~~") {
-		return "~~~"
-	}
-	return ""
-}
-
-func atxHeading(line string) (string, bool) {
-	hashes := 0
-	for hashes < len(line) && line[hashes] == '#' {
-		hashes++
-	}
-	if hashes == 0 || hashes > 6 || hashes == len(line) || !unicode.IsSpace(rune(line[hashes])) {
-		return "", false
-	}
-	heading := strings.TrimSpace(line[hashes:])
-	heading = strings.TrimSpace(strings.TrimRight(heading, "#"))
-	return heading, true
-}
-
-func isSetextUnderline(line string) bool {
-	line = strings.TrimSpace(line)
-	if len(line) == 0 || line[0] != '=' && line[0] != '-' {
-		return false
-	}
-	for _, current := range line {
-		if current != rune(line[0]) {
-			return false
+func renderedText(root ast.Node, source []byte) []byte {
+	var result []byte
+	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-	}
-	return true
+		switch current := node.(type) {
+		case *ast.Text:
+			result = append(result, current.Text(source)...)
+		case *ast.String:
+			result = append(result, current.Value...)
+		}
+		return ast.WalkContinue, nil
+	})
+	return result
 }
 
 func headingSlug(heading string) string {
@@ -236,87 +209,40 @@ func headingSlug(heading string) string {
 	return slug.String()
 }
 
-func markdownTargets(line string) []string {
-	var targets []string
-	for offset := 0; offset < len(line); {
-		closeLabel := strings.Index(line[offset:], "](")
-		if closeLabel < 0 {
-			break
-		}
-		start := offset + closeLabel + 2
-		target, end, ok := inlineTarget(line, start)
-		if ok && target != "" {
-			targets = append(targets, target)
-		}
-		if end <= start {
-			offset = start
-		} else {
-			offset = end
+func sourceLineStarts(source []byte) []int {
+	starts := []int{0}
+	for index, current := range source {
+		if current == '\n' && index+1 < len(source) {
+			starts = append(starts, index+1)
 		}
 	}
-
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "[") {
-		if marker := strings.Index(trimmed, "]:"); marker > 1 {
-			target := strings.TrimSpace(trimmed[marker+2:])
-			if strings.HasPrefix(target, "<") {
-				if end := strings.IndexByte(target, '>'); end > 1 {
-					targets = append(targets, target[1:end])
-				}
-			} else if fields := strings.Fields(target); len(fields) != 0 {
-				targets = append(targets, fields[0])
-			}
-		}
-	}
-	return targets
+	return starts
 }
 
-func inlineTarget(line string, start int) (string, int, bool) {
-	for start < len(line) && unicode.IsSpace(rune(line[start])) {
-		start++
-	}
-	if start >= len(line) {
-		return "", start, false
-	}
-	if line[start] == '<' {
-		end := strings.IndexByte(line[start+1:], '>')
-		if end < 0 {
-			return "", start, false
-		}
-		return line[start+1 : start+1+end], start + end + 2, true
-	}
-
-	depth := 0
-	escaped := false
-	for index := start; index < len(line); index++ {
-		current := line[index]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if current == '\\' {
-			escaped = true
-			continue
-		}
-		switch current {
-		case '(':
-			depth++
-		case ')':
-			if depth == 0 {
-				return line[start:index], index + 1, true
-			}
-			depth--
-		case ' ', '\t':
-			if depth == 0 {
-				return line[start:index], index, true
-			}
-		}
-	}
-	return "", start, false
+func sourceLine(starts []int, offset int) int {
+	return sort.Search(len(starts), func(index int) bool {
+		return starts[index] > offset
+	})
 }
 
-func htmlAnchors(line string) []string {
-	var anchors []string
+func nodeSourceOffset(root ast.Node) int {
+	offset := 0
+	found := false
+	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		if current, ok := node.(*ast.Text); ok && (!found || current.Segment.Start < offset) {
+			offset = current.Segment.Start
+			found = true
+		}
+		return ast.WalkContinue, nil
+	})
+	return offset
+}
+
+func addHTMLAnchors(anchors map[string]bool, source []byte) {
+	line := string(source)
 	lower := strings.ToLower(line)
 	for _, attribute := range []string{" id=", " name="} {
 		for offset := 0; offset < len(lower); {
@@ -328,7 +254,7 @@ func htmlAnchors(line string) []string {
 			if start < len(line) && (line[start] == '"' || line[start] == '\'') {
 				quote := line[start]
 				if end := strings.IndexByte(line[start+1:], quote); end >= 0 {
-					anchors = append(anchors, line[start+1:start+1+end])
+					anchors[line[start+1:start+1+end]] = true
 					offset = start + end + 2
 					continue
 				}
@@ -336,7 +262,6 @@ func htmlAnchors(line string) []string {
 			offset = start
 		}
 	}
-	return anchors
 }
 
 func validateLink(root, source string, current link, documents map[string]document) (*violation, error) {

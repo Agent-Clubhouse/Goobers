@@ -64,6 +64,54 @@ func TestCheckRepositoryIgnoresLinksInCodeFences(t *testing.T) {
 	}
 }
 
+func TestCheckRepositoryUsesRenderedMarkdownLinks(t *testing.T) {
+	t.Parallel()
+	root := fixtureRepository(t)
+	writeFixture(t, root, "README.md", strings.Join([]string{
+		"# Root",
+		"`[inline example](docs/missing-inline.md)`",
+		`\[escaped example](docs/missing-escaped.md)`,
+		"[multiline](",
+		"  docs/missing-multiline.md",
+		")",
+	}, "\n"))
+
+	violations, err := checkRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("violations = %+v, want only the rendered multiline link", violations)
+	}
+	if violations[0].Line != 4 || violations[0].Target != "docs/missing-multiline.md" {
+		t.Fatalf("violation = %+v", violations[0])
+	}
+}
+
+func TestCheckRepositoryUsesRenderedHeadingTextAndGlobalSlugUniqueness(t *testing.T) {
+	t.Parallel()
+	root := fixtureRepository(t)
+	writeFixture(t, root, "docs/guide.md", strings.Join([]string{
+		"# *Styled* `heading`",
+		"# foo",
+		"# foo-1",
+		"# foo",
+	}, "\n"))
+	writeFixture(t, root, "README.md", strings.Join([]string{
+		"# Root",
+		"[markup](docs/guide.md#styled-heading)",
+		"[collision](docs/guide.md#foo-2)",
+	}, "\n"))
+
+	violations, err := checkRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("violations = %+v", violations)
+	}
+}
+
 func TestCheckRepositoryValidatesReferenceTargetsAndHTMLAnchors(t *testing.T) {
 	t.Parallel()
 	root := fixtureRepository(t)
