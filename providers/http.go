@@ -167,6 +167,28 @@ func IsMergeConflictError(err error) bool {
 	return mentionsMergeConflict(responseErr.body)
 }
 
+// IsRequiredStatusCheckPendingError reports whether GitHub refused a merge
+// because a required status check has not reported yet. GitHub uses 405 for
+// unrelated policy refusals too, so both the status and API message must match.
+func IsRequiredStatusCheckPendingError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusMethodNotAllowed {
+		return false
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(responseErr.body), &response); err != nil {
+		return false
+	}
+	message := strings.ToLower(strings.Join(strings.Fields(response.Message), " "))
+	return strings.Contains(message, "required status check ") &&
+		strings.Contains(message, " is expected")
+}
+
 // mentionsMergeConflict reports whether a provider response body names a
 // merge-conflict refusal. GitHub's merge endpoint phrases this as
 // "Pull Request is not mergeable"; the explicit "merge conflict" wording is
