@@ -22,11 +22,11 @@ type providerDispatchEvidence struct {
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"apply-verdict":            {test: TestCloseMootPullRequestDispatchesToADO},
 	"backlog-assignment":       {test: TestADOBacklogStagesDispatchFromCommands},
-	"backlog-dedupe":           {test: TestBacklogDedupeProviderDispatchesADOAndGitea},
+	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
 	"backlog-health":           {test: TestBacklogHealthCommandRunsWithADO},
 	"backlog-query":            {test: TestADOBacklogStagesDispatchFromCommands},
 	"gather-ci-failures":       {test: TestRemediationStagesDispatchFromCommands},
-	"gather-implement-context": {test: TestImplementationContextProviderDispatchesADOAndGitea},
+	"gather-implement-context": {test: TestGatherImplementContextCommandDispatchesToADO},
 	"gather-issue-context":     {test: TestRemediationStagesDispatchFromCommands},
 	"gather-pr-context":        {test: TestRemediationStagesDispatchFromCommands},
 	"gather-review-threads":    {test: TestRemediationStagesDispatchFromCommands},
@@ -207,6 +207,41 @@ func TestADOBacklogStagesDispatchFromCommands(t *testing.T) {
 				t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
 			}
 		})
+	}
+}
+
+func TestBacklogDedupeCommandDispatchesToADO(t *testing.T) {
+	assertADOCommandDispatch(t, "backlog-dedupe", func(t *testing.T) {
+		t.Setenv("GOOBERS_RUN_ID", "dispatch-backlog-dedupe")
+		t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	})
+}
+
+func TestGatherImplementContextCommandDispatchesToADO(t *testing.T) {
+	assertADOCommandDispatch(t, "gather-implement-context", func(t *testing.T) {
+		t.Setenv("GOOBERS_GAGGLE", "acme-web")
+	})
+}
+
+func assertADOCommandDispatch(t *testing.T, command string, setup func(*testing.T)) {
+	t.Helper()
+	root := initDemo(t)
+	setup(t)
+	setNonGitHubStageEnv(t, providers.ProviderADO)
+	previous := newADOProviderForStage
+	called := false
+	newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
+		called = true
+		if repo.Provider != providers.ProviderADO {
+			t.Fatalf("provider = %q, want ado", repo.Provider)
+		}
+		return nil, errors.New(dispatchProbeError)
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	code, _, stderr := runArgs(t, command, root)
+	if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+		t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
 	}
 }
 
