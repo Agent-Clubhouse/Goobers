@@ -1,10 +1,13 @@
 package main
 
 import (
-	"os"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/providers"
 )
@@ -17,23 +20,23 @@ type providerDispatchEvidence struct {
 // commands are coverage entries rather than stale allowlist entries.
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"apply-verdict":            {test: TestCloseMootPullRequestDispatchesToADO},
-	"backlog-assignment":       {test: TestADOBacklogStageCallSitesUseProviderDispatch},
+	"backlog-assignment":       {test: TestADOBacklogStagesDispatchFromCommands},
 	"backlog-dedupe":           {test: TestBacklogDedupeProviderDispatchesADOAndGitea},
 	"backlog-health":           {test: TestBacklogHealthCommandRunsWithADO},
-	"backlog-query":            {test: TestADOBacklogStageCallSitesUseProviderDispatch},
-	"gather-ci-failures":       {test: TestRemediationStageCallSitesUseProviderDispatch},
+	"backlog-query":            {test: TestADOBacklogStagesDispatchFromCommands},
+	"gather-ci-failures":       {test: TestRemediationStagesDispatchFromCommands},
 	"gather-implement-context": {test: TestImplementationContextProviderDispatchesADOAndGitea},
-	"gather-issue-context":     {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"gather-pr-context":        {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"gather-review-threads":    {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"issue-close-out":          {test: TestADOBacklogStageCallSitesUseProviderDispatch},
+	"gather-issue-context":     {test: TestRemediationStagesDispatchFromCommands},
+	"gather-pr-context":        {test: TestRemediationStagesDispatchFromCommands},
+	"gather-review-threads":    {test: TestRemediationStagesDispatchFromCommands},
+	"issue-close-out":          {test: TestADOBacklogStagesDispatchFromCommands},
 	"open-pr":                  {test: TestOpenPRRoutesADOThroughExecutorInjectedAuthentication},
-	"pr-claim":                 {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"push-branch":              {test: TestADORepoForOriginRequiresExactConfiguredRemote},
-	"push-remediated":          {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"rebase-pr":                {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"remediation-checkpoint":   {test: TestRemediationStageCallSitesUseProviderDispatch},
-	"report-pr-status":         {test: TestReportPRStatusRequiresPRNumber},
+	"pr-claim":                 {test: TestRemediationStagesDispatchFromCommands},
+	"push-branch":              {test: TestPushBranchDispatchesADOOrigin},
+	"push-remediated":          {test: TestRemediationStagesDispatchFromCommands},
+	"rebase-pr":                {test: TestRemediationStagesDispatchFromCommands},
+	"remediation-checkpoint":   {test: TestRemediationStagesDispatchFromCommands},
+	"report-pr-status":         {test: TestADOBacklogStagesDispatchFromCommands},
 	"respond-to-findings":      {test: TestRespondToFindingsDispatchesToGitea},
 	"update-behind-pr":         {test: TestUpdateBehindPRDispatchesToGitea},
 }
@@ -87,52 +90,146 @@ func TestBlessedTierStageDispatchCoverage(t *testing.T) {
 	}
 }
 
-func TestRemediationStageCallSitesUseProviderDispatch(t *testing.T) {
-	root, repo := providerDispatchFixture(t, providers.ProviderGitea)
-	provider, err := remediationStageProvider(root, repo, "gitea-token", false)
-	if err != nil {
-		t.Fatalf("remediationStageProvider: %v", err)
-	}
-	assertDispatchedProviderKind(t, provider, providers.ProviderGitea)
+const dispatchProbeError = "provider dispatch probe"
 
-	assertStageFilesUseProviderDispatch(t, "remediationStageProvider(", []string{
-		"gathercifailures.go",
-		"gatherissuecontext.go",
-		"gatherprcontext.go",
-		"gatherreviewthreads.go",
-		"prremediationlifecycle.go",
-		"pushremediated.go",
-		"rebasepr.go",
-		"remediationcheckpoint.go",
-	})
-}
-
-func TestADOBacklogStageCallSitesUseProviderDispatch(t *testing.T) {
-	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	provider, err := assignmentProvider(root, repo)
-	if err != nil {
-		t.Fatalf("assignmentProvider: %v", err)
-	}
-	assertDispatchedProviderKind(t, provider, providers.ProviderADO)
-
-	assertStageFilesUseProviderDispatch(t, "newADOProviderForStage(", []string{
-		"backlogassignment.go",
-		"backlogquery.go",
-		"issuecloseout.go",
-	})
-}
-
-func assertStageFilesUseProviderDispatch(t *testing.T, constructor string, files []string) {
-	t.Helper()
-	for _, file := range files {
-		t.Run(file, func(t *testing.T) {
-			source, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatalf("read %s: %v", file, err)
+func TestRemediationStagesDispatchFromCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		setup   func(*testing.T) string
+	}{
+		{"gather-ci-failures", func(t *testing.T) string {
+			root, _ := runGatherCIFixture(t, remediationBriefFixture(true))
+			return root
+		}},
+		{"gather-issue-context", func(t *testing.T) string {
+			const runID = "dispatch-gather-issue"
+			root := initDemo(t)
+			seedRemediationBriefRun(t, root, runID, issueContextBrief())
+			t.Setenv("GOOBERS_RUN_ID", runID)
+			t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+			return root
+		}},
+		{"gather-pr-context", func(t *testing.T) string { return initDemo(t) }},
+		{"gather-review-threads", func(t *testing.T) string {
+			const runID = "dispatch-review-threads"
+			root := initDemo(t)
+			seedReviewThreadsBrief(t, root, runID, reviewThreadsBrief())
+			t.Setenv("GOOBERS_RUN_ID", runID)
+			t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+			return root
+		}},
+		{"pr-claim", func(t *testing.T) string {
+			const runID = "dispatch-pr-claim"
+			root := initDemo(t)
+			t.Setenv("GOOBERS_RUN_ID", runID)
+			t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+			if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+				t.Fatalf("seed PR claim: %v", err)
 			}
-			if !strings.Contains(string(source), constructor) {
-				t.Fatalf("%s does not dispatch through %s", file, strings.TrimSuffix(constructor, "("))
+			return root
+		}},
+		{"push-remediated", func(t *testing.T) string { return initDemo(t) }},
+		{"rebase-pr", func(t *testing.T) string {
+			t.Setenv(executor.InputEnvVar("selectedNumber"), "77")
+			t.Setenv(executor.InputEnvVar("head"), "goobers/pr-remediation/dispatch")
+			return initDemo(t)
+		}},
+		{"remediation-checkpoint", func(t *testing.T) string {
+			t.Setenv(executor.InputEnvVar("selectedNumber"), "77")
+			return initDemo(t)
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
+			root := test.setup(t)
+			setNonGitHubStageEnv(t, providers.ProviderGitea)
+			previous := remediationStageProvider
+			called := false
+			remediationStageProvider = func(_ string, repo providers.RepositoryRef, _ string, _ bool) (remediationProvider, error) {
+				called = true
+				if repo.Provider != providers.ProviderGitea {
+					t.Fatalf("provider = %q, want gitea", repo.Provider)
+				}
+				return nil, errors.New(dispatchProbeError)
+			}
+			t.Cleanup(func() { remediationStageProvider = previous })
+
+			code, _, stderr := runArgs(t, test.command, root)
+			if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+				t.Fatalf("code = %d, called = %v, stderr = %q; want Gitea dispatch probe failure", code, called, stderr)
 			}
 		})
 	}
+}
+
+func TestADOBacklogStagesDispatchFromCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		args    []string
+		setup   func(*testing.T)
+	}{
+		{"backlog-assignment", nil, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
+			t.Setenv(executor.InputEnvVar("strategy"), assignmentStrategyConstantCap)
+			t.Setenv(executor.InputEnvVar("roster"), `[{"assignee":"goober","maxOpen":1}]`)
+		}},
+		{"backlog-query", []string{"--read-only"}, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), "goobers:approved")
+		}},
+		{"issue-close-out", nil, func(*testing.T) {}},
+		{"report-pr-status", nil, func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("prNumber"), "77")
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
+			root := initDemo(t)
+			test.setup(t)
+			setNonGitHubStageEnv(t, providers.ProviderADO)
+			previous := newADOProviderForStage
+			called := false
+			newADOProviderForStage = func(_ string, repo providers.RepositoryRef) (*providers.ADOProvider, error) {
+				called = true
+				if repo.Provider != providers.ProviderADO {
+					t.Fatalf("provider = %q, want ado", repo.Provider)
+				}
+				return nil, errors.New(dispatchProbeError)
+			}
+			t.Cleanup(func() { newADOProviderForStage = previous })
+
+			args := append([]string{test.command}, test.args...)
+			args = append(args, root)
+			code, _, stderr := runArgs(t, args...)
+			if code != 1 || !called || !strings.Contains(stderr, dispatchProbeError) {
+				t.Fatalf("code = %d, called = %v, stderr = %q; want ADO dispatch probe failure", code, called, stderr)
+			}
+		})
+	}
+}
+
+func TestPushBranchDispatchesADOOrigin(t *testing.T) {
+	root := initDemo(t)
+	repo := t.TempDir()
+	runGitT(t, repo, "init", "-b", "dispatch")
+	runGitT(t, repo, "remote", "add", "origin", "https://dev.azure.com/acme/project/_git/repo")
+	t.Setenv("GOOBERS_INSTANCE_ROOT", root)
+
+	code, _, stderr := runArgs(t, "push-branch", repo)
+	if code != 1 || !strings.Contains(stderr, "ADO origin") || !strings.Contains(stderr, "does not match any configured repository") {
+		t.Fatalf("code = %d, stderr = %q; want configured ADO dispatch failure", code, stderr)
+	}
+}
+
+func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
+	t.Helper()
+	t.Setenv(executor.RepoProviderEnvVar, string(kind))
+	t.Setenv(executor.RepoOwnerEnvVar, "acme")
+	t.Setenv(executor.RepoNameEnvVar, "web")
+	t.Setenv(executor.RepoProjectEnvVar, "project")
+	t.Setenv(executor.CredentialEnvVar("github:pr:write"), "pr-token")
+	t.Setenv(executor.CredentialEnvVar("github:issues:write"), "issues-token")
+	t.Setenv(executor.CredentialEnvVar("repo:push"), "push-token")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "result.json"))
 }
