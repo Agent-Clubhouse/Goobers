@@ -53,16 +53,18 @@ func runHelpCommand(args []string, stdout, stderr io.Writer) int {
 			pf(stdout, "%s", helpHelp)
 			return 0
 		}
-		if prose, ok := glossary[args[0]]; ok && isHelpConcept(args[0]) {
-			pf(stdout, "%s\n\n%s\n", args[0], prose)
-			return 0
-		}
 	}
 
 	topic := strings.Join(args, " ")
 	if command, ok := helpCommand(topic); ok {
 		pf(stdout, "%s", command.long)
 		return 0
+	}
+	if len(args) == 1 {
+		if prose, ok := glossary[topic]; ok && isHelpConcept(topic) {
+			pf(stdout, "%s\n\n%s\n", topic, prose)
+			return 0
+		}
 	}
 
 	suggestion := closestHelpTopic(topic)

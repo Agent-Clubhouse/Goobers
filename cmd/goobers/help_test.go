@@ -23,6 +23,9 @@ func TestHelpRoutesCommandsAndConcepts(t *testing.T) {
 	})
 
 	for _, topic := range helpConceptTopics {
+		if topic == "workflow" {
+			continue
+		}
 		t.Run(topic+" concept", func(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "help", topic)
 			want := topic + "\n\n" + glossary[topic] + "\n"
@@ -31,6 +34,13 @@ func TestHelpRoutesCommandsAndConcepts(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("command takes precedence over concept", func(t *testing.T) {
+		code, stdout, stderr := runArgs(t, "help", "workflow")
+		if code != 0 || stdout != workflowHelp || stderr != "" {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+	})
 }
 
 func TestHelpUnknownTopicErrorsWithSuggestion(t *testing.T) {
