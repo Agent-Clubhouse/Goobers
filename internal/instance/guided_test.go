@@ -37,6 +37,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		CopilotTokenEnv:      "WIDGET_COPILOT_TOKEN",
 		Workflows:            []string{GuidedWorkflowImplementation, GuidedWorkflowWorkNomination},
 		CICommand:            []string{"npm", "run", "ci"},
+		RequiredCapabilities: []string{"node@20"},
 	}
 
 	res, err := initGuidedForTest(root, opts)
@@ -56,6 +57,9 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "acme" ||
 		cfg.Repos[0].Name != "widget-service" || cfg.Repos[0].Token.Env != "WIDGET_REPO_TOKEN" {
 		t.Fatalf("unexpected guided repository config: %+v", cfg.Repos)
+	}
+	if !slices.Equal(cfg.Runner.Capabilities, []string{"node@20"}) {
+		t.Fatalf("guided runner capabilities = %v, want [node@20]", cfg.Runner.Capabilities)
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
@@ -86,6 +90,9 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		gaggle.Spec.Backlog.Project != "acme/widget-service" ||
 		!slices.Equal(gaggle.Spec.CICommand, []string{"npm", "run", "ci"}) {
 		t.Fatalf("unexpected guided gaggle: %+v", gaggle)
+	}
+	if !slices.Equal(gaggle.Spec.RequiredCapabilities, []string{"node@20"}) {
+		t.Fatalf("guided gaggle required capabilities = %v, want [node@20]", gaggle.Spec.RequiredCapabilities)
 	}
 
 	for _, goober := range set.Goobers {
@@ -232,6 +239,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 			switch workflow {
 			case GuidedWorkflowImplementation:
 				opts.CICommand = []string{"go", "test", "./..."}
+				opts.RequiredCapabilities = []string{"go@1.26"}
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 				opts.RepoPushTokenEnv = "PUSH_TOKEN"
 			case GuidedWorkflowBacklogCuration:
@@ -295,6 +303,7 @@ func TestGuidedGaggleAndWorkflowDocumentCICommandLink(t *testing.T) {
 			CopilotTokenEnv:      "MODEL_TOKEN",
 			Workflows:            []string{GuidedWorkflowImplementation},
 			CICommand:            []string{"go", "test", "./..."},
+			RequiredCapabilities: []string{"go@1.26"},
 		}
 		sourceRoot := filepath.Join(t.TempDir(), "widget-config-source")
 		if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {

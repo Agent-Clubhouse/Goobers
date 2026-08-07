@@ -24,6 +24,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"",
 		"make ci", // #2071: no build manifest in this test's cwd, so no default is offered
+		"make",
 		"",
 		"",
 		"",
@@ -79,6 +80,9 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		cfg.Repos[0].Name != "Widget.Service" ||
 		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_REPO_TOKEN" {
 		t.Fatalf("unexpected guided instance config: %+v", cfg)
+	}
+	if !slices.Equal(cfg.Runner.Capabilities, []string{"make"}) {
+		t.Fatalf("guided runner capabilities = %v, want [make]", cfg.Runner.Capabilities)
 	}
 	sourceAbs, err := filepath.Abs(sourceRoot)
 	if err != nil {
@@ -226,10 +230,10 @@ func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) 
 }
 
 // TestPromptGuidedOptionsDetectsCICommandDefault is #2071: the ciCommand
-// prompt's default is seeded from the invoking directory's build manifest
+// prompt's defaults are seeded from the invoking directory's build manifest
 // instead of unconditionally offering the Go-specific `make ci`. Accepting
-// the detected default (empty input) must produce the stack-appropriate
-// command, and the detection message must appear before the prompt.
+// them must produce the stack-appropriate command and capability, and the
+// detection message must identify the current directory as a guess.
 func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
@@ -242,6 +246,7 @@ func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 		"",
 		"implementation",
 		"", // accept the detected default
+		"", // accept the detected capability
 		"",
 		"",
 		"",
@@ -257,7 +262,11 @@ func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 	if !slices.Equal(opts.CICommand, []string{"npm", "run", "ci"}) {
 		t.Fatalf("opts.CICommand = %v, want [npm run ci]", opts.CICommand)
 	}
-	if !strings.Contains(stdout.String(), "Detected Node.js build manifest") {
+	if !slices.Equal(opts.RequiredCapabilities, []string{"node@20"}) {
+		t.Fatalf("opts.RequiredCapabilities = %v, want [node@20]", opts.RequiredCapabilities)
+	}
+	if !strings.Contains(stdout.String(), "Guessed Node.js") ||
+		!strings.Contains(stdout.String(), "current directory") {
 		t.Errorf("stdout lacks the detection message:\n%s", stdout.String())
 	}
 }
