@@ -494,8 +494,11 @@ func checkGaggleRepositoryBindings(
 	ok := true
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
-		if len(cfg.Repos) == 0 && gaggleUsesOnlyScratchWorkspaces(set, gaggle.Name) {
-			// Scratch-only workflows never perform the runtime repository join.
+		if gaggleUsesOnlyScratchWorkspaces(set, gaggle.Name) {
+			// Scratch-only workflows never perform the runtime repository join,
+			// regardless of how many repos[] entries the instance configures
+			// (possibly for other gaggles): the cross-check below would
+			// otherwise misfire on a gaggle that never touches repos[] at all.
 		} else if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
 			repo := cfg.Repos[0]
 			message := fmt.Sprintf("empty spec.project binds to instance repos[0] %s", instanceRepoName(repo))
