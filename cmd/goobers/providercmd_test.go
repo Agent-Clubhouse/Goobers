@@ -207,6 +207,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
 	mux.HandleFunc("/user", s.handleAuthenticatedUser)
+	mux.HandleFunc("/graphql", s.handleGraphQL)
 	mux.HandleFunc(prefix+"/issues/events", s.handleIssueEvents)
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
@@ -220,6 +221,41 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+func (s *fakeGitHubServer) handleGraphQL(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	repository := make(map[string]interface{})
+	for variable, value := range request.Variables {
+		if !strings.HasPrefix(variable, "ref") {
+			continue
+		}
+		state := "PENDING"
+		for _, pr := range s.prs {
+			if pr.headSHA != fmt.Sprint(value) {
+				continue
+			}
+			switch pr.checkState {
+			case "success":
+				state = "SUCCESS"
+			case "failure", "error":
+				state = "FAILURE"
+			}
+			break
+		}
+		repository["r"+strings.TrimPrefix(variable, "ref")] = map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": state},
+		}
+	}
+	writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": repository}})
 }
 
 // handleRepoLabels serves the repository label set: GET lists it, POST defines a
