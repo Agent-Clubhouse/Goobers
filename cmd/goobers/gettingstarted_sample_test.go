@@ -128,9 +128,10 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 			firstPROpenAt = event.Time
 		}
 	}
-	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,push-branch,open-pr"; got != want {
+	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,local-ci,push-branch,open-pr"; got != want {
 		t.Fatalf("successful stages = %q, want %q", got, want)
 	}
+	assertGettingStartedLocalCI(t, reader, events, apiv1.ResultSuccess)
 	instanceEvents, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +232,27 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 	if _, err := os.Stat(disposableRoot); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("disposable target remains after teardown: %v", err)
 	}
+
+	t.Run("broken seed fails local CI", func(t *testing.T) {
+		brokenRoot, _, _, _, _ := initGettingStartedSample(t, false, true)
+		code, stdout, stderr := runArgs(t, "run", "quickstart", brokenRoot)
+		if code != 1 {
+			t.Fatalf("goobers run quickstart: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "phase=failed") {
+			t.Fatalf("broken quickstart run did not fail: %q", stdout)
+		}
+		runID := runIDFromRunStdout(t, stdout)
+		reader, err := journal.OpenRead(filepath.Join(brokenRoot, "runs", runID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGettingStartedLocalCI(t, reader, events, apiv1.ResultFailure)
+	})
 }
 
 func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T) {
@@ -264,29 +286,35 @@ func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			var localCIStatuses []string
-			sawNPMCI := false
-			for _, event := range events {
-				if event.Type == journal.EventStageFinished && event.Stage == "local-ci" {
-					localCIStatuses = append(localCIStatuses, event.Status)
-					for _, ref := range event.Artifacts {
-						data, err := reader.ArtifactBytes(ref)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if strings.Contains(string(data), "@goobers/getting-started-task-api@1.0.0 ci") {
-							sawNPMCI = true
-						}
-					}
-				}
-			}
-			if got, want := strings.Join(localCIStatuses, ","), string(tt.wantStatus); got != want {
-				t.Fatalf("local-ci stage statuses = %q, want %q", got, want)
-			}
-			if !sawNPMCI {
-				t.Fatal("local-ci artifacts do not show the sample's npm run ci script")
-			}
+			assertGettingStartedLocalCI(t, reader, events, tt.wantStatus)
 		})
+	}
+}
+
+func assertGettingStartedLocalCI(t *testing.T, reader *journal.Reader, events []journal.Event, wantStatus apiv1.ResultStatus) {
+	t.Helper()
+	var statuses []string
+	sawNPMCI := false
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished || event.Stage != "local-ci" {
+			continue
+		}
+		statuses = append(statuses, event.Status)
+		for _, ref := range event.Artifacts {
+			data, err := reader.ArtifactBytes(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "@goobers/getting-started-task-api@1.0.0 ci") {
+				sawNPMCI = true
+			}
+		}
+	}
+	if got, want := strings.Join(statuses, ","), string(wantStatus); got != want {
+		t.Fatalf("local-ci stage statuses = %q, want %q", got, want)
+	}
+	if !sawNPMCI {
+		t.Fatal("local-ci artifacts do not show the sample's npm run ci script")
 	}
 }
 
@@ -404,18 +432,6 @@ func configureGettingStartedImplementation(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(gaggleDir, "workflows", "implementation.yaml"), []byte(gettingStartedImplementationWorkflowYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gagglePath := filepath.Join(gaggleDir, "gaggle.yaml")
-	gaggleData, err := os.ReadFile(gagglePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gaggle := strings.Replace(string(gaggleData), "  displayName: Quickstart\n", "  displayName: Quickstart\n  ciCommand: [\"npm\", \"run\", \"ci\"]\n", 1)
-	if gaggle == string(gaggleData) {
-		t.Fatal("quickstart gaggle does not contain its expected display name")
-	}
-	if err := os.WriteFile(gagglePath, []byte(gaggle), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, goober := range []string{"implementer", "reviewer"} {

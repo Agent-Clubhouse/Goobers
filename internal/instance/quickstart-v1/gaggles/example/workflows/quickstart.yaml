@@ -43,6 +43,12 @@ spec:
       type: agentic
       goober: reviewer
       goal: Review the committed tutorial change and report focused feedback.
+      next: local-ci
+    - name: local-ci
+      type: deterministic
+      goal: Run the sample project's local CI-equivalent in the worktree.
+      run:
+        command: ["make", "ci"]
       next: push-branch
     - name: push-branch
       type: deterministic

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -137,13 +138,16 @@ func TestInitQuickstartFresh(t *testing.T) {
 		t.Fatalf("unexpected quickstart config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
-	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
+	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 6 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
+	}
+	if got, want := set.Gaggles[0].Spec.CICommand, []string{"npm", "run", "ci"}; !slices.Equal(got, want) {
+		t.Fatalf("quickstart ciCommand = %v, want %v", got, want)
 	}
 	if len(workflow.Spec.Triggers) != 1 || workflow.Spec.Triggers[0].Type != apiv1.TriggerManual {
 		t.Fatalf("quickstart trigger = %+v, want manual-only", workflow.Spec.Triggers)
 	}
-	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
+	wantTasks := []string{"query-backlog", "implement", "review", "local-ci", "push-branch", "open-pr"}
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
 			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
