@@ -142,6 +142,28 @@ func TestCheckRepositoryReportsLinesForEmptyLinkLabels(t *testing.T) {
 	}
 }
 
+func TestCheckRepositoryReportsLinesForNonTextLinkLabels(t *testing.T) {
+	t.Parallel()
+	root := fixtureRepository(t)
+	writeFixture(t, root, "README.md", strings.Join([]string{
+		"# Root",
+		"",
+		"Intro paragraph",
+		"[<span></span>](docs/missing-html-label.md)",
+	}, "\n"))
+
+	violations, err := checkRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("violations = %+v, want one", violations)
+	}
+	if violations[0].Line != 4 || violations[0].Target != "docs/missing-html-label.md" {
+		t.Fatalf("violation = %+v", violations[0])
+	}
+}
+
 func TestCheckRepositoryValidatesReferenceTargetsAndHTMLAnchors(t *testing.T) {
 	t.Parallel()
 	root := fixtureRepository(t)

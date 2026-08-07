@@ -234,19 +234,15 @@ func sourceLine(starts []int, offset int) int {
 }
 
 func nodeSourceOffset(root ast.Node, source []byte, after int) int {
-	offset := 0
-	found := false
-	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
+	if offset, linkDepth, found := nodeContentOffset(root); found {
+		for index := offset - 1; index >= after; index-- {
+			if source[index] == '[' && !isEscaped(source, index) {
+				linkDepth--
+				if linkDepth == 0 {
+					return index
+				}
+			}
 		}
-		if current, ok := node.(*ast.Text); ok && (!found || current.Segment.Start < offset) {
-			offset = current.Segment.Start
-			found = true
-		}
-		return ast.WalkContinue, nil
-	})
-	if found {
 		return offset
 	}
 
@@ -270,6 +266,30 @@ func nodeSourceOffset(root ast.Node, source []byte, after int) int {
 		}
 	}
 	return start
+}
+
+func nodeContentOffset(node ast.Node) (int, int, bool) {
+	linkDepth := 0
+	switch node.(type) {
+	case *ast.Link, *ast.Image:
+		linkDepth = 1
+	}
+
+	switch current := node.(type) {
+	case *ast.Text:
+		return current.Segment.Start, linkDepth, true
+	case *ast.RawHTML:
+		if current.Segments.Len() != 0 {
+			return current.Segments.At(0).Start, linkDepth, true
+		}
+	}
+
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		if offset, childDepth, found := nodeContentOffset(child); found {
+			return offset, linkDepth + childDepth, true
+		}
+	}
+	return 0, 0, false
 }
 
 func isEscaped(source []byte, offset int) bool {
