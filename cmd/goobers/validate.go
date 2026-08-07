@@ -219,7 +219,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)

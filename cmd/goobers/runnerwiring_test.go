@@ -457,6 +457,26 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // `agency copilot`) while an unset harness keeps its built-in default, and the
 // registered adapter holds a defensive copy so a later mutation of the config
 // map can't reach into it.
+// The preflight and admission paths look adapters up through adapterFor, one
+// hop above buildHarnessRegistry — pin that the override survives that hop, so
+// a regression re-hardcoding nil at a call site cannot pass silently.
+func TestAdapterForAppliesLauncherOverride(t *testing.T) {
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"agency", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, override)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if got, want := strings.Join(copilot.Command, " "), "agency copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want overridden %q", got, want)
+	}
+}
+
 func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
@@ -583,6 +603,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -603,6 +624,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 				},
 			},
 		},
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -653,6 +675,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 			},
 		},
 		[]string{"COPILOT_HOME"},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1664,7 +1687,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
