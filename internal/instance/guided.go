@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -17,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	configexamples "github.com/goobers/goobers/config-examples"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 )
 
@@ -393,6 +395,17 @@ func copyGuidedSourcePath(destination, source, name string) error {
 func CheckGuidedInitTarget(root string) error {
 	layout := NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err == nil {
+		events, readErr := journal.ReadInstanceLog(layout.SchedulerDir())
+		if readErr != nil {
+			return fmt.Errorf("inspect guided init completion journal: %w", readErr)
+		}
+		if !slices.ContainsFunc(events, func(event journal.Event) bool {
+			return event.Type == journal.EventInitCompleted
+		}) {
+			abs := absPath(root)
+			quoted := strconv.Quote(abs)
+			return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s, but its instance journal has no %s marker; this may be an incomplete guided setup. To replace it, delete %s and rerun `goobers init --guided %s`. To recover the existing setup, run `goobers validate %s` and then `goobers config materialize %s`", ConfigFileName, abs, journal.EventInitCompleted, quoted, quoted, quoted, quoted)
+		}
 		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigFileName, absPath(root))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
