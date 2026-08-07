@@ -32,6 +32,7 @@ var synopsisByID = map[string]string{
 	"service":                "  goobers service install|uninstall|stop|start|status [path]\n                                install and manage the platform-supervised daemon\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--drain-timeout <dur>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--no-open] [path]\n                                serve and open the local operations portal\n",
+	"getting-started":        "  goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]\n                                serve and open the guided portal Getting Started walkthrough\n",
 	"run":                    "  goobers run <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
 	"run abort":              "  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted\n",
 	"run cancel":             "  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon\n",
