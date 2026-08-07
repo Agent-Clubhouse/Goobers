@@ -182,6 +182,8 @@ the differences relevant to your environment:
 - [macOS host setup](docs/guides/quickstart-macos.md)
 - [Windows host setup](docs/guides/quickstart-windows.md)
 - [Release installation and verification](docs/guides/releases.md)
+- [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
+- [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)
