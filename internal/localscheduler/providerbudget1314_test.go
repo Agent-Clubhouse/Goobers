@@ -134,7 +134,7 @@ func TestTickRechecksQuotaAfterPaginatedPoll(t *testing.T) {
 	t.Fatal("low-priority pagination shed was not journaled")
 }
 
-func TestTickJournalsQuotaResetAndReopensPolling(t *testing.T) {
+func TestTickPacesPollingAfterQuotaReset(t *testing.T) {
 	now := time.Now()
 	resetAt := now.Add(time.Minute)
 	quota := NewProviderQuotaState()
@@ -150,8 +150,12 @@ func TestTickJournalsQuotaResetAndReopensPolling(t *testing.T) {
 
 	sched.Tick(context.Background(), resetAt)
 
+	if first.polls()+second.polls() != 1 {
+		t.Fatalf("polls on reset tick first=%d second=%d, want one workflow admitted", first.polls(), second.polls())
+	}
+	sched.Tick(context.Background(), resetAt.Add(time.Second))
 	if first.polls() != 1 || second.polls() != 1 {
-		t.Fatalf("polls after reset first=%d second=%d, want both admitted", first.polls(), second.polls())
+		t.Fatalf("polls after paced tick first=%d second=%d, want both admitted across separate ticks", first.polls(), second.polls())
 	}
 	events, err := journal.ReadInstanceLog(dir)
 	if err != nil {

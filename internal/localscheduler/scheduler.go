@@ -175,6 +175,9 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// quotaResumePacing drains provider-backed workflow polls one workflow per
+	// tick after an exhausted quota window resets.
+	quotaResumePacing map[apiv1.Provider]bool
 	// lastDispatchedGaggle is the cursor for work-conserving round-robin
 	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
@@ -296,6 +299,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
+		quotaResumePacing:     make(map[apiv1.Provider]bool),
 		wake:                  make(chan struct{}, 1),
 		writeTriggerState:     writeTriggerEvaluations,
 	}
@@ -974,11 +978,13 @@ func (s *Scheduler) backlogPollDue(entry WorkflowEntry, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	last := s.backlogLastCheck[identity]
-	due := last.IsZero() || !now.Before(last.Add(backlogPollInterval))
-	if due {
-		s.backlogLastCheck[identity] = now
-	}
-	return due
+	return last.IsZero() || !now.Before(last.Add(backlogPollInterval))
+}
+
+func (s *Scheduler) recordBacklogPoll(entry WorkflowEntry, now time.Time) {
+	s.mu.Lock()
+	s.backlogLastCheck[entryIdentity(entry)] = now
+	s.mu.Unlock()
 }
 
 type demandPoll struct {
@@ -1036,8 +1042,29 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		})
 
 		s.journalProviderQuotaReset(provider, now)
+		pacing := s.quotaResumePacingActive(provider)
+		var pacedIdentity WorkflowIdentity
+		uniqueDue := make(map[WorkflowIdentity]struct{})
+		if pacing {
+			for _, poll := range due {
+				identity := entryIdentity(poll.candidate.entry)
+				uniqueDue[identity] = struct{}{}
+				if pacedIdentity == (WorkflowIdentity{}) {
+					pacedIdentity = identity
+				}
+			}
+		}
 		for _, poll := range due {
 			entry := poll.candidate.entry
+			if pacing && entryIdentity(entry) != pacedIdentity {
+				if poll.schedule {
+					s.deferScheduleDemandPoll(poll.candidate)
+				}
+				continue
+			}
+			if !poll.schedule {
+				s.recordBacklogPoll(entry, now)
+			}
 			decision := ProviderPollBudget{Provider: provider, Requested: 1, Allowed: 1}
 			if s.providerQuota != nil {
 				decision = s.providerQuota.ReservePolls(provider, now, 1)
@@ -1057,7 +1084,23 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			s.applyDemandCount(poll, 0)
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
+		if pacing && len(uniqueDue) <= 1 {
+			s.setQuotaResumePacing(provider, false)
+		}
 	}
+}
+
+func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	if !s.persistScheduleDemand(identity, true) {
+		return
+	}
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule: candidate.schedule,
+		repoll:   true,
+	}
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
@@ -1183,7 +1226,25 @@ func (s *Scheduler) journalProviderQuotaReset(provider apiv1.Provider, now time.
 	if !ok {
 		return
 	}
+	s.setQuotaResumePacing(reset.Provider, true)
 	s.journalProviderQuotaResetDecision(reset.Provider, reset.Remaining, reset.ResetAt)
+}
+
+func (s *Scheduler) quotaResumePacingActive(provider apiv1.Provider) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quotaResumePacing[quotaProvider(provider)]
+}
+
+func (s *Scheduler) setQuotaResumePacing(provider apiv1.Provider, active bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = quotaProvider(provider)
+	if active {
+		s.quotaResumePacing[provider] = true
+		return
+	}
+	delete(s.quotaResumePacing, provider)
 }
 
 func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, remaining int, resetAt time.Time) {
