@@ -476,3 +476,18 @@ goobers status --workflow widget-docs-implementation "$GOOBERS_INSTANCE"
 This completes the tier-1/2 onboarding path: the repository has an explicit
 trust gate, independently routed workforce definitions and budgets, observable
 curation/implementation cycles, and a safe daemon lifecycle.
+
+## Next: authoring workflows and custom stages
+
+After the acceptance cycle works, tailor the workforce definitions in
+`$GOOBERS_CONFIG_SOURCE`:
+
+- **[Use the Goobers agent toolkit](dsl-authoring-skill.md)** — turn a
+  plain-English process description into Gaggle, Goober, and Workflow
+  definitions using the bundled `goobers-dsl-author` skill.
+- **[Custom deterministic stage cookbook](custom-stage-cookbook.md)** — add
+  inline scripts or in-repo project scripts as deterministic stages, with
+  concrete examples from the `config-examples/` reference.
+- **[Needs-human label taxonomy](../design/needs-human-taxonomy.md)** — the
+  full decision-vs-status model, which stage applies which park label, and how
+  `goobers trace` surfaces escalation causes.

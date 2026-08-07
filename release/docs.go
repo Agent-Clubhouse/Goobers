@@ -72,13 +72,28 @@ const (
 		"  --json\n" +
 		"```\n\n" +
 		"The action is non-interactive, embeds the release-matched sample, and is safe to\n" +
-		"re-run. It reports every created or skipped file plus the destination and next\n" +
-		"command. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
+		"re-run. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
 		"To also seed the catalog's labels and issues into an existing disposable GitHub\n" +
 		"repository, add `--work-tracking owner/repo`; the command reads\n" +
 		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
 		"the JSON envelope reports the issues pending and still materializes the local\n" +
-		"sample without network access. It never creates or pushes a remote.\n\n"
+		"sample without network access. It never creates or pushes a remote.\n\n" +
+		"The `--json` output is a versioned action envelope:\n\n" +
+		"```json\n" +
+		"{\n" +
+		"  \"action\": \"stub-sample\",\n" +
+		"  \"version\": 2,\n" +
+		"  \"created\": [\"getting-started-task-api/instance.yaml\", \"...\"],\n" +
+		"  \"skipped\": [],\n" +
+		"  \"path\": \"/absolute/path/to/getting-started-task-api\",\n" +
+		"  \"nextCommand\": \"goobers init --template=quickstart ./tutorial-instance\"\n" +
+		"}\n" +
+		"```\n\n" +
+		"`created` lists paths written in this run; `skipped` lists paths already\n" +
+		"present. When `--work-tracking` is supplied, entries of the form `label:<name>`\n" +
+		"and `issue:<id>` appear in `created` or `skipped` respectively. Without a\n" +
+		"configured token, seed entries appear as `issue:<id> (pending: <reason>)` in\n" +
+		"`skipped`. `nextCommand` is the next command to run.\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"

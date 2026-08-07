@@ -54,13 +54,31 @@ bin/goobers onboarding stub-sample \
 ```
 
 The action is non-interactive, embeds the release-matched sample, and is safe to
-re-run. It reports every created or skipped file plus the destination and next
-command. It refuses conflicting user-owned files unless `--force` is explicit.
+re-run. It refuses conflicting user-owned files unless `--force` is explicit.
 To also seed the catalog's labels and issues into an existing disposable GitHub
 repository, add `--work-tracking owner/repo`; the command reads
 `GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,
 the JSON envelope reports the issues pending and still materializes the local
 sample without network access. It never creates or pushes a remote.
+
+The `--json` output is a versioned action envelope:
+
+```json
+{
+  "action": "stub-sample",
+  "version": 2,
+  "created": ["getting-started-task-api/instance.yaml", "..."],
+  "skipped": [],
+  "path": "/absolute/path/to/getting-started-task-api",
+  "nextCommand": "goobers init --template=quickstart ./tutorial-instance"
+}
+```
+
+`created` lists paths written in this run; `skipped` lists paths already
+present. When `--work-tracking` is supplied, entries of the form `label:<name>`
+and `issue:<id>` appear in `created` or `skipped` respectively. Without a
+configured token, seed entries appear as `issue:<id> (pending: <reason>)` in
+`skipped`. `nextCommand` is the next command to run.
 
 ```sh
 bin/goobers init --template=quickstart ./tutorial-instance
