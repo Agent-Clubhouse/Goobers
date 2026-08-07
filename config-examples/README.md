@@ -45,7 +45,7 @@ reference assumes:
   repository, and schedule/webhook support for workflows that use those
   triggers.
 - A configured Copilot or Claude Code agent harness, including its model
-  authentication, for every agentic goober. The `acme-web` coder demonstrates
+  authentication, for every agentic goober. The `acme-web` docs updater demonstrates
   `claude-code`; the other examples use `copilot`. Deterministic-only policy
   workflows do not need a model.
 - GitHub project and backlog connections named `github-main` and
@@ -72,11 +72,11 @@ The workflow families have distinct operational prerequisites:
 
 | Family | Workflows | Purpose and additional prerequisites |
 |---|---|---|
-| Starter implementation | `default-implement` | Manually claims one approved GitHub issue and delegates to `coder`. Requires the coder definition, Claude Code, the project checkout, and `github:issues:write`. It illustrates the starter shape; use the generated init scaffold rather than extracting this file for a minimal install. |
+| Starter implementation | `default-implement` | Manually claims one approved GitHub issue and delegates to `coder`. Requires the coder definition, Copilot, the project checkout, and `github:issues:write`. It illustrates the starter shape; use the generated init scaffold rather than extracting this file for a minimal install. |
 | Production implementation | `implementation` | Scheduled claim, context gathering, implement/review repasses, project CI, branch push, PR creation and polling, and issue close-out. Requires `implementer` and `reviewer`, Copilot, the `acme-web` npm CI command, journal reads, repo push, and GitHub issue/PR write credentials. |
 | Polyglot implementation | `dotnet-implementation`, `java-implementation`, `python-implementation` | Focused manual implement/review/local-CI loops. Each requires its sibling implementer and reviewer, Copilot, repo push, and its gaggle's declared runtime and CI tool. These examples deliberately omit claim, PR publication, and close-out stages, so the caller must supply the claimed work and compose a publication lifecycle if needed. |
 | Backlog operations | `backlog-curation`, `backlog-assignment`, `work-nomination` | Curates and deduplicates issues, assigns approved work to a configured roster, or proposes evidence-backed work from telemetry. Curation requires `curator`, Copilot, telemetry reads, and GitHub issue/milestone/PR writes; the PR grant supports its open-PR eligibility check. Assignment is deterministic and needs GitHub issue writes. Nomination requires `nominator`, Copilot, repo and telemetry reads, and GitHub issue writes. Configure labels, roster, schedules, and rate limits before enabling. |
-| Documentation | `docs-updater` | Gathers churn, confines an agentic edit to `docsRoots`, runs npm CI, pushes, and opens a PR. Requires `docs`, Copilot/model access, `node@20` with npm, repo push, and PR write credentials. Its trigger is manual until explicitly changed. |
+| Documentation | `docs-updater` | Gathers churn, confines an agentic edit to `docsRoots`, runs npm CI, pushes, and opens a PR. Requires `docs`, Claude Code/model access, `node@20` with npm, repo push, and PR write credentials. Its trigger is manual until explicitly changed. |
 | Merge and review | `merge-review` | Selects and reviews PRs, applies verdicts, elects a lander, merges or polls a merge queue, performs post-merge cleanup, and records refusals. Requires `reviewer`, Copilot, webhook delivery and/or scheduling, and GitHub PR review/write/merge, issue write, and branch-delete grants. Configure repository branch protection and merge-queue policy before enabling it. |
 | Policy examples | `todo-check`, `inline-policy-check` | Deterministic scheduled checks requiring no provider credential or model. `todo-check` runs in a project checkout and requires POSIX `sh` plus `scripts/check-todos.sh`. `inline-policy-check` runs inline scripts in a scratch workspace, requires the runner capability `os=linux`, and does not require a checkout. |
 
