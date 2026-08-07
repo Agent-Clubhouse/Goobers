@@ -31,6 +31,7 @@ const FILTER_PHASES: Record<RunsFilter, (RunPhase | undefined)[]> = {
 export interface RunsHistory {
   runs: RunSummary[];
   hasMore: boolean;
+  hasAnyRuns: boolean;
   loadingMore: boolean;
 }
 
@@ -82,6 +83,7 @@ export function useRunsHistory(
     initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
   );
   const runs = useRef<RunSummary[]>(initialCached.current?.data.runs ?? []);
+  const hasAnyRuns = useRef(initialCached.current?.data.hasAnyRuns ?? false);
   const invalidatedRunIds = useRef(new Set<string>());
   const loadingMore = useRef(false);
 
@@ -89,6 +91,7 @@ export function useRunsHistory(
     const data: RunsHistory = {
       runs: runs.current,
       hasMore: streams.current.some((stream) => !stream.exhausted),
+      hasAnyRuns: hasAnyRuns.current,
       loadingMore: loadingMore.current,
     };
     setState(fresh ? { status: "ready", data } : { status: "stale", data });
@@ -134,22 +137,23 @@ export function useRunsHistory(
         : { status: "loading" },
     );
 
-    return advanceStreams(client, streams.current, scope, controller.signal).then(
-      (fetched) => {
+    return advanceStreams(client, streams.current, scope, controller.signal)
+      .then(async (fetched) => {
         if (controller.signal.aborted) {
           return true;
         }
         runs.current = mergeRuns([], fetched);
+        hasAnyRuns.current =
+          fetched.length > 0 || (await instanceHasRuns(client, controller.signal));
         publish(isFresh(), cacheRevision);
         return true;
-      },
-      (error: unknown) => {
+      })
+      .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setState((current) => runsError(current, error));
         }
         return false;
-      },
-    );
+      });
   }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
   // Merge the newest page into the loaded window, preserving pagination.
@@ -216,6 +220,11 @@ export function useRunsHistory(
           return true;
         }
         runs.current = mergeRuns(runs.current, [...fetched, ...targeted]);
+        if (!hasAnyRuns.current && runs.current.length === 0) {
+          hasAnyRuns.current = await instanceHasRuns(client, controller.signal);
+        } else if (runs.current.length > 0) {
+          hasAnyRuns.current = true;
+        }
         publish(isFresh(), cacheRevision);
         return true;
       })
@@ -281,6 +290,7 @@ export function useRunsHistory(
           request.current = undefined;
           streams.current = cached.streams.map((stream) => ({ ...stream }));
           runs.current = cached.data.runs;
+          hasAnyRuns.current = cached.data.hasAnyRuns;
           loadingMore.current = false;
           setState(
             isFresh()
@@ -400,6 +410,11 @@ function mergeRuns(existing: RunSummary[], incoming: RunSummary[]): RunSummary[]
       Date.parse(right.startedAt) - Date.parse(left.startedAt) ||
       left.id.localeCompare(right.id),
   );
+}
+
+async function instanceHasRuns(client: DaemonClient, signal: AbortSignal): Promise<boolean> {
+  const page = await client.listRuns({ limit: 1, showNoWork: true }, { signal });
+  return page.runs.length > 0;
 }
 
 function collectInvalidatedRunIds(

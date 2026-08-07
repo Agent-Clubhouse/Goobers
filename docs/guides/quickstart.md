@@ -30,13 +30,15 @@ path instead.
 ```sh
 bin/goobers init --demo ./demo-instance
 bin/goobers run demo ./demo-instance
+bin/goobers dashboard ./demo-instance
 bin/goobers trace <run-id> ./demo-instance
 ```
 
-The run walks through curate -> implement -> review, pauses at the
-`review-verdict` gate, and then produces a merge-preview artifact before
-finishing. `run` prints the run ID used by `trace`; the trace shows the complete
-journal and gate transition.
+The dashboard opens the Portal for the demo instance so you can follow the run
+and inspect its workflow. The run walks through curate -> implement -> review,
+pauses at the `review-verdict` gate, and then produces a merge-preview artifact
+before finishing. `run` prints the run ID used by `trace`; the trace shows the
+complete journal and gate transition.
 
 ## 2. Graduate to the token-bearing quickstart template
 
@@ -64,6 +66,7 @@ sample without network access. It never creates or pushes a remote.
 bin/goobers init --template=quickstart ./tutorial-instance
 bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
+bin/goobers dashboard ./tutorial-instance
 ```
 
 To seed the same template as a checked-in config source without runtime state,
@@ -75,7 +78,8 @@ bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
-This linear template claims one approved issue, implements it, performs an
+The dashboard opens the same Portal against this first GitHub-backed run. This
+linear template claims one approved issue, implements it, performs an
 advisory code-review task, pushes the run branch, and opens a pull request. It
 is **not for production**: it intentionally omits CI gates, remediation loops,
 bounded escalation, merge policy, and issue close-out so the onboarding happy

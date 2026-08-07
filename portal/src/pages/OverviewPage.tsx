@@ -2,6 +2,7 @@ import type { DaemonClient, RunSummary } from "../api/types";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { RecoveryCommand } from "../components/RecoveryAction";
 import {
   type OperationalOverview,
   useOperationalOverview,
@@ -64,6 +65,14 @@ function Overview({
 }) {
   const groups = overview.groups;
   const emptyInstance = overview.gaggleCount === 0;
+  const emptyWorkflows = !emptyInstance && overview.instance.counts.workflows === 0;
+  const emptyRuns =
+    !emptyInstance &&
+    !emptyWorkflows &&
+    !overview.sectionErrors?.runs &&
+    groups.active.length === 0 &&
+    groups.attention.length === 0 &&
+    groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
 
   return (
@@ -159,16 +168,28 @@ function Overview({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              {!healthy
-                ? "The daemon scheduler heartbeat is stale. Check the daemon before relying on live operations."
-                : overview.health.ready
-                ? standalone
-                  ? "The instance is ready for provisioned gaggle, goober, and workflow definitions."
-                  : "The daemon is ready and waiting for provisioned gaggle, goober, and workflow definitions."
-                : standalone
-                  ? "The local read service has not reported ready yet, and no gaggle definitions are loaded."
-                  : "The daemon has not reported ready yet, and no gaggle definitions are loaded."}
+              No configuration is available to the Portal yet. Initialize the instance to add its
+              first gaggle and workflow definitions.
             </p>
+            <RecoveryCommand command="goobers init --guided <instance>" />
+          </div>
+        </section>
+      ) : emptyWorkflows ? (
+        <section className="empty-state">
+          <img alt="" src="/goober-mascot.png" />
+          <div>
+            <h2>No workflows configured</h2>
+            <p>Add a workflow definition, then validate the instance before reloading the Portal.</p>
+            <RecoveryCommand command="goobers validate <instance>" />
+          </div>
+        </section>
+      ) : emptyRuns ? (
+        <section className="empty-state">
+          <img alt="" src="/goober-mascot.png" />
+          <div>
+            <h2>No runs recorded</h2>
+            <p>Start a configured workflow to create the first run journal.</p>
+            <RecoveryCommand command="goobers run <workflow> <instance>" />
           </div>
         </section>
       ) : (
