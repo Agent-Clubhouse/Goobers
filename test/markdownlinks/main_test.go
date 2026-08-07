@@ -93,6 +93,9 @@ func TestCheckRepositoryUsesRenderedHeadingTextAndGlobalSlugUniqueness(t *testin
 	root := fixtureRepository(t)
 	writeFixture(t, root, "docs/guide.md", strings.Join([]string{
 		"# *Styled* `heading`",
+		"multiline",
+		"setext",
+		"------",
 		"# foo",
 		"# foo-1",
 		"# foo",
@@ -100,6 +103,7 @@ func TestCheckRepositoryUsesRenderedHeadingTextAndGlobalSlugUniqueness(t *testin
 	writeFixture(t, root, "README.md", strings.Join([]string{
 		"# Root",
 		"[markup](docs/guide.md#styled-heading)",
+		"[multiline](docs/guide.md#multiline-setext)",
 		"[collision](docs/guide.md#foo-2)",
 	}, "\n"))
 
@@ -109,6 +113,32 @@ func TestCheckRepositoryUsesRenderedHeadingTextAndGlobalSlugUniqueness(t *testin
 	}
 	if len(violations) != 0 {
 		t.Fatalf("violations = %+v", violations)
+	}
+}
+
+func TestCheckRepositoryReportsLinesForEmptyLinkLabels(t *testing.T) {
+	t.Parallel()
+	root := fixtureRepository(t)
+	writeFixture(t, root, "README.md", strings.Join([]string{
+		"# Root",
+		"",
+		"Intro",
+		"[](docs/missing-empty.md)",
+		"![](docs/missing-image.png)",
+	}, "\n"))
+
+	violations, err := checkRepository(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("violations = %+v, want two", violations)
+	}
+	if violations[0].Line != 4 || violations[0].Target != "docs/missing-empty.md" {
+		t.Fatalf("first violation = %+v", violations[0])
+	}
+	if violations[1].Line != 5 || violations[1].Target != "docs/missing-image.png" {
+		t.Fatalf("second violation = %+v", violations[1])
 	}
 }
 

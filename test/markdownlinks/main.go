@@ -137,6 +137,7 @@ func parseDocument(path, relative string) (document, error) {
 	headingAnchors := make(map[string]bool)
 	parsed := goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser().Parse(text.NewReader(source))
 	lineStarts := sourceLineStarts(source)
+	lastLinkOffset := 0
 	err = ast.Walk(parsed, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -145,15 +146,19 @@ func parseDocument(path, relative string) (document, error) {
 		case *ast.Heading:
 			addHeadingAnchor(result.anchors, headingAnchors, string(renderedText(current, source)))
 		case *ast.Link:
+			offset := nodeSourceOffset(current, source, lastLinkOffset)
 			result.links = append(result.links, link{
-				line:   sourceLine(lineStarts, nodeSourceOffset(current)),
+				line:   sourceLine(lineStarts, offset),
 				target: string(current.Destination),
 			})
+			lastLinkOffset = offset + 1
 		case *ast.Image:
+			offset := nodeSourceOffset(current, source, lastLinkOffset)
 			result.links = append(result.links, link{
-				line:   sourceLine(lineStarts, nodeSourceOffset(current)),
+				line:   sourceLine(lineStarts, offset),
 				target: string(current.Destination),
 			})
+			lastLinkOffset = offset + 1
 		case *ast.HTMLBlock:
 			addHTMLAnchors(result.anchors, current.Text(source))
 		case *ast.RawHTML:
@@ -186,6 +191,9 @@ func renderedText(root ast.Node, source []byte) []byte {
 		switch current := node.(type) {
 		case *ast.Text:
 			result = append(result, current.Text(source)...)
+			if current.SoftLineBreak() || current.HardLineBreak() {
+				result = append(result, ' ')
+			}
 		case *ast.String:
 			result = append(result, current.Value...)
 		}
@@ -225,7 +233,7 @@ func sourceLine(starts []int, offset int) int {
 	})
 }
 
-func nodeSourceOffset(root ast.Node) int {
+func nodeSourceOffset(root ast.Node, source []byte, after int) int {
 	offset := 0
 	found := false
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -238,7 +246,39 @@ func nodeSourceOffset(root ast.Node) int {
 		}
 		return ast.WalkContinue, nil
 	})
-	return offset
+	if found {
+		return offset
+	}
+
+	parent := root.Parent()
+	for parent != nil && parent.Lines().Len() == 0 {
+		parent = parent.Parent()
+	}
+	if parent == nil {
+		return after
+	}
+	lines := parent.Lines()
+	start := max(lines.At(0).Start, after)
+	end := lines.At(lines.Len() - 1).Stop
+	for index := start; index+1 < end; index++ {
+		if source[index] != '[' || source[index+1] != ']' || isEscaped(source, index) {
+			continue
+		}
+		next := index + 2
+		if next < end && (source[next] == '(' || source[next] == '[') {
+			return index
+		}
+	}
+	return start
+}
+
+func isEscaped(source []byte, offset int) bool {
+	backslashes := 0
+	for offset > 0 && source[offset-1] == '\\' {
+		backslashes++
+		offset--
+	}
+	return backslashes%2 != 0
 }
 
 func addHTMLAnchors(anchors map[string]bool, source []byte) {
