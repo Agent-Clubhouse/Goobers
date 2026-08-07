@@ -204,12 +204,14 @@ remain governed by the separate config source.
 | You do not own the target or cannot add files and enforce CODEOWNER review. | Separate config repository | Goobers adds nothing to the target and config governance remains under your control. |
 | You own the target but require a credential-level boundary between autonomous config changes and project code. | Separate config repository | A credential scoped only to the config repository cannot reach project code. |
 | Several operators maintain the workforce. | Separate config repository | Normal repository access, review, and audit rules protect desired state. |
-| You operate against multiple target repositories. | One outside instance root and config source per target | The current local runtime supports one operational repository per instance root; separate roots also isolate credentials, journals, budgets, and workcopies. |
+| You operate several target repositories together under one operator and credential posture. | One outside instance root with one gaggle per repository | Repository selection is gaggle-aware: each gaggle's `project` and `backlog` connections select their own `repos` entry. A few built-in behaviors still bind to the first `repos` entry — see the [single-repo residue](arbitrary-repo-onboarding.md#current-single-repo-residue) note. |
+| You need an isolation boundary between target repositories — different credentials, trust postures, or machines. | One outside instance root and config source per target | Separate roots isolate credentials, journals, budgets, and workcopies. |
 
-Several gaggles may share the one target configured by an instance. They need
-unique workflow identities and disjoint backlog routing, but that does not
-require another placement model. To target a different repository, create
-another outside instance root and choose its config source independently.
+Several gaggles may share one configured target, and separate gaggles may
+target different `repos` entries within the same instance. Both need unique
+workflow identities and disjoint backlog routing, but neither requires another
+placement model. Create another outside instance root when a repository needs
+its own isolation boundary, not because of the repository count.
 
 ## Credential and trust checklist
 
