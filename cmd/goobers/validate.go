@@ -300,7 +300,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, cfg.Runner.HarnessCommand, diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, diagnostics) {
 			return 1
 		}
 	}
@@ -754,6 +754,7 @@ func checkHarnessesAtSources(
 	goobers []apiv1.Goober,
 	stdout, stderr io.Writer,
 	sourceFile func(apiv1.Goober) string,
+	envPassthrough []string,
 	harnessCommand map[string][]string,
 	collectors ...*diagnosticCollector,
 ) bool {
@@ -770,7 +771,7 @@ func checkHarnessesAtSources(
 			file = sourceFile(g)
 		}
 
-		adapter, err := harnessAdapterFor(h, harnessCommand)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -802,7 +803,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 	}
 }
 
-// adapterFor returns the registered adapter for a goober-declared harness kind.
+// adapterFor returns the registered adapter for a goober-declared harness kind,
+// including the instance's configured ambient environment passthrough.
 //
 // The CopilotAdapter carries copilotAuthCheckArgs so every preflight — the
 // operator-invoked `validate --check-harness` AND the automatic daemon-startup
@@ -810,8 +812,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // presence (#238). Both look the harness up through here, so wiring the probe
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
-func adapterFor(h apiv1.Harness, harnessCommand map[string][]string) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, nil, harnessCommand, "", "")
+func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string) (harness.Adapter, error) {
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "")
 	if err != nil {
 		return nil, err
 	}
