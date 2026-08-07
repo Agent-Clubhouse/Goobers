@@ -229,6 +229,16 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 	receipts := make([]apiv1.NotificationReceipt, 0, d.policy.MaxAttempts)
 	for attempt := 1; attempt <= d.policy.MaxAttempts; attempt++ {
 		started := d.now().UTC()
+		if err := ctx.Err(); err != nil {
+			receipt := d.receipt(request, sinkRef(sink), 0, started, started, apiv1.NotificationSkipped, "", err)
+			receipt, _ = d.persist(ctx, receipt)
+			return append(receipts, receipt), false
+		}
+		if !started.Before(request.ExpiresAt) {
+			receipt := d.receipt(request, sinkRef(sink), 0, started, started, apiv1.NotificationSkipped, "", errors.New("notification expired"))
+			receipt, _ = d.persist(ctx, receipt)
+			return append(receipts, receipt), false
+		}
 		deadline := started.Add(d.policy.Timeout)
 		if request.ExpiresAt.Before(deadline) {
 			deadline = request.ExpiresAt
@@ -251,6 +261,20 @@ func (d *Dispatcher) dispatchSink(ctx context.Context, request apiv1.Notificatio
 			receipt := d.receipt(request, sinkRef(sink), 0, d.now(), d.now(), apiv1.NotificationSkipped, "", errors.New("previous delivery attempt remains unresolved"))
 			receipt, _ = d.persist(ctx, receipt)
 			return append(receipts, receipt), false
+		}
+		if err := ctx.Err(); err != nil {
+			pending.Status = apiv1.NotificationSkipped
+			pending.CompletedAt = d.now().UTC()
+			pending.Error = d.sanitizeError(err)
+			pending, _ = d.persist(ctx, pending)
+			return append(receipts, pending), false
+		}
+		if !d.now().Before(request.ExpiresAt) {
+			pending.Status = apiv1.NotificationSkipped
+			pending.CompletedAt = d.now().UTC()
+			pending.Error = d.sanitizeError(errors.New("notification expired"))
+			pending, _ = d.persist(ctx, pending)
+			return append(receipts, pending), false
 		}
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
 		delivery := startDelivery(attemptCtx, sink, request)

@@ -251,6 +251,24 @@ func TestDispatchTimeoutCancellationExpiryAndPayloadLimit(t *testing.T) {
 			t.Fatalf("expiry result=%+v err=%v", result, err)
 		}
 	})
+	t.Run("retry delay crosses expiry", func(t *testing.T) {
+		sink := &RecordingSink{Err: errors.New("temporary failure")}
+		request := validRequest("recording")
+		request.ExpiresAt = time.Now().Add(20 * time.Millisecond)
+		result, err := newTestDispatcher(t, &memoryRecorder{}, Policy{
+			MaxAttempts: 2,
+			RetryDelay:  40 * time.Millisecond,
+		}, sink).Dispatch(context.Background(), request)
+		if err == nil ||
+			len(result.Receipts) != 2 ||
+			result.Receipts[1].Status != apiv1.NotificationSkipped ||
+			!strings.Contains(result.Receipts[1].Error, "expired") {
+			t.Fatalf("retry expiry result=%+v err=%v", result, err)
+		}
+		if got := len(sink.Requests()); got != 1 {
+			t.Fatalf("expired retry reached sink: calls = %d, want 1", got)
+		}
+	})
 	t.Run("oversized", func(t *testing.T) {
 		request := validRequest("recording")
 		request.Body = strings.Repeat("x", MaxBodyBytes+1)
