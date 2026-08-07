@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -738,6 +740,77 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 	}
 	if manager.Root != wantRoot {
 		t.Fatalf("manager root = %q, want alternate gaggle root %q", manager.Root, wantRoot)
+	}
+}
+
+func TestBuildRunnerConfigGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
+	t.Setenv("GOOBERS_TEST_GITHUB_TOKEN", "test-token")
+	base := t.TempDir()
+	t.Chdir(base)
+
+	authenticated := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		select {
+		case authenticated <- struct{}{}:
+		default:
+		}
+		http.Error(w, "stop after authentication", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	gitConfig := filepath.Join(base, "gitconfig")
+	rewrite := fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/\n", server.URL+"/")
+	if err := os.WriteFile(gitConfig, []byte(rewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "web",
+	}
+	_, manager, err := buildRunnerConfig(
+		instance.NewLayout(".").ForGaggle("builders"),
+		&instance.Config{Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "web",
+			Token:    instance.TokenRef{Env: "GOOBERS_TEST_GITHUB_TOKEN"},
+		}}},
+		nil,
+		nil,
+		nil,
+		journal.NewRegistryScrubber(),
+		nil,
+		nil,
+		project,
+		nil,
+		nil,
+		nil,
+		instance.SandboxDisabled,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+
+	t.Chdir(manager.Root)
+	_, _ = manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: "https://github.com/acme/web.git",
+		RunID:   "relative-root-auth",
+		BaseRef: "main",
+	})
+	select {
+	case <-authenticated:
+	default:
+		t.Fatal("git did not authenticate after its working directory changed")
 	}
 }
 
