@@ -232,12 +232,12 @@ func TestRunPacesOrdinaryScheduledWorkflowsAfterQuotaReset(t *testing.T) {
 	}
 }
 
-func TestRunWakesForDeferredScheduleDemandPoll(t *testing.T) {
+func TestRunWakesForDeferredScheduleDemandPollWhenFirstPollIsEmpty(t *testing.T) {
 	resetAt := time.Date(2026, time.August, 7, 16, 5, 0, 0, time.UTC)
 	clock := newFakeClock(resetAt)
 	quota := NewProviderQuotaState()
 	quota.Record(apiv1.ProviderGitHub, 0, resetAt)
-	firstCounter := &fakeBacklogCounter{count: 1}
+	firstCounter := &fakeBacklogCounter{}
 	secondCounter := &fakeBacklogCounter{count: 1}
 	first := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	second := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
@@ -281,9 +281,15 @@ func TestRunWakesForDeferredScheduleDemandPoll(t *testing.T) {
 	if got := firstCounter.polls() + secondCounter.polls(); got != 1 {
 		t.Fatalf("demand polls on reset tick = %d, want 1", got)
 	}
+	if waits := clock.durations(); len(waits) == 0 || waits[0] != minPoll {
+		t.Fatalf("wait after empty demand poll = %v, want %s", waits, minPoll)
+	}
 	clock.advance(resetAt.Add(minPoll))
 	waitForCount(t, func() int { return firstCounter.polls() + secondCounter.polls() }, 2)
-	waitForCount(t, func() int { return first.count() + second.count() }, 2)
+	waitForCount(t, second.count, 1)
+	if first.count() != 0 || second.count() != 1 {
+		t.Fatalf("paced dispatches first=%d second=%d, want only second dispatched", first.count(), second.count())
+	}
 }
 
 func TestTickJournalsPaginationBudgetShed(t *testing.T) {

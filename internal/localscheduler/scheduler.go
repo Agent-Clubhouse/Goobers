@@ -1126,6 +1126,7 @@ func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
 func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 	chosen := make(map[apiv1.Provider]WorkflowIdentity)
 	due := make(map[apiv1.Provider]map[WorkflowIdentity]struct{})
+	deferredPolls := make(map[apiv1.Provider]bool)
 	for _, candidate := range candidates {
 		identity := entryIdentity(candidate.entry)
 		pollProvider := quotaProvider(candidate.entry.PollProvider)
@@ -1135,6 +1136,7 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 				due[pollProvider] = make(map[WorkflowIdentity]struct{})
 			}
 			due[pollProvider][identity] = struct{}{}
+			deferredPolls[pollProvider] = true
 		}
 		if candidate.scheduleRemaining == 0 && candidate.backlogRemaining == 0 {
 			continue
@@ -1165,7 +1167,7 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 		}
 	}
 	for provider, identities := range due {
-		if len(identities) <= 1 {
+		if len(identities) <= 1 && !deferredPolls[provider] {
 			s.setQuotaResumePacing(provider, false)
 		}
 	}
