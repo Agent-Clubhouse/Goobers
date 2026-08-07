@@ -77,6 +77,29 @@ func TestErrorsCannotYieldGo(t *testing.T) {
 	}
 }
 
+func TestEvaluateMetricRejectsMalformedValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value Value
+	}{
+		{name: "unknown type", value: Value{Type: "decimal", Number: 50, Unit: "ms"}},
+		{name: "fractional integer", value: Value{Type: ValueInteger, Number: 50.5, Unit: "ms"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := validObservation(test.value.Number, test.value.Unit)
+			observation.Value = &test.value
+			got := EvaluateMetric(metricDefinition("latency", Required, lessThan(100, "ms")), observation, testNow)
+			if got.Verdict != VerdictUnknown || got.ReasonCode != ReasonSchemaError {
+				t.Fatalf("EvaluateMetric = %q/%q, want unknown/schema-error", got.Verdict, got.ReasonCode)
+			}
+			if got.Value != nil {
+				t.Fatal("malformed source value must not be retained as a canonical value")
+			}
+		})
+	}
+}
+
 func TestUnknownPolicyMustExplicitlyAllowGo(t *testing.T) {
 	metric := metricDefinition("latency", Required, lessThan(100, "ms"))
 	subsystem := SubsystemDefinition{
@@ -135,7 +158,6 @@ func TestBuildIsIndependentOfInputOrdering(t *testing.T) {
 }
 
 func TestValidationRejectsInvalidArtifacts(t *testing.T) {
-	valid := goldenArtifact(t, "all-go")
 	tests := map[string]func(*Artifact){
 		"NaN": func(artifact *Artifact) {
 			artifact.Metrics[0].Value.Number = math.NaN()
@@ -152,11 +174,22 @@ func TestValidationRejectsInvalidArtifacts(t *testing.T) {
 		"dangling evidence": func(artifact *Artifact) {
 			artifact.Metrics[0].EvidenceID = "query.absent"
 		},
+		"unknown metric verdict": func(artifact *Artifact) {
+			artifact.Metrics[0].Verdict = "maybe"
+		},
+		"unknown metric reason code": func(artifact *Artifact) {
+			artifact.Metrics[0].ReasonCode = "unexpected"
+		},
+		"unknown aggregate verdict": func(artifact *Artifact) {
+			artifact.Subsystems[0].Verdict = "maybe"
+		},
+		"unknown aggregate reason code": func(artifact *Artifact) {
+			artifact.Overall.ReasonCode = "unexpected"
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			artifact := valid
-			artifact.Metrics = append([]MetricVerdict(nil), valid.Metrics...)
+			artifact := goldenArtifact(t, "all-go")
 			mutate(&artifact)
 			if err := artifact.Validate(); err == nil {
 				t.Fatal("Validate succeeded")

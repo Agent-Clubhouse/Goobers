@@ -68,4 +68,4 @@
 --- FACTS ---
 MISSION CONTROL: NO-GO (required-no-go)
 SUBSYSTEM API [required]: NO-GO (required-no-go)
-  METRIC Latency [required]: 150.0 ms; NO-GO (threshold-violated)
+  METRIC Latency [required]: value=150.0 ms; criterion=lt 100.0 ms; freshness=age 1m0s, required 5m0s, data-as-of 2026-08-07T06:59:00Z; window=2026-08-07T06:55:00Z to 2026-08-07T07:00:00Z; NO-GO (threshold-violated)

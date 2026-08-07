@@ -214,6 +214,14 @@ func EvaluateMetric(def MetricDefinition, observation Observation, now time.Time
 		result.ReasonCode = ReasonSchemaError
 		return result
 	}
+	if observation.Value.Type != ValueNumber && observation.Value.Type != ValueInteger {
+		result.ReasonCode = ReasonSchemaError
+		return result
+	}
+	if observation.Value.Type == ValueInteger && math.Trunc(observation.Value.Number) != observation.Value.Number {
+		result.ReasonCode = ReasonSchemaError
+		return result
+	}
 	if observation.Value.Unit == "" || observation.Value.Unit != def.Criterion.Unit {
 		result.ReasonCode = ReasonUnitError
 		return result
@@ -468,6 +476,12 @@ func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
 	} else if metric.DataAsOf != nil {
 		return errors.New("dataAsOf requires calculated age")
 	}
+	if !validVerdict(metric.Verdict) {
+		return fmt.Errorf("invalid verdict %q", metric.Verdict)
+	}
+	if !validReasonCode(metric.ReasonCode) {
+		return fmt.Errorf("invalid reasonCode %q", metric.ReasonCode)
+	}
 	if metric.Verdict == VerdictGo && metric.ReasonCode != ReasonSatisfied ||
 		metric.Verdict == VerdictNoGo && metric.ReasonCode != ReasonThresholdViolated ||
 		metric.Verdict == VerdictUnknown && !slices.Contains([]ReasonCode{
@@ -504,6 +518,12 @@ func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
 func validateAggregation(verdict Verdict, reason ReasonCode, policy AggregationPolicy) error {
 	if policy.Unknown != UnknownBlocksGo && policy.Unknown != UnknownAllowsGo {
 		return fmt.Errorf("invalid unknown policy %q", policy.Unknown)
+	}
+	if !validVerdict(verdict) {
+		return fmt.Errorf("invalid verdict %q", verdict)
+	}
+	if !validReasonCode(reason) {
+		return fmt.Errorf("invalid reasonCode %q", reason)
 	}
 	valid := verdict == VerdictGo && (reason == ReasonAllRequiredGo || reason == ReasonUnknownAllowed) ||
 		verdict == VerdictNoGo && reason == ReasonRequiredNoGo ||
@@ -582,6 +602,27 @@ func finite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
+func validVerdict(verdict Verdict) bool {
+	return verdict == VerdictGo || verdict == VerdictNoGo || verdict == VerdictUnknown
+}
+
+func validReasonCode(reason ReasonCode) bool {
+	return slices.Contains([]ReasonCode{
+		ReasonSatisfied,
+		ReasonThresholdViolated,
+		ReasonMissing,
+		ReasonStale,
+		ReasonQueryError,
+		ReasonSchemaError,
+		ReasonUnitError,
+		ReasonInsufficientEvidence,
+		ReasonRequiredNoGo,
+		ReasonRequiredUnknown,
+		ReasonAllRequiredGo,
+		ReasonUnknownAllowed,
+	}, reason)
+}
+
 func canonicalize(artifact *Artifact) {
 	sort.Slice(artifact.Evidence, func(i, j int) bool { return artifact.Evidence[i].ID < artifact.Evidence[j].ID })
 	sort.Slice(artifact.Metrics, func(i, j int) bool { return artifact.Metrics[i].ID < artifact.Metrics[j].ID })
@@ -612,8 +653,40 @@ func RenderFacts(artifact Artifact) (string, error) {
 			if metric.Value != nil {
 				value = strconv.FormatFloat(metric.Value.Number, 'f', metric.DisplayPrecision, 64) + " " + metric.Value.Unit
 			}
-			fmt.Fprintf(&out, "  METRIC %s [%s]: %s; %s (%s)\n", metric.DisplayName, metric.Requirement, value, strings.ToUpper(string(metric.Verdict)), metric.ReasonCode)
+			age := "unavailable"
+			if metric.Age != "" {
+				age = metric.Age
+			}
+			dataAsOf := "unavailable"
+			if metric.DataAsOf != nil {
+				dataAsOf = metric.DataAsOf.UTC().Format(time.RFC3339Nano)
+			}
+			fmt.Fprintf(
+				&out,
+				"  METRIC %s [%s]: value=%s; criterion=%s; freshness=age %s, required %s, data-as-of %s; window=%s to %s; %s (%s)\n",
+				metric.DisplayName,
+				metric.Requirement,
+				value,
+				renderCriterion(metric.Criterion, metric.DisplayPrecision),
+				age,
+				metric.RequiredFreshness,
+				dataAsOf,
+				metric.ObservationWindow.Start.UTC().Format(time.RFC3339Nano),
+				metric.ObservationWindow.End.UTC().Format(time.RFC3339Nano),
+				strings.ToUpper(string(metric.Verdict)),
+				metric.ReasonCode,
+			)
 		}
 	}
 	return out.String(), nil
+}
+
+func renderCriterion(criterion Criterion, precision int) string {
+	format := func(value float64) string {
+		return strconv.FormatFloat(value, 'f', precision, 64)
+	}
+	if criterion.Comparator == InclusiveRange {
+		return fmt.Sprintf("%s [%s, %s] %s", criterion.Comparator, format(*criterion.Minimum), format(*criterion.Maximum), criterion.Unit)
+	}
+	return fmt.Sprintf("%s %s %s", criterion.Comparator, format(*criterion.Threshold), criterion.Unit)
 }

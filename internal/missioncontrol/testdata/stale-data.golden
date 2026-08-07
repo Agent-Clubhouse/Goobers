@@ -68,4 +68,4 @@
 --- FACTS ---
 MISSION CONTROL: UNKNOWN (required-unknown)
 SUBSYSTEM API [required]: UNKNOWN (required-unknown)
-  METRIC Latency [required]: 50.0 ms; UNKNOWN (stale)
+  METRIC Latency [required]: value=50.0 ms; criterion=lt 100.0 ms; freshness=age 10m0s, required 5m0s, data-as-of 2026-08-07T06:50:00Z; window=2026-08-07T06:55:00Z to 2026-08-07T07:00:00Z; UNKNOWN (stale)
