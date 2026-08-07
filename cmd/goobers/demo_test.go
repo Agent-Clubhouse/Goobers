@@ -396,8 +396,16 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 			t.Errorf("trace output missing %q:\n%s", want, traceOut)
 		}
 	}
+	if strings.Contains(traceOut, "ref.touched") {
+		t.Errorf("scratch-only demo recorded a repository ref:\n%s", traceOut)
+	}
+
 	if got := cloneAttempts.Load(); got != 0 {
 		t.Errorf("demo attempted %d repository operation(s)", got)
+	}
+	allOutput := runOut + runErr + statusOut + statusErr + traceOut + traceErr + upStdout.String() + upStderr.String()
+	if strings.Contains(strings.ToLower(allOutput), "credential") {
+		t.Errorf("demo emitted a credential warning: %q", allOutput)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "workcopies", "scratch"))
 	if err != nil {

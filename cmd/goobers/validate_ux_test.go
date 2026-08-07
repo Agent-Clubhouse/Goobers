@@ -254,6 +254,18 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
+		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 // TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
 // becomes a GitHub Actions ::error/::warning workflow command anchored to its
 // file, written to stderr so it composes cleanly with --json (stdout stays a

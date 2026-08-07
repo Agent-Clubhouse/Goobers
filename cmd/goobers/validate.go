@@ -391,8 +391,8 @@ func checkGaggleRepositoryBindings(
 	ok := true
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
-		if len(cfg.Repos) == 0 && project.Owner == "" && project.Name == "" {
-			// A gaggle without a project can run entirely in scratch workspaces.
+		if len(cfg.Repos) == 0 && gaggleUsesOnlyScratchWorkspaces(set, gaggle.Name) {
+			// Scratch-only workflows never perform the runtime repository join.
 		} else if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
 			repo := cfg.Repos[0]
 			message := fmt.Sprintf("empty spec.project binds to instance repos[0] %s", instanceRepoName(repo))
@@ -419,6 +419,27 @@ func checkGaggleRepositoryBindings(
 		}
 	}
 	return ok
+}
+
+func gaggleUsesOnlyScratchWorkspaces(set *instance.ConfigSet, gaggle string) bool {
+	found := false
+	for _, workflow := range set.Workflows {
+		if workflow.Spec.Gaggle != gaggle {
+			continue
+		}
+		found = true
+		for _, task := range workflow.Spec.Tasks {
+			if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
+				return false
+			}
+		}
+		for _, gate := range workflow.Spec.Gates {
+			if gate.Evaluator == apiv1.EvaluatorAgentic {
+				return false
+			}
+		}
+	}
+	return found
 }
 
 func unmatchedGaggleRepoMessage(field string, repo apiv1.RepoRef, configured []instance.RepoRef) string {

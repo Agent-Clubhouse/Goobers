@@ -224,14 +224,8 @@ func defaultConfig() *Config {
 
 func demoConfig() *Config {
 	return &Config{
-		APIVersion: ConfigAPIVersion,
-		Kind:       ConfigKind,
-		Repos: []RepoRef{{
-			Provider: "github",
-			Owner:    "demo",
-			Name:     "offline",
-			Token:    TokenRef{Env: "GOOBERS_DEMO_REPO_TOKEN"},
-		}},
+		APIVersion:    ConfigAPIVersion,
+		Kind:          ConfigKind,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
 	}
 }
