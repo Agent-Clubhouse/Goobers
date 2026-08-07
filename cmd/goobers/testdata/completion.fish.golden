@@ -42,7 +42,7 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen
 complete -c goobers -n '__fish_seen_subcommand_from completion; and test (count (commandline -opc)) -eq 2' -f -a 'bash zsh fish powershell'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (commandline -opc)) -eq 2' -f -a 'stats errors export prune prune-orphans compact'
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
-complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages'
+complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages instance gaggle goober workflow stage gate harness capability'
 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt for repository, credentials, and workflows'

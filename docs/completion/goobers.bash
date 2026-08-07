@@ -258,7 +258,7 @@ _goobers_completion()
             ;;
         help)
             if (( COMP_CWORD == 2 )); then
-                candidates="all stages"
+                candidates="all stages instance gaggle goober workflow stage gate harness capability"
             fi
             ;;
     esac
