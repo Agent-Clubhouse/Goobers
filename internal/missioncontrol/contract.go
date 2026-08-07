@@ -13,18 +13,23 @@ import (
 	"time"
 )
 
+// SchemaVersion identifies the mission-control artifact contract.
 const SchemaVersion = "goobers.dev/mission-control-verdict/v1alpha1"
 
+// Verdict is the authoritative launch status of a metric or aggregate.
 type Verdict string
 
+// Mission-control verdicts are exhaustive and fail closed to VerdictUnknown.
 const (
 	VerdictGo      Verdict = "go"
 	VerdictNoGo    Verdict = "no-go"
 	VerdictUnknown Verdict = "unknown"
 )
 
+// ReasonCode explains why a verdict was produced.
 type ReasonCode string
 
+// Reason codes cover metric evaluation and aggregate evaluation outcomes.
 const (
 	ReasonSatisfied            ReasonCode = "satisfied"
 	ReasonThresholdViolated    ReasonCode = "threshold-violated"
@@ -40,22 +45,28 @@ const (
 	ReasonUnknownAllowed       ReasonCode = "unknown-allowed"
 )
 
+// Requirement controls whether an item affects its parent aggregate.
 type Requirement string
 
+// Requirements distinguish launch-blocking items from advisory items.
 const (
 	Required Requirement = "required"
 	Advisory Requirement = "advisory"
 )
 
+// UnknownPolicy controls whether unknown required items prevent a go verdict.
 type UnknownPolicy string
 
+// Unknown policies must explicitly choose fail-closed or permissive aggregation.
 const (
 	UnknownBlocksGo UnknownPolicy = "block"
 	UnknownAllowsGo UnknownPolicy = "allow"
 )
 
+// Comparator defines how an observed value is tested against a criterion.
 type Comparator string
 
+// Supported comparators include strict and inclusive threshold and range checks.
 const (
 	GreaterThan    Comparator = "gt"
 	GreaterOrEqual Comparator = "gte"
@@ -64,25 +75,30 @@ const (
 	InclusiveRange Comparator = "range-inclusive"
 )
 
+// ValueType identifies the numeric representation of an observed value.
 type ValueType string
 
+// Supported value types distinguish arbitrary numbers from integers.
 const (
 	ValueNumber  ValueType = "number"
 	ValueInteger ValueType = "integer"
 )
 
+// EvidenceRef points to bounded raw query evidence without embedding it.
 type EvidenceRef struct {
 	ID     string `json:"id"`
 	URI    string `json:"uri"`
 	Digest string `json:"digest"`
 }
 
+// Value is an observed numeric value expressed in a canonical unit.
 type Value struct {
 	Type   ValueType `json:"type"`
 	Number float64   `json:"number"`
 	Unit   string    `json:"unit"`
 }
 
+// Criterion describes the comparison and canonical unit for a metric.
 type Criterion struct {
 	Comparator Comparator `json:"comparator"`
 	Unit       string     `json:"unit"`
@@ -91,11 +107,13 @@ type Criterion struct {
 	Maximum    *float64   `json:"maximum,omitempty"`
 }
 
+// ObservationWindow records the interval covered by an observation.
 type ObservationWindow struct {
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
 }
 
+// MetricVerdict records one evaluated metric and its complete evidence metadata.
 type MetricVerdict struct {
 	ID                string            `json:"id"`
 	DisplayName       string            `json:"displayName"`
@@ -113,10 +131,12 @@ type MetricVerdict struct {
 	ReasonCode        ReasonCode        `json:"reasonCode"`
 }
 
+// AggregationPolicy defines how unknown required children affect an aggregate.
 type AggregationPolicy struct {
 	Unknown UnknownPolicy `json:"unknown"`
 }
 
+// SubsystemVerdict aggregates required and advisory metrics for one subsystem.
 type SubsystemVerdict struct {
 	ID                string            `json:"id"`
 	DisplayName       string            `json:"displayName"`
@@ -128,6 +148,7 @@ type SubsystemVerdict struct {
 	ReasonCode        ReasonCode        `json:"reasonCode"`
 }
 
+// OverallVerdict aggregates required and advisory subsystem verdicts.
 type OverallVerdict struct {
 	Policy               AggregationPolicy `json:"policy"`
 	RequiredSubsystemIDs []string          `json:"requiredSubsystemIds"`
@@ -136,6 +157,7 @@ type OverallVerdict struct {
 	ReasonCode           ReasonCode        `json:"reasonCode"`
 }
 
+// Artifact is the versioned provider-neutral mission-control verdict document.
 type Artifact struct {
 	SchemaVersion string             `json:"schemaVersion"`
 	GeneratedAt   time.Time          `json:"generatedAt"`
@@ -145,6 +167,7 @@ type Artifact struct {
 	Overall       OverallVerdict     `json:"overall"`
 }
 
+// MetricDefinition configures deterministic evaluation of one metric.
 type MetricDefinition struct {
 	ID                string
 	DisplayName       string
@@ -156,6 +179,7 @@ type MetricDefinition struct {
 	RequiredFreshness time.Duration
 }
 
+// SubsystemDefinition configures aggregation for one subsystem.
 type SubsystemDefinition struct {
 	ID          string
 	DisplayName string
@@ -163,10 +187,12 @@ type SubsystemDefinition struct {
 	Policy      AggregationPolicy
 }
 
+// OverallDefinition configures aggregation across subsystems.
 type OverallDefinition struct {
 	Policy AggregationPolicy
 }
 
+// Observation is normalized telemetry input for one metric definition.
 type Observation struct {
 	EvidenceID string
 	Value      *Value

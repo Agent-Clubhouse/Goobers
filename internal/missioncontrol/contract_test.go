@@ -12,9 +12,8 @@ import (
 )
 
 var (
-	testNow       = time.Date(2026, 8, 7, 7, 0, 0, 0, time.UTC)
-	testDataAsOf  = testNow.Add(-time.Minute)
-	testThreshold = 100.0
+	testNow      = time.Date(2026, 8, 7, 7, 0, 0, 0, time.UTC)
+	testDataAsOf = testNow.Add(-time.Minute)
 )
 
 func TestEvaluateMetricComparatorsAndFreshness(t *testing.T) {
