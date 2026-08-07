@@ -16,6 +16,7 @@ type JournalRecorder struct {
 	workflow string
 }
 
+// NewJournalRecorder creates a recorder backed by the supplied run journal.
 func NewJournalRecorder(run *journal.Run) (*JournalRecorder, error) {
 	if run == nil {
 		return nil, fmt.Errorf("notification: run journal is required")
@@ -31,6 +32,7 @@ func NewJournalRecorder(run *journal.Run) (*JournalRecorder, error) {
 	return &JournalRecorder{run: run, runID: identity.RunID, workflow: identity.Workflow}, nil
 }
 
+// RecordRequest appends a notification request to the run journal.
 func (r *JournalRecorder) RecordRequest(ctx context.Context, request apiv1.NotificationRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -44,6 +46,7 @@ func (r *JournalRecorder) RecordRequest(ctx context.Context, request apiv1.Notif
 	})
 }
 
+// RecordReceipt appends a notification delivery receipt to the run journal.
 func (r *JournalRecorder) RecordReceipt(ctx context.Context, receipt apiv1.NotificationReceipt) error {
 	return r.recordReceipt(ctx, receipt)
 }
@@ -61,6 +64,7 @@ func (r *JournalRecorder) recordReceipt(ctx context.Context, receipt apiv1.Notif
 	})
 }
 
+// ClaimDelivery atomically records a pending delivery or returns its prior durable state.
 func (r *JournalRecorder) ClaimDelivery(ctx context.Context, pending apiv1.NotificationReceipt) (apiv1.NotificationReceipt, RecordedDeliveryState, error) {
 	if err := ctx.Err(); err != nil {
 		return apiv1.NotificationReceipt{}, DeliveryClaimed, err

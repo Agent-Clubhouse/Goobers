@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// Notification payload and collection limits.
 const (
 	MaxTitleBytes       = 512
 	MaxBodyBytes        = 16 * 1024
@@ -38,6 +39,7 @@ type Sink interface {
 // RecordedDeliveryState describes the durable outcome of a delivery claim.
 type RecordedDeliveryState uint8
 
+// Durable delivery claim outcomes.
 const (
 	DeliveryClaimed RecordedDeliveryState = iota
 	DeliveryUnresolved
@@ -59,10 +61,12 @@ type Registry struct {
 	sinks map[string]Sink
 }
 
+// NewRegistry creates an empty sink registry.
 func NewRegistry() *Registry {
 	return &Registry{sinks: make(map[string]Sink)}
 }
 
+// Register adds a sink, rejecting duplicate kinds and non-canonical identities.
 func (r *Registry) Register(sink Sink) error {
 	if sink == nil {
 		return errors.New("notification: sink is required")
@@ -94,6 +98,7 @@ func (r *Registry) lookup(kind string) (Sink, bool) {
 // PartialDeliveryPolicy states when a multi-sink request is successful.
 type PartialDeliveryPolicy string
 
+// Supported multi-sink delivery policies.
 const (
 	RequireAll PartialDeliveryPolicy = "require-all"
 	RequireAny PartialDeliveryPolicy = "require-any"
@@ -148,6 +153,7 @@ type Dispatcher struct {
 	pending  map[deliveryKey]*deliveryAttempt
 }
 
+// NewDispatcher creates a bounded notification dispatcher.
 func NewDispatcher(registry *Registry, recorder Recorder, scrubber journal.Scrubber, policy Policy) (*Dispatcher, error) {
 	if registry == nil {
 		return nil, errors.New("notification: registry is required")
@@ -416,6 +422,7 @@ func sinkRef(sink Sink) apiv1.NotificationSinkRef {
 	return apiv1.NotificationSinkRef{Kind: sink.Kind(), Version: sink.Version()}
 }
 
+// ValidateRequest validates the versioned provider-neutral request contract.
 func ValidateRequest(request apiv1.NotificationRequest) error {
 	if request.Schema != apiv1.NotificationRequestSchema {
 		return fmt.Errorf("notification: unknown request schema %q", request.Schema)

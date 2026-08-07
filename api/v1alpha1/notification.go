@@ -12,6 +12,7 @@ const (
 // NotificationSeverity is the operational importance of a notification.
 type NotificationSeverity string
 
+// Supported notification severities.
 const (
 	NotificationSeverityInfo     NotificationSeverity = "info"
 	NotificationSeverityWarning  NotificationSeverity = "warning"
@@ -62,6 +63,7 @@ type NotificationRequest struct {
 // NotificationDeliveryStatus is the outcome of one sink attempt or suppression.
 type NotificationDeliveryStatus string
 
+// Notification delivery states recorded by sinks.
 const (
 	NotificationPending   NotificationDeliveryStatus = "pending"
 	NotificationDelivered NotificationDeliveryStatus = "delivered"
