@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -128,11 +129,54 @@ func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
 		if synopsis == "" {
 			synopsis = strings.SplitN(node.cmd.long, "\n\n", 2)[0]
 		}
-		for name := range actual {
-			if !strings.Contains(synopsis, "--"+name) {
-				t.Errorf("%s: synopsis usage line omits --%s", node.id, name)
-			}
+		synopsisFlags := parseSynopsisFlags(strings.SplitN(synopsis, "\n", 2)[0])
+		if !reflect.DeepEqual(actual, synopsisFlags) {
+			t.Errorf("%s: handler flags %v, synopsis flags %v", node.id, sortedFlagKinds(actual), sortedFlagKinds(synopsisFlags))
 		}
+	}
+}
+
+var (
+	synopsisFlagPattern        = regexp.MustCompile(`--([a-z0-9][a-z0-9-]*)`)
+	synopsisDescriptionPattern = regexp.MustCompile(`[ \t]{2,}`)
+)
+
+func parseSynopsisFlags(line string) map[string]bool {
+	line = strings.TrimSpace(line)
+	if description := synopsisDescriptionPattern.FindStringIndex(line); description != nil {
+		line = line[:description[0]]
+	}
+	flags := make(map[string]bool)
+	matches := synopsisFlagPattern.FindAllStringSubmatchIndex(line, -1)
+	for _, match := range matches {
+		name := line[match[2]:match[3]]
+		if _, exists := flags[name]; exists {
+			continue
+		}
+		rest := line[match[1]:]
+		takesArg := strings.HasPrefix(rest, "=")
+		if !takesArg && rest != "" && rest[0] == ' ' {
+			next := strings.TrimLeft(rest, " ")
+			takesArg = next != "" &&
+				!strings.HasPrefix(next, "--") &&
+				!strings.ContainsRune("[()|", rune(next[0]))
+		}
+		flags[name] = takesArg
+	}
+	return flags
+}
+
+func TestParseSynopsisFlags(t *testing.T) {
+	line := "goobers example [--check] [--check-harness] --format candidate-findings --output=<path> [--notify[=all]]  describe --stale"
+	want := map[string]bool{
+		"check":         false,
+		"check-harness": false,
+		"format":        true,
+		"output":        true,
+		"notify":        false,
+	}
+	if got := parseSynopsisFlags(line); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseSynopsisFlags() = %v, want %v", sortedFlagKinds(got), sortedFlagKinds(want))
 	}
 }
 
