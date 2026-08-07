@@ -9,8 +9,9 @@ goobers init \- scaffold an instance root
 Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
-(seeded with a starter example), runs/, scheduler/, workcopies/, and a
-telemetry.db placeholder. Re-running without --guided is safe — existing
+(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
+placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
+gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
 pieces are left untouched. --guided is first-run only and refuses a target
 with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
