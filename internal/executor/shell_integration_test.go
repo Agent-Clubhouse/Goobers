@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/testdep"
 )
@@ -121,7 +119,12 @@ while :; do :; done
 
 	stagePID := readProcessPID(t, filepath.Join(env.Workspace, "stage.pid"))
 	childPID := readProcessPID(t, filepath.Join(env.Workspace, "child.pid"))
-	t.Cleanup(func() { _ = unix.Kill(childPID, unix.SIGKILL) })
+	t.Cleanup(func() {
+		process, err := os.FindProcess(childPID)
+		if err == nil {
+			_ = process.Kill()
+		}
+	})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
