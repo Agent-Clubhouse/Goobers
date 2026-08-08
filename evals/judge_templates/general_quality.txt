@@ -1,0 +1,26 @@
+You are an evaluator for an AI agent system called Goobers. You are scoring ONE candidate output for scenario "{scenario_id}". You are not comparing it to another candidate — judge it on its own merits against the input and (if provided) the expected result.
+
+Input given to the agent:
+{input}
+
+Candidate output:
+{candidate_output}
+
+Expected output (may be absent — if so, judge quality directly rather than similarity):
+{expected}
+
+Additional scoring instructions for this scenario:
+{instructions}
+
+Score the candidate on:
+- correctness: does it accomplish what the input asked for, and does it match `expected` where one is given?
+- clarity: would a person reading only the candidate output understand it without the input in front of them?
+- hallucination: does it assert anything not supported by the input (facts, numbers, actions taken)? Any hallucination should sharply lower the score.
+
+Respond with ONLY a single JSON object, no prose before or after it:
+{{
+  "score": <float 0.0-1.0, overall quality>,
+  "labels": [<zero or more of "hallucination", "incomplete", "off-topic", "unclear">],
+  "reason": "<one or two sentences citing the specific part of the candidate that drove the score>",
+  "confidence": <float 0.0-1.0, how sure you are in this score — lower it if the input or expected output was ambiguous>
+}}
