@@ -108,6 +108,7 @@ export function RunStageInspector({
   client,
   runId,
   node,
+  workflow,
   selectedSeq,
   events = [],
   inspectorRef,
@@ -118,6 +119,8 @@ export function RunStageInspector({
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
+  /** The run's own workflow, shown alongside the stage id for context (#2538). This is a run-level constant, not a phase tier — #2538's phase/stage nesting criterion needs a backend concept that doesn't exist yet (tracked in #2599). */
+  workflow?: string;
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
@@ -282,7 +285,9 @@ export function RunStageInspector({
   return (
     <Inspector
       className="run-inspector"
-      label={`${node.id} attempt inspector`}
+      label={
+        workflow ? `${workflow} · ${node.id} attempt inspector` : `${node.id} attempt inspector`
+      }
       rootRef={inspectorRef}
     >
       <div className="inspector-heading">
@@ -290,8 +295,11 @@ export function RunStageInspector({
           <Icon name={nodeIcon(node.kind)} size={17} />
         </span>
         <div>
-          <span>{node.kind}</span>
+          <span className="inspector-scope">
+            {workflow ? `${workflow} · ${node.kind}` : node.kind}
+          </span>
           <h3>{node.id}</h3>
+          {node.owner && <span className="inspector-owner">Owned by {node.owner}</span>}
         </div>
       </div>
 

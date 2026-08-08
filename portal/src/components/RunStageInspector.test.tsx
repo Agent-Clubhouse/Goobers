@@ -154,6 +154,41 @@ describe("run stage inspector", () => {
     expect(screen.getByText("Select a node")).toBeInTheDocument();
   });
 
+  it("labels the inspector with the run's workflow and the stage's owning goober (#2538)", async () => {
+    const ownedNode: WorkflowGraphNode = {
+      id: "review",
+      kind: "gate",
+      evaluator: "agentic",
+      owner: "reviewer-goober",
+    };
+    renderInspector(
+      <RunStageInspector
+        client={stubClient([attempt({ number: 1, status: "success" })])}
+        node={ownedNode}
+        runId="run-1"
+        selectedSeq={9}
+        workflow="implementation"
+      />,
+    );
+
+    expect(
+      screen.getByRole("complementary", { name: "implementation · review attempt inspector" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("implementation · gate")).toBeInTheDocument();
+    expect(screen.getByText("Owned by reviewer-goober")).toBeInTheDocument();
+  });
+
+  it("omits workflow and owner chrome when neither is known", () => {
+    renderInspector(
+      <RunStageInspector client={stubClient([])} node={reviewNode} runId="run-1" selectedSeq={9} />,
+    );
+
+    expect(
+      screen.getByRole("complementary", { name: "review attempt inspector" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Owned by/)).not.toBeInTheDocument();
+  });
+
   it("loads and shows the current attempt's status, output, and artifact metadata", async () => {
     const client = stubClient([
       attempt({

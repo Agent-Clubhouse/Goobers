@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { RunEvent } from "../api/types";
+import type { RunEvent, WorkflowGraph } from "../api/types";
 import {
   formatReplayClock,
   formatReplayDuration,
@@ -10,7 +10,7 @@ import {
   type ReplayChapterKind,
   type ReplaySpeed,
 } from "../replay";
-import { eventHeading, eventSummary } from "../runDetailData";
+import { eventHeading, eventNodeId, eventSummary, nodeOwner } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
 const chapterPresentation = {
@@ -91,23 +91,30 @@ function groupReplayChapters(
 // navigation over the same deterministic sequence.
 export function ReplayScrubber({
   events,
+  graph,
   runId,
   selectedSeq,
   onSeek,
   terminal,
+  workflow,
 }: {
   events: RunEvent[];
+  graph?: WorkflowGraph;
   runId: string;
   selectedSeq: number;
   onSeek: (seq: number) => void;
   terminal: boolean;
+  workflow?: string;
 }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<ReplaySpeed>(1);
   const [trackWidth, setTrackWidth] = useState(0);
   const [expandedChapterGroup, setExpandedChapterGroup] = useState<string>();
   const timelineRef = useRef<HTMLDivElement>(null);
-  const timeline = useMemo(() => replayTimeline(events), [events]);
+  const timeline = useMemo(
+    () => replayTimeline(events, graph, runId),
+    [events, graph, runId],
+  );
   const chapterGroups = useMemo(
     () => groupReplayChapters(timeline.chapters, trackWidth),
     [timeline.chapters, trackWidth],
@@ -209,10 +216,20 @@ export function ReplayScrubber({
   const chapterDescription = (chapter: ReplayChapter) => {
     const heading = eventHeading(chapter.event);
     const summary = eventSummary(chapter.event, undefined, runId);
+    const stageId = eventNodeId(chapter.event, runId);
+    const stageLabel = timeline.stageSegments.find(
+      (segment) => segment.stageId === stageId,
+    )?.label;
+    const owner = nodeOwner(graph, stageId);
+    const scope = [stageLabel, owner].filter(Boolean).join(" · ");
     return {
       heading,
       summary,
-      label: `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${heading}. ${summary}`,
+      stageLabel,
+      owner,
+      label: `Go to ${chapterPresentation[chapter.kind].label} chapter at event ${chapter.index + 1}: ${heading}. ${summary}${
+        scope ? ` ${scope}.` : ""
+      }`,
     };
   };
 
@@ -231,6 +248,11 @@ export function ReplayScrubber({
 
   const heading = eventHeading(currentPoint.event);
   const summary = eventSummary(currentPoint.event, undefined, runId);
+  const currentStageId = eventNodeId(currentPoint.event, runId);
+  const currentStageLabel = timeline.stageSegments.find(
+    (segment) => segment.stageId === currentStageId,
+  )?.label;
+  const currentOwner = nodeOwner(graph, currentStageId);
   const currentChapterPosition = selectedChapter
     ? timeline.chapters.indexOf(selectedChapter) + 1
     : undefined;
@@ -259,6 +281,14 @@ export function ReplayScrubber({
               : `Raw event ${position + 1} of ${ordered.length}`}
             {" · "}Sequence {currentPoint.event.seq}
           </span>
+          {(workflow || currentStageLabel) && (
+            <span aria-label="Workflow, stage, and goober" className="playback-scope" role="group">
+              {workflow && <span className="playback-workflow">{workflow}</span>}
+              {workflow && currentStageLabel && <span aria-hidden="true">·</span>}
+              {currentStageLabel && <span className="playback-stage">{currentStageLabel}</span>}
+              {currentOwner && <span className="playback-owner">{currentOwner}</span>}
+            </span>
+          )}
           <strong>{heading}</strong>
           <span>{summary}</span>
         </div>
@@ -274,6 +304,27 @@ export function ReplayScrubber({
             className="replay-track-progress"
             style={{ width: `${currentPoint.percent}%` }}
           />
+        </div>
+        <div aria-label="Run stages" className="replay-stage-lane" role="group">
+          {timeline.stageSegments.map((segment) => {
+            const label = segment.owner
+              ? `Stage ${segment.label}, owned by ${segment.owner}`
+              : `Stage ${segment.label}`;
+            return (
+              <span
+                aria-label={label}
+                className={`replay-stage-segment replay-stage-segment-${segment.colorIndex % 4}`}
+                key={segment.key}
+                role="note"
+                style={{
+                  left: `${segment.startPercent}%`,
+                  width: `${Math.max(segment.endPercent - segment.startPercent, 1)}%`,
+                }}
+                tabIndex={0}
+                title={label}
+              />
+            );
+          })}
         </div>
         {timeline.idleGaps.map((gap) => {
           const label = `Compressed idle gap between sequences ${gap.fromSeq} and ${gap.toSeq}: ${formatReplayDuration(gap.realDelayMs)} shown as ${formatReplayDuration(gap.compressedDelayMs)}.`;
@@ -411,6 +462,13 @@ export function ReplayScrubber({
                         {chapterPresentation[chapter.kind].glyph}
                       </span>
                       <span className="replay-chapter-cluster-copy">
+                        {(description.stageLabel || description.owner) && (
+                          <span className="replay-chapter-cluster-scope">
+                            {[description.stageLabel, description.owner]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        )}
                         <strong>{description.heading}</strong>
                         <span>
                           Event {chapter.index + 1} · {description.summary}

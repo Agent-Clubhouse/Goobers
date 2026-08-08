@@ -911,6 +911,19 @@ function humanize(value: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
 }
 
+// nodeOwner resolves the goober that owns a stage/gate node in the run's
+// pinned graph, so replay chapters and stage-inspector entries can attribute
+// a moment in the run to the agent responsible for it (#2538).
+export function nodeOwner(
+  graph: WorkflowGraph | undefined,
+  stageId: string | undefined,
+): string | undefined {
+  if (!graph || !stageId) {
+    return undefined;
+  }
+  return graph.nodes.find((node) => node.id === stageId)?.owner;
+}
+
 // UNSCOPED_EVENT_STAGE labels a journal event that belongs to the run itself
 // rather than to any one stage or gate — run.started, run.finished, and the
 // bare artifact records the runner writes between stages.
