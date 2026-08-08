@@ -131,20 +131,52 @@ describe("operational overview", () => {
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
   });
 
+  it("pivots an attention row's workflow into a pre-scoped Insight view without triggering the run link (#2529)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    // Sanity: the row's own "open this run" link is present alongside the
+    // pivot, confirming the pivot is additive rather than replacing it.
+    const failedRunLink = within(attentionSection).getByRole("link", {
+      name: "Open run 01JZ400FAILED",
+    });
+    const failedRow = failedRunLink.closest(".attention-row");
+    if (!failedRow) {
+      throw new Error("Attention row was not rendered.");
+    }
+    const pivotLink = within(failedRow as HTMLElement).getByRole("link", {
+      name: /View .* in Insight/,
+    });
+
+    await user.click(pivotLink);
+
+    // Clicking the pivot lands on Insight, not the row's own run-detail
+    // link — the stretched overlay link underneath the pivot did not
+    // intercept the click (#2529's DataRow interactiveChildren contract).
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+  });
+
   it("labels a failed attention row with its coded telemetry reason", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    const failedRow = await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
+    // The row link (#2529: now a stretched overlay, not the row's content
+    // container, so the failed run's reason is a document-unique text node
+    // rather than a descendant of the "Open run ..." link) still resolves
+    // first, confirming the row itself rendered before checking its content.
+    await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
     expect(
-      await within(failedRow).findByText(
+      await screen.findByText(
         "harness.crash · Harness exited before producing a result envelope.",
       ),
     ).toBeInTheDocument();
 
-    const escalatedRow = screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
-    expect(
-      within(escalatedRow).getByText("Run escalated and needs human review."),
-    ).toBeInTheDocument();
+    screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
+    expect(screen.getByText("Run escalated and needs human review.")).toBeInTheDocument();
   });
 
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
@@ -153,8 +185,13 @@ describe("operational overview", () => {
     render(<App client={client} />);
 
     const recent = await screen.findByRole("region", { name: "Recent outcomes" });
-    // "Recent outcomes" is capped regardless of the 60+ terminal runs in the journal.
-    expect(within(recent).getAllByRole("link").length).toBeLessThanOrEqual(20);
+    // "Recent outcomes" is capped regardless of the 60+ terminal runs in the
+    // journal. Count only the row-opening links ("Open run ...") — each row
+    // also carries a Runs/Insight scope pivot (#2529), so an unfiltered link
+    // count would triple-count rows instead of bounding them.
+    expect(
+      within(recent).getAllByRole("link", { name: /^Open run/ }).length,
+    ).toBeLessThanOrEqual(20);
 
     // Active runs come from the server-side phase=running filter, not a client sweep.
     expect(listRuns).toHaveBeenCalledWith(
@@ -243,6 +280,43 @@ describe("workflow and gaggle inventory", () => {
     );
   });
 
+  it("pivots a gaggle and a workflow row into pre-scoped Runs/Insight views without colliding with the detail links (#2529)", async () => {
+    window.location.hash = "#/workflows";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Core product" });
+
+    // The gaggle-detail link keeps its bare display name as its accessible
+    // name — the pivot links carry distinct names so this stays unique.
+    expect(screen.getByRole("link", { name: "Core product" })).toHaveAttribute(
+      "href",
+      "#/gaggle/core",
+    );
+    expect(screen.getByRole("link", { name: "View Core product in Runs" })).toHaveAttribute(
+      "href",
+      "#/runs?gaggle=core",
+    );
+    expect(screen.getByRole("link", { name: "View Core product in Insight" })).toHaveAttribute(
+      "href",
+      "#/insight?gaggle=core",
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "View Core product / Implementation in Insight",
+      }),
+    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(
+      screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
+      "core / implementation",
+    );
+  });
+
   it("renders the ready-empty workflow state", async () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
@@ -304,6 +378,33 @@ describe("workflow and gaggle inventory", () => {
     await waitFor(() =>
       expect(window.location.hash).toBe("#/workflow/core/implementation"),
     );
+  });
+
+  it("pivots the gaggle heading and a workflow card into pre-scoped Runs/Insight views (#2529)", async () => {
+    window.location.hash = "#/gaggle/core";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Core product" });
+    expect(screen.getByRole("link", { name: "View Core product in Runs" })).toHaveAttribute(
+      "href",
+      "#/runs?gaggle=core",
+    );
+
+    const topology = screen.getByRole("list", { name: "Core product workflows" });
+    const openWorkflowLink = within(topology).getByRole("link", {
+      name: "Open workflow Implementation for gaggle Core product",
+    });
+    const pivotLink = within(topology).getByRole("link", {
+      name: "View Core product / Implementation in Insight",
+    });
+    expect(pivotLink).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(pivotLink);
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+    // The card's own detail link is untouched by the pivot click.
+    expect(openWorkflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
   });
 
   it("shows an empty topology for a gaggle without workflows", async () => {

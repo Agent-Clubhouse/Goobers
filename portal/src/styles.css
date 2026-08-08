@@ -418,6 +418,13 @@ summary:focus-visible {
   margin: 0;
 }
 
+.detail-heading-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .page-heading > p:last-child,
 .detail-heading > div > p,
 .run-heading > div > p {
@@ -625,6 +632,13 @@ summary:focus-visible {
   font-size: 22px;
   letter-spacing: -0.03em;
   margin: 0;
+}
+
+.gaggle-heading-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .gaggle-detail-link {
@@ -879,7 +893,7 @@ summary:focus-visible {
   width: 16px;
 }
 
-.attention-link {
+.attention-link-shell {
   align-items: center;
   color: inherit;
   cursor: pointer;
@@ -960,6 +974,13 @@ summary:focus-visible {
 
 .attention-meta {
   text-align: right;
+}
+
+.attention-workflow {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .data-table {
@@ -1064,9 +1085,70 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
+.row-title-with-pivot {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.row-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row-arrow {
   color: var(--muted);
   justify-self: end;
+}
+
+.row-workflow {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.data-row-stretched {
+  position: relative;
+}
+
+.data-row-stretch-link {
+  inset: 0;
+  position: absolute;
+}
+
+.data-row-stretched > *:not(.data-row-stretch-link) {
+  pointer-events: none;
+}
+
+.data-row-stretched .scope-pivot,
+.data-row-stretched .scope-pivot * {
+  pointer-events: auto;
+}
+
+.scope-pivot {
+  display: inline-flex;
+  gap: 8px;
+  vertical-align: middle;
+}
+
+.scope-pivot-link {
+  align-items: center;
+  color: var(--muted-strong);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 640;
+  gap: 3px;
+  text-decoration: none;
+}
+
+.scope-pivot-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 .stage-progress {
@@ -2157,7 +2239,7 @@ a.telemetry-error-row:hover {
   min-width: 0;
 }
 
-.gaggle-workflow-node > a {
+.gaggle-workflow-node > .gaggle-workflow-card {
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-left: 3px solid var(--accent);
@@ -2170,11 +2252,11 @@ a.telemetry-error-row:hover {
   text-decoration: none;
 }
 
-.gaggle-workflow-node > a:hover {
+.gaggle-workflow-node > .gaggle-workflow-card:hover {
   border-color: var(--accent);
 }
 
-.gaggle-workflow-node > a:focus-visible {
+.gaggle-workflow-node > .gaggle-workflow-card:has(.data-row-stretch-link:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -2195,7 +2277,14 @@ a.telemetry-error-row:hover {
   overflow-wrap: anywhere;
 }
 
-.gaggle-workflow-node > a > p {
+.gaggle-workflow-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gaggle-workflow-node > .gaggle-workflow-card > p {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
@@ -2919,6 +3008,13 @@ a.telemetry-error-row:hover {
   display: flex;
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.run-identity-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .run-stale-state {

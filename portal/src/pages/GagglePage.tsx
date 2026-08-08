@@ -5,6 +5,7 @@ import type {
   WorkflowSummary,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   latestWorkflowOutcome,
   type GaggleInventory,
@@ -93,7 +94,10 @@ function GaggleTopology({
       <header className="detail-heading">
         <div>
           <span className="definition-label">Gaggle</span>
-          <h1>{gaggle.displayName}</h1>
+          <div className="detail-heading-line">
+            <h1>{gaggle.displayName}</h1>
+            <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+          </div>
           <p>
             {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
           </p>
@@ -233,19 +237,27 @@ function WorkflowNode({
 }) {
   return (
     <li className="gaggle-workflow-node">
-      <a
-        aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
-        href={routeHash({
-          page: "workflow",
-          gaggle: workflow.identity.gaggle,
-          id: workflow.identity.name,
-        })}
-      >
+      <div className="gaggle-workflow-card data-row-stretched">
+        <a
+          aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
+          className="data-row-stretch-link"
+          href={routeHash({
+            page: "workflow",
+            gaggle: workflow.identity.gaggle,
+            id: workflow.identity.name,
+          })}
+        />
         <span className="gaggle-workflow-kind">
           <Icon name="workflow" size={13} />
           Workflow
         </span>
-        <strong>{workflow.displayName}</strong>
+        <span className="gaggle-workflow-title">
+          <strong>{workflow.displayName}</strong>
+          <ScopePivot
+            label={`${gaggleDisplayName} / ${workflow.displayName}`}
+            scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+          />
+        </span>
         <p>{workflow.purpose}</p>
         <dl>
           <div>
@@ -274,7 +286,7 @@ function WorkflowNode({
             </dd>
           </div>
         </dl>
-      </a>
+      </div>
     </li>
   );
 }
