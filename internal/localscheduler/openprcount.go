@@ -51,24 +51,13 @@ type OpenPRRefresher struct {
 	known map[providers.RepositoryRef]bool
 }
 
-// NewOpenPRRefresher builds a refresher over lister for repo. interval <= 0 uses
-// DefaultOpenPRRefreshInterval. excludeLabels are PR labels whose bearers are
-// dropped from the count (#986): a PR parked pending a human — goobers:merge-
-// escalated — cannot be drained by the daemon, so counting it against the cap
-// only starves new work. needs-remediation and plain-open PRs are deliberately
-// NOT excluded (the daemon is draining them; the cap must still apply
-// backpressure). branchNamespaces maps each gaggle to its run-branch namespace
-// (#1115) so OpenPRCount matches each gaggle's own prefix; a nil/empty map (or a
-// gaggle absent from it) counts under the default "goobers/" namespace,
-// preserving pre-#1115 behavior. The count starts "unknown" until the first poll
+// NewOpenPRRefresher builds a refresher that polls every distinct repository
+// used by gaggleRepos. Gaggles absent from the map use defaultRepo. interval <=
+// 0 uses DefaultOpenPRRefreshInterval. excludeLabels are PR labels whose bearers
+// are dropped from the count (#986). branchNamespaces maps each gaggle to its
+// run-branch namespace (#1115). The count starts unknown until the first poll
 // completes (Admit fails open until then).
-func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
-	return NewMultiRepoOpenPRRefresher(lister, repo, nil, interval, excludeLabels, branchNamespaces)
-}
-
-// NewMultiRepoOpenPRRefresher builds a refresher that polls every distinct
-// repository used by gaggleRepos. Gaggles absent from the map use defaultRepo.
-func NewMultiRepoOpenPRRefresher(lister OpenPRLister, defaultRepo providers.RepositoryRef, gaggleRepos map[string]providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
+func NewOpenPRRefresher(lister OpenPRLister, defaultRepo providers.RepositoryRef, gaggleRepos map[string]providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
 	if interval <= 0 {
 		interval = DefaultOpenPRRefreshInterval
 	}

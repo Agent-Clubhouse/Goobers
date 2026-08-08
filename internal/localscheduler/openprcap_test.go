@@ -117,7 +117,7 @@ func TestOpenPRRefresherCountsRunBranchHeads(t *testing.T) {
 		"goobers/implementation-helper/run-4",
 		"feature/human-authored",
 	}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, nil, time.Hour, nil, nil)
 
 	if _, known := r.OpenPRCount("", "implementation"); known {
 		t.Fatal("expected unknown before the first poll (Admit fails open until then)")
@@ -150,7 +150,7 @@ func TestOpenPRRefresherCountsPerGaggleNamespace(t *testing.T) {
 		"acme/implementation/run-3",
 	}}
 	// The map value need not be pre-normalized; BranchNameIn adds the trailing "/".
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil,
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, nil, time.Hour, nil,
 		map[string]string{"acme": "acme"})
 	r.pollOnce(context.Background())
 
@@ -172,7 +172,7 @@ func TestOpenPRRefresherCountsPerGaggleRepository(t *testing.T) {
 		first:  {{Head: "first/implementation/run-1"}},
 		second: {{Head: "second/implementation/run-1"}, {Head: "second/implementation/run-2"}},
 	}}
-	r := NewMultiRepoOpenPRRefresher(
+	r := NewOpenPRRefresher(
 		lister,
 		first,
 		map[string]providers.RepositoryRef{"first": first, "second": second},
@@ -200,7 +200,7 @@ func TestOpenPRRefresherRepositoryErrorsAreIsolated(t *testing.T) {
 		},
 		errs: map[providers.RepositoryRef]error{first: errors.New("first unavailable")},
 	}
-	r := NewMultiRepoOpenPRRefresher(
+	r := NewOpenPRRefresher(
 		lister,
 		first,
 		map[string]providers.RepositoryRef{"first": first, "second": second},
@@ -236,7 +236,7 @@ func TestOpenPRRefresherExcludesHumanParkedPRs(t *testing.T) {
 			"goobers/implementation/run-3": {"goobers:needs-remediation"},
 		},
 	}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, []string{escalated}, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, nil, time.Hour, []string{escalated}, nil)
 
 	r.pollOnce(context.Background())
 	if n, known := r.OpenPRCount("", "implementation"); !known || n != 2 {
@@ -248,7 +248,7 @@ func TestOpenPRRefresherExcludesHumanParkedPRs(t *testing.T) {
 // leaves the count "unknown" so Admit doesn't block on a transient GitHub hiccup.
 func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	lister := &fakeOpenPRLister{err: errors.New("github unavailable")}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, nil, time.Hour, nil, nil)
 
 	r.pollOnce(context.Background())
 	if _, known := r.OpenPRCount("", "implementation"); known {
@@ -268,7 +268,7 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 // returns on context cancellation (its lifecycle under the daemon WaitGroup).
 func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {
 	lister := &fakeOpenPRLister{heads: []string{"goobers/implementation/run-1"}}
-	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, nil, time.Hour, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})

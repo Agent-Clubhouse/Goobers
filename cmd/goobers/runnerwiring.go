@@ -1616,7 +1616,7 @@ func buildOpenPRRefresher(cfg *instance.Config, gaggles []apiv1.Gaggle, workflow
 	// implementation work. needs-remediation / blocked-on-sibling are
 	// deliberately NOT excluded: the daemon can still drain those (remediation,
 	// sibling sequencing), and the cap must keep applying backpressure to them.
-	return localscheduler.NewMultiRepoOpenPRRefresher(lister, defaultRepo, gaggleRepos, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
+	return localscheduler.NewOpenPRRefresher(lister, defaultRepo, gaggleRepos, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
