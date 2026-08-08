@@ -88,23 +88,30 @@ export function RunPage({
 
   return (
     <>
-      {query.state.status === "stale" &&
-        (query.state.error ? (
-          <div className="run-stale-state run-stale-state-error" role="alert">
-            <span>
-              <strong>Run detail may be stale</strong>
-              <small>{query.state.error.message}</small>
-            </span>
-            <button className="text-button" onClick={query.retry} type="button">
-              Try again
-            </button>
-          </div>
-        ) : (
-          <div aria-live="polite" className="run-stale-state" role="status">
-            <span aria-hidden="true" className="loading-mark" />
-            <span>Refreshing run detail…</span>
-          </div>
-        ))}
+      {/*
+       * Only the stale+error case renders anything (matches WorkflowPage,
+       * ErrorsPage, InsightPage, GagglePage): every live invalidation makes
+       * useLiveData's connection freshness dip through "stale" for the
+       * refresh's round-trip (liveData.tsx's drainInvalidations), which
+       * flows into this query's status on every single live event for an
+       * active run — not just on genuine disconnects. A no-error "stale"
+       * banner here previously popped in and out above the graph/journal on
+       * every event, reflowing them each time (#2530, recurrence of the
+       * #2307/#2304/#2308 background-refresh-must-not-disrupt-the-view
+       * class). Real connection health is already surfaced globally by
+       * PortalShell's persistent freshness indicator.
+       */}
+      {query.state.status === "stale" && query.state.error && (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Run detail may be stale</strong>
+            <small>{query.state.error.message}</small>
+          </span>
+          <button className="text-button" onClick={query.retry} type="button">
+            Try again
+          </button>
+        </div>
+      )}
       <RunDetailWorkspace
         client={client}
         events={query.state.data.events}

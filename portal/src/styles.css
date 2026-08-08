@@ -2925,13 +2925,6 @@ a.telemetry-error-row:hover {
   padding: 8px 10px;
 }
 
-.run-stale-state .loading-mark {
-  border-width: 1px;
-  flex: 0 0 auto;
-  height: 14px;
-  width: 14px;
-}
-
 .run-stale-state-error {
   background: var(--warning-soft);
   border-color: var(--warning);
