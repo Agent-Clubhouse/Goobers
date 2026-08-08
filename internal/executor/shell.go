@@ -524,10 +524,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	if timedOut {
 		if stageInvokesProviderBuiltin(command) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
 				command[1], timeout, context.DeadlineExceeded,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -572,9 +572,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				stageName = command[1]
 			}
 			if report.Retryable {
-				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(report.Code, fmt.Errorf(
 					"executor: goobers stage %q reported %s: %s", stageName, report.Code, message,
-				))
+				)))
 			}
 			result.Status = apiv1.ResultFailure
 			result.Error = &apiv1.ErrorInfo{Code: report.Code, Message: message, Retryable: false}
@@ -641,9 +641,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 		providerErr := errors.New(message)
 		if providers.IsTransientError(providerErr) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("provider_error", fmt.Errorf(
 				"executor: provider stage %q failed: %w", command[1], providerErr,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -748,7 +748,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 }
 
 func providerStageInfrastructureFailure(stage, code, message string, outputs map[string]interface{}) error {
-	err := fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message)
+	err := StageFailure(code, fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message))
 	if code != providers.ErrorCodeRateLimited {
 		return invoke.InfrastructureFailure(err)
 	}

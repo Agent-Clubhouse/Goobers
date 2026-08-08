@@ -867,26 +867,16 @@ func IsTransientProvisionError(err error) bool {
 	if !errors.As(err, &gitErr) || gitErr.exitCode != 128 {
 		return false
 	}
-	message := strings.ToLower(string(gitErr.output))
+	output := string(gitErr.output)
+	if isNetworkGitOutput(output) {
+		return true
+	}
+	message := strings.ToLower(output)
 	for _, fragment := range []string{
-		"could not resolve host",
-		"couldn't resolve host",
-		"failed to connect to",
-		"could not connect to",
-		"connection refused",
-		"connection reset",
-		"connection timed out",
-		"ssl connection timeout",
-		"empty reply from server",
-		"network is unreachable",
-		"operation timed out",
-		"timeout was reached",
-		"timed out after",
-		"the remote end hung up unexpectedly",
-		"unexpected disconnect",
-		"early eof",
 		// Promisor blob-backfill failures at worktree checkout (#646) — see
-		// the function doc for why these wrappers classify as transient.
+		// the function doc for why these wrappers classify as transient
+		// without being provably network-owned (ClassifyProvisionError
+		// therefore leaves them on the git tier).
 		"from promisor remote",
 		"failed to fetch some objects",
 	} {
@@ -894,7 +884,7 @@ func IsTransientProvisionError(err error) bool {
 			return true
 		}
 	}
-	return remote5xxPattern.MatchString(message)
+	return false
 }
 
 // runGit runs git with args, using dir as the working directory (the process

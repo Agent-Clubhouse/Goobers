@@ -218,7 +218,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			if standaloneErrorCodes[k] == nil {
 				standaloneErrorCodes[k] = map[string]bool{}
 			}
-			standaloneErrorCodes[k][ev.Error.Code] = true
+			code, _ := errorCodeAndClass(ev)
+			standaloneErrorCodes[k][code] = true
 		}
 	}
 
@@ -262,7 +263,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-						nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+						nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 						return fmt.Errorf("rollup: insert run_error (stage.finished) seq %d: %w", ev.Seq, err)
 					}
 				}
@@ -272,20 +273,34 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			if ev.Error == nil {
 				continue
 			}
-			class := string(telemetry.ClassifyError(ev.Error.Code))
+			code, class := errorCodeAndClass(ev)
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-				nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
+				nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
 			}
 			if a := stages[eventStageKeys[i]]; a != nil {
-				a.errorCode = ev.Error.Code
+				a.errorCode = code
 				a.errorClass = class
+				// The producer's own diagnostic context (retry classification,
+				// whether the failed attempt committed work, #2224) is on the
+				// error event, not on stage.started — without this the failing
+				// attempt's runner_json was NULL for exactly the failures an
+				// operator most needs it for.
+				if rj, err := runnerJSON(ev.Runner); err != nil {
+					return err
+				} else if rj.Valid {
+					a.runnerJSON = rj
+				}
 				// Dispatch failures are followed directly by the next
 				// stage.started event, without a stage.finished event. The
 				// error event is therefore the journal's attempt boundary.
+				// Keyed on the journal's own Error.Code, which stays
+				// executor_error for every dispatch failure — the typed cause
+				// resolved above refines the row, it does not redefine which
+				// events close an attempt.
 				if ev.Error.Code == "executor_error" && a.finishedAt.IsZero() {
 					a.status = stageStatusFailure
 					a.finishedAt = ev.Time
@@ -367,6 +382,35 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 		}
 	}
 	return nil
+}
+
+// Runner-namespace keys carrying a stage failure's typed cause. The producer
+// (internal/runner) writes them alongside the generic Error.Code, which stays
+// executor_error for every dispatch failure because that exact string is the
+// journal's attempt-boundary marker.
+const (
+	runnerErrorCodeKey  = "errorCode"
+	runnerErrorClassKey = "errorClass"
+)
+
+// errorCodeAndClass resolves the code and class one error event contributes to
+// the rollup. The producer's typed refinement wins when present: an unauthorized
+// clone, a broken credential helper, a DNS outage and a claims-lock timeout are
+// four different owners' problems that otherwise share the one executor_error /
+// unknown row, which is what forced the 2026-08-08 audit to reconstruct a
+// failure taxonomy by reading 3,487 journals by hand. Classification is never
+// inferred from the message here — an unrefined event still classifies purely
+// from its own code.
+func errorCodeAndClass(ev journalEvent) (code, class string) {
+	code = ev.Error.Code
+	if typed, ok := ev.Runner[runnerErrorCodeKey].(string); ok && typed != "" {
+		code = typed
+	}
+	class = string(telemetry.ClassifyError(code))
+	if typed, ok := ev.Runner[runnerErrorClassKey].(string); ok && typed != "" {
+		class = typed
+	}
+	return code, class
 }
 
 var curationAgentOutputKeys = []string{
@@ -663,15 +707,59 @@ func (db *DB) resetSchedulerIngestCursor(ctx context.Context) error {
 	return nil
 }
 
+// spansCursor is the scheduler-spans ingest watermark: how far into
+// scheduler/spans/spans.jsonl IngestSchedulerLog has read. Unlike
+// schedulerCursor there is no seq to skip against — the file has no analogous
+// monotonic identity — so the byte offset alone is the whole contract: bytes
+// before it are already ingested, everything at or after is new.
+type spansCursor struct {
+	byteOffset int64
+}
+
+// readSpansCursor loads the spans ingest watermark. A missing row (a fresh
+// Rebuild, or the first ingest after upgrading from the old full-rescan path)
+// starts at offset 0 — the next ingest re-reads the whole spans file once,
+// same as every prior cycle did, and then never again: the per-span
+// delete-then-insert this fix keeps is idempotent, so replaying already-stored
+// spans on that one pass is harmless, just the last full-cost cycle.
+func readSpansCursor(sqlDB *sql.DB) (spansCursor, error) {
+	var c spansCursor
+	err := sqlDB.QueryRow(`SELECT byte_offset FROM spans_ingest_cursor WHERE id = 1`).Scan(&c.byteOffset)
+	if err == sql.ErrNoRows {
+		return spansCursor{}, nil
+	}
+	if err != nil {
+		return spansCursor{}, fmt.Errorf("rollup: read spans cursor: %w", err)
+	}
+	return c, nil
+}
+
+func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO spans_ingest_cursor (id, byte_offset)
+		VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset`,
+		byteOffset); err != nil {
+		return fmt.Errorf("rollup: write spans cursor: %w", err)
+	}
+	return nil
+}
+
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
 // scheduler decisions, starvation and error signals) and its rolling scheduler
-// spans. It is incremental (#1411): a per-tick call reads only the journal tail
-// past the last ingested offset and inserts only events above the seq
-// watermark, so a steady-state ingest with nothing new performs no writes and
-// the WAL stops churning. Idempotent — safe to call repeatedly or as part of
-// Rebuild; INSERT ... ON CONFLICT keeps a re-read after a journal reset, or a
-// historical duplicate seq (corruption), from ever duplicating a row (the first
-// occurrence wins, so one bad record can't block all rollup).
+// spans. Both halves are incremental: a per-tick call reads only the journal
+// tail past the last ingested offset and inserts only events above the seq
+// watermark (#1411), and reads only the spans tail past its own byte-offset
+// cursor instead of re-parsing and delete+reinserting the entire rolling spans
+// file every call (telemetry storage hygiene audit, 2026-08-08 — this file
+// grows for the instance's entire lifetime, unlike a run's own bounded span
+// file). A steady-state ingest with nothing new performs no writes and the WAL
+// stops churning. Idempotent — safe to call repeatedly or as part of Rebuild;
+// INSERT ... ON CONFLICT (events) and delete-then-insert (spans) keep a
+// re-read after a reset, or a historical duplicate (corruption), from ever
+// duplicating a row (events: the first occurrence wins; spans: the last write
+// wins, since replaying the exact same recorded span converges to the same
+// row either way).
 func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error {
 	db.schedulerMu.Lock()
 	defer db.schedulerMu.Unlock()
@@ -687,7 +775,11 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	spans, err := readSchedulerSpans(schedulerDir)
+	spanCursor, err := readSpansCursor(db.sql)
+	if err != nil {
+		return err
+	}
+	spans, newSpanOffset, _, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -727,7 +819,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT(seq) DO NOTHING`,
 					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
-					nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+					nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
 				}
 			}
@@ -746,6 +838,13 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 			}
 		}
 	}
+	// Incremental replay applies here too: spans is now bounded to the tail
+	// past spanCursor.byteOffset, not the whole rolling file (previously
+	// re-parsed AND delete+reinserted in full every tick — O(all-spans-ever),
+	// 75K spans / 55.6MB observed in the wild). The per-span delete-then-insert
+	// stays: it is what makes replaying an already-ingested span (the
+	// reset-from-head fallback in readSchedulerSpansFrom) harmless rather than
+	// a duplicate-key error.
 	for _, span := range spans {
 		if span.TraceID == "" {
 			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
@@ -758,6 +857,9 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 		}
 	}
 	if err := writeSchedulerCursor(ctx, tx, newOffset, maxSeq); err != nil {
+		return err
+	}
+	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
