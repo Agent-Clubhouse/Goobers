@@ -139,6 +139,15 @@ the CLI's `record` command simulates that call via the supplied
 `--response` file so the cassette-writing path can be exercised without
 network access.
 
+**Known gap:** `record` hardcodes `mode="real"` with no `shadow` parameter
+at all — fine today, since a human deliberately running `record` is by
+definition not a shadow invocation, but if a future runner integration
+(#2667) ever shells out to this CLI from inside a live run rather than
+calling `AdapterShim.invoke()` directly, the shadow guard wouldn't apply
+here since there's nothing to pass it. Add a `--shadow` passthrough at that
+point if it becomes a real path, rather than assuming CLI callers are
+always human-operated.
+
 **Known gap:** `replay`'s transparent resolution doesn't currently prefer a
 cassette's latest scrub rotation over the original — `replay` always
 resolves the canonical (un-rotated) path by signature. A rotated/scrubbed
