@@ -108,7 +108,7 @@ func connectFlagArgs(args []string) []string {
 }
 
 func runConnect(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	fs := newCLIFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	tokenEnv := fs.String("token-env", connectDefaultTokenEnv, "repository token environment variable name")
 	seed := fs.Bool("seed", false, "ensure selector labels and one starter issue on the repository")
