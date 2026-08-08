@@ -75,6 +75,7 @@ payload/.goobers/agent-toolkit/docs/VISION.md
 payload/.goobers/agent-toolkit/docs/adr/0001-agentic-sandbox-mechanism.md
 payload/.goobers/agent-toolkit/docs/adr/0002-provider-neutral-capability-namespaces.md
 payload/.goobers/agent-toolkit/docs/design/cobrand.md
+payload/.goobers/agent-toolkit/docs/design/notification-output.md
 payload/.goobers/agent-toolkit/docs/design/static-fan-out-fan-in.md
 payload/.goobers/agent-toolkit/docs/guides/goobers-io-mcp.md
 payload/.goobers/agent-toolkit/docs/guides/quickstart.md
