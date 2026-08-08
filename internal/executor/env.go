@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
@@ -116,9 +118,10 @@ func baseEnv(extra []string) []string {
 // plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
 // GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_BASE_BRANCH/GOOBERS_INSTANCE_ROOT and the
 // provider snapshot identifier associated with the scheduler evaluation (when
-// present), plus one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor
-// appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function
-// returns.
+// present), one GOOBERS_ADDITIONAL_REPO_* path per provisioned reference repo
+// when contents:read is declared, plus one GOOBERS_INPUT_* var per entry in
+// inputs. ShellExecutor appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE
+// after this function returns.
 // Every resolved token is also registered with registrar so it can be scrubbed
 // from anything the stage's process writes.
 //
@@ -185,20 +188,17 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		if snapshotID := providersnapshot.ID(ctx); snapshotID != "" {
 			env = append(env, providersnapshot.EnvVar+"="+snapshotID)
 		}
-		// Read-only reference-repo checkout paths (MGV-11 #1286), sorted for a
-		// deterministic env. Run context, so gated with the other GOOBERS_* vars:
-		// a local-ci stage running the project's own build never receives them.
-		if len(additionalRepos) > 0 {
-			names := make([]string, 0, len(additionalRepos))
-			for name := range additionalRepos {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				env = append(env, AdditionalRepoEnvVar(name)+"="+additionalRepos[name])
-			}
-			env = append(env, AdditionalReposEnvVar+"="+strings.Join(names, ","))
+	}
+	if slices.Contains(declared, string(capability.ContentsRead)) && len(additionalRepos) > 0 {
+		names := make([]string, 0, len(additionalRepos))
+		for name := range additionalRepos {
+			names = append(names, name)
 		}
+		sort.Strings(names)
+		for _, name := range names {
+			env = append(env, AdditionalRepoEnvVar(name)+"="+additionalRepos[name])
+		}
+		env = append(env, AdditionalReposEnvVar+"="+strings.Join(names, ","))
 	}
 	for k, v := range inputs {
 		if s, ok := v.(string); ok {

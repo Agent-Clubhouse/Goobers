@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -1110,6 +1111,50 @@ func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	want := "run= gaggle= wf= root= input=goobers:approved\n"
 	if got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestShellExecutor_DeterministicStagesReceiveAdditionalRepoPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		run  apiv1.DeterministicRun
+	}{
+		{
+			name: "command",
+			run: apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`},
+			},
+		},
+		{
+			name: "script",
+			run: apiv1.DeterministicRun{
+				Script: `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.RunID = "run-123"
+			env.Capabilities = []string{string(capability.ContentsRead)}
+			env.AdditionalWorkspaces = []apiv1.AdditionalWorkspace{{
+				Name: "clubhouse",
+				Path: "/work/refs/clubhouse",
+			}}
+
+			result, err := exec.Run(context.Background(), env, tt.run)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != "clubhouse|/work/refs/clubhouse|" {
+				t.Fatalf("stdout = %q, want additional repo paths without run identity", got)
+			}
+		})
 	}
 }
 
