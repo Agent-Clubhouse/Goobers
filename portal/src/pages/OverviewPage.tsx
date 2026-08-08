@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
+import { useAttentionDismissals } from "../attentionDismissals";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
@@ -75,6 +77,38 @@ function Overview({
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
 
+  const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
+  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [showDismissed, setShowDismissed] = useState(false);
+  const activeAttention = groups.attention.filter((run) => !dismissedRunIds.has(run.id));
+  const dismissedAttention = groups.attention.filter((run) => dismissedRunIds.has(run.id));
+  const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
+  const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
+    activeAttentionIds.has(runId),
+  );
+
+  const toggleSelected = (runId: string) => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) {
+        next.delete(runId);
+      } else {
+        next.add(runId);
+      }
+      return next;
+    });
+  };
+  const dismissRuns = (runIds: readonly string[]) => {
+    dismiss(runIds);
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      for (const runId of runIds) {
+        next.delete(runId);
+      }
+      return next;
+    });
+  };
+
   return (
     <>
       <header className="page-heading">
@@ -90,7 +124,7 @@ function Overview({
               : overview.health.ready
                 ? "Daemon is ready."
                 : "Daemon is starting."
-            : attentionHeading(groups.attention.length)}
+            : attentionHeading(activeAttention.length)}
         </h1>
         <p>
           {emptyInstance
@@ -119,44 +153,115 @@ function Overview({
               <p className="section-kicker section-kicker-danger">Attention</p>
               <h2>Needs attention</h2>
             </div>
-            <span className="section-count">
-              {groups.attention.length} {groups.attention.length === 1 ? "run" : "runs"}
-            </span>
-          </div>
-          <div className="attention-list">
-            {groups.attention.map((run) => {
-              const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
-              return (
-                <a
-                  aria-label={`Open run ${run.id}`}
-                  className="attention-row"
-                  href={routeHash({ page: "run", id: run.id })}
-                  key={run.id}
+            <div className="attention-actions">
+              {visibleSelectedRunIds.length > 0 && (
+                <button
+                  className="text-button"
+                  onClick={() => dismissRuns(visibleSelectedRunIds)}
+                  type="button"
                 >
-                  <span className="attention-icon">
-                    <Icon name="alert" />
-                  </span>
+                  Dismiss {visibleSelectedRunIds.length} selected
+                </button>
+              )}
+              {dismissedAttention.length > 0 && (
+                <button
+                  className="text-button"
+                  onClick={() => setShowDismissed((current) => !current)}
+                  type="button"
+                >
+                  {showDismissed ? "Hide dismissed" : `Show dismissed (${dismissedAttention.length})`}
+                </button>
+              )}
+              <span className="section-count">
+                {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
+              </span>
+            </div>
+          </div>
+          {activeAttention.length === 0 ? (
+            <p className="inline-empty">Nothing needs attention right now.</p>
+          ) : (
+            <div className="attention-list">
+              {activeAttention.map((run) => {
+                const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
+                const selected = selectedRunIds.has(run.id);
+                return (
+                  <div className="attention-row" key={run.id}>
+                    <input
+                      aria-label={`Select run ${run.id} for bulk actions`}
+                      checked={selected}
+                      className="attention-select"
+                      onChange={() => toggleSelected(run.id)}
+                      type="checkbox"
+                    />
+                    <a
+                      aria-label={`Open run ${run.id}`}
+                      className="attention-link"
+                      href={routeHash({ page: "run", id: run.id })}
+                    >
+                      <span className="attention-icon">
+                        <Icon name="alert" />
+                      </span>
+                      <span className="attention-copy">
+                        <strong>{runLabel(run)}</strong>
+                        <span>
+                          {run.phase === "escalated"
+                            ? "Run escalated and needs human review."
+                            : reason
+                              ? `${reason.code || "failed"} · ${reason.message}`
+                              : "Run failed and needs investigation."}
+                        </span>
+                      </span>
+                      <span className="attention-meta">
+                        <span>{workflowDisplayName(overview, run)}</span>
+                        <time dateTime={run.finishedAt ?? run.startedAt}>
+                          {formatTimestamp(run.finishedAt ?? run.startedAt)}
+                        </time>
+                      </span>
+                      <Icon name="arrow" />
+                    </a>
+                    <button
+                      aria-label={`Dismiss run ${run.id}`}
+                      className="attention-dismiss"
+                      onClick={() => dismissRuns([run.id])}
+                      type="button"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {showDismissed && dismissedAttention.length > 0 && (
+            <div className="attention-dismissed-list">
+              <div className="section-heading">
+                <p className="section-kicker">Dismissed</p>
+                <button
+                  className="text-button"
+                  onClick={() => restore(dismissedAttention.map((run) => run.id))}
+                  type="button"
+                >
+                  Restore all
+                </button>
+              </div>
+              {dismissedAttention.map((run) => (
+                <div className="attention-row attention-row-dismissed" key={run.id}>
                   <span className="attention-copy">
                     <strong>{runLabel(run)}</strong>
-                    <span>
-                      {run.phase === "escalated"
-                        ? "Run escalated and needs human review."
-                        : reason
-                          ? `${reason.code || "failed"} · ${reason.message}`
-                          : "Run failed and needs investigation."}
-                    </span>
-                  </span>
-                  <span className="attention-meta">
                     <span>{workflowDisplayName(overview, run)}</span>
-                    <time dateTime={run.finishedAt ?? run.startedAt}>
-                      {formatTimestamp(run.finishedAt ?? run.startedAt)}
-                    </time>
                   </span>
-                  <Icon name="arrow" />
-                </a>
-              );
-            })}
-          </div>
+                  <button
+                    aria-label={`Undo dismiss for run ${run.id}`}
+                    className="text-button"
+                    onClick={() => restore([run.id])}
+                    type="button"
+                  >
+                    Undo
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

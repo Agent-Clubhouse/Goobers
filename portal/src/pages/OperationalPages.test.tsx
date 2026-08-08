@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -11,8 +11,31 @@ import {
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
 
+const storedValues = new Map<string, string>();
+const originalLocalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
+
 beforeEach(() => {
   window.location.hash = "#/overview";
+  storedValues.clear();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedValues.clear(),
+      getItem: (key: string) => storedValues.get(key) ?? null,
+      key: (index: number) => [...storedValues.keys()][index] ?? null,
+      get length() {
+        return storedValues.size;
+      },
+      removeItem: (key: string) => storedValues.delete(key),
+      setItem: (key: string, value: string) => storedValues.set(key, value),
+    } satisfies Storage,
+  });
+});
+
+afterEach(() => {
+  if (originalLocalStorage) {
+    Object.defineProperty(window, "localStorage", originalLocalStorage);
+  }
 });
 
 describe("operational overview", () => {
@@ -311,6 +334,88 @@ describe("workflow and gaggle inventory", () => {
     expect(
       within(connections).queryByText(/Connected from the configured workflows/),
     ).not.toBeInTheDocument();
+  });
+
+  it("dismisses an attention run durably across remounts (#2535)", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const rendered = render(<App client={client} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Dismiss run 01JZ400FAILED" }),
+    );
+
+    expect(
+      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const reattentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const reattentionSection = reattentionHeading.closest("section");
+    if (!reattentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("bulk-dismisses selected attention runs and offers show dismissed / undo (#2535)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select run 01JZ400FAILED for bulk actions",
+      }),
+    );
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select run 01JZ402DASHBOARD for bulk actions",
+      }),
+    );
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Dismiss 2 selected" }),
+    );
+
+    expect(within(attentionSection).getByText("Nothing needs attention right now.")).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Show dismissed (2)" }),
+    );
+    expect(
+      within(attentionSection).getByRole("button", {
+        name: "Undo dismiss for run 01JZ400FAILED",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", {
+        name: "Undo dismiss for run 01JZ400FAILED",
+      }),
+    );
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
   });
 
   it("reports an unknown gaggle without substituting another inventory", async () => {
