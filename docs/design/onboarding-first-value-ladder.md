@@ -225,7 +225,8 @@ push-branch/open-pr stages and capabilities (Decision 7.3).
 template's `local-ci` stage runs a real command
 (`internal/instance/quickstart-v1/gaggles/example/workflows/quickstart.yaml`),
 and the getting-started sample gaggle declares `ciCommand: ["npm", "run",
-"ci"]` (`gaggle.yaml`), which `instance.ApplyGaggleCICommand` compiles into
+"ci"]` (`internal/instance/quickstart-v1/gaggles/example/gaggle.yaml`), which
+`instance.ApplyGaggleCICommand` compiles into
 that stage in place of its `make ci` default (MGV-1/#1009's pre-existing
 mechanism). `cmd/goobers/gettingstarted_sample_test.go`'s
 `assertGettingStartedLocalCI` asserts the stage actually executes and
