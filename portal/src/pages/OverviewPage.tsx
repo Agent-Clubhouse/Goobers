@@ -281,9 +281,11 @@ function Overview({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              No configuration is available to the Portal yet. Initialize the instance to add its
-              first gaggle and workflow definitions.
+              No configuration is available to the Portal yet. New to Goobers? The guided
+              walkthrough builds a working instance step by step.
             </p>
+            <RecoveryCommand command="goobers getting-started" />
+            <p>Or initialize the instance to add its first gaggle and workflow definitions.</p>
             <RecoveryCommand command="goobers init --guided <instance>" />
           </div>
         </section>
