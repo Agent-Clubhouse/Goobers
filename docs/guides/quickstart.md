@@ -30,16 +30,28 @@ path instead.
 ```sh
 bin/goobers init --demo ./demo-instance
 bin/goobers run demo ./demo-instance
-bin/goobers dashboard ./demo-instance
-bin/goobers trace <run-id> ./demo-instance
 ```
 
-The dashboard opens the Portal for the demo instance so you can follow the run
-and inspect its workflow. The run flows through curate -> implement -> review,
-passes the automated `review-verdict` gate, and produces a merge-preview
-artifact before finishing — fully deterministic and offline, with no pause for
-user input. `run` prints the run ID used by `trace`; the trace shows the
-complete journal, including the gate's recorded verdict.
+`run` waits for the run to reach a terminal state by default, so by the time
+it returns the demo has already flowed through curate -> implement -> review,
+passed the automated `review-verdict` gate, and produced a merge-preview
+artifact — fully deterministic and offline, with no pause for user input.
+`run` prints the run ID used by `trace`.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal:
+
+```sh
+# second terminal
+bin/goobers dashboard ./demo-instance
+```
+
+Press Ctrl-C in that terminal when you're done. Back in the first terminal,
+inspect the complete journal, including the gate's recorded verdict:
+
+```sh
+bin/goobers trace <run-id> ./demo-instance
+```
 
 ## 2. Graduate to the token-bearing quickstart template
 
@@ -86,6 +98,21 @@ configured token, seed entries appear as `issue:<id> (pending: <reason>)` in
 bin/goobers init --template=quickstart ./tutorial-instance
 bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
+```
+
+`run` waits for the run to reach a terminal state by default. This is a real
+autonomous run against your disposable repository, so it takes noticeably
+longer than the offline demo: it claims one approved issue, implements it,
+performs an advisory code-review task, pushes the run branch, and opens a
+pull request. It is **not for production**: it intentionally omits CI gates,
+remediation loops, bounded escalation, merge policy, and issue close-out so
+the onboarding happy path has no stall points.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal, and press Ctrl-C there when you're done:
+
+```sh
+# second terminal
 bin/goobers dashboard ./tutorial-instance
 ```
 
@@ -97,13 +124,6 @@ or preserved file and the validation command to run next:
 bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
-
-The dashboard opens the same Portal against this first GitHub-backed run. This
-linear template claims one approved issue, implements it, performs an
-advisory code-review task, pushes the run branch, and opens a pull request. It
-is **not for production**: it intentionally omits CI gates, remediation loops,
-bounded escalation, merge policy, and issue close-out so the onboarding happy
-path has no stall points.
 
 Continue with section 3 to configure a regular instance and run its selected
 canonical workflow. Once that works, read the
