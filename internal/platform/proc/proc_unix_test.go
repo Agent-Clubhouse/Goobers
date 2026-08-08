@@ -215,18 +215,40 @@ func TestKillTreeDoesNotSignalReusedDescendantPID(t *testing.T) {
 	}
 }
 
-func TestProcessIdentityWithoutStartTimeSignalsProcess(t *testing.T) {
+func TestProcessIdentityWithoutStartTimeUsesOnlyUnsupportedPlatformFallback(t *testing.T) {
 	cmd := exec.Command("sleep", "300")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start process: %v", err)
 	}
 
 	processIdentity{pid: cmd.Process.Pid}.signal(syscall.SIGKILL)
+	if startTimeSupported {
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}()
+		if !probeAlive(cmd.Process.Pid) {
+			t.Fatalf("process %d was signaled after its start-time lookup failed", cmd.Process.Pid)
+		}
+		return
+	}
+
 	if err := cmd.Wait(); err == nil {
-		t.Fatal("Wait unexpectedly succeeded after SIGKILL")
+		t.Fatal("Wait unexpectedly succeeded after unsupported-platform fallback SIGKILL")
 	}
 	if probeAlive(cmd.Process.Pid) {
-		t.Fatalf("process %d survived signal without start-time support", cmd.Process.Pid)
+		t.Fatalf("process %d survived unsupported-platform fallback signal", cmd.Process.Pid)
+	}
+}
+
+func TestIdentifyProcessesKeepsOnlyVerifiableIdentities(t *testing.T) {
+	const nonexistentPID = -1
+	identities := identifyProcesses([]int{nonexistentPID})
+	if startTimeSupported && len(identities) != 0 {
+		t.Fatalf("identifyProcesses returned unverifiable identity on supported platform: %+v", identities)
+	}
+	if !startTimeSupported && len(identities) != 1 {
+		t.Fatalf("identifyProcesses returned %d identities on unsupported platform, want 1", len(identities))
 	}
 }
 
