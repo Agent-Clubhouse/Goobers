@@ -24,6 +24,10 @@ func newTestServer(t *testing.T) (*Server, string) {
 		Workspace:    ws,
 		ArtifactFile: "findings.md",
 		Inputs:       map[string]string{"churn-data.artifact[0]": ".goobers/context/00-churn-data.artifact_0_"},
+		RunID:        "run-123",
+		WorkflowID:   "implementation",
+		TaskID:       "implement",
+		Gaggle:       "goobers",
 	}
 	return NewServer(NewToolset(cfg)), ws
 }
@@ -62,6 +66,9 @@ func TestServeFullSession(t *testing.T) {
 		"name":      "read_input",
 		"arguments": map[string]interface{}{"name": "churn-data.artifact[0]"},
 	}))
+	in.WriteString(rpcLine(t, 6, "tools/call", map[string]interface{}{
+		"name": "get_run_info",
+	}))
 
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
@@ -73,8 +80,8 @@ func TestServeFullSession(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("expected 5 responses (init, list, 3 calls), got %d: %v", len(lines), lines)
+	if len(lines) != 6 {
+		t.Fatalf("expected 6 responses (init, list, 4 calls), got %d: %v", len(lines), lines)
 	}
 
 	var responses []rpcResponse
@@ -91,11 +98,12 @@ func TestServeFullSession(t *testing.T) {
 		t.Fatalf("initialize errored: %+v", responses[0].Error)
 	}
 
-	// tools/list — 3 tools present
+	// tools/list — expected tools present
 	listResult, _ := json.Marshal(responses[1].Result)
 	if !strings.Contains(string(listResult), "publish_output") ||
 		!strings.Contains(string(listResult), "list_inputs") ||
-		!strings.Contains(string(listResult), "read_input") {
+		!strings.Contains(string(listResult), "read_input") ||
+		!strings.Contains(string(listResult), "get_run_info") {
 		t.Fatalf("tools/list missing an expected tool: %s", listResult)
 	}
 
@@ -122,6 +130,14 @@ func TestServeFullSession(t *testing.T) {
 	readInputResult, _ := json.Marshal(responses[4].Result)
 	if !strings.Contains(string(readInputResult), "upstream content") {
 		t.Fatalf("read_input missing content: %s", readInputResult)
+	}
+
+	// get_run_info — returns the identity from the invocation config
+	runInfoResult, _ := json.Marshal(responses[5].Result)
+	for _, want := range []string{"run-123", "implementation", "implement", "goobers"} {
+		if !strings.Contains(string(runInfoResult), want) {
+			t.Fatalf("get_run_info missing %q: %s", want, runInfoResult)
+		}
 	}
 }
 

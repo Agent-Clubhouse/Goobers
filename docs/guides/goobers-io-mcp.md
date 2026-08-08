@@ -1,11 +1,10 @@
-# The goobers-io MCP: automatic artifact I/O for agentic stages
+# The goobers-io MCP: run identity and artifact I/O for agentic stages
 
-`goobers-io` is a generic MCP server the harness wires into an agentic
-stage automatically when that stage has a reason to need it — a declared
-output to write, or upstream content to read. It replaces "the model writes
-a file with whatever generic editing tool it reaches for, then reports a
-path it hopes is right" with a small, dedicated tool surface:
-`publish_output`, `list_inputs`, `read_input`, and `grep_input`.
+`goobers-io` is a generic MCP server the harness wires into every agentic
+stage automatically. It exposes the stage's run identity and replaces "the
+model writes a file with whatever generic editing tool it reaches for, then
+reports a path it hopes is right" with a small, dedicated tool surface:
+`get_run_info`, `publish_output`, `list_inputs`, `read_input`, and `grep_input`.
 
 ## Why it exists
 
@@ -30,11 +29,11 @@ scale. `list_inputs`/`grep_input`/`read_input` let a stage page through or
 search a large upstream artifact instead of either truncating it or
 blowing the context budget.
 
-## How eligibility works — there is no YAML declaration for this
+## How auto-wiring works — there is no YAML declaration for this
 
 `goobers-io` is **not** something a goober or workflow declares in
-`tools:` or anywhere else. Eligibility is derived automatically by the
-harness from two conditions, either one sufficient on its own:
+`tools:` or anywhere else. Every agentic stage gets `get_run_info`. The
+file operations apply when either of these conditions is present:
 
 - The stage declares an `artifactFile` input (see below) — makes
   `publish_output` available.
@@ -42,10 +41,8 @@ harness from two conditions, either one sufficient on its own:
   populated automatically — see "How context propagates" below) — makes
   `list_inputs`/`grep_input`/`read_input` available.
 
-A stage with neither gets no auto-wiring at all — nothing about its prompt
-or tool surface changes. A stage with one gets only the tools that
-condition unlocks (write-only stages don't get read tools they have no use
-for, and vice versa).
+A stage with neither still gets run identity access. File operations fail
+closed when their corresponding output or input is absent.
 
 **Do not** try to wire this by hand — don't add an `mcpServers` entry named
 `goobers-io`, don't add its tool names to `tools:`. Doing so would route it
@@ -121,6 +118,8 @@ the read tools exactly the same way.
 
 ## The tools, briefly
 
+- **`get_run_info()`** — returns the current stage's `runId`, `workflowId`,
+  `taskId`, and `gaggle` directly from its invocation envelope.
 - **`publish_output(content)`** — writes `content` to the stage's declared
   `artifactFile`. Available only when `artifactFile` is declared. This is
   the *only* way a model should produce that file — instructions.md should
@@ -140,9 +139,9 @@ the read tools exactly the same way.
   point, never silently dropped.
 
 The harness auto-appends a short "## goobers-io tools" section to the
-stage's prompt directing the model to these tools — only the write
-directive when `artifactFile` is eligible, only the read directive when
-context is present, both when both are. This is the mechanism, not
+stage's prompt, with the write directive when `artifactFile` is eligible
+and the read directive when context is present. `get_run_info` is
+self-describing in the MCP tool list. This is the mechanism, not
 something an instructions.md file needs to duplicate; hand-written
 completion prose that tells the model *how* to write or read its
 artifact should be removed once a stage adopts this, not layered on top

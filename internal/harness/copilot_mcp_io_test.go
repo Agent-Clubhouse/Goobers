@@ -16,8 +16,8 @@ import (
 func TestAutoGoobersIOEligible(t *testing.T) {
 	workspace := t.TempDir()
 	bare := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
-	if autoGoobersIOEligible(bare) {
-		t.Fatal("a task with no artifactFile and no context must not be eligible")
+	if !autoGoobersIOEligible(bare) {
+		t.Fatal("a valid invocation must be eligible for get_run_info")
 	}
 
 	withArtifact := bare
@@ -44,13 +44,13 @@ func TestWithAutoGoobersIONoOpsWithoutSelfBin(t *testing.T) {
 	}
 }
 
-func TestWithAutoGoobersIONoOpsWhenIneligible(t *testing.T) {
+func TestWithAutoGoobersIONoOpsWithoutRunIdentity(t *testing.T) {
 	workspace := t.TempDir()
-	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace, Tools: []string{"shell"}}
+	req := RunRequest{Workspace: workspace, Tools: []string{"shell"}}
 
 	got := withAutoGoobersIO(req, "/usr/local/bin/goobers")
 	if len(got.Tools) != 1 || got.Tools[0] != "shell" {
-		t.Fatalf("an ineligible task must be returned unchanged, got Tools=%v", got.Tools)
+		t.Fatalf("a task without run identity must be returned unchanged, got Tools=%v", got.Tools)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestWithAutoGoobersIOGrantsToolsButNeverTouchesMCPServers(t *testing.T) {
 	// req.Tools feeds --available-tools=, which needs the server-prefixed
 	// form for an externally-registered server to resolve at all (confirmed
 	// live) — not the bare names the server's own "tools" field uses.
-	wantTools := []string{"shell", "goobers-io-publish_output", "goobers-io-list_inputs", "goobers-io-read_input", "goobers-io-grep_input"}
+	wantTools := []string{"shell", "goobers-io-get_run_info", "goobers-io-publish_output", "goobers-io-list_inputs", "goobers-io-read_input", "goobers-io-grep_input"}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("Tools = %v, want %v", got.Tools, wantTools)
 	}
@@ -86,16 +86,16 @@ func TestWithAutoGoobersIOGrantsToolsButNeverTouchesMCPServers(t *testing.T) {
 	}
 }
 
-func TestGoobersIOAdditionalMCPConfigArgEmptyWhenIneligible(t *testing.T) {
+func TestGoobersIOAdditionalMCPConfigArgEmptyWithoutRunIdentity(t *testing.T) {
 	workspace := t.TempDir()
-	req := RunRequest{Envelope: testEnvelope(workspace), Workspace: workspace}
+	req := RunRequest{Workspace: workspace}
 
 	arg, err := goobersIOAdditionalMCPConfigArg(req, "/usr/local/bin/goobers")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if arg != "" {
-		t.Fatalf("expected no arg for an ineligible task, got %q", arg)
+		t.Fatalf("expected no arg without run identity, got %q", arg)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 		t.Fatalf("config path %q is not inside the workspace %q", configPath, resolvedWorkspace)
 	}
 
-	wantTools := []string{"publish_output", "list_inputs", "read_input", "grep_input"}
+	wantTools := []string{"get_run_info", "publish_output", "list_inputs", "read_input", "grep_input"}
 	if len(server.Tools) != len(wantTools) {
 		t.Fatalf("server.Tools = %v, want %v", server.Tools, wantTools)
 	}
@@ -187,6 +187,9 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	}
 	if got := cfg.Inputs["review-code-quality.artifact[0]"]; got != ".goobers/context/00-review-code-quality.artifact_0_" {
 		t.Errorf("Inputs mapping = %q", got)
+	}
+	if cfg.RunID != "run-1" || cfg.WorkflowID != "default-implement" || cfg.TaskID != "implement" || cfg.Gaggle != "example" {
+		t.Errorf("run identity = run %q, workflow %q, task %q, gaggle %q", cfg.RunID, cfg.WorkflowID, cfg.TaskID, cfg.Gaggle)
 	}
 
 	// The file must be private (0600).
@@ -355,8 +358,8 @@ func TestRenderPromptIncludesGoobersIOSectionOnlyWhenEligible(t *testing.T) {
 		Workspace:      workspace,
 		CompletionPath: "result.json",
 	}
-	if strings.Contains(renderPrompt(req), "## goobers-io tools") {
-		t.Fatal("must not mention goobers-io tools when ineligible")
+	if !strings.Contains(renderPrompt(req), "## goobers-io tools") {
+		t.Fatal("must include the goobers-io section for every valid invocation")
 	}
 
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}

@@ -8,7 +8,7 @@ import (
 )
 
 // protocolVersion is the MCP wire version this server speaks. Kept as a
-// literal rather than negotiated — the three tools here have no version-
+// literal rather than negotiated — the tools here have no version-
 // sensitive behavior to gate.
 const protocolVersion = "2024-11-05"
 
@@ -143,6 +143,13 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("invalid tools/call params: %w", err)
 	}
 	switch params.Name {
+	case "get_run_info":
+		data, err := json.Marshal(s.tools.GetRunInfo())
+		if err != nil {
+			return nil, err
+		}
+		return textResult(string(data)), nil
+
 	case "publish_output":
 		var args struct {
 			Content string `json:"content"`
@@ -228,6 +235,15 @@ func textResult(text string) map[string]interface{} {
 
 func toolDefs() []toolDef {
 	return []toolDef{
+		{
+			Name:        "get_run_info",
+			Description: "Return this agentic stage's run identity: runId, workflowId, taskId, and gaggle.",
+			InputSchema: map[string]interface{}{
+				"type":                 "object",
+				"properties":           map[string]interface{}{},
+				"additionalProperties": false,
+			},
+		},
 		{
 			Name:        "publish_output",
 			Description: "Write this stage's declared output content. Replaces writing a file yourself — call this with your finished output instead of using a file-editing tool, so it's reliably picked up by the runner.",
