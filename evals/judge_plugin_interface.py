@@ -262,7 +262,10 @@ class LLMJudgePlugin(JudgePlugin):
     def _call_model(self, prompt: str) -> Dict[str, Any]:
         """#2667 implements this: send `prompt` to an LLM and return the
         parsed JSON response. Must return a dict with at least a `score`
-        key; `labels`, `reason`, `confidence` are optional (defaulted below).
+        key; `labels` and `reason` are optional. `confidence` is optional
+        too, but an omitted `confidence` is treated as "the model didn't
+        report one" and defaults to 0.0, NOT 1.0 — see `evaluate()` below
+        for why that direction matters.
         Not implemented here — no model client exists yet in this repo.
         """
         raise NotImplementedError
@@ -276,7 +279,15 @@ class LLMJudgePlugin(JudgePlugin):
             score=float(response["score"]),
             reason=str(response.get("reason", "")),
             labels=list(response.get("labels", [])),
-            confidence=float(response.get("confidence", 1.0)),
+            # Fail-SAFE, not fail-open: route_for_review() sends any LLM
+            # judge below low_confidence_floor to human review specifically
+            # to catch shaky judgments. Defaulting a missing `confidence` to
+            # 1.0 (maximally confident) would let a model that omits it —
+            # or returns malformed JSON a caller patches over with `{}` —
+            # silently skip that gate as "fully trustworthy". Defaulting to
+            # 0.0 instead guarantees an omitted confidence routes to a
+            # human rather than past one.
+            confidence=float(response.get("confidence", 0.0)),
             raw_evidence=response,
         )
 

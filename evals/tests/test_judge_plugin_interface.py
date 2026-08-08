@@ -17,6 +17,7 @@ from judge_plugin_interface import (  # noqa: E402
     JudgeContext,
     JudgeKind,
     JudgeResult,
+    LLMJudgePlugin,
     RegexChecker,
     SimilarityChecker,
     compute_ensemble_score,
@@ -84,6 +85,39 @@ class SimilarityCheckerTests(unittest.TestCase):
         self.assertEqual(result.confidence, 0.0)
 
 
+class _StubLLMJudge(LLMJudgePlugin):
+    """Minimal concrete LLMJudgePlugin for testing evaluate()'s response
+    handling without a real model call."""
+
+    def __init__(self, response, judge_id="stub-llm"):
+        super().__init__(judge_id, prompt_template="{input}")
+        self._response = response
+
+    def _call_model(self, prompt):
+        return self._response
+
+
+class LLMJudgePluginConfidenceTests(unittest.TestCase):
+    """Regression coverage for the fail-safe (not fail-open) confidence
+    default: a model response that omits `confidence` must be treated as
+    LOW confidence (routes to human review), not high confidence (skips
+    the human-review gate route_for_review's low-confidence branch exists
+    to enforce)."""
+
+    def test_reported_confidence_is_used_as_is(self):
+        result = _StubLLMJudge({"score": 0.9, "confidence": 0.95}).evaluate(_ctx())
+        self.assertEqual(result.confidence, 0.95)
+
+    def test_omitted_confidence_defaults_low_not_high(self):
+        result = _StubLLMJudge({"score": 0.9}).evaluate(_ctx())
+        self.assertEqual(result.confidence, 0.0)
+
+    def test_omitted_confidence_triggers_human_review_despite_high_score(self):
+        result = _StubLLMJudge({"score": 0.95}).evaluate(_ctx())
+        decision = route_for_review([result])
+        self.assertEqual(decision.verdict, "human-review")
+
+
 class EnsembleScoreTests(unittest.TestCase):
     def test_default_weights_worked_example(self):
         # Matches the worked example in EVALS_JUDGE_DESIGN.md: deterministic
@@ -93,8 +127,19 @@ class EnsembleScoreTests(unittest.TestCase):
             JudgeResult("clarity-llm", JudgeKind.LLM, 0.75, "mostly clear"),
             JudgeResult("toxicity-cls", JudgeKind.CLASSIFIER, 0.9, "benign"),
         ]
-        # 0.4*1.0 + 0.4*0.75 + 0.2*0.9 = 0.4 + 0.3 + 0.18 = 0.88
+        # 0.4*1.0 + 0.4*0.75 + 0.2*0.9 = 0.4 + 0.3 + 0.18 = 0.88, / total_weight 1.0
         self.assertAlmostEqual(compute_ensemble_score(results), 0.88)
+
+    def test_missing_kind_worked_example_normalizes_by_weight_that_ran(self):
+        # Second worked example in EVALS_JUDGE_DESIGN.md: no classifier judge
+        # ran, so its 0.2 weight must not silently deflate the score — the
+        # denominator excludes it too.
+        results = [
+            JudgeResult("exact-match", JudgeKind.DETERMINISTIC, 1.0, "matched"),
+            JudgeResult("clarity-llm", JudgeKind.LLM, 0.75, "mostly clear"),
+        ]
+        # (0.4*1.0 + 0.4*0.75) / (0.4 + 0.4) = 0.70 / 0.8 = 0.875
+        self.assertAlmostEqual(compute_ensemble_score(results), 0.875)
 
     def test_multiple_judges_of_one_kind_split_that_kinds_weight(self):
         results = [

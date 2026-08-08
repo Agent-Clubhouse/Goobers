@@ -80,9 +80,22 @@ scores with `compute_ensemble_score(results, weights)`:
   unweighted mean rather than raising — a misconfigured weight table
   shouldn't make every scenario unscorable.
 
-### Worked example
+### Formula
 
-Three judges run on one scenario:
+```
+ensemble_score = ( Σ_kind  weight[kind] * mean(scores in that kind) )
+                  --------------------------------------------------
+                  Σ_kind  weight[kind]   (only kinds that actually ran)
+```
+
+The division by the sum of weights that actually ran is not optional
+bookkeeping — it's what makes the score well-defined when a scenario's
+configured judges don't cover every kind (e.g. no classifier judge ran, so
+`classifier`'s weight shouldn't silently deflate the score toward 0). A
+formula without that denominator only happens to match `compute_ensemble_score`
+when every kind is present *and* the configured weights already sum to 1.0.
+
+### Worked example (all three kinds present, weights sum to 1.0)
 
 | Judge | Kind | Score |
 |---|---|---|
@@ -91,8 +104,26 @@ Three judges run on one scenario:
 | `toxicity-cls` | classifier | 0.9 |
 
 ```
-ensemble = 0.4*1.0 + 0.4*0.75 + 0.2*0.9 = 0.4 + 0.30 + 0.18 = 0.88
+weighted_sum  = 0.4*1.0 + 0.4*0.75 + 0.2*0.9 = 0.4 + 0.30 + 0.18 = 0.88
+total_weight  = 0.4 + 0.4 + 0.2 = 1.0
+ensemble      = 0.88 / 1.0 = 0.88
 ```
+
+### Worked example (a configured kind didn't run — division matters here)
+
+Same weights, but this scenario has no classifier judge configured at all
+(only `exact-match` and `clarity-llm` ran):
+
+```
+weighted_sum  = 0.4*1.0 + 0.4*0.75 = 0.4 + 0.30 = 0.70
+total_weight  = 0.4 + 0.4 = 0.8            # classifier's 0.2 excluded — it never ran
+ensemble      = 0.70 / 0.8 = 0.875
+```
+
+Without the division, naively summing `0.4*1.0 + 0.4*0.75 = 0.70` would
+understate the score by treating the absent classifier as if it had scored
+0 — exactly the "missing judge silently drags the score down" failure this
+design is meant to avoid.
 
 This is `EnsembleScoreTests.test_default_weights_worked_example` in the test
 suite — the example above is not illustrative prose, it's the literal
