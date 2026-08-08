@@ -102,7 +102,7 @@ class CLIRoundtripTests(unittest.TestCase):
         self.assertEqual(code, 0)
         summaries = json.loads(out)
         self.assertEqual(len(summaries), 1)
-        self.assertFalse(summaries[0]["scrubbed"])
+        self.assertEqual(summaries[0]["scrubbed_fields"], [])
 
     def test_inspect_single_cassette_by_path(self):
         run_cli(
@@ -153,13 +153,23 @@ class CLIRoundtripTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("scrubbed:", out)
 
+        # The original cassette is immutable (EVALS_CASSETTE.md §8) — scrub
+        # writes a new rotated file rather than editing it in place.
         with open(cassette_path) as f:
-            cassette = json.load(f)
-        self.assertEqual(cassette["response"]["body"]["auth_token"], "***SCRUBBED***")
-        self.assertEqual(cassette["response"]["body"]["tx_id"], "tx-1")
-        self.assertTrue(cassette["metadata"]["scrubbed"])
+            original = json.load(f)
+        self.assertEqual(original["response"]["body"]["auth_token"], "sekrit")
+
+        rotated_path = cassette_path.replace(".json", ".r1.json")
+        self.assertTrue(os.path.exists(rotated_path))
+        with open(rotated_path) as f:
+            rotated = json.load(f)
+        self.assertEqual(rotated["response"]["body"]["auth_token"], "***SCRUBBED***")
+        self.assertEqual(rotated["response"]["body"]["tx_id"], "tx-1")
+        self.assertIn("response.body.auth_token", rotated["scrubbed_fields"])
 
     def test_scrub_all_for_adapter(self):
+        with open(self.response_path, "w") as f:
+            json.dump({"status": 200, "body": {"auth_token": "sekrit", "tx_id": "tx-1"}}, f)
         run_cli(
             [
                 "--cassettes-dir",
@@ -178,6 +188,27 @@ class CLIRoundtripTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertIn("done: 1 cassette(s) scrubbed", out)
+
+    def test_scrub_skips_cassette_with_nothing_to_scrub(self):
+        run_cli(
+            [
+                "--cassettes-dir",
+                self.cassettes_dir,
+                "record",
+                "--adapter-id",
+                "bank_api",
+                "--request",
+                self.request_path,
+                "--response",
+                self.response_path,
+            ]
+        )
+        code, out = run_cli(
+            ["--cassettes-dir", self.cassettes_dir, "scrub", "--adapter-id", "bank_api", "--all"]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("skipped (nothing new to scrub):", out)
+        self.assertIn("done: 0 cassette(s) scrubbed", out)
 
     def test_scrub_requires_a_target(self):
         code, _out = run_cli(["--cassettes-dir", self.cassettes_dir, "scrub"])

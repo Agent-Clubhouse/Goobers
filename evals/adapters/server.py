@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Minimal HTTP JSON adapter shim: POST /adapter/invoke.
 
-Implements the wire contract from EVALS_SANDBOX_API.md:
+Implements the wire contract proposed in evals/EVALS_SANDBOX_API.md §3
+(PR #2671 / issue #2665 — open, not yet merged, at the time this was
+reconciled):
 
     POST /adapter/invoke
     {"adapter_id": "bank_api", "mode": "replay",
-     "request": {...}, "metadata": {"run_id": "...", "seed": 42}}
+     "request": {...},
+     "metadata": {"run_id": "...", "scenario_id": "...", "seed": 42, "shadow": false}}
 
     -> {"status": "ok|error|blocked", "mode": "replay", "response": {...},
-        "recorded": true, "signature": "sha256..."}
+        "recorded": true, "signature": "sha256...", "side_effects_performed": []}
+
+A "blocked" outcome (e.g. a shadow run's mode="real" rejection) is a normal,
+successful HTTP response (200) carrying a structured {"error": {"code",
+"message"}} per §3.3 — it is a distinct, expected policy outcome, not a
+transport error. Malformed requests (bad JSON, missing required fields,
+unknown adapter_id/mode) are transport-level 4xx errors.
 
 Built on Python's standard-library http.server rather than a framework
 (Flask, etc.) to keep this prototype dependency-free, consistent with the
@@ -45,7 +54,9 @@ def make_handler(shim: shim_mod.AdapterShim):
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib method name
             if self.path != "/adapter/invoke":
-                self._send_json(404, {"status": "error", "error": f"unknown path {self.path!r}"})
+                self._send_json(
+                    404, {"status": "error", "error": {"code": "NOT_FOUND", "message": f"unknown path {self.path!r}"}}
+                )
                 return
 
             length = int(self.headers.get("Content-Length", "0"))
@@ -53,7 +64,9 @@ def make_handler(shim: shim_mod.AdapterShim):
             try:
                 envelope = json.loads(raw or b"{}")
             except json.JSONDecodeError as exc:
-                self._send_json(400, {"status": "error", "error": f"invalid JSON: {exc}"})
+                self._send_json(
+                    400, {"status": "error", "error": {"code": "INVALID_JSON", "message": str(exc)}}
+                )
                 return
 
             adapter_id = envelope.get("adapter_id")
@@ -61,21 +74,55 @@ def make_handler(shim: shim_mod.AdapterShim):
             request = envelope.get("request")
             metadata = envelope.get("metadata") or {}
             seed = metadata.get("seed", 0)
+            shadow = bool(metadata.get("shadow", False))
+            scenario_id = metadata.get("scenario_id")
+            recorder_mode = envelope.get("recorder_mode")
 
             if not adapter_id or not mode or request is None:
                 self._send_json(
                     400,
-                    {"status": "error", "error": "adapter_id, mode, and request are required"},
+                    {
+                        "status": "error",
+                        "error": {
+                            "code": "MISSING_REQUIRED_FIELD",
+                            "message": "adapter_id, mode, and request are required",
+                        },
+                    },
                 )
                 return
 
             try:
-                result = shim.invoke(adapter_id, mode, request, seed=seed)
+                result = shim.invoke(
+                    adapter_id,
+                    mode,
+                    request,
+                    seed=seed,
+                    shadow=shadow,
+                    scenario_id=scenario_id,
+                    recorder_mode=recorder_mode,
+                )
+            except shim_mod.ShadowRealModeForbiddenError as exc:
+                # A policy rejection is a distinct, expected outcome (§3.2/
+                # §3.3) — 200 with status="blocked", not a transport error.
+                self._send_json(
+                    200,
+                    {
+                        "status": "blocked",
+                        "mode": mode,
+                        "error": {"code": exc.code, "message": str(exc)},
+                        "signature": shim_mod.compute_signature(request, seed),
+                    },
+                )
+                return
             except shim_mod.CassetteMissingError as exc:
-                self._send_json(404, {"status": "error", "mode": mode, "error": str(exc)})
+                self._send_json(
+                    404, {"status": "error", "mode": mode, "error": {"code": exc.code, "message": str(exc)}}
+                )
                 return
             except shim_mod.AdapterError as exc:
-                self._send_json(400, {"status": "error", "mode": mode, "error": str(exc)})
+                self._send_json(
+                    400, {"status": "error", "mode": mode, "error": {"code": exc.code, "message": str(exc)}}
+                )
                 return
 
             self._send_json(200, result.to_dict())

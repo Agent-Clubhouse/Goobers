@@ -62,7 +62,6 @@ class CassetteStoreTests(unittest.TestCase):
         cassette = {
             "signature": signature,
             "adapter_id": "bank_api",
-            "mode": "replay",
             "request": request,
             "response": {"status": 200, "body": {"ok": True}},
             "metadata": {"recorded_at": "now", "run_id": "r1", "recorder_version": "0.1"},
@@ -82,7 +81,6 @@ class CassetteStoreTests(unittest.TestCase):
         cassette = {
             "signature": "sha256:abc",
             "adapter_id": "../../etc",
-            "mode": "replay",
             "request": {},
             "response": {},
             "metadata": {},
@@ -109,8 +107,7 @@ class CassetteStoreTests(unittest.TestCase):
                 {
                     "signature": signature,
                     "adapter_id": adapter_id,
-                    "mode": "replay",
-                    "request": request,
+                            "request": request,
                     "response": {},
                     "metadata": {},
                     "tags": [],
@@ -127,7 +124,7 @@ class AdapterShimInvokeTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.store = shim_mod.CassetteStore(self.tmp)
 
-    def test_real_mode_calls_caller_and_records(self):
+    def test_real_mode_without_recorder_mode_does_not_record(self):
         calls = []
 
         def caller(request):
@@ -139,9 +136,27 @@ class AdapterShimInvokeTests(unittest.TestCase):
         result = shim.invoke("bank_api", "real", request, seed=1)
 
         self.assertEqual(result.status, "ok")
+        self.assertFalse(result.recorded)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(self.store.load("bank_api", result.signature))
+
+    def test_real_mode_with_recorder_mode_record_writes_cassette(self):
+        calls = []
+
+        def caller(request):
+            calls.append(request)
+            return {"status": 200, "body": {"tx_id": "tx-1"}}
+
+        shim = shim_mod.AdapterShim(store=self.store, real_callers={"bank_api": caller}, run_id="r1")
+        request = {"method": "POST", "path": "/transfer", "body": {"amount": 10}}
+        result = shim.invoke("bank_api", "real", request, seed=1, recorder_mode="record")
+
+        self.assertEqual(result.status, "ok")
         self.assertTrue(result.recorded)
         self.assertEqual(len(calls), 1)
-        self.assertIsNotNone(self.store.load("bank_api", result.signature))
+        cassette = self.store.load("bank_api", result.signature)
+        self.assertIsNotNone(cassette)
+        self.assertNotIn("mode", cassette)
 
     def test_replay_mode_returns_recorded_response_without_calling_real(self):
         calls = []
@@ -152,7 +167,7 @@ class AdapterShimInvokeTests(unittest.TestCase):
 
         shim = shim_mod.AdapterShim(store=self.store, real_callers={"bank_api": caller}, run_id="r1")
         request = {"method": "POST", "path": "/transfer", "body": {"amount": 10}}
-        shim.invoke("bank_api", "real", request, seed=1)
+        shim.invoke("bank_api", "real", request, seed=1, recorder_mode="record")
         self.assertEqual(len(calls), 1)
 
         replay_result = shim.invoke("bank_api", "replay", request, seed=1)
@@ -168,15 +183,24 @@ class AdapterShimInvokeTests(unittest.TestCase):
         with self.assertRaises(shim_mod.CassetteMissingError):
             shim.invoke("bank_api", "replay", request)
 
-    def test_replay_mode_allow_record_falls_back_to_real(self):
-        def caller(request):
-            return {"status": 200, "body": {"fallback": True}}
+    def test_real_mode_rejected_for_shadow_run(self):
+        def caller(_request):
+            return {"status": 200, "body": {}}
 
         shim = shim_mod.AdapterShim(store=self.store, real_callers={"bank_api": caller}, run_id="r1")
-        request = {"method": "GET", "path": "/x"}
-        result = shim.invoke("bank_api", "replay", request, allow_record=True)
-        self.assertTrue(result.recorded)
-        self.assertEqual(result.response, {"status": 200, "body": {"fallback": True}})
+        with self.assertRaises(shim_mod.ShadowRealModeForbiddenError) as ctx:
+            shim.invoke("bank_api", "real", {"method": "GET"}, shadow=True)
+        self.assertEqual(ctx.exception.code, "SHADOW_REAL_MODE_FORBIDDEN")
+
+    def test_real_mode_rejected_for_shadow_run_even_with_recorder_mode(self):
+        # A shadow invocation must fail closed regardless of any other flag.
+        def caller(_request):
+            return {"status": 200, "body": {}}
+
+        shim = shim_mod.AdapterShim(store=self.store, real_callers={"bank_api": caller}, run_id="r1")
+        with self.assertRaises(shim_mod.ShadowRealModeForbiddenError):
+            shim.invoke("bank_api", "real", {"method": "GET"}, shadow=True, recorder_mode="record")
+        self.assertEqual(self.store.list_paths(), [])
 
     def test_mock_mode_uses_registered_script(self):
         shim = shim_mod.AdapterShim(
@@ -206,10 +230,19 @@ class AdapterShimInvokeTests(unittest.TestCase):
 
         shim = shim_mod.AdapterShim(store=self.store, real_callers={"bank_api": caller}, run_id="r1")
         result = shim.invoke("bank_api", "no-op", {"method": "POST", "path": "/transfer"})
-        self.assertEqual(result.status, "blocked")
+        # no-op is a normal, successful mode selection — "blocked" is
+        # reserved for the policy layer refusing a call (e.g. shadow+real),
+        # which no-op never triggers.
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.side_effects_performed, [])
         self.assertFalse(result.recorded)
         self.assertEqual(len(calls), 0)
         self.assertEqual(self.store.list_paths(), [])
+
+    def test_no_op_mode_is_inert_even_when_shadow(self):
+        shim = shim_mod.AdapterShim(store=self.store, run_id="r1")
+        result = shim.invoke("bank_api", "no-op", {"method": "POST"}, shadow=True)
+        self.assertEqual(result.status, "ok")
 
     def test_real_mode_without_registered_caller_raises(self):
         shim = shim_mod.AdapterShim(store=self.store, run_id="r1")
@@ -238,7 +271,9 @@ class ScrubTests(unittest.TestCase):
         self.assertEqual(scrubbed["request"]["body"]["amount"], 10)
         self.assertEqual(scrubbed["response"]["body"]["email"], shim_mod.SCRUB_MASK)
         self.assertEqual(scrubbed["response"]["body"]["tx_id"], "tx-1")
-        self.assertTrue(scrubbed["metadata"]["scrubbed"])
+        self.assertCountEqual(
+            scrubbed["scrubbed_fields"], ["request.body.auth_token", "response.body.email"]
+        )
 
     def test_scrub_recomputes_response_hash(self):
         cassette = {
@@ -278,14 +313,15 @@ class CassetteJSONSchemaTests(unittest.TestCase):
             real_callers={"bank_api": lambda _r: {"status": 200, "body": {"tx_id": "tx-1"}}},
             run_id="r1",
         )
-        result = shim.invoke("bank_api", "real", {"method": "POST", "path": "/transfer"}, seed=42)
+        result = shim.invoke(
+            "bank_api", "real", {"method": "POST", "path": "/transfer"}, seed=42, recorder_mode="record"
+        )
         with open(store.path_for("bank_api", result.signature), "r", encoding="utf-8") as f:
             cassette = json.load(f)
 
         for key in (
             "signature",
             "adapter_id",
-            "mode",
             "request",
             "response",
             "metadata",
@@ -295,6 +331,9 @@ class CassetteJSONSchemaTests(unittest.TestCase):
             self.assertIn(key, cassette)
         for key in ("recorded_at", "run_id", "recorder_version"):
             self.assertIn(key, cassette["metadata"])
+        # EVALS_CASSETTE.md §3: a cassette is mode-agnostic storage — no
+        # "mode" key. Recorded during a "real" session, read by "replay".
+        self.assertNotIn("mode", cassette)
 
 
 if __name__ == "__main__":

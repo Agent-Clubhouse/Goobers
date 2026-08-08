@@ -49,7 +49,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         real_callers={args.adapter_id: lambda _req, _response=response: _response},
         run_id=args.run_id,
     )
-    result = shim.invoke(args.adapter_id, "real", request, seed=args.seed)
+    result = shim.invoke(args.adapter_id, "real", request, seed=args.seed, recorder_mode="record")
     path = store.path_for(args.adapter_id, result.signature)
     print(f"Recorded cassette: {path}")
     _print_json(result.to_dict())
@@ -97,7 +97,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 "signature": cassette.get("signature"),
                 "recorded_at": cassette.get("metadata", {}).get("recorded_at"),
                 "tags": cassette.get("tags", []),
-                "scrubbed": bool(cassette.get("metadata", {}).get("scrubbed")),
+                "scrubbed_fields": cassette.get("scrubbed_fields", []),
             }
         )
     _print_json(summaries)
@@ -125,14 +125,21 @@ def cmd_scrub(args: argparse.Namespace) -> int:
     for path in paths:
         with open(path, "r", encoding="utf-8") as f:
             cassette = json.load(f)
+        already_scrubbed = set(cassette.get("scrubbed_fields", []))
         scrubbed = shim_mod.scrub_cassette(cassette)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(scrubbed, f, indent=2, sort_keys=True)
-            f.write("\n")
+        newly_scrubbed = set(scrubbed.get("scrubbed_fields", [])) - already_scrubbed
+        if not newly_scrubbed:
+            print(f"skipped (nothing new to scrub): {path}")
+            continue
+        # EVALS_CASSETTE.md §8: cassettes are immutable once created —
+        # scrub is a recovery path for a scrub-rule gap found after the
+        # fact (§9), not a content update, so it writes a new rotated file
+        # and leaves the original untouched rather than overwriting it.
+        rotated_path = store.save_rotation(path, scrubbed)
         scrubbed_count += 1
-        print(f"scrubbed: {path}")
+        print(f"scrubbed: {path} -> {rotated_path}")
 
-    print(f"done: {scrubbed_count} cassette(s) scrubbed")
+    print(f"done: {scrubbed_count} cassette(s) scrubbed (originals left untouched, new rotations written)")
     return 0
 
 
