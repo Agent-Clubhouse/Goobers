@@ -118,6 +118,8 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "properties/decision/enum", source: "api/v1alpha1.VerdictDecision", want: goConsts("api/v1alpha1/envelope.go", "VerdictDecision")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/severity/enum", source: "api/v1alpha1.Severity", want: goConsts("api/v1alpha1/envelope.go", "Severity")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/class/enum", source: "api/v1alpha1.FindingClass", want: goConsts("api/v1alpha1/envelope.go", "FindingClass")},
+	{schema: "notification-request.schema.json", path: "properties/severity/enum", source: "api/v1alpha1.NotificationSeverity", want: goConsts("api/v1alpha1/notification.go", "NotificationSeverity")},
+	{schema: "notification-receipt.schema.json", path: "properties/status/enum", source: "api/v1alpha1.NotificationDeliveryStatus", want: goConsts("api/v1alpha1/notification.go", "NotificationDeliveryStatus")},
 
 	// --- mission-control verdict artifact types ---
 	{schema: "mission-control-verdict-v1alpha1.schema.json", path: "$defs/verdict/enum", source: "internal/missioncontrol.Verdict", want: goConsts("internal/missioncontrol/contract.go", "Verdict")},

@@ -18,6 +18,8 @@ payload/.goobers/agent-toolkit/api/schemas/journal-event.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-run.schema.json
 payload/.goobers/agent-toolkit/api/schemas/manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/mission-control-verdict-v1alpha1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/notification-receipt.schema.json
+payload/.goobers/agent-toolkit/api/schemas/notification-request.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v2.schema.json
 payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v3.schema.json
@@ -73,6 +75,7 @@ payload/.goobers/agent-toolkit/docs/VISION.md
 payload/.goobers/agent-toolkit/docs/adr/0001-agentic-sandbox-mechanism.md
 payload/.goobers/agent-toolkit/docs/adr/0002-provider-neutral-capability-namespaces.md
 payload/.goobers/agent-toolkit/docs/design/cobrand.md
+payload/.goobers/agent-toolkit/docs/design/notification-output.md
 payload/.goobers/agent-toolkit/docs/design/static-fan-out-fan-in.md
 payload/.goobers/agent-toolkit/docs/guides/goobers-io-mcp.md
 payload/.goobers/agent-toolkit/docs/guides/quickstart.md

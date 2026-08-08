@@ -133,6 +133,41 @@ func TestIsMergeConflictError(t *testing.T) {
 	}
 }
 
+// TestIsForbiddenPATError pins #2685's classification constraint: only the
+// exact fine-grained-PAT-checks-gap wording on a 403 may trigger the
+// actions/runs fallback. GitHub returns 403 for unrelated reasons too (rate
+// limiting, org SSO enforcement), and those must surface as ordinary errors.
+func TestIsForbiddenPATError(t *testing.T) {
+	respErr := func(status int, body string) error {
+		return &providerResponseError{
+			method:     http.MethodGet,
+			endpoint:   "https://api.github.com/repos/o/r/commits/abc/check-runs",
+			statusCode: status,
+			body:       body,
+		}
+	}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"fine-grained PAT checks gap", respErr(http.StatusForbidden, `{"message":"Resource not accessible by personal access token"}`), true},
+		{"wrapped still detected", fmt.Errorf("check-runs: %w", respErr(http.StatusForbidden, `{"message":"Resource not accessible by personal access token"}`)), true},
+		{"rate limited 403 is not this", respErr(http.StatusForbidden, `{"message":"API rate limit exceeded"}`), false},
+		{"org SSO 403 is not this", respErr(http.StatusForbidden, `{"message":"Resource protected by organization SAML enforcement"}`), false},
+		{"same wording on a non-403 status", respErr(http.StatusUnauthorized, `{"message":"Resource not accessible by personal access token"}`), false},
+		{"plain error", errors.New("dial tcp: connection refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsForbiddenPATError(tc.err); got != tc.want {
+				t.Fatalf("IsForbiddenPATError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsRequiredStatusCheckPendingError(t *testing.T) {
 	respErr := func(status int, body string) error {
 		return &providerResponseError{

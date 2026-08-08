@@ -1996,7 +1996,25 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		checkRuns = append(checkRuns, pageOut.CheckRuns...)
 		return nil
 	}); err != nil {
-		return nil, err
+		if !IsForbiddenPATError(err) {
+			return nil, err
+		}
+		// Fine-grained PATs have no grantable "Checks" permission at all, so
+		// this specific 403 is permanent, not transient (#2685). If the token
+		// has instead been granted "Actions: Read", actions/runs exposes the
+		// same success/failure signal for Actions-based CI, so retry there
+		// before failing CI visibility closed.
+		runs, actionsErr := p.actionsRunsForRef(ctx, repo, ref)
+		if actionsErr != nil {
+			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
+		}
+		for _, run := range runs {
+			state := normalizeCheckRunState(run.Status, run.Conclusion)
+			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
+				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
+			}})
+		}
+		return details, nil
 	}
 	for _, run := range checkRuns {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
@@ -2009,6 +2027,36 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		})
 	}
 	return details, nil
+}
+
+// actionsRunsForRef reads workflow-run conclusions for ref via the Actions
+// API (GET .../actions/runs?head_sha=ref) — the fallback CI-state source for
+// a fine-grained PAT that can reach Actions runs but not check-runs (#2685).
+// It carries the same success/failure signal as check-runs (one entry per
+// workflow run rather than per job/check), normalized through the same
+// status/conclusion mapping so it merges into checkDetails' worst-case-wins
+// result indistinguishably from a native check-run.
+func (p *GitHubProvider) actionsRunsForRef(ctx context.Context, repo RepositoryRef, ref string) ([]githubActionsRun, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"head_sha": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	var runs []githubActionsRun
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut githubActionsRunsResponse
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode actions runs page: %w", err)
+		}
+		runs = append(runs, pageOut.WorkflowRuns...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }
 
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
@@ -3287,6 +3335,18 @@ type githubCheckRun struct {
 	Output     struct {
 		Summary string `json:"summary"`
 	} `json:"output"`
+}
+
+type githubActionsRunsResponse struct {
+	WorkflowRuns []githubActionsRun `json:"workflow_runs"`
+}
+
+type githubActionsRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 }
 
 type githubCheckAnnotation struct {

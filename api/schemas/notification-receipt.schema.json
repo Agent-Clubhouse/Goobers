@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/notification-receipt.schema.json",
+  "title": "NotificationReceipt",
+  "description": "Durable state or result of one notification sink attempt or suppression.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "notificationId", "idempotencyKey", "idempotencyDigest", "source", "sink", "attempt", "startedAt", "completedAt", "status"],
+  "properties": {
+    "schema": {
+      "description": "Versioned receipt contract identifier.",
+      "const": "goobers.dev/notification/receipt/v1"
+    },
+    "notificationId": {
+      "description": "Request identity this result belongs to.",
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotencyKey": {
+      "description": "Request idempotency key paired with sink kind.",
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotencyDigest": {
+      "description": "Stable non-secret index of the idempotency key.",
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "source": {
+      "description": "Run, workflow, and stage that produced the request.",
+      "$ref": "notification-request.schema.json#/$defs/source"
+    },
+    "evidence": {
+      "description": "Supporting evidence copied from the request for direct receipt linkage.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "notification-request.schema.json#/$defs/evidence" }
+    },
+    "sink": {
+      "description": "Registered sink implementation attempted.",
+      "$ref": "#/$defs/sink"
+    },
+    "attempt": {
+      "description": "One-based delivery attempt, or zero for suppression before delivery.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "startedAt": {
+      "description": "When this attempt or suppression began.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "description": "When this attempt or suppression completed.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "description": "Pending, delivered, failed, or skipped without pretending failure is success.",
+      "type": "string",
+      "enum": ["pending", "delivered", "failed", "skipped"]
+    },
+    "unresolved": {
+      "description": "Whether an invoked sink may still complete after this observation.",
+      "type": "boolean"
+    },
+    "externalReference": {
+      "description": "Transport-issued reference when available.",
+      "type": "string",
+      "maxLength": 2048
+    },
+    "error": {
+      "description": "Sanitized bounded failure detail.",
+      "type": "string",
+      "maxLength": 243
+    }
+  },
+  "$defs": {
+    "sink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version"],
+      "properties": {
+        "kind": { "description": "Provider-neutral registered sink kind.", "type": "string", "minLength": 1 },
+        "version": { "description": "Sink contract implementation version.", "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

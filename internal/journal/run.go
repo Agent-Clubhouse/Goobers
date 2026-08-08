@@ -316,6 +316,46 @@ func (r *Run) Append(ev Event) error {
 	return nil
 }
 
+// ClaimNotificationDelivery appends pending unless the journal already contains
+// a completed or unresolved claim for the same idempotency key and sink.
+func (r *Run) ClaimNotificationDelivery(pending apiv1.NotificationReceipt) (*apiv1.NotificationReceipt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrClosed
+	}
+	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		receipt := events[i].NotificationReceipt
+		if receipt == nil || receipt.IdempotencyDigest != pending.IdempotencyDigest ||
+			receipt.Sink.Kind != pending.Sink.Kind || receipt.Attempt == 0 {
+			continue
+		}
+		if receipt.Status == apiv1.NotificationDelivered ||
+			receipt.Status == apiv1.NotificationPending || receipt.Unresolved {
+			existing := *receipt
+			return &existing, nil
+		}
+		break
+	}
+	if err := r.append(Event{
+		Type:                EventNotificationReceipt,
+		NotificationReceipt: &pending,
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.checkpoint(); err != nil {
+		return nil, err
+	}
+	if r.observer != nil {
+		r.observer(r.id.RunID, r.seq)
+	}
+	return nil, nil
+}
+
 // append is the lock-held core: assign seq, scrub the serialized line, write, fsync.
 func (r *Run) append(ev Event) error {
 	if r.appendErr != nil {
