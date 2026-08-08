@@ -139,9 +139,9 @@ the read tools exactly the same way.
   point, never silently dropped.
 
 The harness auto-appends a short "## goobers-io tools" section to the
-stage's prompt directing the model to `get_run_info`, plus the write
-directive when `artifactFile` is eligible and the read directive when
-context is present. This is the mechanism, not
+stage's prompt, with the write directive when `artifactFile` is eligible
+and the read directive when context is present. `get_run_info` is
+self-describing in the MCP tool list. This is the mechanism, not
 something an instructions.md file needs to duplicate; hand-written
 completion prose that tells the model *how* to write or read its
 artifact should be removed once a stage adopts this, not layered on top

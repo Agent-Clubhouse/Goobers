@@ -134,10 +134,10 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 	return string(data), nil
 }
 
-// goobersIOPromptSection explains that run identity is available and how to
-// use whichever artifact tools this invocation has a reason to call — only
-// the write directive when there's a declared artifactFile, only the read
-// directive when there's upstream context. Getting the model to actually
+// goobersIOPromptSection explains how to use whichever artifact tools this
+// invocation has a reason to call — only the write directive when there's a
+// declared artifactFile, only the read directive when there's upstream
+// context. Getting the model to actually
 // use these tools instead of a generic file-editing tool requires naming
 // them explicitly here — a goober's own instructions.md describing an output
 // shape ("artifacts.findingsRef pointing at X.md") is not enough on its own;
@@ -147,7 +147,6 @@ func goobersIOPromptSection(req RunRequest) string {
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
 	var b strings.Builder
 	b.WriteString("## goobers-io tools\n\n")
-	b.WriteString("Use `get_run_info` when you need this stage's run, workflow, task, or gaggle identity; do not guess these values.\n\n")
 	if artifactFile != "" {
 		b.WriteString("Call `publish_output` with your complete final output when you are done — do not write it to a file yourself with any other tool.\n\n")
 	}

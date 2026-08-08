@@ -334,9 +334,6 @@ func TestGoobersIOPromptSection(t *testing.T) {
 	writeOnly := RunRequest{Envelope: base, Workspace: workspace}
 	writeOnly.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 	section := goobersIOPromptSection(writeOnly)
-	if !strings.Contains(section, "get_run_info") {
-		t.Error("expected the get_run_info directive")
-	}
 	if !strings.Contains(section, "publish_output") {
 		t.Error("expected the publish_output directive when artifactFile is declared")
 	}
@@ -361,8 +358,8 @@ func TestRenderPromptIncludesGoobersIOSectionOnlyWhenEligible(t *testing.T) {
 		Workspace:      workspace,
 		CompletionPath: "result.json",
 	}
-	if !strings.Contains(renderPrompt(req), "get_run_info") {
-		t.Fatal("must expose run identity for every valid invocation")
+	if !strings.Contains(renderPrompt(req), "## goobers-io tools") {
+		t.Fatal("must include the goobers-io section for every valid invocation")
 	}
 
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}

@@ -569,8 +569,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
 	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
 	// credential/prep block all need to see the goobers-io server and tools
-	// as already present, not added after the fact. A task with no declared
-	// artifactFile and no upstream inputs is untouched.
+	// as already present, not added after the fact. Every valid invocation
+	// receives run identity access, even without artifact or context inputs.
 	req = withAutoGoobersIO(req, c.SelfBin)
 	resolution := ConfigResolution{
 		Model:          req.Model,
