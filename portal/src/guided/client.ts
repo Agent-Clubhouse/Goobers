@@ -26,6 +26,12 @@ export interface GuidedJobDetail extends GuidedJobSummary {
   output: string[];
 }
 
+/** The repository the tutorial instance is connected to. Repo is null until
+ *  instance.yaml names a real (non-placeholder) repository. */
+export interface GuidedConnectedState {
+  repo: string | null;
+}
+
 export interface GuidedState {
   version: number;
   workdir: string;
@@ -36,6 +42,7 @@ export interface GuidedState {
   env: GuidedEnvState;
   job: GuidedJobSummary | null;
   apiReady: boolean;
+  connected: GuidedConnectedState;
 }
 
 /** The shared shape of the envelope-returning actions: the CLI subprocess's
@@ -47,11 +54,13 @@ export interface GuidedEnvelopeResult<E> {
   stderr: string;
 }
 
-/** `goobers onboarding stub-sample --json` action envelope (fields we render). */
+/** The shared onboarding action envelope (`goobers onboarding stub-sample
+ *  --json`, `goobers connect --json`) — fields we render. */
 export interface OnboardingActionEnvelope {
   action?: string;
   version?: number;
   created?: string[];
+  updated?: string[];
   skipped?: string[];
   path?: string;
   nextCommand?: string;
@@ -96,6 +105,21 @@ export interface StubSampleRequest {
   force?: boolean;
 }
 
+export interface InitInstanceRequest {
+  template?: "quickstart" | "starter";
+}
+
+export interface ConnectRequest {
+  repo: string;
+  tokenEnv?: string;
+  seed?: boolean;
+  replace?: boolean;
+}
+
+export interface RunRequest {
+  workflow?: "quickstart" | "default-implement";
+}
+
 export interface ValidateRequest {
   checkHarness: boolean;
   checkRepos: boolean;
@@ -133,16 +157,20 @@ export class GuidedClient {
     return this.post("/guided/actions/stub-sample", body);
   }
 
-  initInstance(): Promise<GuidedInitResult> {
-    return this.post("/guided/actions/init-instance", {});
+  initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {
+    return this.post("/guided/actions/init-instance", body);
+  }
+
+  connect(body: ConnectRequest): Promise<GuidedEnvelopeResult<OnboardingActionEnvelope>> {
+    return this.post("/guided/actions/connect", body);
   }
 
   validate(body: ValidateRequest): Promise<GuidedEnvelopeResult<DiagnosticsEnvelope>> {
     return this.post("/guided/actions/validate", body);
   }
 
-  startRun(): Promise<{ jobId: string }> {
-    return this.post("/guided/actions/run", {});
+  startRun(body: RunRequest = {}): Promise<{ jobId: string }> {
+    return this.post("/guided/actions/run", body);
   }
 
   getJob(id: string): Promise<GuidedJobDetail> {

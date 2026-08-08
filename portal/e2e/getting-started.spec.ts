@@ -29,6 +29,7 @@ function guidedState(fixture: GuidedFixture) {
     env: { goobersGithubToken: true, goobersGithubIssuesToken: false },
     job: fixture.jobStarted ? jobDetail() : null,
     apiReady: fixture.instanceExists,
+    connected: { repo: null },
   };
 }
 
@@ -172,33 +173,40 @@ test("walks the guided happy path from welcome to the success readout", async ({
   await expect(page.getByText("GOOBERS_GITHUB_TOKEN set")).toBeVisible();
   await page.getByRole("button", { name: "Start the walkthrough" }).click();
 
-  // Step 2: materialize the sample; pending seeds render as pending, not errors.
+  // Step 2: the path chooser — the own-repo card leads; this spec takes the
+  // disposable-sample branch.
+  await expect(
+    page.getByRole("button", { name: /Connect your repository/ }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /Try the disposable sample/ }).click();
+
+  // Step 3: materialize the sample; pending seeds render as pending, not errors.
   await page.getByRole("button", { name: "Materialize the sample" }).click();
   await expect(page.getByText("src/server.js")).toBeVisible();
   await expect(
     page.getByText("pending: GOOBERS_GITHUB_ISSUES_TOKEN unset"),
   ).toBeVisible();
 
-  // Step 3 is manual: the repo-creation commands are printed, never run.
+  // Step 4 is manual: the repo-creation commands are printed, never run.
   await expect(page.getByText("gh repo create <owner>/<repo> --private")).toBeVisible();
   await page
     .getByRole("checkbox", { name: "I created the repository and pushed the sample" })
     .check();
 
-  // Step 4: initialize the tutorial instance.
+  // Step 5: initialize the tutorial instance.
   await page.getByRole("button", { name: "Initialize the instance" }).click();
   await expect(page.getByText(/single source\s+of truth/)).toBeVisible();
 
-  // Step 5 is manual: placeholder edits are listed explicitly.
+  // Step 6 is manual: placeholder edits are listed explicitly.
   await page
     .getByRole("checkbox", { name: "I edited the placeholders and exported the token" })
     .check();
 
-  // Step 6: validate.
+  // Step 7: validate.
   await page.getByRole("button", { name: "Run the checks" }).click();
   await expect(page.getByText("All systems go.")).toBeVisible();
 
-  // Step 7: run, poll the job, and land on the live run link.
+  // Step 8: run, poll the job, and land on the live run link.
   await page.getByRole("button", { name: "Start the run" }).click();
   await expect(page.getByRole("link", { name: `Watch run ${runId} live →` })).toHaveAttribute(
     "href",
@@ -206,7 +214,7 @@ test("walks the guided happy path from welcome to the success readout", async ({
   );
   await expect(page.getByText(`created run ${runId}`)).toBeVisible();
 
-  // Step 8: the local Time-to-First-PR readout.
+  // Step 9: the local Time-to-First-PR readout.
   await expect(page.getByText("Your first autonomous PR opened in 8 minutes.")).toBeVisible();
   await expect(page.getByRole("link", { name: `Revisit run ${runId} →` })).toBeVisible();
 });
