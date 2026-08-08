@@ -32,6 +32,9 @@ const (
 	// that can't read the daemon's in-memory ProviderQuotaState directly)
 	// needs the resume time recoverable from the journal alone.
 	ReasonProviderQuota = "provider-quota"
+	// ReasonProviderAuth identifies a workflow whose provider credential needs
+	// operator repair. The scheduler does not retry this permanent condition.
+	ReasonProviderAuth = "provider-auth-failed"
 )
 
 // OpenPRCounter reports the most recently polled count of a gaggle-scoped
