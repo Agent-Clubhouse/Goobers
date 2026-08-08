@@ -1806,6 +1806,125 @@ summary:focus-visible {
   justify-content: space-between;
 }
 
+.usage-trend {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.usage-trend-heading h3 {
+  font-size: 12px;
+  margin: 2px 0 0;
+}
+
+.usage-trend-note {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.usage-trend-sparkline {
+  align-items: end;
+  display: flex;
+  gap: 6px;
+  height: 88px;
+}
+
+.usage-trend-bar {
+  align-items: center;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 5px;
+  height: 100%;
+  justify-content: flex-end;
+}
+
+.usage-trend-bar-track {
+  align-items: flex-end;
+  background: var(--surface);
+  border-radius: 3px;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.usage-trend-bar-p95,
+.usage-trend-bar-p50 {
+  border-radius: 3px 3px 0 0;
+  bottom: 0;
+  position: absolute;
+  width: 60%;
+}
+
+.usage-trend-bar-p95 {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.usage-trend-bar-p50 {
+  background: var(--accent);
+  width: 34%;
+}
+
+.usage-trend-bar > small {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.usage-trend-comparison {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 0;
+}
+
+.usage-trend-comparison dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage-trend-comparison dd {
+  align-items: baseline;
+  display: flex;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  gap: 8px;
+  margin: 4px 0 0;
+}
+
+.usage-trend-delta {
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 720;
+  padding: 1px 6px;
+}
+
+.usage-trend-delta-up {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.usage-trend-delta-down {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.usage-trend-delta-flat {
+  background: var(--surface);
+  color: var(--muted);
+}
+
 .error-signatures {
   border: 1px solid var(--line);
   border-radius: 10px;
