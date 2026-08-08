@@ -25,11 +25,22 @@ implement against, and #2669 (docs) to link from onboarding. It does not add
 a working runner or a required CI check: EvalSuite has no runner in this repo
 yet (#2665–#2667 are still open), so wiring a *required* gate today would
 either have nothing to run or would silently no-op, which is worse than not
-having a gate. The example workflow in §5 is real, lints cleanly, and follows
+having a gate. The example workflow in §6 is real, lints cleanly, and follows
 this repo's established pattern for a not-yet-provisioned automation (see
 `provider-fixture-drift.yml` / `docs/guides/provider-fixture-drift.md`): it
 exists, it is `workflow_dispatch`-only, and it fails loudly with a clear
 "blocked on #2667" message rather than pretending to gate anything.
+
+This is a distinct, higher-level gate from `evals-tests.yml` (landed
+alongside #2670–#2672), which already runs `evals/`'s Python schema and unit
+tests (`pytest`, path-filtered to `evals/**`) on every push and PR — that one
+protects the DSL and judge-harness code itself, and needs no design doc; it's
+an ordinary test suite. What's missing, and what this doc defines, is the
+gate one level up: given a *runner* that can execute a suite's scenarios
+against real (or mocked) workflow stages and score the result, what turns
+that score into a merge decision. `evals-tests.yml` already covers the "is
+this code correct" question; this design covers "did this change regress
+workflow behavior."
 
 ## 2. Terms
 
@@ -119,7 +130,7 @@ A gray-zone or safety-critical-failing scenario does not resolve
 automatically in either direction. The gate job reports a **non-passing,
 non-simply-failing** status (GitHub Actions "neutral"/annotated-failure, not
 a silent pass) and requires an approving review from the suite's declared
-owner (§6) before merge — the same mechanism CODEOWNERS already uses for
+owner (§5.3) before merge — the same mechanism CODEOWNERS already uses for
 `/reference-workflows/` (`docs/guides/tutor-write-boundary.md`). This is
 the CI-side half of the human-in-the-loop sampling `EVALS_JUDGE_DESIGN.md`
 already specifies; the annotation UI/queue itself is out of scope here and

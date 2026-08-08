@@ -32,8 +32,8 @@ jobs:
 
       - name: Verify runner is provisioned
         run: |
-          if [ ! -d evals ]; then
-            echo "::error title=EvalSuite runner not yet implemented::evals/ does not exist. Blocked on #2667 (runner integration) landing; see docs/design/evals-ci-gating.md."
+          if [ ! -d evals/cmd ] || [ ! -d evals/testdata/baselines ]; then
+            echo "::error title=EvalSuite runner not yet implemented::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) don't exist yet. This is a distinct gate from evals-tests.yml, which already runs the evals/ schema/unit tests (#2670-#2672); this one is blocked on #2667 (runner integration) landing. See docs/design/evals-ci-gating.md."
             exit 1
           fi
 
