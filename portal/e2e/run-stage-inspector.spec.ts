@@ -99,21 +99,28 @@ async function openInspector(page: Page): Promise<() => number> {
 }
 
 test("expanded artifact remains visible across three background refreshes", async ({ page }) => {
+  test.setTimeout(30_000);
   const attemptRequests = await openInspector(page);
   const baseline = attemptRequests();
 
   await page.getByRole("button", { name: "View content" }).click();
   await expect(page.getByText(content)).toBeVisible();
 
-  await expect.poll(attemptRequests).toBeGreaterThanOrEqual(baseline + 3);
+  // Three refresh cycles need at least 3 * refreshIntervalMs (3000ms) of
+  // artificial SSE delay alone, before any reconnect/fetch/render overhead —
+  // the default 5000ms expect.poll timeout leaves too little margin under
+  // load (#2604: observed failing deterministically at 5-vs-6 cycles on a
+  // busy CI runner, unrelated to this file's own logic).
+  await expect.poll(attemptRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(baseline + 3);
   await expect(page.getByText(content)).toBeVisible();
 });
 
 test("collapsed artifact remains collapsed across three background refreshes", async ({ page }) => {
+  test.setTimeout(30_000);
   const attemptRequests = await openInspector(page);
   const baseline = attemptRequests();
 
-  await expect.poll(attemptRequests).toBeGreaterThanOrEqual(baseline + 3);
+  await expect.poll(attemptRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(baseline + 3);
   await expect(page.getByRole("button", { name: "View content" })).toBeVisible();
   await expect(page.getByText(content)).toHaveCount(0);
 });
