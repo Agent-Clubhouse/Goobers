@@ -25,7 +25,7 @@ const gatherIssueContextHelp = "Usage: goobers gather-issue-context [path]\n\n" 
 	"usage/IO error.\n"
 
 func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-issue-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-issue-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-issue-context")
 	if err := fs.Parse(args); err != nil {

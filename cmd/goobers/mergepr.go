@@ -87,7 +87,7 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 }
 
 func runMergePR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("merge-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "merge-pr")
 	if err := fs.Parse(args); err != nil {

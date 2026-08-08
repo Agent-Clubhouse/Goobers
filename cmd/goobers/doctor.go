@@ -80,7 +80,7 @@ var doctorKubeClient = func(kubeconfig, contextName string, timeout time.Duratio
 // declared forge-policy manifest against its live GitHub state (#916, Tier 4
 // of #903). Exactly one mode is required per invocation.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs := newCLIFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")

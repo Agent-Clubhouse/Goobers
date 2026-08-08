@@ -159,7 +159,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "Usage: goobers workflow show [--dot] <name> [path]") {
+	if !strings.Contains(stderr, "Usage: goobers workflow show [flags] <name> [path]") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 
@@ -167,7 +167,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workflow help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "Usage: goobers workflow show [--dot] <name> [path]") {
+	if !strings.Contains(stdout, "Usage: goobers workflow show [flags] <name> [path]") {
 		t.Fatalf("workflow help stdout = %q", stdout)
 	}
 
@@ -183,7 +183,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "goobers workflow show <name> [path]") {
+	if !strings.Contains(stdout, "goobers workflow show [--dot] <name> [path]") {
 		t.Fatalf("help stdout = %q", stdout)
 	}
 }

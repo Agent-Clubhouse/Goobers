@@ -38,7 +38,7 @@ func pruneOrphansAtStartup(layout instance.Layout, now time.Time) ([]retention.O
 }
 
 func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now time.Time) int {
-	fs := flag.NewFlagSet("telemetry prune-orphans", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry prune-orphans", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	deleteOrphans := fs.Bool("delete", false, "delete eligible orphan directories (opt-in; default is dry-run)")
 	minAge := fs.Duration("min-age", retention.MinimumOrphanAge, "minimum inactivity age (at least 24h)")

@@ -73,7 +73,7 @@ const gatherImplementContextHelp = "Usage: goobers gather-implement-context [pat
 	"error.\n"
 
 func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-implement-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-implement-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-implement-context")
 	if err := fs.Parse(args); err != nil {

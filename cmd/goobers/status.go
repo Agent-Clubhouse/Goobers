@@ -487,7 +487,7 @@ const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
-	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs := newCLIFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit config warnings, workflow summary, and runs as JSON")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")

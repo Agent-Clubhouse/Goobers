@@ -404,7 +404,7 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // NEXT gather-sibling-context's cache lookup — the digest travels with the
 // verdict, not as separate state.
 func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("apply-verdict", flag.ContinueOnError)
+	fs := newCLIFlagSet("apply-verdict", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gateName := fs.String("gate", "review", "the gate name whose verdict to apply")
 	fs.Usage = helpUsage(stderr, "apply-verdict")

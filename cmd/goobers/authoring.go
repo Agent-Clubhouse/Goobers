@@ -59,7 +59,7 @@ type explainOutput struct {
 }
 
 func runSchema(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
+	fs := newCLIFlagSet("schema", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	list := fs.Bool("list", false, "list every embedded schema kind")
 	human := fs.Bool("human", false, "emit a human-readable rendering")
@@ -119,7 +119,7 @@ func runSchema(args []string, stdout, stderr io.Writer) int {
 }
 
 func runExplain(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
+	fs := newCLIFlagSet("explain", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	human := fs.Bool("human", false, "emit a human-readable rendering")
 	fs.Usage = helpUsage(stderr, "explain")

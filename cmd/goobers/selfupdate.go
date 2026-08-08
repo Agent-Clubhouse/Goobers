@@ -24,7 +24,7 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"on-main builds the configured branch. Config is never changed.\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("self-update", flag.ContinueOnError)
+	fs := newCLIFlagSet("self-update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")

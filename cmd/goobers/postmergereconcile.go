@@ -90,7 +90,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fs := flag.NewFlagSet("reconcile-post-merge", flag.ContinueOnError)
+	fs := newCLIFlagSet("reconcile-post-merge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	limit := fs.Int("max", limitDefault, "maximum pending pull requests inspected in one sweep (1-100)")
 	lookback := fs.Duration("lookback", lookbackDefault, "maximum age of a queue timeout eligible for reconciliation")

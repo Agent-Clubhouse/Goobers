@@ -35,7 +35,7 @@ const checkFailFirstHelp = "Usage: goobers check-fail-first [path]\n\n" +
 	"evidence; 1 = a new gate lacks evidence; 2 = usage/IO error.\n"
 
 func runCheckFailFirst(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("check-fail-first", flag.ContinueOnError)
+	fs := newCLIFlagSet("check-fail-first", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "check-fail-first")
 	if err := fs.Parse(args); err != nil {

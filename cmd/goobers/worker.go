@@ -63,7 +63,7 @@ func (f *repeatableFlag) Set(v string) error {
 }
 
 func runWorker(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs := newCLIFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var queues repeatableFlag
 	fs.Var(&queues, "task-queue", "task queue to serve (repeatable)")

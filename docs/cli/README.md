@@ -1661,7 +1661,7 @@ $ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 install agent-instruction assets into a config source
 
 ~~~text
-Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]
+Usage: goobers onboarding stub-agent-instructions --source-tree <path> [--harness <name>] [--json]
 
 Install the release-matched Goobers agent toolkit and the selected harness
 instruction reference into a checked-in config source repository. This action
@@ -1689,7 +1689,7 @@ $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harne
 materialize and optionally seed the disposable Getting Started target
 
 ~~~text
-Usage: goobers onboarding stub-sample --destination <path> [flags]
+Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]
 
 Materialize the embedded getting-started-task-api sample at an explicitly
 named destination. Existing matching files are skipped. A conflicting file
@@ -3127,7 +3127,7 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 inspect workflows
 
 ~~~text
-Usage: goobers workflow show [--dot] <name> [path]
+Usage: goobers workflow show [flags] <name> [path]
 
 Show the named workflow as a text DAG or Graphviz DOT (default path ".").
 

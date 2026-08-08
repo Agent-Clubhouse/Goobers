@@ -34,7 +34,7 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("open-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "open-pr")
 	if err := fs.Parse(args); err != nil {
