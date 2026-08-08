@@ -49,6 +49,13 @@ class ExactMatchCheckerTests(unittest.TestCase):
         result = ExactMatchChecker().evaluate(_ctx(expected=None))
         self.assertEqual(result.confidence, 0.0)
 
+    def test_a_real_assertion_is_strict(self):
+        self.assertTrue(ExactMatchChecker().evaluate(_ctx()).strict)
+
+    def test_missing_expected_abstention_is_not_strict(self):
+        result = ExactMatchChecker().evaluate(_ctx(expected=None))
+        self.assertFalse(result.strict)
+
 
 class RegexCheckerTests(unittest.TestCase):
     def test_required_pattern_present(self):
@@ -83,6 +90,18 @@ class SimilarityCheckerTests(unittest.TestCase):
     def test_no_reference_is_zero_confidence(self):
         result = SimilarityChecker().evaluate(_ctx(expected=None, baseline_output=None))
         self.assertEqual(result.confidence, 0.0)
+
+    def test_is_never_strict_even_on_a_perfect_match(self):
+        # A graded score is never a binary assertion, even at 1.0 — strict
+        # is about the KIND of judgment being made, not this particular
+        # result's value.
+        self.assertFalse(SimilarityChecker().evaluate(_ctx()).strict)
+
+    def test_near_miss_is_not_strict(self):
+        result = SimilarityChecker().evaluate(_ctx(candidate_output="a summary!"))
+        self.assertFalse(result.strict)
+        self.assertGreater(result.score, 0.0)
+        self.assertLess(result.score, 1.0)
 
 
 class _StubLLMJudge(LLMJudgePlugin):
@@ -164,6 +183,44 @@ class RouteForReviewTests(unittest.TestCase):
         results = [JudgeResult("exact-match", JudgeKind.DETERMINISTIC, 0.0, "no match")]
         decision = route_for_review(results, ensemble_score=0.95)
         self.assertEqual(decision.verdict, "fail")
+
+    def test_non_strict_deterministic_near_miss_does_not_hard_fail(self):
+        # Regression: SimilarityChecker scoring 0.95 (a near-miss, not a
+        # failed assertion) must not trip the "any deterministic failure ->
+        # fail" rule the way a real ExactMatchChecker/RegexChecker failure
+        # does. strict=False is exactly what SimilarityChecker sets to
+        # signal "graded score, not a binary check" (found during #2667).
+        results = [
+            JudgeResult(
+                "similarity", JudgeKind.DETERMINISTIC, 0.95, "close match", strict=False
+            ),
+            JudgeResult("clarity-llm", JudgeKind.LLM, 0.9, "clear", confidence=0.9),
+        ]
+        decision = route_for_review(results)
+        self.assertEqual(decision.verdict, "pass")
+
+    def test_non_strict_deterministic_abstention_does_not_hard_fail(self):
+        # Regression: a checker with strict=False and score=0.0 because it
+        # had nothing to compare against (no `expected`/`baseline_output`)
+        # is an abstention, not an assertion of failure — the strict-bypass
+        # rule must not fire for it. Isolated from ensemble math with an
+        # explicit ensemble_score (same pattern as
+        # test_deterministic_failure_always_fails above) because an
+        # abstained judge's score=0.0 legitimately still dilutes the
+        # ensemble average via the normal weighted-mean path below — that's
+        # a separate, already-approved piece of math this test isn't about.
+        results = [
+            JudgeResult(
+                "exact-match",
+                JudgeKind.DETERMINISTIC,
+                0.0,
+                "no expected value",
+                confidence=0.0,
+                strict=False,
+            ),
+        ]
+        decision = route_for_review(results, ensemble_score=0.9)
+        self.assertEqual(decision.verdict, "pass")
 
     def test_high_score_passes(self):
         results = [JudgeResult("llm", JudgeKind.LLM, 0.9, "good", confidence=0.9)]

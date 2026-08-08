@@ -41,12 +41,12 @@ commits:
 | Vendored path | Source branch | Source commit |
 |---|---|---|
 | `evals/eval_schema.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `c334399c` |
-| `evals/judge_plugin_interface.py` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
+| `evals/judge_plugin_interface.py` | `patient-wasp/2664-evals-judge-harness` | `759111c7` |
 | `evals/judge_templates/` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
-| `evals/tests/test_judge_plugin_interface_vendored.py` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
-| `evals/adapters/shim.py`, `evals/adapters/__init__.py` | `noble-salmon/2666-evals-adapter-shim-prototype` | `89fadcab` |
+| `evals/tests/test_judge_plugin_interface_vendored.py` | `patient-wasp/2664-evals-judge-harness` | `759111c7` |
+| `evals/adapters/shim.py`, `evals/adapters/__init__.py` | `noble-salmon/2666-evals-adapter-shim-prototype` | `5ad66dce` |
 | `evals/samples/mvp-evals.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `c334399c` |
-| `evals/.gitignore`, `evals/adapters/cassettes/.gitignore` | `noble-salmon/2666-evals-adapter-shim-prototype` | `89fadcab` |
+| `evals/.gitignore`, `evals/adapters/cassettes/.gitignore` | `noble-salmon/2666-evals-adapter-shim-prototype` | `5ad66dce` |
 
 **Reconciliation, once the real PRs land:** these paths should be
 overwritten by the actual merges, not coexist with two copies. If a
@@ -106,10 +106,24 @@ noted in `runner.py`'s module docstring.
    *more* conservative than the spec (real is never allowed for shadow
    regardless of the adapter's actual side-effect profile), so it can only
    ever be too strict, never too permissive, until the manifest endpoint
-   exists. `AdapterShim.invoke` also independently rejects real calls it
-   receives directly (defense in depth, per the same section) —
+   exists.
+
+   **Genuinely two-layer as of the `5ad66dce` shim resync** (an earlier
+   revision of this doc claimed this before the vendored shim actually
+   implemented its half — corrected after vivid-gazelle's review of #2676
+   caught the gap): `AdapterShim.invoke` now independently rejects
+   `mode="real"` when `shadow=True` by raising
+   `ShadowRealModeForbiddenError` (`SHADOW_REAL_MODE_FORBIDDEN`), *before*
+   this runner's pre-emption existed, this shim call had no `shadow`
+   parameter at all and could not have enforced anything — so the original
+   claim was describing the spec's intended design, not this vendored
+   copy's actual behavior. Both layers are independently exercised:
    `evals/tests/test_runner.py::test_shadow_scenario_forces_no_op_instead_of_real`
-   asserts a real caller is never reached.
+   asserts the runner's own pre-emption (layer 1, via the full
+   `Runner.run_scenario` path), and
+   `::test_shim_independently_rejects_real_mode_under_shadow` calls
+   `AdapterShim.invoke` directly — bypassing the runner's policy layer
+   entirely — to prove layer 2 holds on its own.
 5. **The implicit default judge is `ExactMatchChecker`, gated strictly on an
    explicit `expected` value — not `SimilarityChecker`, and not "baseline
    present."** Two things pushed this: (a) `SimilarityChecker` and
@@ -132,6 +146,20 @@ noted in `runner.py`'s module docstring.
    available via explicit opt-in (`judge.plugins: ["similarity"]`).
    See `_build_judge_registry`'s docstring in `runner.py` for the same note
    colocated with the code.
+
+   **Confirmed as a real bug (a), fixed upstream, now vendored:**
+   patient-wasp's `759111c7` (patient-wasp/2664-evals-judge-harness, vendored
+   into this PR) adds `JudgeResult.strict` (default `True`) — only a
+   `strict=True` deterministic failure hard-fails via rule 1;
+   `SimilarityChecker` now always sets `strict=False`, and both checkers'
+   abstention paths (no reference to compare against) do too. This resolves
+   (a) at the source rather than requiring a runner-side workaround, but (b)
+   (`ExactMatchChecker` has no baseline fallback) is unrelated to `strict`
+   and still holds regardless — the `has_reference`-gated default above is
+   left as-is in this PR rather than widened back to include
+   `SimilarityChecker`, since reducing the default judge set's scope isn't
+   this resync's purpose; revisiting it is reasonable future work now that
+   the hard-fail risk is gone.
 
 ## Running it
 

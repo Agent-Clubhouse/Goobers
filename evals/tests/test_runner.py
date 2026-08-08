@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from adapters.shim import AdapterShim, CassetteStore  # noqa: E402
+from adapters.shim import AdapterShim, CassetteStore, ShadowRealModeForbiddenError  # noqa: E402
 from judge_plugin_interface import JudgeKind  # noqa: E402
 from runner import (  # noqa: E402
     Runner,
@@ -179,8 +179,12 @@ class RunnerAgenticStageTests(unittest.TestCase):
                 {"name": "call", "type": "agentic", "tool_mocks": {"bank_api": {"mode": "no-op"}}}
             ],
         }
-        runner.run_scenario(scenario)
+        result = runner.run_scenario(scenario)
         self.assertEqual(called, [])
+        # EVALS_SANDBOX_API.md §3.2: no-op is a normal successful mode
+        # selection, not a policy refusal — "blocked" is reserved for an
+        # actual rejection (e.g. a shadow run's real request).
+        self.assertEqual(result.artifacts()[0]["status"], "ok")
 
     def test_shadow_scenario_forces_no_op_instead_of_real(self):
         called = []
@@ -197,6 +201,23 @@ class RunnerAgenticStageTests(unittest.TestCase):
         result = runner.run_scenario(scenario)
         self.assertEqual(called, [], "shadow run must never reach a real adapter caller")
         self.assertEqual(result.artifacts()[0]["mode"], "no-op")
+
+    def test_shim_independently_rejects_real_mode_under_shadow(self):
+        # Layer 2 of EVALS_SANDBOX_API.md §6.1 rule 1's required double
+        # enforcement: even if this runner's own pre-emption (the test
+        # above) were ever bypassed or buggy, AdapterShim.invoke itself must
+        # independently refuse mode="real" when shadow=True. Call the shim
+        # directly, bypassing the runner's policy layer entirely, to prove
+        # this is a real second layer and not just this runner trusting
+        # itself twice.
+        called = []
+        shim = AdapterShim(
+            store=CassetteStore(root=tempfile.mkdtemp()),
+            real_callers={"bank_api": lambda req: called.append(req) or {"status": 200}},
+        )
+        with self.assertRaises(ShadowRealModeForbiddenError):
+            shim.invoke("bank_api", "real", {"method": "POST", "path": "/x"}, shadow=True)
+        self.assertEqual(called, [])
 
     def test_replay_missing_cassette_reports_error_status_not_crash(self):
         runner = make_runner()

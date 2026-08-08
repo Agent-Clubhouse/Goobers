@@ -78,6 +78,19 @@ class JudgeResult:
     reason: str
     labels: List[str] = field(default_factory=list)
     confidence: float = 1.0
+    # A DETERMINISTIC result is only treated as a hard-fail gate (route_for_
+    # review's "any deterministic failure -> fail, unconditionally" rule) when
+    # `strict=True`. True for a binary pass/fail assertion (ExactMatchChecker,
+    # RegexChecker: score is always exactly 0.0 or 1.0, and 0.0 means "the
+    # assertion was checked and failed"). False for a graded/continuous
+    # deterministic score (SimilarityChecker: 0.95 is a near-miss, not a
+    # failed assertion — it should compete on the ensemble threshold like any
+    # other judge) and for any checker's "I could not evaluate this" case
+    # (e.g. no `expected` value was provided) — an abstention is not the same
+    # claim as "I evaluated and found a defect", and must not be treated as
+    # one. Only DETERMINISTIC kind results are ever consulted for this; LLM/
+    # classifier/human results ignore the field entirely.
+    strict: bool = True
     # Raw, unprocessed judge output (LLM completion text, classifier logits,
     # the exact regex match) — kept for audit trails per EVALS_JUDGE_DESIGN.md
     # ("Persist full judge evidence and LLM rationale for auditing").
@@ -128,6 +141,10 @@ class ExactMatchChecker(JudgePlugin):
                 score=0.0,
                 reason="no `expected` value provided; exact-match cannot score",
                 confidence=0.0,
+                # Abstention, not a failed assertion: route_for_review must
+                # not hard-fail a scenario just because this checker had
+                # nothing to compare against.
+                strict=False,
             )
         matched = context.candidate_output == context.expected
         return JudgeResult(
@@ -136,6 +153,8 @@ class ExactMatchChecker(JudgePlugin):
             score=1.0 if matched else 0.0,
             reason="candidate matches expected exactly" if matched else "candidate differs from expected",
             raw_evidence={"expected": context.expected, "candidate": context.candidate_output},
+            # strict=True (the default): a real exact-match assertion was
+            # checked, so a 0.0 here means route_for_review should hard-fail.
         )
 
 
@@ -192,6 +211,13 @@ class SimilarityChecker(JudgePlugin):
     for regression scenarios that only assert "candidate ~= baseline").
     Same ratio() approach run_evals.py's prototype already uses, promoted
     here to the plugin contract so it composes with the ensemble scorer.
+
+    Unlike ExactMatchChecker/RegexChecker, this is a GRADED score, not a
+    binary assertion — 0.95 is a near-miss, not a failed check. Every
+    JudgeResult this returns has `strict=False` so route_for_review's
+    unconditional deterministic-hard-fail rule leaves it to compete on the
+    ensemble score/threshold like an LLM or classifier judge, instead of
+    hard-failing any candidate that isn't byte-for-byte identical.
     """
 
     kind = JudgeKind.DETERMINISTIC
@@ -208,6 +234,7 @@ class SimilarityChecker(JudgePlugin):
                 score=0.0,
                 reason="no `expected` or `baseline_output` to compare against",
                 confidence=0.0,
+                strict=False,
             )
         ratio = difflib.SequenceMatcher(a=_stringify(context.candidate_output), b=_stringify(reference)).ratio()
         return JudgeResult(
@@ -216,6 +243,7 @@ class SimilarityChecker(JudgePlugin):
             score=ratio,
             reason=f"sequence similarity ratio={ratio:.3f}",
             raw_evidence={"candidate": context.candidate_output, "reference": reference},
+            strict=False,
         )
 
 
@@ -413,8 +441,17 @@ def route_for_review(
     if ensemble_score is None:
         ensemble_score = compute_ensemble_score(results)
 
+    # Only a STRICT deterministic result is a hard-fail gate: a binary
+    # assertion (ExactMatchChecker, RegexChecker) that was actually checked
+    # and failed. A graded deterministic score (SimilarityChecker) or an
+    # abstention (any checker with no reference to compare against) sets
+    # strict=False specifically so it competes on the ensemble threshold
+    # below instead of unconditionally failing the scenario — see
+    # JudgeResult.strict's docstring for why conflating the two was a bug.
     deterministic_failures = [
-        r for r in results if r.kind is JudgeKind.DETERMINISTIC and r.score < 1.0
+        r
+        for r in results
+        if r.kind is JudgeKind.DETERMINISTIC and r.strict and r.score < 1.0
     ]
     if deterministic_failures:
         names = ", ".join(r.judge_id for r in deterministic_failures)

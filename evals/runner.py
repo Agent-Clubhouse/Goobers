@@ -62,6 +62,7 @@ from adapters.shim import (  # noqa: E402
     CassetteMissingError,
     CassetteStore,
     InvokeResult,
+    ShadowRealModeForbiddenError,
 )
 from judge_plugin_interface import (  # noqa: E402
     DEFAULT_GRAY_ZONE_FLOOR,
@@ -340,11 +341,15 @@ class Runner:
         adapter_shim: AdapterShim,
         *,
         default_adapter_mode: str = "mock",
-        allow_record: bool = False,
+        recorder_mode: Optional[str] = None,
     ) -> None:
         self.adapter_shim = adapter_shim
         self.default_adapter_mode = default_adapter_mode
-        self.allow_record = allow_record
+        # None (the default) means a mode="real" call performs the live call
+        # but writes no cassette; "record" is the explicit, separate opt-in
+        # EVALS_SANDBOX_API.md/EVALS_CASSETTE.md require for persisting one
+        # (see AdapterShim.invoke's docstring in the vendored shim.py).
+        self.recorder_mode = recorder_mode
 
     def run_suite(self, suite: Dict[str, Any]) -> Dict[str, Any]:
         results = [self.run_scenario(scenario) for scenario in suite["scenarios"]]
@@ -477,20 +482,54 @@ class Runner:
             }
             self.adapter_shim.mock_scripts.setdefault(adapter_id, cfg.get("response"))
             try:
+                # `shadow` is passed through even though the check above
+                # already downgrades a shadow scenario's `real` request to
+                # `no-op` before this call — AdapterShim.invoke independently
+                # rejects mode="real" when shadow=True
+                # (ShadowRealModeForbiddenError), so this is genuine
+                # two-layer defense in depth (EVALS_SANDBOX_API.md §6.1 rule
+                # 1), not just this runner's own policy layer relying on
+                # itself.
                 invoke_result: InvokeResult = self.adapter_shim.invoke(
                     adapter_id,
                     mode,
                     request,
                     seed=stage.get("seed", 0),
-                    allow_record=self.allow_record,
+                    shadow=shadow,
+                    scenario_id=scenario["id"],
+                    recorder_mode=self.recorder_mode,
+                )
+            except ShadowRealModeForbiddenError as exc:
+                # Per EVALS_SANDBOX_API.md §3.2/§3.3: a policy refusal is
+                # "blocked", not "error" — a distinct, expected outcome. This
+                # path should be unreachable given the pre-emption above; it
+                # stays as a genuine second, independent layer rather than
+                # dead code, per the module's shadow-run safety guarantee.
+                invoke_result = InvokeResult(
+                    status="blocked",
+                    mode=mode,
+                    response=None,
+                    recorded=False,
+                    signature="",
+                    error={"code": exc.code, "message": str(exc)},
                 )
             except CassetteMissingError as exc:
                 invoke_result = InvokeResult(
-                    status="error", mode=mode, response={"error": str(exc)}, recorded=False, signature=""
+                    status="error",
+                    mode=mode,
+                    response=None,
+                    recorded=False,
+                    signature="",
+                    error={"code": exc.code, "message": str(exc)},
                 )
             except AdapterError as exc:
                 invoke_result = InvokeResult(
-                    status="error", mode=mode, response={"error": str(exc)}, recorded=False, signature=""
+                    status="error",
+                    mode=mode,
+                    response=None,
+                    recorded=False,
+                    signature="",
+                    error={"code": exc.code, "message": str(exc)},
                 )
             outputs[adapter_id] = invoke_result.response
             artifacts.append(
@@ -499,6 +538,7 @@ class Runner:
                     "mode": mode,
                     "status": invoke_result.status,
                     "signature": invoke_result.signature,
+                    "side_effects_performed": invoke_result.side_effects_performed,
                     "cassette_path": self.adapter_shim.store.path_for(adapter_id, invoke_result.signature)
                     if invoke_result.signature
                     else None,
@@ -546,16 +586,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--cassettes-dir", default=str(_EVALS_DIR / "adapters" / "cassettes"), help="Cassette store root."
     )
     parser.add_argument(
-        "--allow-record",
-        action="store_true",
-        help="Allow replay-mode cassette misses to fall through to a real call and record one. "
-        "Never set this in CI (EVALS_CASSETTE.md §10).",
+        "--recorder-mode",
+        choices=["record"],
+        default=None,
+        help="Set to 'record' to let a mode=\"real\" call write a new cassette (an explicit, "
+        "separate opt-in from mode=\"real\" itself — EVALS_CASSETTE.md §5/§10). "
+        "Never set this in CI.",
     )
     args = parser.parse_args(argv)
 
     suite = load_suite(args.suite)
     shim = AdapterShim(store=CassetteStore(root=args.cassettes_dir), run_id=f"cli-{_now_iso()}")
-    runner = Runner(adapter_shim=shim, allow_record=args.allow_record)
+    runner = Runner(adapter_shim=shim, recorder_mode=args.recorder_mode)
     report = runner.run_suite(suite)
 
     os.makedirs(args.out, exist_ok=True)
