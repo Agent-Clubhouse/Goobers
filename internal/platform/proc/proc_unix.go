@@ -9,10 +9,11 @@ import (
 	"syscall"
 )
 
-// Tree on unix is fully identified by its session-leader pid, which — because
-// configure made the child a session leader — is also its process-group id.
+// Tree on unix tracks its session-leader pid and descendants captured before a
+// diagnostic signal can reparent them.
 type Tree struct {
-	pid int
+	pid         int
+	descendants []int
 }
 
 // configure puts the child in a NEW SESSION (Setsid), not merely a new process
@@ -44,9 +45,14 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 // kill snapshots descendants before terminating the process group so children
 // that escaped into another session cannot be orphaned by their parent's exit.
 func (t *Tree) kill() error {
-	descendants := descendantPIDs(t.pid)
+	descendants := append(t.descendants, descendantPIDs(t.pid)...)
 	groupErr := syscall.Kill(-t.pid, syscall.SIGKILL)
+	signaled := make(map[int]struct{}, len(descendants))
 	for _, pid := range descendants {
+		if _, ok := signaled[pid]; ok {
+			continue
+		}
+		signaled[pid] = struct{}{}
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 	return groupErr
@@ -55,6 +61,9 @@ func (t *Tree) kill() error {
 // requestDump SIGQUITs the whole process group so every Go process in it dumps
 // its full goroutine trace and exits. Always supported on unix.
 func (t *Tree) requestDump() (bool, error) {
+	// Keep ownership of descendants that may exit the stage's session and be
+	// reparented when their direct parent handles SIGQUIT.
+	t.descendants = append(t.descendants, descendantPIDs(t.pid)...)
 	return true, syscall.Kill(-t.pid, syscall.SIGQUIT)
 }
 

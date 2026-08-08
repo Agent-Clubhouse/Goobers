@@ -6,9 +6,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -65,6 +69,7 @@ func TestShellExecutor_SpawnsStageInNewSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}
@@ -73,6 +78,76 @@ func TestShellExecutor_SpawnsStageInNewSession(t *testing.T) {
 	if sid != pid {
 		t.Fatalf("spawned stage sid=%d != pid=%d — it is not a session leader, so it was spawned with Setpgid, not Setsid; terminal job control can freeze it (#845 regression)", sid, pid)
 	}
+}
+
+func TestShellExecutor_TimeoutRemovesOriginalProcessGroup(t *testing.T) {
+	e, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "200ms"}
+
+	result, err := e.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `
+echo $$ > "$PIDDIR/stage.pid"
+trap '' QUIT
+sleep 30 >/dev/null 2>&1 &
+echo $! > "$PIDDIR/child.pid"
+trap 'exit 0' QUIT
+while :; do :; done
+`},
+		Env: map[string]string{"PIDDIR": env.Workspace},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "timeout" {
+		t.Fatalf("status=%v error=%+v, want timeout failure", result.Status, result.Error)
+	}
+
+	stagePID := readProcessPID(t, filepath.Join(env.Workspace, "stage.pid"))
+	childPID := readProcessPID(t, filepath.Join(env.Workspace, "child.pid"))
+	t.Cleanup(func() { _ = unix.Kill(childPID, unix.SIGKILL) })
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		alive, err := processGroupExists(stagePID)
+		if err != nil {
+			t.Fatalf("probe process group %d: %v", stagePID, err)
+		}
+		if !alive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process with timed-out stage's original process-group id %d remains alive", stagePID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func processGroupExists(pgid int) (bool, error) {
+	out, err := exec.Command("ps", "-axo", "pgid=").Output()
+	if err != nil {
+		return false, err
+	}
+	want := strconv.Itoa(pgid)
+	for _, field := range strings.Fields(string(out)) {
+		if field == want {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func readProcessPID(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read process pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse process pid %q: %v", data, err)
+	}
+	return pid
 }
 
 // parseSessionMarker extracts the sid and pid from a captured transcript that

@@ -119,6 +119,7 @@ func TestKillTreeReapsDescendantInEscapedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	var child int
 	if !waitUntil(t, 5*time.Second, func() bool {
 		var ok bool
@@ -136,6 +137,40 @@ func TestKillTreeReapsDescendantInEscapedSession(t *testing.T) {
 	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
 		_ = syscall.Kill(child, syscall.SIGKILL)
 		t.Fatalf("escaped child process %d survived KillTree", child)
+	}
+}
+
+func TestKillTreeReapsEscapedDescendantAfterDumpReparentsIt(t *testing.T) {
+	dir := t.TempDir()
+	script := `"$TESTBIN" -test.run=^TestEscapedSessionProcess$ -- "$PIDDIR/child.pid" & wait`
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PIDDIR="+dir, "TESTBIN="+os.Args[0])
+
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var child int
+	if !waitUntil(t, 5*time.Second, func() bool {
+		var ok bool
+		child, ok = readPID(t, filepath.Join(dir, "child.pid"))
+		return ok
+	}) {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+		t.Fatal("escaped child never recorded its pid")
+	}
+
+	if _, err := tree.RequestDump(); err != nil {
+		t.Fatalf("RequestDump: %v", err)
+	}
+	_ = cmd.Wait()
+	if err := tree.Kill(); err != nil && err != syscall.ESRCH {
+		t.Fatalf("Kill: %v", err)
+	}
+	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		t.Fatalf("escaped, reparented child process %d survived KillTree", child)
 	}
 }
 
