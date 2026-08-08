@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,7 +166,7 @@ func TestKillTreeReapsEscapedDescendantAfterDumpReparentsIt(t *testing.T) {
 		t.Fatalf("RequestDump: %v", err)
 	}
 	_ = cmd.Wait()
-	if err := tree.Kill(); err != nil && err != syscall.ESRCH {
+	if err := tree.Kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("Kill: %v", err)
 	}
 	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
