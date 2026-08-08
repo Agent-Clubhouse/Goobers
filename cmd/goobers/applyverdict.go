@@ -769,7 +769,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// If a distinct review identity is ever provisioned
 		// (GOOBERS_CRED_GITHUB_PR_REVIEW backed by a second token), this call
 		// simply succeeds and no degradation happens.
-		if !providers.IsSelfReviewError(err) {
+		selfReview := providers.IsSelfReviewError(err)
+		if !selfReview && providers.IsFineGrainedPATReviewNotFoundError(err) {
+			reviewAuthor, authorErr := reviewProvider.AuthenticatedLogin(ctx)
+			if authorErr != nil {
+				return failProviderStage(stderr, "resolve native review author", authorErr, resultFile)
+			}
+			selfReview = current.Author != "" && strings.EqualFold(reviewAuthor, current.Author)
+		}
+		if !selfReview {
 			return failProviderStage(stderr, fmt.Sprintf("submit native review for PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)

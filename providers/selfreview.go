@@ -1,8 +1,10 @@
 package providers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -42,4 +44,33 @@ func IsSelfReviewError(err error) bool {
 	// IsTransientError's string-fallback discipline.
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "status 422") && strings.Contains(msg, selfReviewMarker)
+}
+
+// IsFineGrainedPATReviewNotFoundError reports whether err has the opaque shape
+// GitHub returns when a fine-grained PAT attempts to review its own pull
+// request. The response alone is ambiguous, so callers must also confirm that
+// the reviewing identity authored the pull request before degrading.
+func IsFineGrainedPATReviewNotFoundError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) ||
+		responseErr.statusCode != http.StatusNotFound ||
+		responseErr.method != http.MethodPost {
+		return false
+	}
+	endpoint, parseErr := url.Parse(responseErr.endpoint)
+	if parseErr != nil {
+		return false
+	}
+	parts := strings.Split(strings.Trim(endpoint.Path, "/"), "/")
+	if len(parts) < 3 ||
+		parts[len(parts)-3] != "pulls" ||
+		parts[len(parts)-2] == "" ||
+		parts[len(parts)-1] != "reviews" {
+		return false
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	return json.Unmarshal([]byte(responseErr.body), &body) == nil &&
+		body.Message == http.StatusText(http.StatusNotFound)
 }

@@ -85,3 +85,84 @@ func TestApplyVerdictDegradesOnSelfReview422(t *testing.T) {
 		t.Fatalf("verdict-result.json = %q, want authenticated PR-write author", resData)
 	}
 }
+
+func TestApplyVerdictDegradesOnFineGrainedPATSelfReview404(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	const selectedNumber = 10
+	server.addIssue(selectedNumber, "Selected PR")
+	server.addOpenPR(selectedNumber, "goobers/implementation/run-10", "main", "sha10head", "shamainbase",
+		false, nil, nil)
+	server.setPRIdentities(selectedNumber, "Goobers", nil, nil)
+	server.setPRFineGrainedSelfReview(selectedNumber)
+
+	const runID = "run-1"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "fine-grained-review-token")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "looks good",
+		HeadSHA:  "sha10head",
+		BaseSHA:  "shamainbase",
+	})
+
+	applyDir := t.TempDir()
+	t.Chdir(applyDir)
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "native review skipped") {
+		t.Fatalf("stdout = %q, want it to report the native review was skipped", stdout)
+	}
+
+	server.mu.Lock()
+	issue := server.issues[selectedNumber]
+	reviews := append([]fakeReview(nil), server.prs[selectedNumber].reviews...)
+	server.mu.Unlock()
+	if len(reviews) != 0 {
+		t.Fatalf("native reviews = %+v, want none", reviews)
+	}
+	if issue == nil || len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "pass") {
+		t.Fatalf("issue = %+v, want one pass verdict comment", issue)
+	}
+}
+
+func TestApplyVerdictDoesNotDegradeUnconfirmedReview404(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	const selectedNumber = 10
+	server.addIssue(selectedNumber, "Selected PR")
+	server.addOpenPR(selectedNumber, "goobers/implementation/run-10", "main", "sha10head", "shamainbase",
+		false, nil, nil)
+	server.setPRIdentities(selectedNumber, "someone-else", nil, nil)
+	server.setPRFineGrainedSelfReview(selectedNumber)
+
+	const runID = "run-1"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "fine-grained-review-token")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "looks good",
+		HeadSHA:  "sha10head",
+		BaseSHA:  "shamainbase",
+	})
+
+	t.Chdir(t.TempDir())
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 1 {
+		t.Fatalf("apply-verdict: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "native review skipped") {
+		t.Fatalf("stdout = %q, unrelated 404 must not be degraded", stdout)
+	}
+	if !strings.Contains(stderr, "status 404") {
+		t.Fatalf("stderr = %q, want original review failure", stderr)
+	}
+}

@@ -70,6 +70,9 @@ type fakePR struct {
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
 	selfReview bool
+	// fineGrainedSelfReview returns the opaque 404 emitted for the same
+	// restriction when the reviewer uses a fine-grained PAT.
+	fineGrainedSelfReview bool
 }
 
 type fakeReview struct {
@@ -869,6 +872,11 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			Event    string `json:"event"`
 		}
 		decodeFakeJSON(r, &body)
+		if pr.fineGrainedSelfReview {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"}`)
+			return
+		}
 		if pr.selfReview {
 			// GitHub's exact categorical refusal (#870): author == reviewer.
 			verb := "approve"
@@ -1077,6 +1085,12 @@ func (s *fakeGitHubServer) setPRSelfReview(number int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].selfReview = true
+}
+
+func (s *fakeGitHubServer) setPRFineGrainedSelfReview(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].fineGrainedSelfReview = true
 }
 
 // closeIssue flips a fixture issue's state to closed — for #552's
