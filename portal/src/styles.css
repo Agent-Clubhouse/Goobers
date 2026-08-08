@@ -2811,12 +2811,6 @@ a.telemetry-error-row:hover {
   margin: 0;
 }
 
-.inspector-heading .inspector-scope {
-  align-items: center;
-  display: flex;
-  gap: 4px;
-}
-
 .inspector-heading span.inspector-owner {
   color: var(--accent-ink);
   font-size: 9px;
@@ -3291,7 +3285,7 @@ a.telemetry-error-row:hover {
   gap: 4px;
 }
 
-.playback-now .playback-phase {
+.playback-now .playback-workflow {
   color: var(--muted-strong);
   font-weight: 700;
 }

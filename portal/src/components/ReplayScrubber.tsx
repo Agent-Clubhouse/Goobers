@@ -282,9 +282,9 @@ export function ReplayScrubber({
             {" · "}Sequence {currentPoint.event.seq}
           </span>
           {(workflow || currentStageLabel) && (
-            <span aria-label="Run hierarchy" className="playback-scope" role="group">
-              {workflow && <span className="playback-phase">{workflow}</span>}
-              {workflow && currentStageLabel && <Icon name="chevron" size={9} />}
+            <span aria-label="Workflow, stage, and goober" className="playback-scope" role="group">
+              {workflow && <span className="playback-workflow">{workflow}</span>}
+              {workflow && currentStageLabel && <span aria-hidden="true">·</span>}
               {currentStageLabel && <span className="playback-stage">{currentStageLabel}</span>}
               {currentOwner && <span className="playback-owner">{currentOwner}</span>}
             </span>
@@ -306,14 +306,14 @@ export function ReplayScrubber({
           />
         </div>
         <div aria-label="Run stages" className="replay-stage-lane" role="group">
-          {timeline.stageSegments.map((segment, index) => {
+          {timeline.stageSegments.map((segment) => {
             const label = segment.owner
               ? `Stage ${segment.label}, owned by ${segment.owner}`
               : `Stage ${segment.label}`;
             return (
               <span
                 aria-label={label}
-                className={`replay-stage-segment replay-stage-segment-${index % 4}`}
+                className={`replay-stage-segment replay-stage-segment-${segment.colorIndex % 4}`}
                 key={segment.key}
                 role="note"
                 style={{

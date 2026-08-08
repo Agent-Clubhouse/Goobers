@@ -209,17 +209,17 @@ describe("replay scrubber", () => {
 
     expect(
       screen.getByRole("button", {
-        name: /Go to Workflow transition chapter at event 1: .*Implement · builder-goober\./,
+        name: /Go to Workflow transition chapter at event 1: .*implement · builder-goober\./,
       }),
     ).toBeInTheDocument();
 
-    const scope = screen.getByRole("group", { name: "Run hierarchy" });
+    const scope = screen.getByRole("group", { name: "Workflow, stage, and goober" });
     expect(within(scope).getByText("implementation")).toBeInTheDocument();
-    expect(within(scope).getByText("Implement")).toBeInTheDocument();
+    expect(within(scope).getByText("implement")).toBeInTheDocument();
     expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
 
     expect(
-      screen.getByRole("note", { name: "Stage Implement, owned by builder-goober" }),
+      screen.getByRole("note", { name: "Stage implement, owned by builder-goober" }),
     ).toBeInTheDocument();
   });
 

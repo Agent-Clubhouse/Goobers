@@ -1,5 +1,5 @@
 import type { RunEvent, WorkflowGraph } from "./api/types";
-import { eventNodeId, humanize, nodeOwner } from "./runDetailData";
+import { eventNodeId, nodeOwner } from "./runDetailData";
 
 export const replaySpeeds = [1, 5, 10] as const;
 export type ReplaySpeed = (typeof replaySpeeds)[number];
@@ -52,6 +52,8 @@ export interface ReplayStageSegment {
   stageId: string;
   label: string;
   owner?: string;
+  /** Stable per stage id (first-appearance order), so a repassed stage's segments always share a color. */
+  colorIndex: number;
   startPercent: number;
   endPercent: number;
 }
@@ -186,7 +188,10 @@ export function replayTimeline(
 // replayStageSegments groups consecutive timeline points by the run's own
 // stage/gate node id, carrying the last-known node forward across events that
 // don't name one directly (evidence, liveness) — the same attribution
-// eventNodeAtSequence uses for the graph and journal.
+// eventNodeAtSequence uses for the graph and journal. Points before the run's
+// first stage-bearing event (run.started and the like) carry no stage id and
+// are intentionally left uncovered by any segment: there is no stage yet to
+// attribute them to.
 function replayStageSegments(
   points: ReplayTimelinePoint[],
   graph: WorkflowGraph | undefined,
@@ -208,11 +213,22 @@ function replayStageSegments(
     }
   });
 
+  // Colors key off the stage id's first appearance, not the segment's
+  // position, so a repassed stage's second visit matches its first instead of
+  // drifting to whatever color that position in the list lands on.
+  const colorIndexByStage = new Map<string, number>();
+  for (const run of runs) {
+    if (!colorIndexByStage.has(run.stageId)) {
+      colorIndexByStage.set(run.stageId, colorIndexByStage.size);
+    }
+  }
+
   return runs.map((run) => ({
     key: `${run.stageId}-${run.startIndex}`,
     stageId: run.stageId,
-    label: humanize(run.stageId),
+    label: run.stageId,
     owner: nodeOwner(graph, run.stageId),
+    colorIndex: colorIndexByStage.get(run.stageId) ?? 0,
     startPercent: points[run.startIndex].percent,
     endPercent: points[run.endIndex].percent,
   }));

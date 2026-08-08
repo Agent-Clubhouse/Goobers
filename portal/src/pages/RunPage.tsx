@@ -422,7 +422,7 @@ function RunDetailWorkspace({
               onSelectAttempt={(isLatest) =>
                 setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
               }
-              phase={run.workflow}
+              workflow={run.workflow}
               runId={runId}
               selectedEvidence={selectedEvidence}
               selectedEvidenceVisit={selectedEvidenceVisit}
@@ -531,6 +531,7 @@ function EventLedger({
           <span className="graph-legend">Ordered by durable sequence</span>
           <div aria-label="Journal event kind" className="journal-view-control" role="group">
             <button
+              aria-describedby="journal-view-major-hint"
               aria-pressed={view === "major"}
               className={view === "major" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("major")}
@@ -539,7 +540,11 @@ function EventLedger({
             >
               Major events
             </button>
+            <span className="sr-only" id="journal-view-major-hint">
+              Shows only stage/gate landmarks, hiding evidence and liveness noise
+            </span>
             <button
+              aria-describedby="journal-view-all-hint"
               aria-pressed={view === "all"}
               className={view === "all" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("all")}
@@ -548,6 +553,9 @@ function EventLedger({
             >
               All events ({events.length})
             </button>
+            <span className="sr-only" id="journal-view-all-hint">
+              Shows every durable event of every kind, independent of the stage filter
+            </span>
           </div>
           {stages.length > 1 && (
             <label className="journal-stage-filter">
