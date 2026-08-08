@@ -38,6 +38,39 @@ prose spec it has to re-derive into code.
 | Classifier judge | Trained binary/multi-class classifier for repetitive, high-volume checks (e.g. toxicity, PII). Efficient at scale once trained. | Not yet implemented; `JudgeKind.CLASSIFIER` is reserved in the contract so ensemble scoring already accounts for it. |
 | Human adjudication | Human review for edge cases, gray-zone scores, and judge calibration. Ground truth. | Routing rules below (`route_for_review`); the annotation UI itself is out of scope for #2664. |
 
+### Strict vs. graded deterministic checkers
+
+"Deterministic checker" is not one homogeneous behavior. `ExactMatchChecker`
+and `RegexChecker` are **binary assertions** — their score is always exactly
+`1.0` or `0.0`, and `0.0` means "the assertion was checked and failed".
+`SimilarityChecker` is a **graded** score — `0.95` is a near-miss, not a
+failed check. `route_for_review`'s "any deterministic checker fails → fail,
+unconditionally" rule below is only correct for the first kind; applying it
+to a graded score would hard-fail almost every non-identical candidate
+regardless of the suite's configured threshold, which defeats the point of
+having a threshold at all.
+
+`JudgeResult.strict` (default `True`) is how a plugin declares which kind of
+claim its result is making, and `route_for_review` only treats
+`strict=True and score < 1.0` as the unconditional-fail case:
+
+- `ExactMatchChecker`/`RegexChecker`: `strict=True` on a real evaluation
+  (matches their binary-assertion semantics).
+- `SimilarityChecker`: always `strict=False` — a graded score competes on
+  the ensemble threshold like an LLM or classifier judge instead of
+  bypassing it.
+- Any checker's **abstention** case (no `expected`/`baseline_output` to
+  compare against, so it returns `score=0.0, confidence=0.0`): `strict=False`
+  on all of them, including `ExactMatchChecker`. "I could not evaluate this"
+  is not the same claim as "I evaluated and found a defect", and must not be
+  treated as one — an abstention should not unconditionally fail a scenario
+  just because the suite forgot to provide a golden answer.
+
+(Found during #2667's runner-integration work: an earlier version of this
+contract didn't have `strict`, so `SimilarityChecker` and abstentions both
+tripped the hard-fail rule. Fixed in the same PR that introduced them,
+before #2667 had to build a workaround into the runner.)
+
 ## LLM judge pattern
 
 **Input** — `JudgeContext` (see `judge_plugin_interface.py`): `scenario_id`,
@@ -79,6 +112,17 @@ scores with `compute_ensemble_score(results, weights)`:
   if *every* present kind has weight 0 the function falls back to an
   unweighted mean rather than raising — a misconfigured weight table
   shouldn't make every scenario unscorable.
+- **Known limitation, not fixed here**: `compute_ensemble_score` does not
+  currently look at `confidence`, so a checker that *abstained*
+  (`confidence=0.0, score=0.0` — see "Strict vs. graded deterministic
+  checkers" above) still contributes its `0.0` to the weighted average like
+  a real bad score would, diluting the ensemble even though `strict=False`
+  correctly keeps it out of the hard-fail path. Whether an abstention should
+  instead be excluded from the average entirely (with its weight
+  redistributed to the judges that did run) is a real question, just not
+  one #2667's reported bug required answering — left as a follow-up rather
+  than folded in here to avoid re-litigating ensemble math mega-puffin
+  already independently verified.
 
 ### Formula
 
@@ -134,10 +178,13 @@ assertion.
 Implemented in `route_for_review()`, applied to one scenario's results in
 this priority order:
 
-1. **Any deterministic checker fails** → `fail`, unconditionally. A
-   deterministic check exists precisely because the answer isn't supposed
-   to be gray — a regex miss or an exact-match miss is never routed to a
-   human "just in case".
+1. **Any *strict* deterministic checker fails** (`strict=True and score <
+   1.0` — see "Strict vs. graded deterministic checkers" above) → `fail`,
+   unconditionally. A binary assertion exists precisely because the answer
+   isn't supposed to be gray — a regex miss or an exact-match miss is never
+   routed to a human "just in case". A graded checker's low score, or any
+   checker's abstention, is `strict=False` and does not trip this rule —
+   it flows into the ensemble score at step 4/5 instead.
 2. **`safety_critical=True`** → any judge scoring below `max(pass_threshold,
    0.95)` forces `human-review`, regardless of the ensemble score. Mirrors
    "mandatory human review for any variance" from the original draft: on a
