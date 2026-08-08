@@ -51,19 +51,20 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 func identifyProcesses(pids []int) []processIdentity {
 	identities := make([]processIdentity, 0, len(pids))
 	for _, pid := range pids {
-		started, ok := StartTime(pid)
-		if !ok {
-			continue
-		}
+		// Some Unix targets cannot provide a process start time. Keep the
+		// descendant in that case so cleanup retains its best-effort PID path.
+		started, _ := StartTime(pid)
 		identities = append(identities, processIdentity{pid: pid, startTime: started})
 	}
 	return identities
 }
 
 func (p processIdentity) signal(sig syscall.Signal) {
-	started, ok := StartTime(p.pid)
-	if !ok || !started.Equal(p.startTime) {
-		return
+	if !p.startTime.IsZero() {
+		started, ok := StartTime(p.pid)
+		if !ok || !started.Equal(p.startTime) {
+			return
+		}
 	}
 	_ = syscall.Kill(p.pid, sig)
 }

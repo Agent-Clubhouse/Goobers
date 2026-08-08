@@ -215,6 +215,21 @@ func TestKillTreeDoesNotSignalReusedDescendantPID(t *testing.T) {
 	}
 }
 
+func TestProcessIdentityWithoutStartTimeSignalsProcess(t *testing.T) {
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start process: %v", err)
+	}
+
+	processIdentity{pid: cmd.Process.Pid}.signal(syscall.SIGKILL)
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("Wait unexpectedly succeeded after SIGKILL")
+	}
+	if probeAlive(cmd.Process.Pid) {
+		t.Fatalf("process %d survived signal without start-time support", cmd.Process.Pid)
+	}
+}
+
 func TestEscapedSessionProcess(t *testing.T) {
 	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
 		return
