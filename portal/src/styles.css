@@ -958,6 +958,24 @@ summary:focus-visible {
   gap: 16px;
 }
 
+.attention-collapse-toggle {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 4px;
+}
+
+.attention-collapse-chevron {
+  color: var(--muted);
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.attention-collapse-toggle[aria-expanded="true"] .attention-collapse-chevron {
+  transform: rotate(90deg);
+}
+
 .attention-dismissed-list {
   border-top: 1px solid var(--line);
   display: grid;
