@@ -147,6 +147,31 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	}
 }
 
+func TestAnnotateReadyTimesSkipsClosedItems(t *testing.T) {
+	readyAt := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
+	items := []providers.WorkItem{
+		{ID: "closed", State: "closed", Labels: []string{providers.LabelReady}},
+		{ID: "open", State: "open", Labels: []string{providers.LabelReady}},
+	}
+	transitions := []providers.WorkItemLabelTransition{{
+		ItemID: "open", Label: providers.LabelReady, Added: true, OccurredAt: readyAt,
+	}}
+
+	if err := annotateReadyTimes(items, providers.LabelReady, transitions); err != nil {
+		t.Fatalf("annotateReadyTimes: %v", err)
+	}
+	if items[0].ReadyAt != nil {
+		t.Fatalf("closed item readyAt = %v, want nil", items[0].ReadyAt)
+	}
+	if items[1].ReadyAt == nil || !items[1].ReadyAt.Equal(readyAt) {
+		t.Fatalf("open item readyAt = %v, want %v", items[1].ReadyAt, readyAt)
+	}
+
+	if err := annotateReadyTimes(items[1:], providers.LabelReady, nil); err == nil {
+		t.Fatal("annotateReadyTimes accepted open ready item without an active label-add event")
+	}
+}
+
 func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

@@ -569,7 +569,8 @@ func annotateReadyTimes(
 		}
 	}
 	for i := range items {
-		if !items[i].HasLabel(readyLabel) {
+		if !items[i].HasLabel(readyLabel) ||
+			(items[i].State != "" && !strings.EqualFold(items[i].State, "open")) {
 			continue
 		}
 		readyAt, ok := active[items[i].ID]
