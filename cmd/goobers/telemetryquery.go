@@ -259,7 +259,7 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 // It locates the instance through GOOBERS_INSTANCE_ROOT because the stage's
 // working directory is its isolated worktree, not the instance root.
 func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry-query", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	window := fs.Duration("window", 24*time.Hour, "lookback window (for example 24h or 168h)")
 	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings, effective-version-efficacy, tutor-live-verification)")

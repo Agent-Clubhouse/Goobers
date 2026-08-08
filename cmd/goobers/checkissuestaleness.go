@@ -32,7 +32,7 @@ const checkIssueStalenessHelp = "Usage: goobers check-issue-staleness [path]\n\n
 	"Exit codes: 0 = evaluated, 1 = business error, 2 = usage/IO error.\n"
 
 func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("check-issue-staleness", flag.ContinueOnError)
+	fs := newCLIFlagSet("check-issue-staleness", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "check-issue-staleness")
 	if err := fs.Parse(args); err != nil {

@@ -30,7 +30,7 @@ const featuresHelp = "Usage: goobers features [--json] [--dsl-version <version>]
 	"config, 2 = usage/IO error.\n"
 
 func runFeatures(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("features", flag.ContinueOnError)
+	fs := newCLIFlagSet("features", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable feature-discovery envelope")
 	usedOnly := fs.Bool("used", false, "list only the features the instance at path references")

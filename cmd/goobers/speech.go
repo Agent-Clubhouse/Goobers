@@ -48,7 +48,7 @@ func runSpeech(args []string, stdout, stderr io.Writer) int {
 }
 
 func runSpeechPreflight(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("speech preflight", flag.ContinueOnError)
+	fs := newCLIFlagSet("speech preflight", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render the preflight report as JSON")
 	fs.Usage = helpUsage(stderr, "speech preflight")
@@ -82,7 +82,7 @@ func runSpeechPreflight(args []string, stdout, stderr io.Writer) int {
 }
 
 func runSpeechTest(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("speech test", flag.ContinueOnError)
+	fs := newCLIFlagSet("speech test", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render the final delivery receipt as JSON")
 	fs.Usage = helpUsage(stderr, "speech test")

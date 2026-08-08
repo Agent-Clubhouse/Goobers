@@ -258,7 +258,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		<-parentBridgeDone
 	}()
 
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs := newCLIFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")

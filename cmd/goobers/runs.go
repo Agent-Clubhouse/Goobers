@@ -63,7 +63,7 @@ const runsDuHelp = "Usage: goobers runs du [--json] [path]\n\n" +
 	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
 
 func runRunsDU(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("runs du", flag.ContinueOnError)
+	fs := newCLIFlagSet("runs du", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit disk usage as JSON")
 	fs.Usage = helpUsage(stderr, "runs du")

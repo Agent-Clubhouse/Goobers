@@ -57,7 +57,7 @@ func runGettingStarted(args []string, stdout, stderr io.Writer) int {
 }
 
 func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("getting-started", flag.ContinueOnError)
+	flags := newCLIFlagSet("getting-started", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the getting-started URL without opening a browser")

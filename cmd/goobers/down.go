@@ -41,7 +41,7 @@ const downHelp = "Usage: goobers down [path]\n\n" +
 	"1 = no live daemon found, 2 = usage/IO error.\n"
 
 func runDown(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("down", flag.ContinueOnError)
+	fs := newCLIFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "down")
 	if err := fs.Parse(args); err != nil {

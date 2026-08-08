@@ -58,7 +58,7 @@ const escalationsHelp = "Usage: goobers escalations [--json] [path]\n" +
 	"escalation cause and the artifacts available before and after each stage.\n"
 
 func runEscalations(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("escalations", flag.ContinueOnError)
+	fs := newCLIFlagSet("escalations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit escalated runs as JSON")
 	fs.Usage = helpUsage(stderr, "escalations")
@@ -99,7 +99,7 @@ const escalationsShowHelp = "Usage: goobers escalations show [--json] <run-id> [
 	"Show an escalation's structured cause and per-stage artifact timeline.\n"
 
 func runEscalationShow(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("escalations show", flag.ContinueOnError)
+	fs := newCLIFlagSet("escalations show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the escalation inspection as JSON")
 	fs.Usage = helpUsage(stderr, "escalations show")

@@ -218,7 +218,7 @@ func implementationInReviewComment(prURL string) string {
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
+	fs := newCLIFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "issue-close-out")
 	if err := fs.Parse(args); err != nil {

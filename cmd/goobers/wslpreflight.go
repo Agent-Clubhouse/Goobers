@@ -142,7 +142,7 @@ func runWSLNetworkPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 }
 
 func runOnboardingPreflightWith(args []string, stdout, stderr io.Writer, deps wslPreflightDeps) int {
-	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
+	fs := newCLIFlagSet("preflight", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "preflight")
 	distro := fs.String("distro", "", "WSL distro to check (default: the configured default distro)")

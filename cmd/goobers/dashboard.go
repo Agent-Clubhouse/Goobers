@@ -101,7 +101,7 @@ const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--no-open]
 	"browser failure, 2 = usage/IO error.\n"
 
 func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	flags := newCLIFlagSet("dashboard", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", strconv.Itoa(defaultDashboardPort), "dashboard port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the dashboard URL without opening a browser")

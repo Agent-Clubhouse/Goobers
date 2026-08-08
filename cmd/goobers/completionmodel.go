@@ -77,8 +77,15 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"version": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"versions": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"init": {
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
+		{name: "insecure", desc: "Allow an unisolated Windows demo"},
 		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
@@ -122,6 +129,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"validate": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "github-annotations", desc: "Emit GitHub Actions file annotations"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
@@ -129,6 +137,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"lint": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
+		{name: "github-annotations", desc: "Emit GitHub Actions file annotations"},
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
@@ -138,10 +147,43 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "quiet", desc: "Suppress liveness heartbeats"},
 		{name: "diagnostics", desc: "Capture deep per-stage diagnostics for hang debugging"},
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
+		{name: "skip-preflight", desc: "Start despite config validation errors"},
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
 		{name: "disable-read-model-reads", desc: "Read-model rollback: force journal-derived list paths for this run"},
+	},
+	"fix": {
+		{name: "to", takesArg: true, desc: "Target DSL version"},
+		{name: "write", desc: "Apply migrations in place"},
+	},
+	"doctor": {
+		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
+		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},
+		{name: "context", takesArg: true, desc: "Kubeconfig context"},
+		{name: "report", takesArg: true, values: []string{"text", "json"}, desc: "Report format"},
+		{name: "oidc-issuer", takesArg: true, desc: "OIDC issuer URL"},
+		{name: "registry", takesArg: true, desc: "Container registry host"},
+		{name: "egress", takesArg: true, desc: "Outbound host and port targets"},
+		{name: "timeout", takesArg: true, desc: "Per-probe timeout"},
+	},
+	"self-update": {
+		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
+		{name: "branch", takesArg: true, desc: "Branch tracked by on-main"},
+		{name: "target", takesArg: true, desc: "Manual release tag"},
+		{name: "health-ticks", takesArg: true, desc: "Required clean heartbeat ticks"},
+		{name: "health-timeout", takesArg: true, desc: "Candidate health window"},
+	},
+	"service status": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"worker": {
+		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
+		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
@@ -161,6 +203,19 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"run": {
 		{name: "no-wait", desc: "Return after the run is dispatched"},
+	},
+	"approve": {
+		{name: "decision", takesArg: true, desc: "Gate decision"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+	},
+	"override": {
+		{name: "rationale", takesArg: true, desc: "Override rationale"},
+		{name: "decision", takesArg: true, desc: "Gate decision"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+	},
+	"rerun-stage": {
+		{name: "addendum", takesArg: true, desc: "Instruction addendum"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
 	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
@@ -235,6 +290,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
 		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "branch", takesArg: true, desc: "Filter by journal branch"},
 		{name: "model", takesArg: true, desc: "Filter by model"},
 		{name: "harness-version", takesArg: true, desc: "Filter by harness version"},
 		{name: "group-by", takesArg: true, desc: "Group by model or harness-version"},
@@ -256,15 +312,38 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "delete", desc: "Delete eligible orphan directories (opt-in; default dry-run)"},
 		{name: "min-age", takesArg: true, desc: "Minimum inactivity age (at least 24h)"},
 	},
+	"telemetry prune": {
+		{name: "dry-run", desc: "Report eligible runs without deleting them"},
+	},
+	"telemetry export": {
+		{name: "since", takesArg: true, desc: "Inclusive span-start lower bound"},
+		{name: "until", takesArg: true, desc: "Exclusive span-start upper bound"},
+	},
+	"telemetry compact": {
+		{name: "dry-run", desc: "Report reclaimable data without changing it"},
+	},
 	"journal redact": {
 		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id"},
 		{name: "path", takesArg: true, desc: "Journal-relative blob path"},
 		{name: "reason", takesArg: true, desc: "Redaction reason"},
 		{name: "secret-file", takesArg: true, desc: "Read the leaked secret bytes from this file"},
 	},
+	"backlog-health": {
+		{name: "feedback", desc: "Include backlog feedback"},
+	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
 		{name: "release", desc: "Release this run's claim leases early"},
+		{name: "read-only", desc: "Query without mutating provider state"},
+		{name: "reconcile", desc: "Reconcile claim state"},
+	},
+	"set-milestone": {
+		{name: "item", takesArg: true, desc: "Issue item id"},
+		{name: "milestone", takesArg: true, desc: "Milestone number"},
+	},
+	"reconcile-post-merge": {
+		{name: "max", takesArg: true, desc: "Maximum pull requests to reconcile"},
+		{name: "lookback", takesArg: true, desc: "Merge lookback duration"},
 	},
 	"reconcile-branches": {
 		{name: "delete", desc: "Delete eligible branches (opt-in; default dry-run)"},
@@ -277,6 +356,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "gate-noise"}, desc: "Aggregate to detect"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
 		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},
 	"docs-churn": {
 		{name: "repo", takesArg: true, desc: "Git repository/worktree to scan"},
@@ -285,6 +365,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "First-run window and minimum buffer floor"},
 		{name: "buffer-multiplier", takesArg: true, desc: "Buffer multiplier over observed churn"},
 		{name: "format", takesArg: true, values: []string{"churn-digest"}, desc: "Artifact format"},
+	},
+	"ios-simulator-test": {
+		{name: "project", takesArg: true, desc: "Xcode project path"},
+		{name: "workspace", takesArg: true, desc: "Xcode workspace path"},
+		{name: "scheme", takesArg: true, desc: "Xcode scheme"},
+		{name: "device", takesArg: true, desc: "Simulator device"},
+		{name: "runtime", takesArg: true, desc: "Simulator runtime"},
+		{name: "only-testing", takesArg: true, desc: "Test target filter"},
+		{name: "result-bundle", takesArg: true, desc: "Result bundle path"},
 	},
 	"gather-sibling-context": {
 		{name: "no-cache", desc: "Bypass the sibling-context cache"},
@@ -296,9 +385,19 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"elect-lander": {
 		{name: "gate", takesArg: true, desc: "Gate name whose verdict to read"},
 	},
+	"pr-claim": {
+		{name: "release", desc: "Release the remediation claim"},
+	},
 	"remediation-checkpoint": {
 		{name: "budget", takesArg: true, desc: "Per-PR repass-cycle budget before escalating"},
 		{name: "escalate", takesArg: true, desc: "Escalate unconditionally with this reason"},
+		{name: "escalation-outcome", takesArg: true, desc: "Recorded escalation outcome"},
+	},
+	"respond-to-findings": {
+		{name: "check", desc: "Validate without publishing responses"},
+	},
+	"mcp-io": {
+		{name: "config", takesArg: true, desc: "MCP server configuration path"},
 	},
 }
 

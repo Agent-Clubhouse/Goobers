@@ -33,7 +33,7 @@ const selectSourceHelp = "Usage: goobers select-source [path]\n\n" +
 	"error) / 2 = usage/IO error.\n"
 
 func runSelectSource(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("select-source", flag.ContinueOnError)
+	fs := newCLIFlagSet("select-source", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "select-source")
 	if err := fs.Parse(args); err != nil {

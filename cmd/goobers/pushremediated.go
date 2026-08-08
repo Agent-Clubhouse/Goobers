@@ -61,7 +61,7 @@ const pushRemediatedHelp = "Usage: goobers push-remediated [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runPushRemediated(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("push-remediated", flag.ContinueOnError)
+	fs := newCLIFlagSet("push-remediated", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-remediated")
 	if err := fs.Parse(args); err != nil {

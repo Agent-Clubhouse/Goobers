@@ -79,7 +79,7 @@ const claimsListHelp = "Usage: goobers claims list [--json] [--stale] [--gaggle=
 	"expires-at for each claim. Filters may be combined. Default path is \".\".\n"
 
 func runClaimsList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("claims list", flag.ContinueOnError)
+	fs := newCLIFlagSet("claims list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit claim entries as JSON")
 	staleOnly := fs.Bool("stale", false, "show only claims whose lease has expired")
@@ -167,7 +167,7 @@ const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=nam
 	"ambiguous, 2 = usage/IO error.\n"
 
 func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("claims release", flag.ContinueOnError)
+	fs := newCLIFlagSet("claims release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")

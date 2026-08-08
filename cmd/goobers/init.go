@@ -69,7 +69,7 @@ func runInitWithInputForOSAndGitHub(
 	goos string,
 	github guidedGitHubOperations,
 ) int {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs := newCLIFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")

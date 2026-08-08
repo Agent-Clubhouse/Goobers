@@ -58,7 +58,7 @@ func runBacklogAssignmentWithMutationHook(
 	stdout, stderr io.Writer,
 	beforeMutation func(assignmentPlanEntry),
 ) int {
-	fs := flag.NewFlagSet("backlog-assignment", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-assignment", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "backlog-assignment")
 	if err := fs.Parse(args); err != nil {

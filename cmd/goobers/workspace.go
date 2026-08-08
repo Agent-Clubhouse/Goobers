@@ -41,7 +41,7 @@ func runWorkspace(args []string, stdout, stderr io.Writer) int {
 }
 
 func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("workspace reset", flag.ContinueOnError)
+	fs := newCLIFlagSet("workspace reset", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "workspace reset")
 	if err := fs.Parse(args); err != nil {

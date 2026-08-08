@@ -47,7 +47,7 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"provider failure), 2 = usage/IO error.\n"
 
 func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("merge-queue-poll", flag.ContinueOnError)
+	fs := newCLIFlagSet("merge-queue-poll", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "merge-queue-poll")
 	if err := fs.Parse(args); err != nil {

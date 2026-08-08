@@ -182,7 +182,7 @@ func runServiceStart(args []string, stdout, stderr io.Writer) int {
 }
 
 func runServiceStatus(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("service status", flag.ContinueOnError)
+	fs := newCLIFlagSet("service status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render status as JSON")
 	fs.Usage = helpUsage(stderr, "service status")
@@ -227,7 +227,7 @@ func runServiceStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseServiceRoot(flagName, helpID string, args []string, stderr io.Writer) (string, bool) {
-	fs := flag.NewFlagSet(flagName, flag.ContinueOnError)
+	fs := newCLIFlagSet(flagName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, helpID)
 	if err := fs.Parse(args); err != nil {

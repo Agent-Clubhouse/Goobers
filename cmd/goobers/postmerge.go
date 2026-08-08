@@ -193,7 +193,7 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
 
 func runPostMerge(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("post-merge", flag.ContinueOnError)
+	fs := newCLIFlagSet("post-merge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "post-merge")
 	if err := fs.Parse(args); err != nil {
