@@ -363,7 +363,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if e.SelfBin != "" && stageInvokesGoobersCLI(command) {
 		name = e.SelfBin
 	}
-	cmd := exec.Command(name, command[1:]...)
+	invokeName, invokeArgs := commandInvocation(name, command[1:])
+	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	// Configure tree ownership before the network isolation below layers its
