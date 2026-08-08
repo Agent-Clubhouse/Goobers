@@ -1,0 +1,45 @@
+# Curation/implementation telemetry projections key on run payload shape, not workflow name
+
+Suggested labels: `area:telemetry`, `type:bug`, `sprint:v1-breadth`
+
+## Problem
+
+`internal/telemetry/rollup`'s curation/implementation dashboard tables populate only when a run's `workflow` field is literally `"backlog-curation"` or `"implementation"`. Any adopter who renames either workflow — which Goobers' own onboarding guide instructs multi-gaggle adopters to do, to keep workflow names globally unique per gaggle — gets `curation_actions`, `ready_pool_samples`, `ready_label_transitions`, and `ready_claims` silently populated with nothing. No error surfaces anywhere; the operator sees an empty-looking dashboard and cannot tell "no curation activity" from "curation activity isn't being counted."
+
+This is the write side of the bug. The read side carries the identical defect one layer up: even a correctly-written row can be filtered back out by a second, independent literal-name comparison in the query layer, so fixing only the write path would leave the dashboard looking just as empty for a renamed workflow.
+
+## Evidence
+
+- `internal/telemetry/rollup/ingest.go:426-444` (`insertBacklogProjections`): gates all four curation/implementation projector calls behind `id.Workflow == "backlog-curation"` / `id.Workflow == "implementation"`. `id.Workflow` (`internal/telemetry/rollup/mirror.go:123`) mirrors `run.yaml`'s `workflow` field verbatim — an ordinary, author-chosen `metadata.name` string, not a reserved keyword (`internal/journal/identity.go:51-52`).
+- `internal/telemetry/rollup/ingest.go:585-607` (`insertReadyClaims`): already self-gates on the *content* of the run, independent of the outer check — it only inserts a row for a `query-backlog` stage-finished event whose `Outputs["readyAt"]` parses as an RFC3339 timestamp. Same pattern in `insertCurationAction` (curate-stage output-key set, lines 446-503), `insertReadyPoolSample` (readyPoolDepth/average/oldest/observedAt output keys, lines 561-583), and `insertReadyLabelTransitions` (sample-ready-pool stage + ready-pool artifact, lines 515-559).
+- `internal/telemetry/rollup/curation.go:157,179,237,274,298,330,392` and `aggregates.go:418`: the read path re-derives "is this a curation/implementation run" a second time via embedded SQL clauses (`r.workflow = 'backlog-curation'` / `'implementation'`) and two Go-level early-return guards (`curationStats`, the `readyLabelTransitions` call site) — independent of, and just as brittle as, the write-side gate.
+- `docs/audits/2026-08-08-gaggle-reliability/domains/audit-drift-audit.md` (the wishlist-branch finding): confirms the multi-gaggle onboarding pattern this defect breaks — the instance's own second gaggle (`goobers-site`) already runs hand-forked workflow copies, the exact shape a renamed workflow takes.
+- Upstream #2494 (open, `goobers:needs-human`) already tracks the symptom, filed from this defect class, with four occurrences allow-listed in `test/stagenamelint/main.go:47-52` (`aggregates.go:418`, `curation.go:172`, `ingest.go:427`, `ingest.go:438`).
+
+## Proposed direction
+
+Delete the two outer name gates in `insertBacklogProjections` (`ingest.go:427,438`) and call all four projector functions unconditionally for every run. This is safe and free: each function already self-selects on the *distinctive stage-output shape* a run must have to be curation/implementation-flavored — the `curate` stage's seven-key output set, the `query-backlog` stage's `readyAt` output, `sample-ready-pool`'s four numeric/timestamp outputs. No other built-in stage produces that shape, so the gate was always redundant with the content check directly beneath it; it only ever *narrowed* correct behavior, never widened it.
+
+Then remove the mirrored read-side literal comparisons. Every embedded `r.workflow = 'backlog-curation'` / `'implementation'` clause that joins against one of the four projection tables (`curation_actions`, `ready_pool_samples`, `ready_label_transitions`, `ready_claims`) is now redundant with table membership — a row exists there if and only if the run's payload matched, regardless of what the run's workflow is named — so the clause can simply be dropped from those joins. The one query that reads a *different* table for a curation-adjacent signal (`readyPoolHealth`'s `implementationDemand` count, which joins `provider_mutations` directly rather than `ready_claims`) should instead join through `ready_claims` membership (`provider_mutations.run_id` present in `ready_claims`) rather than compare `r.workflow` — this is also a *more correct* answer to "how much demand did implementation-flavored runs place," since it now tracks the same payload-derived definition everywhere instead of a name string that can drift from it.
+
+Zero-config result: an adopter who renames `backlog-curation` to `widget-curation` gets working dashboards on their very first run, with no config, DSL field, or opt-in required — the fix is entirely in the rollup package, invisible to workflow authors.
+
+This retires stage-name-lint's four `#2494` allow-list entries and closes #2494 for real (not just the two entries its own current allow-list flags — the read-side pair is necessary for the fix to be visible to an operator at all, since fixing only the write path leaves rows written that no query ever surfaces).
+
+## Alternatives considered
+
+- **A DSL `role:`/`kind:` field a workflow author sets to declare "this is the curation role"** — the fix #2494's own issue body proposes ("a config-sourced workflow role marker"). Rejected: this is new DSL surface for a problem the existing output-shape check already solves without it, it adds an authoring step every adopter must remember (and `goobers validate` cannot force them to), and per operator direction workflow-level role is at most future *presentation* metadata inferred from composition — not a field that should drive projection *behavior*. The payload-shape check is strictly better: it requires no author action and cannot silently drift out of sync with what the workflow actually does.
+- **Keep the workflow-name gate but make the name list configurable** (an instance-level `curationWorkflowNames: [...]` setting) — rejected as the "bigger allowlist" #2494's own issue text already dismisses: it moves the brittleness one level up rather than removing it, and still requires an authoring step an adopter can forget.
+- **Fix only the write path, leave the read-side literals** — rejected: produces populated tables an operator still cannot see through the existing dashboard/API surface, which is a worse outcome than doing nothing (looks fixed, isn't).
+
+## Duplicate search
+
+2026-08-08, `gh issue list -R Agent-Clubhouse/Goobers --search "<terms>" --state all`, terms tried: `telemetry projections workflow name`, `payload-driven telemetry`, `curation dashboard renamed workflow`, `readyAt`, `workflow role marker telemetry`, `backlog-curation hardcoded`.
+
+- **#2494** (open, `goobers:needs-human`, `area:telemetry`) — "internal/telemetry/rollup backlog/curation dashboards silently empty for a renamed workflow." This *is* the tracked wish for the problem statement. Its current scope stops at diagnosis plus a suggested (not committed) direction — "the durable fix is probably introducing that role/kind marker ... which is a real design call, not a mechanical patch" — and its own allow-list only names two of the four entries the fix actually needs to touch to be user-visible. This draft supplies the concrete design the diagnosis asks for, explicitly rejects the role-marker direction #2494 floats (per the operator-ratified position on workflow-level role), and extends scope to the two read-side literals #2494's issue text doesn't mention at all. **Not filed as new** — recommend this draft supersede/close #2494 with the concrete design once approved, rather than filing a duplicate.
+- **#2490** (closed) — `gather-ci-failures` hard-failed on a literal workflow-name match. Same bug *class*, already fixed, in an unrelated stage (a provider stage's runtime guard, not a telemetry projection). Does not cover this.
+- **#2551** (closed) — the `stage-name-lint` CI guard itself, whose allow-list is the evidence cited above. It intentionally allow-lists the #2494 occurrences rather than fixing them; it created the tracking mechanism this draft's fix will let the lint's allow-list shrink by four entries, not a duplicate proposal.
+
+## Size and risk
+
+**S.** Blast radius: `internal/telemetry/rollup` only (`ingest.go`, `curation.go`, `aggregates.go`) plus four allow-list line removals in `test/stagenamelint/main.go`. No DSL schema change, no migration, no new table/column — existing tables already have the right shape, this only changes which rows populate them and which rows a query returns. Backward-compatible: runs already named `backlog-curation`/`implementation` see byte-identical projection results before and after (the gate was redundant for them by construction). No live-instance config change required.
