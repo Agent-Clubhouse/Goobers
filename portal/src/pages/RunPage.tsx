@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
+import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import { ScopePivot } from "../components/ScopePivot";
@@ -438,12 +439,22 @@ function RunDetailWorkspace({
           )}
         </div>
 
-        <EventLedger
-          events={events}
-          onSelect={selectEvent}
-          run={run}
-          selectedSeq={selectedSeq}
-        />
+        <div className="run-journal-column">
+          <KeyMomentsDigest
+            client={client}
+            events={events}
+            onSelect={selectEvent}
+            runId={runId}
+            runStartedAt={run.startedAt}
+            selectedSeq={selectedSeq}
+          />
+          <EventLedger
+            events={events}
+            onSelect={selectEvent}
+            run={run}
+            selectedSeq={selectedSeq}
+          />
+        </div>
       </section>
     </>
   );

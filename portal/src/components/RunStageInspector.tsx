@@ -429,27 +429,50 @@ function EvidenceDetail({
         </span>
         <strong>{eventHeading(event)}</strong>
       </div>
-      {isTranscriptEvent(event) ? (
-        <TranscriptRow client={client} event={event} runId={runId} />
-      ) : event.artifact ? (
-        <div className="artifact-list">
-          <ArtifactRow
-            artifact={{
-              ...event.artifact,
-              recordedSeq: event.artifact.recordedSeq ?? event.seq,
-            }}
-            attemptNumber={event.artifact.attempt ?? event.attempt}
-            attemptVisit={visit}
-            client={client}
-            runId={runId}
-          />
-        </div>
-      ) : (
-        <p className="artifact-load-error" role="alert">
-          Evidence content is unavailable.
-        </p>
-      )}
+      <EvidencePayload client={client} event={event} runId={runId} visit={visit} />
     </div>
+  );
+}
+
+// EvidencePayload renders whatever an inspectable evidence event (transcript
+// or artifact) carries, without assuming a graph node context — the shared
+// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
+// reuses directly for its inline "state change and payload" preview (#2537),
+// so the two views never grow separate rendering logic for the same evidence.
+export function EvidencePayload({
+  client,
+  event,
+  runId,
+  visit,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  runId: string;
+  visit?: number;
+}) {
+  if (isTranscriptEvent(event)) {
+    return <TranscriptRow client={client} event={event} runId={runId} />;
+  }
+  if (event.artifact) {
+    return (
+      <div className="artifact-list">
+        <ArtifactRow
+          artifact={{
+            ...event.artifact,
+            recordedSeq: event.artifact.recordedSeq ?? event.seq,
+          }}
+          attemptNumber={event.artifact.attempt ?? event.attempt}
+          attemptVisit={visit}
+          client={client}
+          runId={runId}
+        />
+      </div>
+    );
+  }
+  return (
+    <p className="artifact-load-error" role="alert">
+      Evidence content is unavailable.
+    </p>
   );
 }
 
