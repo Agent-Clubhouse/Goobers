@@ -49,7 +49,12 @@ async function openInspector(page: Page): Promise<() => number> {
       await new Promise((resolve) => setTimeout(resolve, refreshIntervalMs));
       const cursor = `browser:${eventSequence}`;
       await route.fulfill({
-        body: `id: ${cursor}\nevent: invalidate\ndata: ${JSON.stringify({
+        // `retry:` pins the browser's SSE reconnect backoff after this
+        // single-message response closes; without it, reconnect delay is
+        // implementation-default and free to vary between local Chromium
+        // and a busy CI runner — the dominant source of per-cycle variance
+        // on top of the deterministic refreshIntervalMs sleep above.
+        body: `retry: 100\nid: ${cursor}\nevent: invalidate\ndata: ${JSON.stringify({
           cursor,
           models: ["run"],
           runIds: [runId],
