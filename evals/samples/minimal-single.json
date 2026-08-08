@@ -1,0 +1,11 @@
+{
+  "suite_name": "minimal-single",
+  "description": "Smallest valid suite: one scenario with only the required fields.",
+  "scenarios": [
+    {
+      "id": "min-1",
+      "name": "bare-minimum-scenario",
+      "input": "What is 2 + 2?"
+    }
+  ]
+}

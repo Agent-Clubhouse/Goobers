@@ -11,9 +11,43 @@ evaluation of agentic workflows — [#2662](https://github.com/Agent-Clubhouse/G
 - [`EVALS_CASSETTE.md`](./EVALS_CASSETTE.md) — the cassette storage format
   that `replay` mode reads from and `real`+`record` sessions write to.
 
-Other design docs for sibling child issues under the epic (DSL/schema, judge
-harness, adapter shim prototype, CI gating) land here as their issues are
-worked. Runner integration (#2667) is documented in the section below.
+Other design docs for sibling child issues under the epic (judge harness,
+adapter shim prototype, CI gating) land here as their issues are worked.
+DSL/schema validation (#2663) and runner integration (#2667) are documented
+in the sections below.
+
+## DSL & schema validation (#2663)
+
+- `eval_schema.json` — the EvalSuite DSL, as a JSON Schema (draft-07):
+  required fields/types for a suite, its scenarios, their stages, and an
+  optional judge block.
+- `samples/*.json` — sample suites, each validated against the schema.
+- `tests/validate_schema.py` — schema self-checks, sample-suite validation
+  (parametrized over every file in `samples/`), and a set of deliberately
+  malformed documents that must be rejected, so the runner fails fast on bad
+  input rather than misbehaving downstream.
+
+### Running the schema tests locally
+
+```sh
+cd evals
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest
+```
+
+Adding a new sample suite: drop a new `*.json` file under `samples/` — it's
+picked up automatically by the parametrized tests above, no test-code change
+needed.
+
+### CI
+
+`.github/workflows/evals-tests.yml` installs the pinned dependencies and runs
+`pytest` on every push/PR that touches this directory (test discovery covers
+the whole `evals/` tree, not just `tests/` — sibling child issues land their
+own test directories as they're implemented), failing the check on any
+schema or sample-suite validation error.
 
 ---
 
@@ -48,22 +82,25 @@ commits:
 | `evals/samples/mvp-evals.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `c334399c` |
 | `evals/.gitignore`, `evals/adapters/cassettes/.gitignore` | `noble-salmon/2666-evals-adapter-shim-prototype` | `5ad66dce` |
 
-**Reconciliation, once the real PRs land:** these paths should be
-overwritten by the actual merges, not coexist with two copies. If a
-vendored file here is byte-identical to what merges, the merge is a no-op
-diff for that file. This runner reads the sibling contracts structurally
-(attribute/field access), not by pinning to a specific vendored revision,
-so it should keep passing against small shape changes; anything that
-doesn't is a real integration bug worth finding now rather than after both
-land silently out of sync. One such change already happened during this
-PR's own review: `eval_schema.json`'s `stages[].tool_mocks.<adapter_id>`
-naming was resolved to `mode` (4-value enum), matching the wire-level
-`/adapter/invoke` field exactly — re-synced here (see `eval_schema.json`'s
-and `samples/mvp-evals.json`'s commit above) after `_adapter_mode()` was
-already written to accept both `mode` and the earlier `mock_type` name, so
-no runner code change was needed, only a vendored-file re-sync. The
-`mock_type` fallback in `_adapter_mode()` is left in place as harmless
-backward compatibility for any suite authored against the earlier name.
+**Reconciliation, now that #2663 has landed:** `eval_schema.json` and
+`samples/mvp-evals.json` above are confirmed byte-identical to what #2663
+merged — this runner's vendored copies were already a no-op diff against
+the real files, exactly as this section predicted before either side knew
+which would merge first. This runner reads the sibling contracts
+structurally (attribute/field access), not by pinning to a specific
+vendored revision, so it should keep passing against small shape changes;
+anything that doesn't is a real integration bug worth finding now rather
+than after both land silently out of sync. One such change already happened
+during this PR's own review: `eval_schema.json`'s
+`stages[].tool_mocks.<adapter_id>` naming was resolved to `mode` (4-value
+enum), matching the wire-level `/adapter/invoke` field exactly — re-synced
+here (see `eval_schema.json`'s and `samples/mvp-evals.json`'s commit above)
+after `_adapter_mode()` was already written to accept both `mode` and the
+earlier `mock_type` name, so no runner code change was needed, only a
+vendored-file re-sync. The `mock_type` fallback in `_adapter_mode()` is left
+in place as harmless backward compatibility for any suite authored against
+the earlier name. `judge_plugin_interface.py`, `judge_templates/`, and the
+adapter shim files remain provisional pending #2664/#2666's own merges.
 
 `server.py` and `cli.py` from the adapter shim prototype were **not**
 vendored — this runner talks to `AdapterShim` in-process (direct Python
