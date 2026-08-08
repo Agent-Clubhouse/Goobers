@@ -332,6 +332,7 @@ func TestValidateCheckRepos(t *testing.T) {
 	t.Cleanup(func() { targetRepositoryReachable = original })
 	originalSize := targetRepositorySize
 	t.Cleanup(func() { targetRepositorySize = originalSize })
+	stubRepositoryRealityChecks(t, []string{"goobers", "goobers:claimed"}, 1, 1)
 
 	called := 0
 	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
@@ -506,7 +507,11 @@ func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *tes
 
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
-	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+	// The starter scaffold now ships its scoped packages under
+	// config/gaggles/example/skills (SKILL002 fix) rather than the
+	// instance-level fallback; remove those to reproduce the missing-package
+	// probe.
+	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "skills")); err != nil {
 		t.Fatal(err)
 	}
 

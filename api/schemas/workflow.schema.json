@@ -350,7 +350,7 @@
           }
         },
         "expectedOutputs": { "type": "array", "description": "Intended task postconditions. Accepted for forward compatibility but not enforced by the local runner.", "items": { "type": "string" } },
-        "continueOnError": { "type": "boolean", "description": "Whether a failed result remains visible to the next gate instead of immediately failing the run. Failed-task outputs are discarded." },
+        "continueOnError": { "type": "boolean", "description": "Whether this stage's failure is tolerated. With a task as `next`, a failed stage fails the run unless this is true. With a gate as `next`, the failed status always reaches the gate and its branches are honored either way; this flag then only decides how a failure the gate routes to workflow completion is recorded — tolerated (run completes) or preserved (run marked failed). Failed-task outputs are discarded in every case." },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"], "description": "Agentic timeout behavior: fail the attempt or salvage a viable committed diff." },
         "next": { "type": "string", "description": "Next task, gate, or parallel state. Empty means successful terminal completion." }
       },

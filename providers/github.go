@@ -2641,6 +2641,55 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	return item, nil
 }
 
+// RepositoryLabelNames lists the repository's issue-label names, read-only —
+// the validator's selector-reality pass compares config selectors against
+// them and must never create anything (creation is EnsureWorkItemLabels'
+// job, invoked only by connect --seed).
+func (p *GitHubProvider) RepositoryLabelNames(ctx context.Context, repo RepositoryRef) ([]string, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageLabels []githubLabel
+		if err := json.Unmarshal(page, &pageLabels); err != nil {
+			return fmt.Errorf("decode labels page: %w", err)
+		}
+		for _, label := range pageLabels {
+			names = append(names, label.Name)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// ActionsWorkflowCount reports how many GitHub Actions workflows the
+// repository defines — the cheap "does anything here produce check runs"
+// signal the validator's ci-poll reality warning keys on. External check
+// apps are invisible to this probe by design; callers must hedge.
+func (p *GitHubProvider) ActionsWorkflowCount(ctx context.Context, repo RepositoryRef) (int, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return 0, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "workflows")
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := p.doStatus(ctx, http.MethodGet, endpoint, nil, &out, nil); err != nil {
+		return 0, err
+	}
+	return out.TotalCount, nil
+}
+
 // EnsureWorkItemLabels creates missing GitHub issue labels without modifying existing labels.
 func (p *GitHubProvider) EnsureWorkItemLabels(
 	ctx context.Context,
