@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -332,7 +331,7 @@ const (
 	// reports those as *RateLimitError before a plain status error can ever
 	// see one) — a real permission failure. Never retryable: retrying with
 	// the same bad or expired credential cannot succeed.
-	errorCodeAuthFailed = "github_auth_failed"
+	errorCodeAuthFailed = providers.ErrorCodeAuthFailed
 	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
@@ -396,10 +395,11 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if strings.Contains(message, "gh006") && strings.Contains(message, "added to a merge queue") {
 		return errorCodeBranchMergeQueued, true, nil
 	}
+	if providers.IsAuthenticationError(err) {
+		return errorCodeAuthFailed, false, nil
+	}
 	if status, ok := statusCodeFrom(err); ok {
 		switch {
-		case status == http.StatusUnauthorized, status == http.StatusForbidden:
-			return errorCodeAuthFailed, false, nil
 		case status >= 500:
 			return errorCodeServerError, true, nil
 		}

@@ -55,3 +55,40 @@ func TestIsTransientError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsAuthenticationError(t *testing.T) {
+	permissionDenied := &providerResponseError{
+		method:     "GET",
+		endpoint:   "/repos/acme/app/commits/abc/check-runs",
+		statusCode: 403,
+		body:       `{"message":"Resource not accessible by personal access token"}`,
+	}
+	rateLimited := &providerResponseError{
+		method:             "GET",
+		endpoint:           "/repos/acme/app/issues",
+		statusCode:         403,
+		rateLimitRemaining: "0",
+	}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"typed permission denied", permissionDenied, true},
+		{"wrapped permission denied", fmt.Errorf("list checks: %w", permissionDenied), true},
+		{"serialized 401", errors.New("GET /user failed: status 401: Bad credentials"), true},
+		{"serialized 403", errors.New("GET /checks failed: status 403: Resource not accessible by personal access token"), true},
+		{"typed rate limit", rateLimited, false},
+		{"serialized rate limit", errors.New(`GET /issues failed: status 403: forbidden (X-RateLimit-Remaining="0")`), false},
+		{"rate limit error", &RateLimitError{Status: 403}, false},
+		{"not found", errors.New("GET /issues/1 failed: status 404: Not Found"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsAuthenticationError(tc.err); got != tc.want {
+				t.Fatalf("IsAuthenticationError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

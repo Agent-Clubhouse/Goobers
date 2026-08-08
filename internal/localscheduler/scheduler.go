@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/telemetry"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/providers"
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
@@ -178,6 +179,10 @@ type Scheduler struct {
 	// quotaResumePacing drains provider-backed workflow polls one workflow per
 	// tick after an exhausted quota window resets.
 	quotaResumePacing map[apiv1.Provider]bool
+	// authCircuits suppress provider polls and dispatch for a workflow after a
+	// permanent credential failure. Reload clears the circuit after an
+	// operator repairs configuration.
+	authCircuits map[WorkflowIdentity]struct{}
 	// lastDispatchedGaggle is the cursor for work-conserving round-robin
 	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
@@ -300,6 +305,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
 		quotaResumePacing:     make(map[apiv1.Provider]bool),
+		authCircuits:          make(map[WorkflowIdentity]struct{}),
 		wake:                  make(chan struct{}, 1),
 		writeTriggerState:     writeTriggerEvaluations,
 	}
@@ -742,6 +748,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
+		if s.authCircuitOpen(entryIdentity(entry)) {
+			continue
+		}
 		identity := entryIdentity(entry)
 		s.mu.Lock()
 		pending := s.pendingScheduleDemand[identity]
@@ -989,6 +998,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.backlogLastCheck = backlogLastCheck
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
+	s.authCircuits = make(map[WorkflowIdentity]struct{})
 
 	select {
 	case s.wake <- struct{}{}:
@@ -1078,6 +1088,10 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		}
 		for _, poll := range due {
 			entry := poll.candidate.entry
+			if s.authCircuitOpen(entryIdentity(entry)) {
+				s.applyDemandCount(poll, 0)
+				continue
+			}
 			if pacing && entryIdentity(entry) != pacedIdentity {
 				if poll.schedule {
 					s.deferScheduleDemandPoll(poll.candidate)
@@ -1277,6 +1291,16 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 		var budgetErr *ProviderPollBudgetError
 		if errors.As(err, &budgetErr) {
 			s.journalPollShed(entry, budgetErr.Provider, budgetErr.Remaining, budgetErr.Requested, budgetErr.ResetAt)
+			return 0
+		}
+		if providers.IsAuthenticationError(err) {
+			s.openAuthCircuit(entryIdentity(entry))
+			s.journalEvent(journal.Event{
+				Type:     journal.EventError,
+				Workflow: entry.Workflow,
+				Gaggle:   entry.Gaggle,
+				Error:    &journal.ErrorDetail{Code: providers.ErrorCodeAuthFailed, Message: err.Error()},
+			})
 			return 0
 		}
 		code := "backlog_count_failed"
@@ -1583,6 +1607,18 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	span := s.startSpan(ctx, entry, runID)
 	defer span.End()
 
+	if s.authCircuitOpen(entryIdentity(entry)) {
+		reason := ReasonProviderAuth + ": operator must repair credentials and reload configuration"
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
+
 	// Unlike the journalEvent calls below (best-effort: they record a
 	// decision already made, so a write failure doesn't roll it back), a
 	// failed trigger.fired append MUST stop this dispatch here rather than
@@ -1669,6 +1705,9 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Trigger: trigger,
 			RepoRef: entry.RepoRef,
 		})
+		if startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed {
+			s.openAuthCircuit(identity)
+		}
 		// #710: this echo used to carry only the bare phase string — a
 		// business failure (result.Phase == "failed", startErr == nil: the
 		// run completed dispatch cleanly and reported a failed OUTCOME)
@@ -1703,6 +1742,19 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		s.journalEvent(ev)
 	}()
 	return runID, true, ""
+}
+
+func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, open := s.authCircuits[identity]
+	return open
+}
+
+func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity) {
+	s.mu.Lock()
+	s.authCircuits[identity] = struct{}{}
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) resetPoolSkips(identity WorkflowIdentity) {
@@ -1793,6 +1845,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		}
 	}
 	for name, entry := range s.workflows {
+		if _, open := s.authCircuits[name]; open {
+			continue
+		}
 		ts := s.triggers[name]
 		if next, ok := NextScheduledFire(entry.Schedules, ts.LastEval); ok {
 			consider(next)
