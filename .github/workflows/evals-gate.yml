@@ -1,0 +1,72 @@
+name: EvalSuite gate
+
+# Dormant until #2667 (runner integration) lands. workflow_dispatch only —
+# no schedule, no pull_request trigger — until there is a real runner and a
+# committed evals/testdata/baselines/ fixture for it to diff against. See
+# docs/design/evals-ci-gating.md.
+
+on:
+  workflow_dispatch:
+  # Enable once #2667 lands a runner and baselines are committed (see
+  # docs/design/evals-ci-gating.md §4):
+  # pull_request:
+  #   paths: ["evals/**"]
+  # schedule:
+  #   - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: EvalSuite baseline gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify runner is provisioned
+        run: |
+          if [ ! -d evals/cmd ] || [ ! -d evals/testdata/baselines ]; then
+            echo "::error title=EvalSuite runner not yet implemented::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) don't exist yet. This is a distinct gate from evals-tests.yml, which already runs the evals/ schema/unit tests (#2670-#2672); this one is blocked on #2667 (runner integration) landing. See docs/design/evals-ci-gating.md."
+            exit 1
+          fi
+
+      # Once #2667 lands, the remaining steps become real:
+      #
+      # - name: Set up Go
+      #   uses: actions/setup-go@v7
+      #   with:
+      #     go-version-file: go.mod
+      #     cache: true
+      #
+      # - name: Run EvalSuite against committed baselines
+      #   run: >-
+      #     go run ./evals/cmd/evalsrun gate
+      #     -suites evals/suites
+      #     -baselines evals/testdata/baselines
+      #     -out evals-run-report.json
+      #
+      # - name: Upload run report
+      #   if: ${{ !cancelled() }}
+      #   uses: actions/upload-artifact@v7
+      #   with:
+      #     name: evals-run-report-${{ github.run_id }}
+      #     path: evals-run-report.json
+      #     retention-days: 30
+
+      # Guards partial activation: if a future edit uncomments the trigger
+      # and this guard starts passing (evals/cmd + baselines exist) without
+      # also uncommenting the run step above, this is the only thing left to
+      # catch a green "gate" that never actually ran anything.
+      - name: Verify the gate actually ran
+        run: |
+          if [ ! -f evals-run-report.json ]; then
+            echo "::error title=EvalSuite gate activation incomplete::evals-run-report.json was not produced. Uncomment the commented 'Run EvalSuite against committed baselines' step above (not just the provisioning guard) before enabling this workflow's triggers."
+            exit 1
+          fi
