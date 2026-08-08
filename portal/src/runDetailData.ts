@@ -906,7 +906,7 @@ function stateFromStatus(
   }
 }
 
-export function humanize(value: string): string {
+function humanize(value: string): string {
   const words = value.replace(/[._-]+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
 }
