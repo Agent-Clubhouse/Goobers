@@ -126,6 +126,33 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 	})
 
+	t.Run("token ref follows the workflow's own repo", func(t *testing.T) {
+		multi := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BACKLOG_TOK"}},
+			{Provider: "github", Owner: "masra", Name: "site", Token: instance.TokenRef{Env: "BACKLOG_TOK_B"}},
+		}}
+		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers:ready": "true"}}},
+		}}
+		siteRef := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "masra", Name: "site"}
+		c, err := buildBacklogCounter(multi, apiv1.Gaggle{}, wf, siteRef, nil, nil, "", nil)
+		if err != nil {
+			t.Fatalf("buildBacklogCounter: %v", err)
+		}
+		bc, ok := c.(*backlogCounter)
+		if !ok {
+			t.Fatalf("counter type = %T, want *backlogCounter", c)
+		}
+		// #2692 sibling: the counter queries the workflow's repo, so it must
+		// authenticate with that repo's ref — not the first repo's.
+		if bc.ref != "masra/site" {
+			t.Fatalf("credential ref = %q, want the workflow repo's own masra/site", bc.ref)
+		}
+		if bc.repo.Owner != "masra" || bc.repo.Name != "site" {
+			t.Fatalf("repo = %+v, want masra/site", bc.repo)
+		}
+	})
+
 	t.Run("pr remediation uses claim-aware pull request demand", func(t *testing.T) {
 		scheduleCfg := &instance.Config{Repos: []instance.RepoRef{
 			{Provider: "github", Owner: "acme", Name: "other", Token: instance.TokenRef{Env: "OTHER_TOK"}},

@@ -81,10 +81,11 @@ type schedulerSetup struct {
 	Validation        *validate.Report
 	ConfigDigest      string
 	RecoveredClaims   []localscheduler.ClaimEntry
-	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
-	// in (or no repo is configured). Only the `up` daemon starts its Run loop
-	// and wires it as a scheduler option — see up.go.
-	OpenPRRefresher *localscheduler.OpenPRRefresher
+	// OpenPRRefresher backs the #353 MaxOpenPRs cap — one refresher per
+	// distinct gaggle repo (#2692); nil when no workflow opts in (or no repo
+	// is configured). Only the `up` daemon starts its Run loop and wires it as
+	// a scheduler option — see up.go.
+	OpenPRRefresher *localscheduler.OpenPRRefresherSet
 	// ProviderQuota is the shared provider budget ledger. Stage rate-limit
 	// failures and provider response headers write to it; SchedulerOptions wires
 	// the same pointer into polling and run admission. Unlike OpenPRRefresher it
@@ -115,7 +116,7 @@ type schedulerDefinitions struct {
 	GooberDigests     map[localscheduler.WorkflowIdentity]string
 	Goobers           map[string]apiv1.GooberSpec
 	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
-	OpenPRRefresher   *localscheduler.OpenPRRefresher
+	OpenPRRefresher   *localscheduler.OpenPRRefresherSet
 	Worktrees         *worktree.Manager
 	WorktreesByGaggle map[string]*worktree.Manager
 }
@@ -615,7 +616,7 @@ func buildSchedulerDefinitions(
 		runners[gaggle] = rn
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, gaggleProjects, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
 	if err != nil {
 		return nil, err
 	}
@@ -839,7 +840,7 @@ func buildRuntimeRunner(
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
-	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
+	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
 	}

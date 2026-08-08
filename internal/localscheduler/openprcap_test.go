@@ -201,6 +201,89 @@ func TestOpenPRRefresherFailsOpenOnError(t *testing.T) {
 	}
 }
 
+// TestOpenPRRefresherSetRoutesPerGaggleRepo is #2692: with two gaggles bound
+// to two different repos, each gaggle's count must come from its own repo's
+// poll — never the other's. Before the fix a single refresher polled only the
+// first configured repo, so a second gaggle's namespace matched nothing there
+// and its MaxOpenPRs cap was silently unenforced.
+func TestOpenPRRefresherSetRoutesPerGaggleRepo(t *testing.T) {
+	// Repo A carries a decoy head under the site gaggle's namespace: if the
+	// set ever routed "site" to repo A, its count would be 1, not repo B's 2.
+	listerA := &fakeOpenPRLister{heads: []string{
+		"goobers/implementation/run-1",
+		"goobers-site/implementation/decoy",
+	}}
+	listerB := &fakeOpenPRLister{heads: []string{
+		"goobers-site/implementation/run-2",
+		"goobers-site/implementation/run-3",
+	}}
+	namespaces := map[string]string{"site": "goobers-site"}
+	refresherA := NewOpenPRRefresher(listerA, providers.RepositoryRef{Owner: "o", Name: "a"}, time.Hour, nil, namespaces)
+	refresherB := NewOpenPRRefresher(listerB, providers.RepositoryRef{Owner: "o", Name: "b"}, time.Hour, nil, namespaces)
+	set := NewOpenPRRefresherSet(map[string]*OpenPRRefresher{"main": refresherA, "site": refresherB})
+
+	refresherA.pollOnce(context.Background())
+	// Site's repo has not polled yet: its count must be unknown, not repo A's.
+	if _, known := set.OpenPRCount("site", "implementation"); known {
+		t.Fatal("site count known before its own repo polled — set answered from another repo")
+	}
+	refresherB.pollOnce(context.Background())
+	if n, known := set.OpenPRCount("site", "implementation"); !known || n != 2 {
+		t.Fatalf("site: count=%d known=%v, want 2/true from its own repo", n, known)
+	}
+	if n, known := set.OpenPRCount("main", "implementation"); !known || n != 1 {
+		t.Fatalf("main: count=%d known=%v, want 1/true (the site-namespace decoy in repo A is not main's)", n, known)
+	}
+	if _, known := set.OpenPRCount("unmapped", "implementation"); known {
+		t.Fatal("a gaggle with no refresher must report unknown (fail-open), never another repo's count")
+	}
+}
+
+// TestOpenPRRefresherSetRunsSharedRepoOnce: gaggles sharing a repo share one
+// refresher, so Run polls that repo once per interval — and, like the single
+// refresher, polls eagerly and returns on context cancellation.
+func TestOpenPRRefresherSetRunsSharedRepoOnce(t *testing.T) {
+	lister := &fakeOpenPRLister{heads: []string{"goobers/implementation/run-1"}}
+	r := NewOpenPRRefresher(lister, providers.RepositoryRef{Owner: "o", Name: "n"}, time.Hour, nil, nil)
+	set := NewOpenPRRefresherSet(map[string]*OpenPRRefresher{"a": r, "b": r})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { set.Run(ctx); close(done) }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if _, known := set.OpenPRCount("a", "implementation"); known {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("set never completed the eager first poll")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+	if lister.calls != 1 {
+		t.Fatalf("poll calls = %d, want 1 (two gaggles sharing a repo share one poller)", lister.calls)
+	}
+}
+
+// TestOpenPRRefresherSetNilFailsOpen: the wiring hands a possibly-nil set to
+// the OpenPRCounter interface (typed-nil-in-interface), so both methods must
+// tolerate a nil receiver — reporting "unknown" keeps Admit failing open.
+func TestOpenPRRefresherSetNilFailsOpen(t *testing.T) {
+	var set *OpenPRRefresherSet
+	if _, known := set.OpenPRCount("g", "implementation"); known {
+		t.Fatal("nil set must report unknown")
+	}
+	set.Run(context.Background()) // must return immediately, not panic
+}
+
 // TestOpenPRRefresherRunPollsAndStops confirms Run does an eager first poll and
 // returns on context cancellation (its lifecycle under the daemon WaitGroup).
 func TestOpenPRRefresherRunPollsAndStops(t *testing.T) {

@@ -48,8 +48,8 @@ var exceptions = []exception{
 	// #2494 tracks replacing these with a config-sourced workflow role marker.
 	{Path: "internal/telemetry/rollup/aggregates.go", Line: 418, Value: "backlog-curation", Reason: "#2494"},
 	{Path: "internal/telemetry/rollup/curation.go", Line: 172, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 383, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 394, Value: "implementation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Line: 427, Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Line: 438, Value: "implementation", Reason: "#2494"},
 
 	// These are canonical stage-owned status labels, not config-facing routing
 	// labels. Configurable approval/readiness labels must come from stage inputs.
@@ -62,7 +62,7 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/prselect.go", Line: 33, Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Line: 34, Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/remediationcheckpoint.go", Line: 25, Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/runabortlabel.go", Line: 31, Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
+	{Path: "cmd/goobers/runabortlabel.go", Line: 32, Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
 	{Path: "cmd/goobers/scopedrift.go", Line: 17, Value: "goobers:scope-drift", Reason: "canonical scope-review label"},
 	{Path: "cmd/goobers/scopegate1313.go", Line: 13, Value: "goobers:scope-gate", Reason: "canonical scope-review label"},
 	{Path: "cmd/goobers/scopegate1313.go", Line: 20, Value: "goobers:scope-gate-ack", Reason: "canonical scope-review label"},

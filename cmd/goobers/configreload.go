@@ -37,13 +37,13 @@ type openPRLoop struct {
 	done   chan struct{}
 }
 
-func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresher) *openPRLoop {
+func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresherSet) *openPRLoop {
 	loop := &openPRLoop{ctx: ctx}
 	loop.Replace(refresher)
 	return loop
 }
 
-func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresher) {
+func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresherSet) {
 	l.stopCurrent()
 	if refresher == nil || l.ctx.Err() != nil {
 		return

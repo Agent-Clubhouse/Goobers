@@ -2755,20 +2755,20 @@ func repoConfig() *instance.Config {
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}
@@ -2776,6 +2776,90 @@ func TestBuildOpenPRRefresher(t *testing.T) {
 			t.Fatal("expected a non-nil refresher for a repo-backed, capped instance")
 		}
 	})
+}
+
+// openPRTestRegistrar is escTestRegistrar with a mutex: the per-repo
+// refreshers (#2692) poll concurrently, so Register must be race-safe here.
+type openPRTestRegistrar struct {
+	mu         sync.Mutex
+	registered [][]byte
+}
+
+func (r *openPRTestRegistrar) Register(secret []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registered = append(r.registered, append([]byte(nil), secret...))
+}
+
+// TestBuildOpenPRRefresherRoutesPerGaggleRepo is #2692: with two gaggles bound
+// to two different repos, each gaggle's MaxOpenPRs count must come from a poll
+// of its OWN repo with that repo's own token — never the first repo's. Before
+// the fix a single refresher polled only cfg.Repos[0], so the second gaggle's
+// namespace matched nothing there and its cap was silently unenforced.
+func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
+	t.Setenv("OPENPR_TOK_A", "token-repo-a")
+	t.Setenv("OPENPR_TOK_B", "token-repo-b")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "OPENPR_TOK_A"}},
+		{Provider: "github", Owner: "masra", Name: "site", Token: instance.TokenRef{Env: "OPENPR_TOK_B"}},
+	}}
+	workflows := []apiv1.Workflow{
+		{Spec: apiv1.WorkflowSpec{Gaggle: "main", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}},
+		{Spec: apiv1.WorkflowSpec{Gaggle: "site", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 3}}},
+	}
+	projects := map[string]apiv1.RepoRef{
+		"main": {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		"site": {Provider: apiv1.ProviderGitHub, Owner: "masra", Name: "site"},
+	}
+	// The first repo carries a decoy head under the site gaggle's namespace: a
+	// misrouted site lookup would count it (1) instead of repo B's own heads (2).
+	headsByToken := map[string][]string{
+		"token-repo-a": {"goobers/implementation/run-1", "goobers-site/implementation/decoy"},
+		"token-repo-b": {"goobers-site/implementation/run-2", "goobers-site/implementation/run-3"},
+	}
+	prev := newOpenPRProvider
+	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+		return &fakeHeadLister{heads: headsByToken[token]}
+	}
+	t.Cleanup(func() { newOpenPRProvider = prev })
+
+	set, err := buildOpenPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
+		map[string]string{"site": "goobers-site"}, "", nil)
+	if err != nil {
+		t.Fatalf("buildOpenPRRefresher: %v", err)
+	}
+	if set == nil {
+		t.Fatal("expected a non-nil refresher set for a two-repo, capped instance")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { set.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	waitCount := func(gaggle string) int {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			if n, known := set.OpenPRCount(gaggle, "implementation"); known {
+				return n
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("count for gaggle %q never became known", gaggle)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	if n := waitCount("site"); n != 2 {
+		t.Fatalf("site count = %d, want 2 from its own repo (a first-repo misroute reads 1)", n)
+	}
+	if n := waitCount("main"); n != 1 {
+		t.Fatalf("main count = %d, want 1 (the site-namespace decoy must not count)", n)
+	}
+	if _, known := set.OpenPRCount("unmapped", "implementation"); known {
+		t.Fatal("a gaggle with no capped workflow must report unknown, not another repo's count")
+	}
 }
 
 type fakeHeadLister struct{ heads []string }

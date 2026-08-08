@@ -628,7 +628,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry, setup.SecretStores)
+				// The stalled run's gaggle is only knowable from its runs-tree
+				// scope; cleanup must target that gaggle's own repo (#2692).
+				project, err := terminalGaggleProject(runLayout)
+				if err != nil {
+					return nil, err
+				}
+				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
