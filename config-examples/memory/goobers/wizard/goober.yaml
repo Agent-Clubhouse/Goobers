@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: wizard
+spec:
+  gaggle: <your-gaggle>
+  role: reviewer
+  displayName: Wizard (memory-informed review gate)
+  instructions: instructions.md
+  harness: copilot
+  # A judgment gate. Use a capable review-grade model; it decides pass /
+  # needs-changes / fail / escalate against active memory.
+  model: <fill-in>
+  harnessOptions: {}
+  # Pure evaluation: returns a verdict, mutates nothing.
+  capabilities: []
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - review-with-wizard-gate

@@ -1,0 +1,55 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: review-with-wizard-gate
+spec:
+  gaggle: <your-gaggle>
+  displayName: Review with a wizard memory gate
+  # SNIPPET: place a memory-informed `wizard-review` gate AHEAD of your existing
+  # review gates. The wizard goober asks one question — "have we been here
+  # before?" — judged ONLY against active memory (known-failures, fragilities,
+  # prior decisions). A change that walks into a documented known-failure is
+  # stopped here before the expensive full review runs.
+  #
+  # NOTE: agentic gate evaluators take NO goal and NO contextFrom — the schema
+  # accepts only goober / timeoutSeconds / workspace / retry. The wizard's full
+  # prompt therefore lives in goobers/wizard/instructions.md, not here.
+  triggers:
+    - type: manual
+  start: wizard-review
+  tasks:
+    - name: review
+      type: agentic
+      goober: reviewer
+      goal: Perform the full change review.
+      capabilities:
+        - agent:model
+      next: apply
+
+    - name: apply
+      type: agentic
+      goober: reviewer
+      goal: Publish the review verdict.
+      capabilities:
+        - agent:model
+        - github:pr:review
+      policyActions:
+        - publish-review
+  gates:
+    # The wizard gate runs BEFORE the ordinary review. pass -> continue to the
+    # full review; needs-changes/fail route to remediation; escalate hands off
+    # to a human. Its prompt and pass/needs-changes/fail/escalate rules are in
+    # goobers/wizard/instructions.md.
+    - name: wizard-review
+      evaluator: agentic
+      agentic:
+        goober: wizard
+        workspace: repo-readonly
+        retry:
+          maxAttempts: 2
+      branches:
+        pass: review
+        needs-changes: ""
+        fail: ""
+        escalate: ""
