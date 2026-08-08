@@ -743,6 +743,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
+	if excerpt := stderrTailExcerpt(errBytes); excerpt != "" {
+		result.Error.Message += "; stderr: " + excerpt
+	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
 }
@@ -919,6 +922,25 @@ func stderrExcerpt(errBytes []byte) string {
 	s := strings.TrimSpace(string(b))
 	if truncated {
 		s += "…"
+	}
+	return s
+}
+
+// Generic command failures keep the tail, where tools conventionally print the
+// terminal cause, while the complete scrubbed stderr remains an artifact.
+func stderrTailExcerpt(errBytes []byte) string {
+	if len(errBytes) == 0 {
+		return ""
+	}
+	b := errBytes
+	truncated := false
+	if len(b) > missingResultFileStderrExcerptBytes {
+		b = b[len(b)-missingResultFileStderrExcerptBytes:]
+		truncated = true
+	}
+	s := strings.TrimSpace(string(b))
+	if truncated {
+		s = "…" + s
 	}
 	return s
 }

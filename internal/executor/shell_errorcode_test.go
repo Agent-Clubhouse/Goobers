@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,5 +104,24 @@ func TestShellExecutor_NonzeroExitWithoutErrorCodeStaysGeneric(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "nonzero_exit" {
 		t.Fatalf("error = %+v, want nonzero_exit", result.Error)
+	}
+}
+
+func TestShellExecutor_NonzeroExitIncludesBoundedStderrTail(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	result, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf '%0600d\nparallel golangci-lint is running\n' 0 >&2; exit 3`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Error == nil || result.Error.Code != "nonzero_exit" {
+		t.Fatalf("error = %+v, want nonzero_exit", result.Error)
+	}
+	if !strings.Contains(result.Error.Message, "parallel golangci-lint is running") {
+		t.Fatalf("error message = %q, want stderr tail", result.Error.Message)
+	}
+	if len(result.Error.Message) > missingResultFileStderrExcerptBytes+64 {
+		t.Fatalf("error message length = %d, want bounded diagnostic", len(result.Error.Message))
 	}
 }
