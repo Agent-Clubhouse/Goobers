@@ -153,6 +153,48 @@ describe("GettingStartedPage", () => {
     expect(window.sessionStorage.getItem("goobers-guided-welcome-done")).toBe("true");
   });
 
+  it("keeps Node.js/npm out of the universal welcome checklist and delegates own-repo prerequisites", async () => {
+    render(
+      <GettingStartedPage
+        client={clientWith({ "/guided/state": () => ({ body: guidedState() }) })}
+      />,
+    );
+
+    const welcome = (
+      await screen.findByRole("heading", { name: "Welcome & prerequisites" })
+    ).closest("li");
+    if (!welcome) {
+      throw new Error("Welcome step did not render as a list item.");
+    }
+    expect(within(welcome).queryByText(/Node\.js/)).toBeNull();
+    expect(within(welcome).queryByText(/npm/)).toBeNull();
+    expect(
+      within(welcome).getByText(/Its own workflow determines any further tooling it needs/),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces the sample's Node.js/npm prerequisite only on the sample branch, softened", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({ "/guided/state": () => ({ body: guidedState() }) })}
+      />,
+    );
+
+    await chooseSample(user);
+
+    const materialize = (
+      await screen.findByRole("heading", { name: "Materialize the sample" })
+    ).closest("li");
+    if (!materialize) {
+      throw new Error("Materialize step did not render as a list item.");
+    }
+    expect(within(materialize).getByText(/Node\.js >= 20 and npm on/)).toBeInTheDocument();
+    expect(
+      within(materialize).getByText(/Nothing here enforces that for you/),
+    ).toBeInTheDocument();
+  });
+
   it("renders pending seed entries as pending with an explanation, not as errors", async () => {
     const user = userEvent.setup();
     render(

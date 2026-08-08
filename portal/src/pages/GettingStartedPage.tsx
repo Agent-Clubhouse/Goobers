@@ -488,11 +488,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <li>A GitHub account and a repository to work against.</li>
             <li>Copilot CLI installed and signed in.</li>
             <li>
-              Node.js &gt;= 20 and npm on <code>PATH</code> (the sample's CI uses them).
-            </li>
-            <li>
               <code>export GOOBERS_GITHUB_TOKEN=...</code> — and optionally{" "}
               <code>GOOBERS_GITHUB_ISSUES_TOKEN</code> for seeding starter issues.
+            </li>
+            <li>
+              Connecting your own repository? Its own workflow determines any further
+              tooling it needs — the checks step below (<code>goobers validate
+              --check-harness --check-repos</code>) confirms what your connected instance
+              actually requires.
             </li>
           </ul>
           <div aria-label="Token environment status" className="guided-badges">
@@ -728,6 +731,12 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 Writes the embedded <code>getting-started-task-api</code> sample to{" "}
                 <code>{samplePath}</code>. With a work-tracking repo named, it also seeds the
                 starter labels and issues there.
+              </p>
+              <p className="guided-note">
+                The sample is a small Node.js/TypeScript project — its own CI expects
+                Node.js &gt;= 20 and npm on <code>PATH</code> to build and test it. Nothing
+                here enforces that for you; it's the sample's own tooling, not this
+                walkthrough's.
               </p>
               <RecoveryCommand
                 command={stubSampleCommand(samplePath, workTracking, useMainToken, forceRerun)}
