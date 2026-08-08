@@ -37,7 +37,7 @@ to verify the two-token boundary against disposable repositories.
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:milestones:write` | Issues: Read and write | Assign an existing milestone to an issue. Keep roadmap mutation out of stages that only perform ordinary issue writes. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `provider:pr:write` | Pull requests: Read and write, Checks: Read-only, Commit statuses: Read-only | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. |
+| `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
@@ -122,7 +122,7 @@ when your target repo lives in an org, `agent:model`'s token is necessarily a
   Requests: Read-only** and **no repository access at all** (it authenticates
   the model, nothing else).
 - **repository capability tokens** — org-scoped fine-grained PATs with the
-  narrow Contents, Issues, Pull-requests, Checks, and Commit-statuses permissions
+  narrow Contents, Issues, Pull-requests, and Commit-statuses permissions
   required by the selected workflows. An org owner must **approve** personal
   fine-grained PATs before they can access org repos (org *Settings → Third-party
   Access → Personal access tokens*), so budget for that approval step.
@@ -148,7 +148,7 @@ credentials:
       env: GOOBERS_GITHUB_ISSUES_TOKEN # Issues: read and write
   - capability: github:pr:write
     token:
-      env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; CI Checks/statuses: read-only
+      env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; commit statuses: read-only
   - capability: repo:push
     token:
       env: GOOBERS_GITHUB_PUSH_TOKEN # Contents: read and write
@@ -223,8 +223,9 @@ store-backed `privateKey.store` (#683) — so in a regulated deployment the App
 key itself lives in Azure Key Vault, and nothing long-lived touches disk or
 the config repo.
 
-**Installation permissions.** Grant the App the union of what the selected
-workflows' capabilities need — same table as above: Contents (Read and write
+**Installation permissions.** Unlike a fine-grained PAT, a GitHub App does
+expose a Checks permission. Grant the App the union of what the selected
+workflows' capabilities need: Contents (Read and write
 for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
 requests (Read and write), Checks + Commit statuses (Read-only, for
 `ci-poll`). Install it on **only the target repositories**.

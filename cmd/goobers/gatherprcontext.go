@@ -118,7 +118,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
@@ -188,6 +188,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// its number through the workflow. The claim ledger remains the durable
 	// fallback across retries and resumes.
 	candidates := nonBlocked
+	var behindBase func(providers.PullRequestSummary) (bool, error)
 	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
 			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
@@ -196,7 +197,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
 		}
 		fetchedBases := make(map[string]bool)
-		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, func(pr providers.PullRequestSummary) (bool, error) {
+		behindBase = func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
 				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
 					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
@@ -208,7 +209,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
 			}
 			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-		})
+		}
+		if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
+			return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
+		}
+		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
 		if err != nil {
 			pf(stderr, "error: determine remediation eligibility: %v\n", err)
 			return 1
@@ -227,6 +232,9 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 	selected := *claimed
+	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
+	}
 
 	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
@@ -432,6 +440,44 @@ func remediationPriorityFor(pr providers.PullRequestSummary) remediationPriority
 		return remediationPriorityFailingCI
 	}
 	return remediationPriorityNone
+}
+
+func resolveRemediationCheckState(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
+	if pr.CheckState != "" {
+		return nil
+	}
+	checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+	if err != nil {
+		return err
+	}
+	pr.CheckState = checkState
+	return nil
+}
+
+func resolveRemediationCheckStates(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) error {
+	refs := make([]string, 0, len(prs))
+	seen := make(map[string]bool, len(prs))
+	for _, pr := range prs {
+		if pr.CheckState == "" && !seen[pr.HeadSHA] {
+			refs = append(refs, pr.HeadSHA)
+			seen[pr.HeadSHA] = true
+		}
+	}
+	states, err := provider.RefCheckStates(ctx, repo, refs)
+	if err != nil {
+		return err
+	}
+	for i := range prs {
+		if prs[i].CheckState != "" {
+			continue
+		}
+		state, ok := states[prs[i].HeadSHA]
+		if !ok {
+			return fmt.Errorf("check state for ref %q was not returned", prs[i].HeadSHA)
+		}
+		prs[i].CheckState = state
+	}
+	return nil
 }
 
 // selectRemediationCandidates returns every open PR carrying a strong

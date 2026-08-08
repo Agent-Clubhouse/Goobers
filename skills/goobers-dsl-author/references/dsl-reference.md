@@ -106,10 +106,21 @@ connection for the backlog.
 Provide:
 
 - `gaggle`, `role`, and `instructions`;
-- `harness: copilot`, an optional supported `model`, and `harnessOptions`;
+- a supported `harness`, an optional supported `model`, and `harnessOptions`;
 - `capabilities`, `skills`, and `tools`;
 - `scaleFactor`;
 - `workflows` when the associations are known.
+
+| Harness | Command | `agent:model` credential mapping |
+|---|---|---|
+| `copilot` | `copilot` | `COPILOT_GITHUB_TOKEN` |
+| `claude-code` | `claude` | `ANTHROPIC_API_KEY` |
+
+The harness credential is optional when its CLI already has an interactive
+sign-in. When a headless instance supplies `agent:model`, the runner maps that
+capability to the selected harness's environment variable above. Claude Code
+accepts `effort` under `harnessOptions`; Copilot and Claude Code model names are
+validated by their respective adapters.
 
 The `instructions` path is relative to the goober definition directory. Keep
 the role, scope, completion contract, and safety limits in that markdown file;
@@ -191,10 +202,12 @@ auto-wired from `artifactFile`/propagated context alone. See
 full mechanics and what to put (and not put) in `instructions.md`.
 
 A gate has `name`, exactly one evaluator configuration, and `branches`.
-Automated checks currently include `status-equals`, `output-equals`,
-`output-not-equals`, `output-numeric-gte`, `output-numeric-lte`,
-`output-numeric-lt`, `output-matches`, `ci-status`, `land-outcome`, and
-`queue-outcome`. Use only outcomes and parameters accepted by the target
+Automated checks currently include `status-equals`, `failure-class`,
+`output-equals`, `output-not-equals`, `output-numeric-gte`,
+`output-numeric-lte`, `output-numeric-lt`, `output-matches`, `ci-status`,
+`land-outcome`, and `queue-outcome`. `failure-class` takes no parameters: it
+returns `pass` for success, `infra` for a retryable failure, and `fail` for
+every other status. Use only outcomes and parameters accepted by the target
 release. Agentic gates must cover `pass`, `fail`, and `needs-changes`. Human
 gates may be present in a schema before a runner supports them, so always
 confirm them with `goobers validate`.

@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GuidedClient, type GuidedState } from "../guided/client";
 import { GettingStartedPage } from "./GettingStartedPage";
 
@@ -15,6 +15,7 @@ function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
     env: { goobersGithubToken: false, goobersGithubIssuesToken: false },
     job: null,
     apiReady: false,
+    connected: { repo: null },
     ...overrides,
   };
 }
@@ -39,7 +40,27 @@ function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
   return new GuidedClient(fetchFn);
 }
 
+function parseBody(init?: RequestInit): unknown {
+  return JSON.parse(String(init?.body ?? "null"));
+}
+
+async function chooseSample(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(
+    await screen.findByRole("button", { name: /Try the disposable sample/ }),
+  );
+}
+
+async function chooseOwnRepo(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(
+    await screen.findByRole("button", { name: /Connect your repository/ }),
+  );
+}
+
 describe("GettingStartedPage", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
   it("renders the instructional state when the guided endpoints are absent", async () => {
     render(<GettingStartedPage client={clientWith({})} />);
 
@@ -68,6 +89,28 @@ describe("GettingStartedPage", () => {
     expect(badges).toHaveTextContent("GOOBERS_GITHUB_ISSUES_TOKEN not set");
   });
 
+  it("renders the path chooser with the own-repo card first and recommended", async () => {
+    render(
+      <GettingStartedPage
+        client={clientWith({ "/guided/state": () => ({ body: guidedState() }) })}
+      />,
+    );
+
+    const chooser = await screen.findByRole("group", { name: "Path chooser" });
+    const cards = within(chooser).getAllByRole("button");
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveTextContent("Connect your repository");
+    expect(cards[0]).toHaveTextContent("Recommended");
+    expect(cards[0]).toHaveTextContent("Your repo, your issues, a real first PR.");
+    expect(cards[1]).toHaveTextContent("Try the disposable sample");
+    expect(cards[1]).toHaveTextContent("A zero-stakes tutorial against a throwaway repo.");
+    // No path chosen yet: neither branch's steps render.
+    expect(screen.queryByRole("button", { name: "Materialize the sample" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Initialize the starter instance" }),
+    ).toBeNull();
+  });
+
   it("marks steps done from server truth and activates the first open step", async () => {
     render(
       <GettingStartedPage
@@ -79,6 +122,7 @@ describe("GettingStartedPage", () => {
       />,
     );
 
+    // sampleExists infers the sample path on reload with nothing stored.
     const materialize = (
       await screen.findByRole("heading", { name: "Materialize the sample" })
     ).closest("li");
@@ -134,6 +178,7 @@ describe("GettingStartedPage", () => {
       />,
     );
 
+    await chooseSample(user);
     await user.click(await screen.findByRole("button", { name: "Materialize the sample" }));
 
     expect(await screen.findByText("issue:TASK-9")).toBeInTheDocument();
@@ -162,6 +207,7 @@ describe("GettingStartedPage", () => {
       />,
     );
 
+    await chooseSample(user);
     expect(await screen.findByRole("button", { name: "Materialize the sample" })).toBeVisible();
     expect(screen.queryByText(/Re-run with/)).toBeNull();
 
@@ -175,12 +221,14 @@ describe("GettingStartedPage", () => {
   });
 
   it("presents the manual repo-creation, push, and placeholder steps explicitly", async () => {
+    const user = userEvent.setup();
     render(
       <GettingStartedPage
         client={clientWith({ "/guided/state": () => ({ body: guidedState() }) })}
       />,
     );
 
+    await chooseSample(user);
     expect(
       await screen.findByRole("heading", {
         name: "Create the disposable GitHub repo & push",
@@ -226,6 +274,7 @@ describe("GettingStartedPage", () => {
       />,
     );
 
+    await chooseSample(user);
     await user.click(await screen.findByRole("button", { name: "Run the checks" }));
 
     expect(await screen.findByText(/All systems go/)).toBeInTheDocument();
@@ -286,5 +335,218 @@ describe("GettingStartedPage", () => {
     ).toBeInTheDocument();
     const implement = await screen.findByText("implement", { selector: ".guided-stage" });
     expect(implement).toHaveAttribute("data-state", "done");
+  });
+
+  it("walks the own-repo branch and sends the exact action payloads", async () => {
+    const user = userEvent.setup();
+    const initBodies: unknown[] = [];
+    const connectBodies: unknown[] = [];
+    const runBodies: unknown[] = [];
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/init-instance": (init) => {
+            initBodies.push(parseBody(init));
+            return { body: { exitCode: 0, stdout: "initialized\n", stderr: "" } };
+          },
+          "/guided/actions/connect": (init) => {
+            connectBodies.push(parseBody(init));
+            return {
+              body: {
+                exitCode: 0,
+                envelope: {
+                  action: "connect",
+                  version: 2,
+                  created: ["label:goobers", "issue:hello-goobers"],
+                  updated: ["instance.yaml", "config/gaggles/example/gaggle.yaml"],
+                  skipped: [],
+                  path: "/work/tutorial-instance",
+                  nextCommand: "goobers run default-implement '/work/tutorial-instance'",
+                },
+                stderr: "",
+              },
+            };
+          },
+          "/guided/actions/run": (init) => {
+            runBodies.push(parseBody(init));
+            return { status: 202, body: { jobId: "job-a" } };
+          },
+          "/guided/jobs/job-a": () => ({
+            body: {
+              id: "job-a",
+              kind: "run",
+              done: true,
+              exitCode: 0,
+              runId: "01JZOWNREPORUN",
+              output: [
+                "created run 01JZOWNREPORUN (workflow=default-implement gaggle=starter)",
+                "stage push-branch started (run=01JZOWNREPORUN, attempt=1, elapsed=1s)",
+                "stage push-branch finished (run=01JZOWNREPORUN, attempt=1, status=success, elapsed=2s)",
+              ],
+            },
+          }),
+          "/guided/status": () => ({
+            body: { exitCode: 0, envelope: {}, stderr: "" },
+          }),
+        })}
+      />,
+    );
+
+    await chooseOwnRepo(user);
+
+    // Step A1: initialize the starter instance.
+    await user.click(
+      await screen.findByRole("button", { name: "Initialize the starter instance" }),
+    );
+    expect(initBodies).toEqual([{ template: "starter" }]);
+
+    // Step A2: connect, with a custom token-env name and seeding on by default.
+    const seed = screen.getByRole("checkbox", { name: /Seed the backlog/ });
+    expect(seed).toBeChecked();
+    const connectButton = screen.getByRole("button", { name: "Connect the repository" });
+    expect(connectButton).toBeDisabled();
+    await user.type(
+      screen.getByRole("textbox", { name: "Repository (owner/repo)" }),
+      "acme/widgets",
+    );
+    const tokenEnv = screen.getByRole("textbox", {
+      name: /Token environment variable/,
+    });
+    await user.clear(tokenEnv);
+    await user.type(tokenEnv, "MY_GH_TOKEN");
+    expect(connectButton).toBeEnabled();
+    await user.click(connectButton);
+    expect(connectBodies).toEqual([
+      { repo: "acme/widgets", tokenEnv: "MY_GH_TOKEN", seed: true },
+    ]);
+    expect(
+      await screen.findByText("config/gaggles/example/gaggle.yaml"),
+    ).toBeInTheDocument();
+
+    // Step A5: run default-implement.
+    await user.click(screen.getByRole("button", { name: "Start the run" }));
+    expect(runBodies).toEqual([{ workflow: "default-implement" }]);
+    const pushBranch = await screen.findByText("push-branch", { selector: ".guided-stage" });
+    expect(pushBranch).toHaveAttribute("data-state", "done");
+  });
+
+  it("renders connect pending-credential entries as pending, and offers --replace only after a refusal", async () => {
+    const user = userEvent.setup();
+    let refuse = true;
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState({ instanceExists: true }) }),
+          "/guided/actions/connect": () => {
+            if (refuse) {
+              return {
+                body: {
+                  exitCode: 1,
+                  envelope: null,
+                  stderr: "refusing to overwrite existing repository acme/old (use --replace)",
+                },
+              };
+            }
+            return {
+              body: {
+                exitCode: 0,
+                envelope: {
+                  action: "connect",
+                  version: 2,
+                  created: ["label:goobers"],
+                  updated: ["instance.yaml"],
+                  skipped: ["issue:hello-goobers (pending: credentials unavailable)"],
+                },
+                stderr: "",
+              },
+            };
+          },
+        })}
+      />,
+    );
+
+    await chooseOwnRepo(user);
+    expect(screen.queryByText(/Re-run with/)).toBeNull();
+    await user.type(
+      await screen.findByRole("textbox", { name: "Repository (owner/repo)" }),
+      "acme/widgets",
+    );
+    await user.click(screen.getByRole("button", { name: "Connect the repository" }));
+
+    // Refusal: stderr surfaces, and only now is --replace offered, unchecked.
+    expect(await screen.findByText(/refusing to overwrite/)).toBeInTheDocument();
+    const replace = screen.getByRole("checkbox", { name: /Re-run with --replace/ });
+    expect(replace).not.toBeChecked();
+
+    refuse = false;
+    await user.click(replace);
+    await user.click(screen.getByRole("button", { name: "Connect the repository" }));
+
+    expect(await screen.findByText("issue:hello-goobers")).toBeInTheDocument();
+    expect(screen.getByText("pending: credentials unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Pending is not an error/)).toBeInTheDocument();
+    expect(screen.getByText("label:goobers")).toBeInTheDocument();
+    // The rewritten files render under an "Updated" kicker.
+    expect(screen.getByText("Updated")).toBeInTheDocument();
+  });
+
+  it("drives the connect step's done state from the server's connected repo", async () => {
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({
+              instanceExists: true,
+              connected: { repo: "acme/widgets" },
+            }),
+          }),
+        })}
+      />,
+    );
+
+    // A connected repo infers the own-repo path with nothing stored.
+    const connect = (
+      await screen.findByRole("heading", { name: "Connect your repository", level: 2 })
+    ).closest("li");
+    expect(connect).toHaveAttribute("data-state", "done");
+    expect(screen.getByText("acme/widgets")).toBeInTheDocument();
+    const init = screen
+      .getByRole("heading", { name: "Initialize a starter instance" })
+      .closest("li");
+    expect(init).toHaveAttribute("data-state", "done");
+  });
+
+  it("preserves server-truth step state across a branch switch", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({ sampleExists: true, instanceExists: true }),
+          }),
+        })}
+      />,
+    );
+
+    // Inferred sample branch; switch to own-repo.
+    expect(
+      await screen.findByRole("heading", { name: "Materialize the sample" }),
+    ).toBeInTheDocument();
+    await chooseOwnRepo(user);
+
+    expect(screen.queryByRole("heading", { name: "Materialize the sample" })).toBeNull();
+    const init = (
+      await screen.findByRole("heading", { name: "Initialize a starter instance" })
+    ).closest("li");
+    expect(init).toHaveAttribute("data-state", "done");
+    expect(window.sessionStorage.getItem("goobers-guided-path")).toBe("own-repo");
+
+    // And back: the sample branch's server-attested steps are still done.
+    await chooseSample(user);
+    const materialize = (
+      await screen.findByRole("heading", { name: "Materialize the sample" })
+    ).closest("li");
+    expect(materialize).toHaveAttribute("data-state", "done");
   });
 });

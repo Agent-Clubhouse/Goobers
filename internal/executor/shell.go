@@ -437,12 +437,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// stdout/stderr before dying — a stage that blew its timeout is exactly
 		// the case worth diagnosing, and SIGKILL alone leaves no trace of WHY
 		// it hung (the long-standing "killed at 10m, cmd/goobers never finished,
-		// no dump" record). If the group dumps and exits within timeoutDumpGrace
-		// the SIGKILL below is skipped; otherwise (a non-Go child, one that
-		// caught SIGQUIT, or one wedged in an uninterruptible syscall) it is
-		// force-killed exactly as before. A deliberate cancel (not a timeout)
-		// goes straight to SIGKILL — nothing to diagnose there.
-		dumped := false
+		// no dump" record). The final SIGKILL sweep always runs: the direct
+		// child exiting after SIGQUIT does not prove that signal-ignoring
+		// descendants exited too. A deliberate cancel (not a timeout) goes
+		// straight to SIGKILL — nothing to diagnose there.
+		waited := false
 		if timedOut {
 			// SIGQUIT the whole tree so every Go process in it dumps its full
 			// goroutine trace and exits before the force-kill below. A platform
@@ -451,15 +450,15 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			if supported, _ := tree.RequestDump(); supported {
 				select {
 				case waitErr = <-waitDone:
-					dumped = true // goroutine traces are now in the captured output
+					waited = true // goroutine traces are now in the captured output
 				case <-time.After(timeoutDumpGrace):
 				}
 			}
 		}
-		if !dumped {
-			// Kill the whole tree, not just the direct child, so a runaway
-			// subprocess tree can't outlive the stage.
-			_ = tree.Kill()
+		// Kill the whole tree, not just the direct child, so a runaway
+		// subprocess tree can't outlive the stage.
+		_ = tree.Kill()
+		if !waited {
 			select {
 			case waitErr = <-waitDone:
 			case <-time.After(groupKillWaitDelay):

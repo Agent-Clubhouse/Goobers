@@ -79,9 +79,10 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo,
-		Base:       providerInput("base", providerBaseBranch()),
-		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
+		Repository:     repo,
+		Base:           providerInput("base", providerBaseBranch()),
+		HeadPrefix:     providerInput("headPrefix", providerBranchNamespace()),
+		SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
@@ -105,6 +106,9 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 			behindByPR[pr.Number] = behind
 		}
 		return behind, err
+	}
+	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+		return failProviderStage(stderr, "resolve remediation check states", err, "update-behind-result.json")
 	}
 	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
 	if err != nil {

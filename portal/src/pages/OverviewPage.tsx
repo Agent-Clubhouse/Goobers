@@ -1,8 +1,12 @@
+import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
+import { useAttentionCollapsed } from "../attentionCollapse";
+import { useAttentionDismissals } from "../attentionDismissals";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   type OperationalOverview,
   useOperationalOverview,
@@ -75,6 +79,39 @@ function Overview({
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
 
+  const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
+  const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
+  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [showDismissed, setShowDismissed] = useState(false);
+  const activeAttention = groups.attention.filter((run) => !dismissedRunIds.has(run.id));
+  const dismissedAttention = groups.attention.filter((run) => dismissedRunIds.has(run.id));
+  const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
+  const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
+    activeAttentionIds.has(runId),
+  );
+
+  const toggleSelected = (runId: string) => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) {
+        next.delete(runId);
+      } else {
+        next.add(runId);
+      }
+      return next;
+    });
+  };
+  const dismissRuns = (runIds: readonly string[]) => {
+    dismiss(runIds);
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      for (const runId of runIds) {
+        next.delete(runId);
+      }
+      return next;
+    });
+  };
+
   return (
     <>
       <header className="page-heading">
@@ -90,7 +127,7 @@ function Overview({
               : overview.health.ready
                 ? "Daemon is ready."
                 : "Daemon is starting."
-            : attentionHeading(groups.attention.length)}
+            : attentionHeading(activeAttention.length)}
         </h1>
         <p>
           {emptyInstance
@@ -119,43 +156,137 @@ function Overview({
               <p className="section-kicker section-kicker-danger">Attention</p>
               <h2>Needs attention</h2>
             </div>
-            <span className="section-count">
-              {groups.attention.length} {groups.attention.length === 1 ? "run" : "runs"}
-            </span>
-          </div>
-          <div className="attention-list">
-            {groups.attention.map((run) => {
-              const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
-              return (
-                <a
-                  aria-label={`Open run ${run.id}`}
-                  className="attention-row"
-                  href={routeHash({ page: "run", id: run.id })}
-                  key={run.id}
+            <div className="attention-actions">
+              {visibleSelectedRunIds.length > 0 && (
+                <button
+                  className="text-button"
+                  onClick={() => dismissRuns(visibleSelectedRunIds)}
+                  type="button"
                 >
-                  <span className="attention-icon">
-                    <Icon name="alert" />
-                  </span>
-                  <span className="attention-copy">
-                    <strong>{runLabel(run)}</strong>
-                    <span>
-                      {run.phase === "escalated"
-                        ? "Run escalated and needs human review."
-                        : reason
-                          ? `${reason.code || "failed"} · ${reason.message}`
-                          : "Run failed and needs investigation."}
+                  Dismiss {visibleSelectedRunIds.length} selected
+                </button>
+              )}
+              {dismissedAttention.length > 0 && (
+                <button
+                  className="text-button"
+                  onClick={() => setShowDismissed((current) => !current)}
+                  type="button"
+                >
+                  {showDismissed ? "Hide dismissed" : `Show dismissed (${dismissedAttention.length})`}
+                </button>
+              )}
+              <span className="section-count">
+                {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
+              </span>
+              <button
+                aria-controls="attention-section-body"
+                aria-expanded={!attentionCollapsed}
+                className="attention-collapse-toggle"
+                onClick={() => setAttentionCollapsed(!attentionCollapsed)}
+                type="button"
+              >
+                <span className="sr-only">
+                  {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
+                </span>
+                <span aria-hidden="true" className="attention-collapse-chevron">
+                  <Icon name="chevron" size={14} />
+                </span>
+              </button>
+            </div>
+          </div>
+          <div hidden={attentionCollapsed} id="attention-section-body">
+            {activeAttention.length === 0 ? (
+              <p className="inline-empty">Nothing needs attention right now.</p>
+            ) : (
+              <div className="attention-list">
+                {activeAttention.map((run) => {
+                  const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
+                  const selected = selectedRunIds.has(run.id);
+                  return (
+                    <div className="attention-row" key={run.id}>
+                      <input
+                        aria-label={`Select run ${run.id} for bulk actions`}
+                        checked={selected}
+                        className="attention-select"
+                        onChange={() => toggleSelected(run.id)}
+                        type="checkbox"
+                      />
+                      <div className="attention-link-shell data-row-stretched">
+                        <a
+                          aria-label={`Open run ${run.id}`}
+                          className="data-row-stretch-link"
+                          href={routeHash({ page: "run", id: run.id })}
+                        />
+                        <span className="attention-icon">
+                          <Icon name="alert" />
+                        </span>
+                        <span className="attention-copy">
+                          <strong>{runLabel(run)}</strong>
+                          <span>
+                            {run.phase === "escalated"
+                              ? "Run escalated and needs human review."
+                              : reason
+                                ? `${reason.code || "failed"} · ${reason.message}`
+                                : "Run failed and needs investigation."}
+                          </span>
+                        </span>
+                        <span className="attention-meta">
+                          <span className="attention-workflow">
+                            {workflowDisplayName(overview, run)}
+                            <ScopePivot
+                              label={workflowDisplayName(overview, run)}
+                              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                            />
+                          </span>
+                          <time dateTime={run.finishedAt ?? run.startedAt}>
+                            {formatTimestamp(run.finishedAt ?? run.startedAt)}
+                          </time>
+                        </span>
+                        <Icon name="arrow" />
+                      </div>
+                      <button
+                        aria-label={`Dismiss run ${run.id}`}
+                        className="attention-dismiss"
+                        onClick={() => dismissRuns([run.id])}
+                        type="button"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {showDismissed && dismissedAttention.length > 0 && (
+              <div className="attention-dismissed-list">
+                <div className="section-heading">
+                  <p className="section-kicker">Dismissed</p>
+                  <button
+                    className="text-button"
+                    onClick={() => restore(dismissedAttention.map((run) => run.id))}
+                    type="button"
+                  >
+                    Restore all
+                  </button>
+                </div>
+                {dismissedAttention.map((run) => (
+                  <div className="attention-row attention-row-dismissed" key={run.id}>
+                    <span className="attention-copy">
+                      <strong>{runLabel(run)}</strong>
+                      <span>{workflowDisplayName(overview, run)}</span>
                     </span>
-                  </span>
-                  <span className="attention-meta">
-                    <span>{workflowDisplayName(overview, run)}</span>
-                    <time dateTime={run.finishedAt ?? run.startedAt}>
-                      {formatTimestamp(run.finishedAt ?? run.startedAt)}
-                    </time>
-                  </span>
-                  <Icon name="arrow" />
-                </a>
-              );
-            })}
+                    <button
+                      aria-label={`Undo dismiss for run ${run.id}`}
+                      className="text-button"
+                      onClick={() => restore([run.id])}
+                      type="button"
+                    >
+                      Undo
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -168,9 +299,11 @@ function Overview({
           <div>
             <h2>No gaggles configured</h2>
             <p>
-              No configuration is available to the Portal yet. Initialize the instance to add its
-              first gaggle and workflow definitions.
+              No configuration is available to the Portal yet. New to Goobers? The guided
+              walkthrough builds a working instance step by step.
             </p>
+            <RecoveryCommand command="goobers getting-started" />
+            <p>Or initialize the instance to add its first gaggle and workflow definitions.</p>
             <RecoveryCommand command="goobers init --guided <instance>" />
           </div>
         </section>
@@ -317,6 +450,7 @@ function RunSection({
           {runs.map((run) => (
             <DataRow
               href={routeHash({ page: "run", id: run.id })}
+              interactiveChildren
               key={run.id}
               label={`Open run ${run.id}`}
             >
@@ -329,7 +463,13 @@ function RunSection({
               </span>
               {active ? (
                 <>
-                  <span>{workflowDisplayName(overview, run)}</span>
+                  <span className="row-workflow">
+                    {workflowDisplayName(overview, run)}
+                    <ScopePivot
+                      label={workflowDisplayName(overview, run)}
+                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                    />
+                  </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
                     {run.currentStage ?? "Awaiting stage"}
@@ -338,7 +478,13 @@ function RunSection({
               ) : (
                 <>
                   <StatusBadge status={run.phase} />
-                  <span>{workflowDisplayName(overview, run)}</span>
+                  <span className="row-workflow">
+                    {workflowDisplayName(overview, run)}
+                    <ScopePivot
+                      label={workflowDisplayName(overview, run)}
+                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                    />
+                  </span>
                 </>
               )}
               <span className="mono">{formatDuration(run.durationMillis)}</span>

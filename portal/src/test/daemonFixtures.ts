@@ -614,6 +614,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 2_700_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 3_600_000,
+          stuckAbortedRuns: 0,
         },
         {
           gaggle: "tools",
@@ -625,6 +626,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 1_800_000,
+          stuckAbortedRuns: 0,
         },
       ],
       stages: [
@@ -652,6 +654,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           retryWasteDurationMs: 480_000,
           retryWasteTokens: 12_000,
           retryWasteCostUSD: 0.75,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "core",
@@ -674,6 +677,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           p50CostUSD: 0.4,
           p95CostUSD: 0.8,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "tools",
@@ -686,6 +690,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           tokenSamples: 0,
           costSamples: 0,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
       ],
       usage: [

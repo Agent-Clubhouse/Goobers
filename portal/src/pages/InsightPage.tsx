@@ -1,3 +1,4 @@
+import { useCallback, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -14,9 +15,14 @@ import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { ScopeStrip } from "../components/ScopeStrip";
 import {
+  type InsightCostRollupSnapshot,
+  type InsightCostTrendSnapshot,
   type InsightErrorSignaturesSnapshot,
+  type InsightGaggleSpend,
   type InsightSnapshot,
   type InsightWindow,
+  useInsightCostRollup,
+  useInsightCostTrend,
   useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
@@ -75,6 +81,8 @@ export function InsightPage({
     errorScope.workflow,
     errorScope.stage,
   );
+  const costTrend = useInsightCostTrend(client, window, errorScope.gaggle, errorScope.workflow);
+  const costRollup = useInsightCostRollup(client, window);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -151,6 +159,10 @@ export function InsightPage({
       )}
 
       <InsightContent
+        costRollup={costRollup.state}
+        costRollupRetry={costRollup.retry}
+        costTrend={costTrend.state}
+        costTrendRetry={costTrend.retry}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
         scope={requestedScope}
@@ -161,11 +173,19 @@ export function InsightPage({
 }
 
 function InsightContent({
+  costRollup,
+  costRollupRetry,
+  costTrend,
+  costTrendRetry,
   errorSignatures,
   errorSignaturesRetry,
   scope,
   snapshot,
 }: {
+  costRollup: QueryState<InsightCostRollupSnapshot>;
+  costRollupRetry: () => void;
+  costTrend: QueryState<InsightCostTrendSnapshot>;
+  costTrendRetry: () => void;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
   scope: InsightScope;
@@ -196,30 +216,31 @@ function InsightContent({
       snapshot.stats.readyPool.sampleEverRecorded ||
       snapshot.stats.readyPool.bounceEverRecorded);
 
-  if (
+  const isEmpty =
     !hasOutcomes &&
     !usage &&
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
     !hasCurationHealth &&
-    errorSignatures.status !== "loading"
-  ) {
-    return (
-      <section className="empty-state insight-empty">
-        <span className="insight-empty-icon">
-          <Icon name="insight" size={24} />
-        </span>
-        <div>
-          <h2>No telemetry in this window</h2>
-          <p>Choose a wider time window or another scope to inspect recorded runs.</p>
-        </div>
-      </section>
-    );
-  }
+    errorSignatures.status !== "loading";
 
   return (
     <>
+      <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={snapshot.window} />
+
+      {isEmpty ? (
+        <section className="empty-state insight-empty">
+          <span className="insight-empty-icon">
+            <Icon name="insight" size={24} />
+          </span>
+          <div>
+            <h2>No telemetry in this window</h2>
+            <p>Choose a wider time window or another scope to inspect recorded runs.</p>
+          </div>
+        </section>
+      ) : (
+        <>
       {hasOutcomes && (
         <section className="content-section">
           <div className="section-heading">
@@ -267,6 +288,13 @@ function InsightContent({
             report usage remain unmeasured.
           </p>
           <UsageAnalytics filters={snapshot.filters} usage={usage} />
+          <CostTrend
+            costTrend={costTrend}
+            currentUsage={usage}
+            retry={costTrendRetry}
+            scope={scope}
+            window={snapshot.window}
+          />
         </section>
       )}
 
@@ -287,6 +315,8 @@ function InsightContent({
             <StageDistributions filters={snapshot.filters} stages={stages} />
           )}
         </section>
+      )}
+        </>
       )}
     </>
   );
@@ -722,6 +752,417 @@ function RetryWasteMetric({
   );
 }
 
+function CostTrend({
+  costTrend,
+  currentUsage,
+  retry,
+  scope,
+  window,
+}: {
+  costTrend: QueryState<InsightCostTrendSnapshot>;
+  currentUsage: TelemetryUsageStats;
+  retry: () => void;
+  scope: InsightScope;
+  window: InsightWindow;
+}) {
+  if (window === "all") {
+    return (
+      <p className="usage-trend-note">
+        Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.
+      </p>
+    );
+  }
+  if (costTrend.status === "loading") {
+    return <p className="usage-trend-note">Loading cost trend…</p>;
+  }
+  if (costTrend.status === "error") {
+    return (
+      <div className="insight-inline-error">
+        <span>Unable to load the cost trend.</span>
+        <button onClick={retry} type="button">
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (costTrend.status !== "ready" && costTrend.status !== "stale") {
+    return null;
+  }
+  const data = costTrend.data;
+  const points = data.buckets.map((bucket) => ({
+    since: bucket.since,
+    until: bucket.until,
+    usage: usageForScope(scope, bucket.usage),
+  }));
+  const hasSamples = points.some((point) => (point.usage?.costSamples ?? 0) > 0);
+  const previousUsage = data.previous ? usageForScope(scope, data.previous.usage) : undefined;
+
+  return (
+    <div className="usage-trend">
+      {costTrend.status === "stale" && costTrend.error && (
+        <div className="insight-inline-error">
+          <span>Cost trend refresh failed. Showing the last successful read.</span>
+          <button onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      )}
+      <div className="usage-trend-heading">
+        <p className="section-kicker">Trend</p>
+        <h3>Cost over time</h3>
+      </div>
+      {hasSamples ? (
+        <CostTrendSparkline points={points} window={window} />
+      ) : (
+        <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
+      )}
+      <CostTrendComparison current={currentUsage} previous={previousUsage} window={window} />
+    </div>
+  );
+}
+
+function CostTrendSparkline({
+  points,
+  window,
+}: {
+  points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
+  window: InsightWindow;
+}) {
+  const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  return (
+    <div className="usage-trend-sparkline" role="img" aria-label={sparklineAriaLabel(points)}>
+      {points.map((point) => {
+        const p50 = point.usage?.p50CostUSD;
+        const p95 = point.usage?.p95CostUSD;
+        const p50Height = `${Math.min(100, ((p50 ?? 0) / scaleMax) * 100)}%`;
+        const p95Height = `${Math.min(100, ((p95 ?? 0) / scaleMax) * 100)}%`;
+        return (
+          <span
+            className="usage-trend-bar"
+            key={point.since}
+            title={`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(p50)}, P95 ${formatMeasuredCost(p95)}`}
+          >
+            <span className="usage-trend-bar-track">
+              <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
+              <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
+            </span>
+            <small>{formatBucketTick(point.since, window)}</small>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function sparklineAriaLabel(
+  points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[],
+): string {
+  const summary = points
+    .map(
+      (point) =>
+        `${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.usage?.p50CostUSD)}`,
+    )
+    .join("; ");
+  return `AI cost trend by bucket. ${summary}`;
+}
+
+function formatBucketLabel(since: string, until: string): string {
+  return `${formatTimestamp(since)} to ${formatTimestamp(until)}`;
+}
+
+function formatBucketTick(since: string, window: InsightWindow): string {
+  const date = new Date(since);
+  // Buckets for the 24h window are only hours apart, so a date-only tick
+  // (e.g. "Jul 22") renders identically for every bar. Buckets for 7d/30d
+  // are always at least a day apart, where the date is the meaningful axis.
+  return window === "24h"
+    ? date.toLocaleTimeString("en-US", { hour: "numeric" })
+    : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function CostTrendComparison({
+  current,
+  previous,
+  window,
+}: {
+  current: TelemetryUsageStats;
+  previous: TelemetryUsageStats | undefined;
+  window: InsightWindow;
+}) {
+  const duration = windowDurationLabel(window);
+  if (!previous || previous.costSamples === 0) {
+    return <p className="usage-trend-note">No prior {duration} to compare against in this scope.</p>;
+  }
+  return (
+    <dl className="usage-trend-comparison">
+      <div>
+        <dt>AI cost vs. previous {duration}</dt>
+        <dd>
+          {formatMeasuredCost(current.p50CostUSD)}
+          <DeltaBadge current={current.p50CostUSD} previous={previous.p50CostUSD} />
+        </dd>
+      </div>
+      <div>
+        <dt>Tokens vs. previous {duration}</dt>
+        <dd>
+          {formatMeasuredTokens(current.p50Tokens)}
+          <DeltaBadge current={current.p50Tokens} previous={previous.p50Tokens} />
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+function windowDurationLabel(window: InsightWindow): string {
+  switch (window) {
+    case "24h":
+      return "24 hours";
+    case "7d":
+      return "7 days";
+    case "30d":
+      return "30 days";
+    case "all":
+      return "all time";
+  }
+}
+
+function DeltaBadge({
+  current,
+  previous,
+}: {
+  current: number | undefined;
+  previous: number | undefined;
+}) {
+  if (current === undefined || previous === undefined || previous === 0) {
+    return <span className="usage-trend-delta usage-trend-delta-flat">Unmeasured</span>;
+  }
+  const change = (current - previous) / previous;
+  const direction = change > 0 ? "up" : change < 0 ? "down" : "flat";
+  const label = `${change > 0 ? "+" : ""}${(change * 100).toFixed(1)}%`;
+  return <span className={`usage-trend-delta usage-trend-delta-${direction}`}>{label}</span>;
+}
+
+const BUDGET_THRESHOLD_STORAGE_KEY = "goobers-insight-budget-threshold-usd";
+
+/**
+ * The daemon has no budget-config endpoint (#2533 is portal-only), so the
+ * soft threshold an operator sets is a local browser preference, not shared
+ * instance state. Reads/writes are wrapped in try/catch (matching how
+ * unavailable storage is handled elsewhere, e.g. private-browsing quota
+ * errors) so a storage failure degrades to "no threshold set" instead of
+ * crashing the page.
+ */
+function readStoredThreshold(): number | undefined {
+  try {
+    const stored = window.localStorage.getItem(BUDGET_THRESHOLD_STORAGE_KEY);
+    const parsed = stored ? Number(stored) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredThreshold(value: number | undefined): void {
+  try {
+    if (value === undefined) {
+      window.localStorage.removeItem(BUDGET_THRESHOLD_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(BUDGET_THRESHOLD_STORAGE_KEY, String(value));
+    }
+  } catch {
+    // Storage unavailable (private browsing, quota) — the in-memory state
+    // set alongside this call still drives the UI for the rest of the
+    // session; it just won't survive a reload.
+  }
+}
+
+function useBudgetThreshold(): [number | undefined, (value: number | undefined) => void] {
+  const [threshold, setThresholdState] = useState<number | undefined>(readStoredThreshold);
+  const setThreshold = useCallback((value: number | undefined) => {
+    setThresholdState(value);
+    writeStoredThreshold(value);
+  }, []);
+  return [threshold, setThreshold];
+}
+
+function InstanceCostRollup({
+  costRollup,
+  retry,
+  window,
+}: {
+  costRollup: QueryState<InsightCostRollupSnapshot>;
+  retry: () => void;
+  window: InsightWindow;
+}) {
+  const [threshold, setThreshold] = useBudgetThreshold();
+
+  if (costRollup.status === "loading") {
+    return (
+      <section className="content-section">
+        <RollupHeading window={window} />
+        <p className="inline-empty">Loading instance spend…</p>
+      </section>
+    );
+  }
+  if (costRollup.status === "error") {
+    return (
+      <section className="content-section">
+        <RollupHeading window={window} />
+        <div className="insight-inline-error">
+          <span>Unable to load instance spend.</span>
+          <button onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+  if (costRollup.status !== "ready" && costRollup.status !== "stale") {
+    return null;
+  }
+  const data = costRollup.data;
+  const rankedGaggles = data.byGaggle.filter((entry) => (entry.usage?.costSamples ?? 0) > 0);
+  const total = data.totalCostSamples === 0 ? undefined : data.totalCostUSD;
+
+  return (
+    <section className="content-section">
+      <RollupHeading window={window} />
+      {costRollup.status === "stale" && costRollup.error && (
+        <div className="insight-inline-error">
+          <span>Instance spend refresh failed. Showing the last successful read.</span>
+          <button onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      )}
+      <div className="instance-spend-summary">
+        <div className="instance-spend-total">
+          <small>Total AI cost · all gaggles</small>
+          <strong>{data.totalCostSamples === 0 ? "Unmeasured" : formatMeasuredCost(total)}</strong>
+        </div>
+        <BudgetThreshold onChange={setThreshold} threshold={threshold} total={total} />
+      </div>
+      {rankedGaggles.length === 0 ? (
+        <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
+      ) : (
+        <div className="gaggle-spend-table">
+          <div aria-hidden="true" className="gaggle-spend-header">
+            <span>Gaggle</span>
+            <span>P50 cost</span>
+            <span>P95 cost</span>
+            <span>Samples</span>
+          </div>
+          {rankedGaggles.map((entry) => (
+            <GaggleSpendRow entry={entry} filters={data.filters} key={entry.gaggle} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RollupHeading({ window }: { window: InsightWindow }) {
+  return (
+    <div className="section-heading">
+      <div>
+        <p className="section-kicker">AI usage</p>
+        <h2>Instance spend</h2>
+      </div>
+      <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
+    </div>
+  );
+}
+
+function GaggleSpendRow({
+  entry,
+  filters,
+}: {
+  entry: InsightGaggleSpend;
+  filters: TelemetryStatsOptions;
+}) {
+  const usage = entry.usage;
+  const href = routeHash({
+    page: "runs",
+    filters: drillFilters(filters, entry.gaggle, undefined, undefined, undefined, "cost-measured"),
+  });
+  return (
+    <a
+      aria-label={`View instance spend for gaggle ${entry.gaggle}: ${formatSamples(usage?.costSamples ?? 0)}, P50 ${formatMeasuredCost(usage?.p50CostUSD)}, P95 ${formatMeasuredCost(usage?.p95CostUSD)}`}
+      className="gaggle-spend-row"
+      href={href}
+    >
+      <span className="distribution-name">
+        <strong>{entry.gaggle}</strong>
+      </span>
+      <span>{formatMeasuredCost(usage?.p50CostUSD)}</span>
+      <span>{formatMeasuredCost(usage?.p95CostUSD)}</span>
+      <span>{formatSamples(usage?.costSamples ?? 0)}</span>
+    </a>
+  );
+}
+
+function BudgetThreshold({
+  onChange,
+  threshold,
+  total,
+}: {
+  onChange: (value: number | undefined) => void;
+  threshold: number | undefined;
+  total: number | undefined;
+}) {
+  const [draft, setDraft] = useState(() => (threshold === undefined ? "" : String(threshold)));
+
+  const commit = () => {
+    const parsed = Number(draft);
+    onChange(draft.trim() !== "" && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
+  };
+
+  const status = budgetStatus(total, threshold);
+
+  return (
+    <div className="budget-threshold">
+      <label>
+        <small>Soft budget (USD)</small>
+        <input
+          inputMode="decimal"
+          onBlur={commit}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              commit();
+              event.currentTarget.blur();
+            }
+          }}
+          placeholder="Not set"
+          type="number"
+          value={draft}
+        />
+      </label>
+      {status && (
+        <span className={`budget-status budget-status-${status.kind}`} role="status">
+          {status.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function budgetStatus(
+  total: number | undefined,
+  threshold: number | undefined,
+): { kind: "under" | "over"; label: string } | undefined {
+  if (threshold === undefined || total === undefined) {
+    return undefined;
+  }
+  const ratio = total / threshold;
+  return ratio >= 1
+    ? {
+        kind: "over",
+        label: `${(ratio * 100).toFixed(0)}% of budget — over by ${formatMeasuredCost(total - threshold)}`,
+      }
+    : { kind: "under", label: `${(ratio * 100).toFixed(0)}% of budget` };
+}
+
 function StageDistributions({
   filters,
   stages,
@@ -745,7 +1186,7 @@ function StageDistributions({
       </div>
       {stages.map((stage) => (
         <a
-          aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}`}
+          aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
           className="stage-distribution-row"
           href={routeHash({
             page: "runs",
@@ -764,6 +1205,15 @@ function StageDistributions({
             <strong>{stage.stage}</strong>
             <small>
               {stage.gaggle} / {stage.workflow} · {stage.durationSamples} samples
+              {stage.stuckAbortedAttempts > 0 && (
+                <span
+                  className="distribution-excluded"
+                  title="Attempts whose run hung and was later aborted (max-duration expiry) are excluded from these duration stats so they don't skew the range."
+                >
+                  {" "}
+                  · {stage.stuckAbortedAttempts} stuck-aborted excluded
+                </span>
+              )}
             </small>
           </span>
           <DistributionPlot scaleMax={scaleMax} stage={stage} />

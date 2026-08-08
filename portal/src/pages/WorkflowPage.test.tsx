@@ -101,6 +101,27 @@ describe("workflow detail page", () => {
     ).toBeInTheDocument();
   });
 
+  it("pivots the workflow and its owning gaggle into pre-scoped Runs/Insight views (#2529)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Implementation" });
+    const breadcrumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(
+      within(breadcrumbs).getByRole("link", { name: "View core in Runs" }),
+    ).toHaveAttribute("href", "#/runs?gaggle=core");
+    // The gaggle breadcrumb button's own name ("core") stays unique even with
+    // the adjacent pivot links present.
+    expect(within(breadcrumbs).getByRole("button", { name: "core" })).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("link", { name: "View core / Implementation in Insight" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+  });
+
   it("keeps the graph available across dark and light themes", async () => {
     window.localStorage.setItem("goobers-theme", "dark");
     const user = userEvent.setup();

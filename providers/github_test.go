@@ -1653,6 +1653,38 @@ func TestGitHubProviderRefCheckState(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/graphql" {
+			t.Fatalf("request path = %q, want /graphql", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "SUCCESS"}},
+					"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+					"r2": map[string]interface{}{"statusCheckRollup": nil},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"aaa111", "bbb222", "ccc333"})
+	if err != nil {
+		t.Fatalf("RefCheckStates: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("GraphQL calls = %d, want 1", calls)
+	}
+	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStateFailing || states["ccc333"] != CheckStatePending {
+		t.Fatalf("states = %v, want passing, failing, pending", states)
+	}
+}
+
 // TestGitHubProviderPullRequestFilesListsTouchedFiles is issue #359's
 // sibling-set context gathering: given another open PR's number, list the
 // files it touches for cross-PR conflict/drift detection.

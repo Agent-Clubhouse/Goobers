@@ -64,11 +64,12 @@ export function DataList({
 interface DataRowProps {
   children: React.ReactNode;
   href?: string;
+  interactiveChildren?: boolean;
   label: string;
   onClick?: () => void;
 }
 
-export function DataRow({ children, href, label, onClick }: DataRowProps) {
+export function DataRow({ children, href, interactiveChildren, label, onClick }: DataRowProps) {
   const content = (
     <>
       {children}
@@ -77,6 +78,26 @@ export function DataRow({ children, href, label, onClick }: DataRowProps) {
       </span>
     </>
   );
+
+  // A row is normally one big clickable link/button — the common case, and
+  // the largest hit target. A row whose content needs its own nested
+  // interactive element (e.g. a gaggle/workflow pivot, #2529) can't do that
+  // inside an <a>/<button> (invalid, inaccessible nesting), so it instead
+  // gets a "stretched link" that covers the row from behind: content paints
+  // on top with pointer-events disabled so clicks still fall through to the
+  // row link everywhere except the interactive element, which re-enables
+  // pointer-events on itself (see .data-row-stretched in styles.css).
+  if (interactiveChildren) {
+    if (!href) {
+      throw new TypeError("DataRow interactiveChildren requires href.");
+    }
+    return (
+      <div className="data-row data-row-stretched">
+        <a aria-label={label} className="data-row-stretch-link" href={href} />
+        {content}
+      </div>
+    );
+  }
 
   if (href) {
     return (

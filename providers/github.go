@@ -1834,6 +1834,58 @@ func (p *GitHubProvider) RefCheckState(ctx context.Context, repo RepositoryRef, 
 	return state, err
 }
 
+// RefCheckStates resolves combined check state for multiple commit refs in one
+// GraphQL request.
+func (p *GitHubProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	states := make(map[string]CheckState, len(refs))
+	if len(refs) == 0 {
+		return states, nil
+	}
+
+	var definitions, fields strings.Builder
+	variables := map[string]interface{}{"owner": repo.Owner, "name": repo.Name}
+	for i, ref := range refs {
+		variable := fmt.Sprintf("ref%d", i)
+		alias := fmt.Sprintf("r%d", i)
+		fmt.Fprintf(&definitions, ",$%s:String!", variable)
+		fmt.Fprintf(&fields, "%s:object(expression:$%s){... on Commit{statusCheckRollup{state}}}", alias, variable)
+		variables[variable] = ref
+	}
+	query := fmt.Sprintf(
+		"query($owner:String!,$name:String!%s){repository(owner:$owner,name:$name){%s}}",
+		definitions.String(), fields.String(),
+	)
+	var response struct {
+		Repository map[string]struct {
+			StatusCheckRollup *struct {
+				State string `json:"state"`
+			} `json:"statusCheckRollup"`
+		} `json:"repository"`
+	}
+	if err := p.graphql(ctx, query, variables, &response); err != nil {
+		return nil, err
+	}
+	for i, ref := range refs {
+		result, ok := response.Repository[fmt.Sprintf("r%d", i)]
+		if !ok || result.StatusCheckRollup == nil {
+			states[ref] = CheckStatePending
+			continue
+		}
+		switch result.StatusCheckRollup.State {
+		case "SUCCESS":
+			states[ref] = CheckStatePassing
+		case "FAILURE", "ERROR":
+			states[ref] = CheckStateFailing
+		default:
+			states[ref] = CheckStatePending
+		}
+	}
+	return states, nil
+}
+
 type resolvedCheckDetail struct {
 	CheckDetail
 	checkRunID int64

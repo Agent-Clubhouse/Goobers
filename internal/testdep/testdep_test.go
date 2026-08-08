@@ -101,6 +101,7 @@ func TestDependenciesAreSorted(t *testing.T) {
 		{Name: "java", InstallHint: "install a JDK (https://adoptium.net/)"},
 		{Name: "mkdir", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},
 		{Name: "mvn", InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)"},
+		{Name: "ps", InstallHint: "install procps (Debian/Ubuntu: apt-get install procps)"},
 		{Name: "python3", InstallHint: "install Python 3.12 (https://www.python.org/downloads/)"},
 		{Name: "sh", InstallHint: "install a POSIX shell (Debian/Ubuntu: apt-get install dash)"},
 		{Name: "sleep", InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)"},

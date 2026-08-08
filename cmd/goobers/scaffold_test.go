@@ -130,6 +130,9 @@ func assertScaffoldValidationWarnings(t *testing.T, output string, wantCompatibi
 			sawPreview = true
 			continue
 		}
+		if strings.HasPrefix(warning, "WARNING "+placeholderFindingCode+" ") {
+			continue
+		}
 		compatibility = append(compatibility, warning)
 	}
 	if sawPreview {

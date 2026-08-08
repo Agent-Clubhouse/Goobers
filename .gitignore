@@ -51,6 +51,10 @@ coverage.html
 .idea/
 *.swp
 
+# Python (evals/)
+__pycache__/
+*.pyc
+
 # Agent-local (do not commit)
 .mcp.json
 CLAUDE.md

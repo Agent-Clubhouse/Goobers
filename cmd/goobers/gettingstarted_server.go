@@ -148,6 +148,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleStubSample(w, r)
 	case r.URL.Path == "/guided/actions/init-instance":
 		s.handleInitInstance(w, r)
+	case r.URL.Path == "/guided/actions/connect":
+		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
 		s.handleValidate(w, r)
 	case r.URL.Path == "/guided/actions/run":
@@ -186,15 +188,23 @@ type guidedJobDetail struct {
 }
 
 type guidedStateBody struct {
-	Version        int               `json:"version"`
-	Workdir        string            `json:"workdir"`
-	SamplePath     string            `json:"samplePath"`
-	InstancePath   string            `json:"instancePath"`
-	SampleExists   bool              `json:"sampleExists"`
-	InstanceExists bool              `json:"instanceExists"`
-	Env            guidedEnvState    `json:"env"`
-	Job            *guidedJobSummary `json:"job"`
-	APIReady       bool              `json:"apiReady"`
+	Version        int                  `json:"version"`
+	Workdir        string               `json:"workdir"`
+	SamplePath     string               `json:"samplePath"`
+	InstancePath   string               `json:"instancePath"`
+	SampleExists   bool                 `json:"sampleExists"`
+	InstanceExists bool                 `json:"instanceExists"`
+	Env            guidedEnvState       `json:"env"`
+	Job            *guidedJobSummary    `json:"job"`
+	APIReady       bool                 `json:"apiReady"`
+	Connected      guidedConnectedState `json:"connected"`
+}
+
+// guidedConnectedState reports the repository the tutorial instance is
+// connected to. Repo is null until instance.yaml names a real (non-placeholder)
+// repository — derived by the same loader `goobers connect` itself uses.
+type guidedConnectedState struct {
+	Repo *string `json:"repo"`
 }
 
 type guidedEnvelopeBody struct {
@@ -221,6 +231,10 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(instance.NewLayout(s.instancePath).ConfigFile()); err == nil {
 		instanceExists = true
 	}
+	connected := guidedConnectedState{}
+	if repo := connectedRepository(s.instancePath); repo != "" {
+		connected.Repo = &repo
+	}
 	s.mu.Lock()
 	var job *guidedJobSummary
 	if s.job != nil {
@@ -241,8 +255,9 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 			GoobersGithubToken:       os.Getenv("GOOBERS_GITHUB_TOKEN") != "",
 			GoobersGithubIssuesToken: os.Getenv(defaultWorkTrackingTokenEnv) != "",
 		},
-		Job:      job,
-		APIReady: apiReady,
+		Job:       job,
+		APIReady:  apiReady,
+		Connected: connected,
 	})
 }
 
@@ -273,15 +288,35 @@ func (s *guidedServer) handleStubSample(w http.ResponseWriter, r *http.Request) 
 	s.respondEnvelope(w, r, argv)
 }
 
+type guidedInitInstanceRequest struct {
+	Template string `json:"template"`
+}
+
 func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodPost) {
 		return
 	}
-	var input struct{}
+	var input guidedInitInstanceRequest
 	if !decodeGuidedBody(w, r, &input) {
 		return
 	}
-	result, err := s.execSync(r.Context(), "init", "--template=quickstart", s.instancePath)
+	// Allowlisted template chooser: "quickstart" (the tutorial default) execs
+	// the templated init; "starter" execs the bare init, whose scaffold IS the
+	// starter template. Anything else is a 400, never an argv.
+	var argv []string
+	switch input.Template {
+	case "", "quickstart":
+		argv = []string{"init", "--template=quickstart", s.instancePath}
+	case "starter":
+		argv = []string{"init", s.instancePath}
+	default:
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_template",
+			Message: "template must be \"quickstart\" or \"starter\"",
+		})
+		return
+	}
+	result, err := s.execSync(r.Context(), argv...)
 	if err != nil {
 		writeGuidedExecFailure(w, err)
 		return
@@ -291,6 +326,47 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 		Stdout:   result.stdout,
 		Stderr:   result.stderr,
 	})
+}
+
+type guidedConnectRequest struct {
+	Repo     string `json:"repo"`
+	TokenEnv string `json:"tokenEnv"`
+	Seed     bool   `json:"seed"`
+	Replace  bool   `json:"replace"`
+}
+
+// handleConnect wraps `goobers connect` exactly as a shell user would invoke
+// it (docs/design/v1/cli-surface-and-manpages.md §5): repo/flags in, the
+// parsed onboarding envelope out. Token VALUES never cross this API — only
+// the environment variable name does, and the CLI's own paste-guard rejects
+// pasted secrets.
+func (s *guidedServer) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedConnectRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	if input.Repo == "" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_repo",
+			Message: "repo (owner/name) is required",
+		})
+		return
+	}
+	argv := []string{"connect", input.Repo, "--json"}
+	if input.TokenEnv != "" {
+		argv = append(argv, "--token-env", input.TokenEnv)
+	}
+	if input.Seed {
+		argv = append(argv, "--seed")
+	}
+	if input.Replace {
+		argv = append(argv, "--replace")
+	}
+	argv = append(argv, s.instancePath)
+	s.respondEnvelope(w, r, argv)
 }
 
 type guidedValidateRequest struct {
@@ -324,12 +400,30 @@ func (s *guidedServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.respondEnvelope(w, r, []string{"status", "--json", s.instancePath})
 }
 
+type guidedRunRequest struct {
+	Workflow string `json:"workflow"`
+}
+
 func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodPost) {
 		return
 	}
-	var input struct{}
+	var input guidedRunRequest
 	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	// Allowlisted workflow chooser: the two workflows the shipped templates
+	// materialize. Anything else is a 400, never an argv.
+	workflow := input.Workflow
+	switch workflow {
+	case "":
+		workflow = "quickstart"
+	case "quickstart", "default-implement":
+	default:
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_workflow",
+			Message: "workflow must be \"quickstart\" or \"default-implement\"",
+		})
 		return
 	}
 	s.mu.Lock()
@@ -347,7 +441,7 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), guidedRunJobTimeout)
 	job.cancel = cancel
-	command := guidedExecCommand(ctx, s.executable, "run", "quickstart", s.instancePath)
+	command := guidedExecCommand(ctx, s.executable, "run", workflow, s.instancePath)
 	// stdout and stderr interleave into the job's bounded ring, exactly as a
 	// terminal user would see them.
 	command.Stdout = job

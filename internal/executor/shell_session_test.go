@@ -65,6 +65,7 @@ func TestShellExecutor_SpawnsStageInNewSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}

@@ -120,6 +120,18 @@ and [requirements](docs/requirements/). Those documents include future
 design; this overview deliberately describes the behavior shipped in this
 tree.
 
+## EvalSuite (workflow evaluation)
+
+EvalSuite is an in-progress epic ([#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662))
+for deterministic, reproducible evaluation of agentic workflows: side-by-side
+(A/B) comparisons and shadow/dark runs against production-like input without
+side effects. It is not yet shipped behavior — treat it the same as the other
+future-design docs above until its child issues land.
+
+- [Design overview and status](docs/design/evals-suite.md)
+- [Onboarding: running EvalSuite tests and reading reports](docs/guides/evals-onboarding.md)
+- [PR review checklist for EvalSuite artifacts](docs/guides/evals-review-checklist.md)
+
 ## Engineering reference
 
 ### Repository layout
@@ -143,6 +155,7 @@ tree.
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
 | `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
+| `evals/` | EvalSuite design docs (sandbox/adapter API, cassette format) for deterministic, reproducible workflow evaluation | Design — no runner/adapter implementation shipped yet |
 | `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
 | `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |

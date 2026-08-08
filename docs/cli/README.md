@@ -9,6 +9,7 @@
 | Command | Description |
 | --- | --- |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
+| [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub repository |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
@@ -791,6 +792,53 @@ instance root.
 ~~~console
 $ goobers config show
 $ goobers config show --json
+~~~
+
+## `goobers connect`
+
+connect an instance to your own GitHub repository
+
+~~~text
+Usage: goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
+
+Connect an instance to your own GitHub repository — the connect rung of the
+onboarding ladder. The command rewrites the template placeholders
+(your-org/your-repo) in instance.yaml repos[] and in every materialized
+gaggle's project and backlog under config/gaggles/, then validates the
+result in-process. Configuration already pointing at a real repository is
+left alone (and reported skipped) unless --replace is set.
+
+Credentials are recorded by NAME only: --token-env stores the environment
+variable name (default GOOBERS_GITHUB_TOKEN) in the repo's token
+reference. Token values never pass through this command; a value that looks
+like a pasted token is rejected.
+
+--seed derives the labels the connected gaggles' backlog selectors actually
+require (backlog labels plus each workflow's trustLabel/requireLabels
+inputs), idempotently ensures they exist on the repository, and files one
+safe starter issue carrying exactly those labels. Seeding uses the same
+--token-env; when that variable is unset the issue is reported pending and
+the local rewrite still completes.
+
+When the token variable is set, the target repository's reachability is
+also checked with the exact credential path a real run would use.
+
+Flags:
+  --token-env <name>  repository token environment variable name (default GOOBERS_GITHUB_TOKEN)
+  --seed              ensure selector labels + one starter issue on the repository
+  --replace           also rewrite entries already pointing at a real repository
+  --json              emit the versioned onboarding action envelope
+
+Exit codes: 0 = connected (or already connected), 1 = refusal, validation,
+or provider error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers connect acme/web ./my-instance
+$ goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance
+$ goobers connect acme/web --json ./my-instance
 ~~~
 
 ## `goobers dashboard`

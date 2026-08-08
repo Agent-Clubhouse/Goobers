@@ -1105,6 +1105,25 @@ func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, 
 	return summarizeGiteaPull(pr, ""), nil
 }
 
+// RefCheckState resolves a ref's combined commit-status state on demand.
+func (p *GiteaProvider) RefCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+	state, _, err := p.combinedCheckState(ctx, repo, ref)
+	return state, err
+}
+
+// RefCheckStates resolves combined check state for each requested ref.
+func (p *GiteaProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
+	states := make(map[string]CheckState, len(refs))
+	for _, ref := range refs {
+		state, err := p.RefCheckState(ctx, repo, ref)
+		if err != nil {
+			return nil, err
+		}
+		states[ref] = state
+	}
+	return states, nil
+}
+
 // ListRecentlyClosedPullRequests lists pull requests closed or merged since
 // updatedSince. It is the bounded terminal-PR complement to ListPullRequests
 // used when a workflow needs current state for recently relevant siblings.

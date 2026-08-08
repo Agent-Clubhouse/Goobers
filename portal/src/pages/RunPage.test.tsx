@@ -123,7 +123,7 @@ describe("run detail", () => {
         }),
       );
 
-      let inspector = screen.getByRole("complementary", { name: "query attempt inspector" });
+      let inspector = screen.getByRole("complementary", { name: "implementation · query attempt inspector" });
       expect(inspector).toHaveFocus();
       expect(scrollIntoView).toHaveBeenLastCalledWith({
         block: "start",
@@ -131,7 +131,7 @@ describe("run detail", () => {
       });
 
       await user.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
-      inspector = screen.getByRole("complementary", { name: "implement attempt inspector" });
+      inspector = screen.getByRole("complementary", { name: "implementation · implement attempt inspector" });
       expect(inspector).toHaveFocus();
       expect(scrollIntoView).toHaveBeenCalledTimes(2);
     } finally {
@@ -205,7 +205,7 @@ describe("run detail", () => {
     expect(await screen.findByText("artifact-30.txt")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(40);
     const workspace = document.querySelector(".run-detail-workspace");
-    const inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    const inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     const ledger = screen.getByRole("region", { name: "Event ledger" });
     expect(workspace).toHaveAttribute("data-scroll-owner", "page");
     expect(
@@ -252,7 +252,7 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "query, deterministic, Running at sequence 2" }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(
-      screen.getByRole("complementary", { name: "query attempt inspector" }),
+      screen.getByRole("complementary", { name: "implementation · query attempt inspector" }),
     ).toBeInTheDocument();
   });
 
@@ -441,13 +441,13 @@ describe("run detail", () => {
     expect(
       screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
     ).toHaveAttribute("aria-pressed", "true");
-    let inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    let inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
@@ -471,13 +471,13 @@ describe("run detail", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 10:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
-    inspector = screen.getByRole("complementary", { name: "review attempt inspector" });
+    inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
     expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();
@@ -910,17 +910,35 @@ describe("run detail", () => {
     client.close();
   });
 
-  it("keeps run detail visible while a refresh is pending or fails", async () => {
+  it("keeps run detail visible, without a busy banner, while a refresh is pending, and surfaces failures (#2530)", async () => {
+    // Regression test for #2530: a background refresh triggered by a live
+    // invalidation dips useLiveData's connection freshness through "stale"
+    // for the round-trip (liveData.tsx's drainInvalidations) on every single
+    // live event for an active run, not just on genuine disconnects. Before
+    // this fix, RunPage rendered a "Refreshing run detail…" banner for any
+    // stale-without-error state, so it popped in and out above the
+    // graph/journal once per event — a recurrence of the
+    // #2307/#2304/#2308 "background refresh must not visibly disrupt the
+    // view" class, this time as a pure visual flicker with selection intact.
+    // RunPage must behave like every other query-driven page in the portal
+    // (WorkflowPage, ErrorsPage, InsightPage, GagglePage): stale-without-error
+    // is invisible, and only stale-with-error surfaces anything.
     const runId = "01JZ441DAEMONAPI";
     const client = new LiveFixtureClient(populatedDaemonFixtures());
     renderRun(runId, client);
     await screen.findByRole("heading", { name: `Run ${runId}` });
 
     client.holdRefresh();
-    act(() => client.invalidateRun("fixture:stale"));
+    await act(async () => {
+      client.invalidateRun("fixture:stale");
+      await client.waitForPendingRefresh();
+    });
 
-    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    // The refresh is genuinely pending (not yet resolved), and the run
+    // detail must stay fully visible without any busy banner appearing.
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
     act(() => client.failRefresh(new Error("Unable to refresh this run.")));
@@ -928,11 +946,15 @@ describe("run detail", () => {
     expect(await screen.findByText("Run detail may be stale")).toBeInTheDocument();
     expect(screen.getByText("Unable to refresh this run.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
 
     client.holdRefresh();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await client.waitForPendingRefresh();
+    });
 
-    expect(await screen.findByText("Refreshing run detail…")).toBeInTheDocument();
+    expect(screen.queryByText("Refreshing run detail…")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: `Run ${runId}` })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Loading run" })).not.toBeInTheDocument();
 
@@ -1027,6 +1049,25 @@ describe("run detail", () => {
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 
+  it("pivots the run's gaggle/workflow identity into a pre-scoped Runs and Insight view (#2529)", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ400FAILED");
+
+    await screen.findByRole("heading", { name: "Run 01JZ400FAILED" });
+    expect(
+      screen.getByRole("link", { name: "View core / implementation in Insight" }),
+    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(
+      screen.getByRole("link", { name: "View core / implementation in Runs" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
+      "core / implementation",
+    );
+  });
+
   it("surfaces the coded failure reason and deep-links from a failed run", async () => {
     const user = userEvent.setup();
     renderRun("01JZ400FAILED");
@@ -1104,6 +1145,7 @@ class LiveFixtureClient extends FixtureDaemonClient {
   private readonly stream = new PushEventStream();
   private refreshError: Error | undefined;
   private refreshGate: Deferred | undefined;
+  private refreshStarted: Deferred | undefined;
 
   override connectEvents(): Promise<DaemonEventStream> {
     return Promise.resolve(this.stream);
@@ -1133,6 +1175,16 @@ class LiveFixtureClient extends FixtureDaemonClient {
   holdRefresh(): void {
     this.refreshError = undefined;
     this.refreshGate = deferred();
+    this.refreshStarted = deferred();
+  }
+
+  // Since the removal of the #2530 stale-without-error banner leaves no DOM
+  // signal that a held refresh has actually reached the gate (the previous
+  // version of this test relied on `findByText("Refreshing run detail…")`
+  // for that synchronization), tests must await this instead of racing
+  // `failRefresh`/`release` against a refresh that hasn't started yet.
+  async waitForPendingRefresh(): Promise<void> {
+    await this.refreshStarted?.promise;
   }
 
   failRefresh(error: Error): void {
@@ -1154,6 +1206,7 @@ class LiveFixtureClient extends FixtureDaemonClient {
     if (!gate) {
       return;
     }
+    this.refreshStarted?.resolve();
     await gate.promise;
     if (this.refreshError) {
       throw this.refreshError;

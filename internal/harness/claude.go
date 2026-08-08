@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -84,12 +86,14 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	env := baseEnv(c.ExtraEnvAllowlist)
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q did not respond to --version: %w — check it is installed and signed in", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q --version exited %d — check it is installed and signed in", bin, res.ExitCode)
+	versionProbe := fmt.Sprintf("harness: claude-code: %q --version", bin)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            versionCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
 	version := firstOutputLine(res.Transcript)
 	if version == "" {
@@ -97,12 +101,14 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	}
 
 	authCommand := append(append([]string(nil), baseCommand...), "auth", "status")
-	res, err = c.runner().Run(ctx, ProcessRequest{Command: authCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status failed: %w — run `claude auth login`", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status exited %d — run `claude auth login`", bin, res.ExitCode)
+	authProbe := fmt.Sprintf("harness: claude-code: %q auth status", bin)
+	res, err = c.runner().Run(ctx, ProcessRequest{
+		Command:            authCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
 	return PreflightInfo{Version: version}, nil
 }
@@ -175,7 +181,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
-		if err := seedClaudeCredentials(env, configDir); err != nil {
+		if err := seedClaudeCredentials(ctx, env, configDir); err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
 		writableRoots, err = gitWritableRoots(req.Workspace)
@@ -311,7 +317,21 @@ func ensurePlainDirectory(path string) error {
 	return nil
 }
 
-func seedClaudeCredentials(env []string, destination string) error {
+const claudeCodeKeychainService = "Claude Code-credentials"
+
+type claudeKeychainReader func(context.Context, string) ([]byte, error)
+
+func seedClaudeCredentials(ctx context.Context, env []string, destination string) error {
+	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readClaudeKeychainCredentials)
+}
+
+func seedClaudeCredentialsForPlatform(
+	ctx context.Context,
+	env []string,
+	destination string,
+	goos string,
+	readKeychain claudeKeychainReader,
+) error {
 	sourceDir := ""
 	var home, userProfile string
 	for _, entry := range env {
@@ -346,16 +366,28 @@ func seedClaudeCredentials(env []string, destination string) error {
 	if sourceDir == "" && home != "" {
 		sourceDir = filepath.Join(home, ".claude")
 	}
-	if sourceDir == "" {
-		return nil
+	var credentials []byte
+	if sourceDir != "" {
+		source := filepath.Join(sourceDir, ".credentials.json")
+		var err error
+		credentials, err = os.ReadFile(source)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read stored credentials: %w", err)
+		}
 	}
-	source := filepath.Join(sourceDir, ".credentials.json")
-	credentials, err := os.ReadFile(source)
-	if err != nil {
-		if os.IsNotExist(err) {
+	if credentials == nil {
+		if goos != "darwin" {
 			return nil
 		}
-		return fmt.Errorf("read stored credentials: %w", err)
+		var err error
+		credentials, err = readKeychain(ctx, claudeCodeKeychainService)
+		if err != nil {
+			return fmt.Errorf("read Claude Code credentials from macOS Keychain service %q: %w", claudeCodeKeychainService, err)
+		}
+		credentials = bytes.TrimSpace(credentials)
+		if len(credentials) == 0 {
+			return fmt.Errorf("macOS Keychain service %q contains empty Claude Code credentials", claudeCodeKeychainService)
+		}
 	}
 	target := filepath.Join(destination, ".credentials.json")
 	if err := os.WriteFile(target, credentials, 0o600); err != nil {
@@ -365,4 +397,8 @@ func seedClaudeCredentials(env []string, destination string) error {
 		return fmt.Errorf("secure stored credentials: %w", err)
 	}
 	return nil
+}
+
+func readClaudeKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
+	return exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
 }

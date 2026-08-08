@@ -89,8 +89,13 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 			t.Fatalf("%v: decode validation: %v\n%s", args, err, stdout)
 		}
-		if !result.OK || result.Counts.Errors != 0 || result.Counts.Warnings != 0 || len(result.Findings) != 0 {
-			t.Fatalf("%v: validation was not clean: %s", args, stdout)
+		if !result.OK || result.Counts.Errors != 0 {
+			t.Fatalf("%v: validation had errors: %s", args, stdout)
+		}
+		for _, finding := range result.Findings {
+			if finding.Code != placeholderFindingCode || finding.Severity != "warning" {
+				t.Fatalf("%v: validation had a non-placeholder finding: %s", args, stdout)
+			}
 		}
 	}
 

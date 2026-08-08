@@ -75,6 +75,16 @@ function dashboardMode(): DashboardMode {
   return "daemon";
 }
 
+function activeRouteGaggle(route: Route): string | undefined {
+  if (route.page === "gaggle") {
+    return route.id;
+  }
+  if (route.page === "workflow") {
+    return route.gaggle;
+  }
+  return undefined;
+}
+
 function Portal({
   client,
   mode,
@@ -216,8 +226,11 @@ function Portal({
     <CobrandContext.Provider value={{ config, loading }}>
       <PortalShell
         activeArea={activeArea(route)}
+        activeGaggle={activeRouteGaggle(route)}
+        client={client}
         currentScope={currentScope}
         navigate={navigate}
+        showGettingStarted={mode === "getting-started"}
         standalone={standalone}
         theme={theme}
         toggleTheme={toggleTheme}

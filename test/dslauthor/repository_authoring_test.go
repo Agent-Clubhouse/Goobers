@@ -30,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "7a1f2732053c6b29bd2955a03718786e911989f2851d4c40dafc684f2a741be1"
+	recordedAuthoringPathSHA256 = "d51e602ca038930f3eb00bb1fc8435d9273c77e076b519e38c859896607c9107"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
@@ -975,9 +975,13 @@ func loadPackagedAuthoringPath(t *testing.T, root string) ([]string, string) {
 		".goobers/agent-toolkit/skills/goobers-dsl-author/SKILL.md",
 		".goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-authoring.md",
 	}
+	digestPaths := append(append([]string(nil), paths...),
+		".goobers/agent-toolkit/skills/goobers-dsl-author/references/dsl-reference.md",
+		".goobers/agent-toolkit/skills/goobers-dsl-author/references/terminology.md",
+	)
 	hash := sha256.New()
 	bodies := map[string]string{}
-	for _, path := range paths {
+	for _, path := range digestPaths {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil {
 			t.Fatalf("read installed authoring path %s: %v", path, err)

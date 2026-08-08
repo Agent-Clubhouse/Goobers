@@ -4,6 +4,7 @@ import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   WorkflowTopologyGraph,
   type WorkflowGraphFullscreenMode,
@@ -24,6 +25,7 @@ import {
   isInspectableEvidenceEvent,
   eventStage,
   journalEntries,
+  nodeOwner,
   orderRunEvents,
   runFailure,
   type JournalEntry,
@@ -88,23 +90,30 @@ export function RunPage({
 
   return (
     <>
-      {query.state.status === "stale" &&
-        (query.state.error ? (
-          <div className="run-stale-state run-stale-state-error" role="alert">
-            <span>
-              <strong>Run detail may be stale</strong>
-              <small>{query.state.error.message}</small>
-            </span>
-            <button className="text-button" onClick={query.retry} type="button">
-              Try again
-            </button>
-          </div>
-        ) : (
-          <div aria-live="polite" className="run-stale-state" role="status">
-            <span aria-hidden="true" className="loading-mark" />
-            <span>Refreshing run detail…</span>
-          </div>
-        ))}
+      {/*
+       * Only the stale+error case renders anything (matches WorkflowPage,
+       * ErrorsPage, InsightPage, GagglePage): every live invalidation makes
+       * useLiveData's connection freshness dip through "stale" for the
+       * refresh's round-trip (liveData.tsx's drainInvalidations), which
+       * flows into this query's status on every single live event for an
+       * active run — not just on genuine disconnects. A no-error "stale"
+       * banner here previously popped in and out above the graph/journal on
+       * every event, reflowing them each time (#2530, recurrence of the
+       * #2307/#2304/#2308 background-refresh-must-not-disrupt-the-view
+       * class). Real connection health is already surfaced globally by
+       * PortalShell's persistent freshness indicator.
+       */}
+      {query.state.status === "stale" && query.state.error && (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Run detail may be stale</strong>
+            <small>{query.state.error.message}</small>
+          </span>
+          <button className="text-button" onClick={query.retry} type="button">
+            Try again
+          </button>
+        </div>
+      )}
       <RunDetailWorkspace
         client={client}
         events={query.state.data.events}
@@ -261,8 +270,14 @@ function RunDetailWorkspace({
             <span className="mono run-id">{run.id}</span>
           </div>
           <h1>Run {run.id}</h1>
-          <p>
-            {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
+          <p className="run-identity-line">
+            <span>
+              {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
+            </span>
+            <ScopePivot
+              label={`${run.gaggle} / ${run.workflow}`}
+              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+            />
           </p>
           {!portalConfigLoading && portalConfig.capabilities.revealRun && (
             <div className="run-file-actions">
@@ -396,10 +411,12 @@ function RunDetailWorkspace({
           {events.length > 0 && (
             <ReplayScrubber
               events={events}
+              graph={run.graph}
               onSeek={replaySeek}
               runId={runId}
               selectedSeq={selectedSeq}
               terminal={run.finishedAt != null}
+              workflow={run.workflow}
             />
           )}
 
@@ -412,6 +429,7 @@ function RunDetailWorkspace({
               onSelectAttempt={(isLatest) =>
                 setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
               }
+              workflow={run.workflow}
               runId={runId}
               selectedEvidence={selectedEvidence}
               selectedEvidenceVisit={selectedEvidenceVisit}
@@ -518,37 +536,53 @@ function EventLedger({
         </div>
         <div className="journal-heading-actions">
           <span className="graph-legend">Ordered by durable sequence</span>
-          <div aria-label="Journal event view" className="journal-view-control" role="group">
+          <div aria-label="Journal event kind" className="journal-view-control" role="group">
             <button
+              aria-describedby="journal-view-major-hint"
               aria-pressed={view === "major"}
               className={view === "major" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("major")}
+              title="Show only stage/gate landmarks, hiding evidence and liveness noise"
               type="button"
             >
               Major events
             </button>
+            <span className="sr-only" id="journal-view-major-hint">
+              Shows only stage/gate landmarks, hiding evidence and liveness noise
+            </span>
             <button
+              aria-describedby="journal-view-all-hint"
               aria-pressed={view === "all"}
               className={view === "all" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
               onClick={() => setView("all")}
+              title="Show every durable event of every kind"
               type="button"
             >
               All events ({events.length})
             </button>
+            <span className="sr-only" id="journal-view-all-hint">
+              Shows every durable event of every kind, independent of the stage filter
+            </span>
           </div>
           {stages.length > 1 && (
             <label className="journal-stage-filter">
               <span>Stage</span>
               <select
+                aria-label="Narrow the journal to one stage, independent of the event-kind toggle above"
                 onChange={(changeEvent) => setStageFilter(changeEvent.target.value)}
                 value={activeStage}
               >
                 <option value="">All stages</option>
-                {stages.map((stage) => (
-                  <option key={stage} value={stage}>
-                    {stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage}
-                  </option>
-                ))}
+                {stages.map((stage) => {
+                  const owner =
+                    stage === UNSCOPED_EVENT_STAGE ? undefined : nodeOwner(run.graph, stage);
+                  const label = stage === UNSCOPED_EVENT_STAGE ? "Run-level" : stage;
+                  return (
+                    <option key={stage} value={stage}>
+                      {owner ? `${label} — ${owner}` : label}
+                    </option>
+                  );
+                })}
               </select>
             </label>
           )}

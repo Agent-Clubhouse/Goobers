@@ -28,6 +28,10 @@ const githubSecondaryFallbackMin = time.Minute
 // missing_result_file it used to hide behind.
 const ErrorCodeRateLimited = "github_rate_limited"
 
+// ErrorCodeAuthFailed is the stable code for a credential that GitHub rejects
+// with 401 or a permission-denied 403.
+const ErrorCodeAuthFailed = "github_auth_failed"
+
 // RateLimitError is the typed error send() returns when a rate-limited
 // request cannot be absorbed by in-request backoff — the reset is further out
 // than the wait budget, or the retry budget is exhausted (#614). Callers can
