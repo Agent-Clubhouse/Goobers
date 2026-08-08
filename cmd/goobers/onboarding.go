@@ -80,6 +80,7 @@ type onboardingActionResult struct {
 	Action      string   `json:"action"`
 	Version     int      `json:"version"`
 	Created     []string `json:"created"`
+	Updated     []string `json:"updated,omitempty"`
 	Skipped     []string `json:"skipped"`
 	Path        string   `json:"path"`
 	NextCommand string   `json:"nextCommand"`
@@ -771,6 +772,20 @@ func seedOnboardingIssues(
 	catalog onboardingSeedCatalog,
 	result *onboardingActionResult,
 ) error {
+	return seedOnboardingIssuesAs(ctx, seeder, repository, catalog, stubSampleAction, result)
+}
+
+// seedOnboardingIssuesAs is seedOnboardingIssues with the action segment of
+// the dedupe run-id made explicit, so `goobers connect --seed` reuses the
+// same idempotent machinery under its own marker namespace.
+func seedOnboardingIssuesAs(
+	ctx context.Context,
+	seeder onboardingIssueSeeder,
+	repository providers.RepositoryRef,
+	catalog onboardingSeedCatalog,
+	action string,
+	result *onboardingActionResult,
+) error {
 	labels, err := seeder.EnsureWorkItemLabels(ctx, repository, catalog.Labels)
 	if err != nil {
 		return err
@@ -790,7 +805,7 @@ func seedOnboardingIssues(
 		return err
 	}
 	for _, issue := range catalog.Issues {
-		runID := onboardingSeedRunID(catalog, issue)
+		runID := onboardingSeedRunID(catalog, issue, action)
 		marker := "goobers run-id: " + runID
 		found := false
 		for _, item := range existing {
@@ -817,10 +832,10 @@ func seedOnboardingIssues(
 	return nil
 }
 
-func onboardingSeedRunID(catalog onboardingSeedCatalog, issue onboardingSeedIssue) string {
+func onboardingSeedRunID(catalog onboardingSeedCatalog, issue onboardingSeedIssue, action string) string {
 	return fmt.Sprintf(
 		"onboarding/%s/v%d/%s@%s/%s",
-		stubSampleAction,
+		action,
 		onboardingIssueSeedVersion,
 		catalog.Sample.ID,
 		catalog.Sample.Version,

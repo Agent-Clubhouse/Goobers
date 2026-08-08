@@ -98,6 +98,11 @@ inputs, invoke these commands, and render their parsed results:
 - `goobers onboarding stub-sample`
 - `goobers init --template=quickstart --source-tree`
 - `goobers onboarding stub-agent-instructions`
+- `goobers connect <owner>/<repo>` — the connect-your-repository rung
+  (onboarding-first-value-ladder §3 R3, authorized by the #2449 ruling recorded
+  on design PR #2540): rewrites instance/gaggle placeholders, records the token
+  env-var name, optionally seeds selector labels + a starter issue, and
+  validates in-process.
 - `goobers validate --source-tree --json`
 
 The three write actions return the same versioned envelope:
