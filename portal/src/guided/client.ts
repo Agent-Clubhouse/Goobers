@@ -10,6 +10,11 @@
 // generated wire-contract drift checks.
 
 export interface GuidedEnvState {
+  /** The repository-token environment variable name the server is actually
+   *  checking — the default, or whatever `connect --token-env` recorded.
+   *  goobersGithubToken reports presence for exactly this name, read from
+   *  the getting-started server's own process. */
+  tokenEnv: string;
   goobersGithubToken: boolean;
   goobersGithubIssuesToken: boolean;
 }

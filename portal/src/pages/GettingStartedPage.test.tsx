@@ -12,7 +12,7 @@ function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
     instancePath: "/work/tutorial-instance",
     sampleExists: false,
     instanceExists: false,
-    env: { goobersGithubToken: false, goobersGithubIssuesToken: false },
+    env: { tokenEnv: "GOOBERS_GITHUB_TOKEN", goobersGithubToken: false, goobersGithubIssuesToken: false },
     job: null,
     apiReady: false,
     connected: { repo: null },
@@ -77,7 +77,11 @@ describe("GettingStartedPage", () => {
         client={clientWith({
           "/guided/state": () => ({
             body: guidedState({
-              env: { goobersGithubToken: true, goobersGithubIssuesToken: false },
+              env: {
+                tokenEnv: "GOOBERS_GITHUB_TOKEN",
+                goobersGithubToken: true,
+                goobersGithubIssuesToken: false,
+              },
             }),
           }),
         })}
