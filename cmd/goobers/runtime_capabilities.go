@@ -185,10 +185,16 @@ func init() {
 					return runScaffoldKind("workflow", args, stdout, stderr)
 				},
 			).withHelp("scaffold a workflow in a gaggle", scaffoldHelp),
+			subcommand(
+				"scaffold gaggle",
+				"gaggle",
+				apicontract.ActionConfigTime,
+				runScaffoldGaggle,
+			).withHelp("scaffold a gaggle, or rename one with --from", scaffoldGaggleHelp),
 		).
 			withSynopsis(synopsisByID["scaffold"]).
-			withHelp("scaffold a goober or workflow in a gaggle", scaffoldHelp).
-			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow"),
+			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
+			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,

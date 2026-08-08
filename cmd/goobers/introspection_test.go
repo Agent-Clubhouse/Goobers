@@ -377,7 +377,10 @@ func initIntrospectionInstance(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code=%d stderr=%q", code, stderr)
 	}
-	createDeclaredSkillPackages(t, root, "implement", "run-tests")
+	// The starter scaffold now ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix); declaring shared-level stand-ins here as
+	// well would collide with them (SKILL001) instead of being a harmless
+	// no-op.
 	replaceInFile(t, defaultWorkflowPath(root),
 		"    - type: manual",
 		"    - type: schedule\n      schedule: \"@hourly\"")

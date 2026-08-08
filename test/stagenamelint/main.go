@@ -37,11 +37,11 @@ var exceptions = []exception{
 	{Path: "internal/instance/instance.go", Line: 26, Value: "docs-updater", Reason: "canonical scaffold directory name"},
 	{Path: "internal/providerstage/manifest.go", Line: 180, Value: "post-merge", Reason: "stage command registry key"},
 	{Path: "cmd/goobers/clisynopsis.go", Line: 32, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 265, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 266, Value: "self-update", Reason: "CLI command registry lookup"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Line: 271, Value: "self-update", Reason: "CLI command registry key"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Line: 272, Value: "self-update", Reason: "CLI command registry lookup"},
 	{Path: "cmd/goobers/selfupdate.go", Line: 27, Value: "self-update", Reason: "CLI flag-set name"},
 	{Path: "cmd/goobers/selfupdate.go", Line: 34, Value: "self-update", Reason: "CLI help lookup"},
-	{Path: "cmd/goobers/completionmodel.go", Line: 171, Value: "self-update", Reason: "CLI completion flag-spec registry key"},
+	{Path: "cmd/goobers/completionmodel.go", Line: 175, Value: "self-update", Reason: "CLI completion flag-spec registry key"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Line: 76, Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 
 	// Existing telemetry projections still infer roles from shipped names.

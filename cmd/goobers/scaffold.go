@@ -37,6 +37,11 @@ type scaffoldTemplateData struct {
 	Name   string
 	Gaggle string
 	Goober string
+	// ConnectionRef is the sole use only by gaggle.yaml.tmpl: the manifest
+	// connection a freshly scaffolded gaggle's project/backlog should
+	// reference, or "" to omit connectionRef entirely (still a validate-clean
+	// shape — REF004 only fires on a non-empty, undeclared reference).
+	ConnectionRef string
 }
 
 type scaffoldFile struct {
@@ -55,10 +60,22 @@ func runScaffold(args []string, stdout, stderr io.Writer) int {
 }
 
 const scaffoldHelp = "Usage: goobers scaffold goober [--force] <name> [path]\n" +
-	"       goobers scaffold workflow [--force] <name> [path]\n\n" +
-	"Generate a valid goober or workflow in the current gaggle. path may be\n" +
-	"an instance root or a gaggle directory and defaults to \".\". Existing\n" +
-	"files are never replaced unless --force is set.\n"
+	"       goobers scaffold workflow [--force] <name> [path]\n" +
+	"       goobers scaffold gaggle [--force] <name> [path]\n" +
+	"       goobers scaffold gaggle --from <existing-gaggle> <name> [path]\n\n" +
+	"Generate a valid goober, workflow, or gaggle. For goober/workflow, path\n" +
+	"may be an instance root or a gaggle directory and defaults to \".\". For\n" +
+	"gaggle, path is always an instance root. Existing files are never\n" +
+	"replaced unless --force is set.\n\n" +
+	"`scaffold gaggle` with no --from creates an empty gaggle: gaggle.yaml\n" +
+	"plus its manifest.yaml registration, ready for scaffold goober/workflow.\n" +
+	"`scaffold gaggle --from <existing-gaggle>` instead renames that gaggle to\n" +
+	"<name>: it moves gaggles/<existing-gaggle> to gaggles/<name> and rewrites\n" +
+	"every identity reference — gaggle.yaml's metadata.name and\n" +
+	"isolation.namespace, the manifest.yaml gaggles list entry, and every\n" +
+	"contained goober/workflow's spec.gaggle — while project, backlog,\n" +
+	"ciCommand, instructions, and workflow bodies move untouched. --force is\n" +
+	"not accepted with --from.\n"
 
 func scaffoldUsage(w io.Writer) {
 	pf(w, "%s", scaffoldHelp)
@@ -272,6 +289,12 @@ func scaffoldFiles(kind, gaggleDir, name string) []scaffoldFile {
 		return []scaffoldFile{
 			{path: filepath.Join(dir, "goober.yaml"), template: "templates/scaffold/goober.yaml.tmpl"},
 			{path: filepath.Join(dir, "instructions.md"), template: "templates/scaffold/instructions.md.tmpl"},
+			// The goober template declares `skills: ["{{ .Name }}"]` (SKILL002's
+			// scoped resolution is gaggles/<gaggle>/skills/<skill>); scaffold the
+			// matching package alongside so the reference is never dangling
+			// (cold-start finding: init/scaffold goober both shipped skills:
+			// entries with no package, warning on their own output).
+			{path: filepath.Join(gaggleDir, "skills", name, "SKILL.md"), template: "templates/scaffold/SKILL.md.tmpl"},
 		}
 	}
 	return []scaffoldFile{{

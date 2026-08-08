@@ -78,7 +78,9 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 			if test.check != nil {
 				test.check(t, root)
 			}
-			createDeclaredSkillPackages(t, filepath.Dir(root), "implement", "review", "run-tests")
+			// The quickstart-v1 template ships its own gaggle-scoped
+			// implement/run-tests/review skill packages (SKILL002 fix); a
+			// shared-level stand-in here would collide with them (SKILL001).
 
 			var envelope onboardingActionResult
 			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {

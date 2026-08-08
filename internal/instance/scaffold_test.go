@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 func TestInitFresh(t *testing.T) {
@@ -151,6 +152,17 @@ func TestInitQuickstartFresh(t *testing.T) {
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
 			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
+		}
+	}
+
+	// Cold-start SKILL002 probe (see
+	// TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings): the
+	// quickstart template's implementer/reviewer goobers declare
+	// implement/run-tests/review skills, which must resolve to scaffolded
+	// packages on a virgin init.
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("virgin quickstart scaffold emitted a missing-skill-package warning: %+v", warning)
 		}
 	}
 }

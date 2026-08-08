@@ -80,7 +80,15 @@ func TestLoadConfigDirValid(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDirReportsMissingSkillPackagesAsWarnings(t *testing.T) {
+// TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings reproduces the
+// cold-start SKILL002 probe (docs/audits/2026-08-08-gaggle-reliability/
+// coldstart/: "goobers init scaffolds goobers whose spec.skills reference
+// packages init does not create — its own post-init validation prints
+// SKILL002 warnings on a virgin scaffold", hit by all five cold-start
+// flavors). A virgin copy of the starter template must now validate with
+// zero SKILL002 findings because the referenced "implement"/"run-tests"
+// skill packages are scaffolded alongside the goober that declares them.
+func TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	if err := os.CopyFS(configDir, os.DirFS("starter")); err != nil {
@@ -89,7 +97,23 @@ func TestLoadConfigDirReportsMissingSkillPackagesAsWarnings(t *testing.T) {
 
 	_, report, err := LoadConfigDir(configDir)
 	if err != nil {
-		t.Fatalf("LoadConfigDir with missing skill packages: %v (report: %+v)", err, report)
+		t.Fatalf("LoadConfigDir on a virgin starter scaffold: %v (report: %+v)", err, report)
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("virgin starter scaffold emitted a missing-skill-package warning: %+v", warning)
+		}
+	}
+
+	// Negative control: the check must still fire when a skill package is
+	// genuinely missing, proving the clean result above comes from the
+	// scaffolded packages and not from the check having stopped running.
+	if err := os.RemoveAll(filepath.Join(configDir, "gaggles", "example", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	_, report, err = LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with skill packages removed: %v (report: %+v)", err, report)
 	}
 	var missing []validate.CodedWarning
 	for _, warning := range report.Warnings() {
@@ -98,22 +122,7 @@ func TestLoadConfigDirReportsMissingSkillPackagesAsWarnings(t *testing.T) {
 		}
 	}
 	if len(missing) != 2 {
-		t.Fatalf("missing skill warnings = %+v, want implement and run-tests", missing)
-	}
-
-	for _, skill := range []string{"implement", "run-tests"} {
-		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_, report, err = LoadConfigDir(configDir)
-	if err != nil {
-		t.Fatalf("LoadConfigDir with present skill packages: %v (report: %+v)", err, report)
-	}
-	for _, warning := range report.Warnings() {
-		if warning.Code == validate.WarningMissingSkillPackage {
-			t.Fatalf("present skill package emitted warning: %+v", warning)
-		}
+		t.Fatalf("missing skill warnings with packages removed = %+v, want implement and run-tests", missing)
 	}
 }
 

@@ -51,7 +51,7 @@ scaffold an instance root
 trigger a run manually (still honors run conditions)
 .TP
 \fBgoobers scaffold\fR
-scaffold a goober or workflow in a gaggle
+scaffold a goober, workflow, or gaggle
 .TP
 \fBgoobers service\fR
 install and manage the platform-supervised daemon
@@ -209,6 +209,9 @@ report per-run journal and artifact bytes
 .TP
 \fBgoobers runs list\fR
 alias for the status run table (same flags, no --watch)
+.TP
+\fBgoobers scaffold gaggle\fR
+scaffold a gaggle, or rename one with --from
 .TP
 \fBgoobers scaffold goober\fR
 scaffold a goober in a gaggle
@@ -484,6 +487,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),
 \fBgoobers-scaffold\fR(1),
+\fBgoobers-scaffold-gaggle\fR(1),
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
 \fBgoobers-schema\fR(1),
