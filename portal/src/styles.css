@@ -1925,6 +1925,125 @@ summary:focus-visible {
   color: var(--muted);
 }
 
+.instance-spend-summary {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.instance-spend-total {
+  display: grid;
+  gap: 4px;
+}
+
+.instance-spend-total > small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.instance-spend-total > strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 20px;
+}
+
+.budget-threshold {
+  align-items: flex-end;
+  display: flex;
+  gap: 12px;
+}
+
+.budget-threshold label {
+  display: grid;
+  gap: 4px;
+}
+
+.budget-threshold small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.budget-threshold input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  width: 110px;
+}
+
+.budget-status {
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 720;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.budget-status-under {
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.budget-status-over {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+
+.gaggle-spend-table {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.gaggle-spend-header,
+.gaggle-spend-row {
+  align-items: center;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(140px, 1.4fr) repeat(3, minmax(90px, 0.8fr));
+  padding: 10px 13px;
+}
+
+.gaggle-spend-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.gaggle-spend-row {
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.gaggle-spend-row:hover {
+  background: var(--surface);
+}
+
+.gaggle-spend-row + .gaggle-spend-row {
+  border-top: 1px solid var(--line);
+}
+
+.gaggle-spend-row .distribution-name {
+  font-family: inherit;
+}
+
 .error-signatures {
   border: 1px solid var(--line);
   border-radius: 10px;

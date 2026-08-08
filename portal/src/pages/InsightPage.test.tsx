@@ -296,6 +296,143 @@ describe("Insight page", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    getTelemetryStats.mockResolvedValue({
+      gaggles: [
+        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
+        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+      ],
+      runs: [],
+      stages: [],
+      usage: [
+        {
+          scope: "gaggle",
+          gaggle: "core",
+          totalAttempts: 9,
+          tokenSamples: 8,
+          premiumRequestSamples: 0,
+          costSamples: 8,
+          p50CostUSD: 0.8,
+          p95CostUSD: 2.5,
+          retryWasteAttempts: 0,
+        },
+        {
+          scope: "gaggle",
+          gaggle: "tools",
+          totalAttempts: 1,
+          tokenSamples: 0,
+          premiumRequestSamples: 0,
+          costSamples: 0,
+          retryWasteAttempts: 0,
+        },
+      ],
+      models: [
+        { model: "claude", usageSamples: 8, inputTokenSamples: 8, outputTokenSamples: 8, premiumRequestSamples: 0, costSamples: 6, costUSD: 6 },
+        { model: "gpt", usageSamples: 2, inputTokenSamples: 2, outputTokenSamples: 2, premiumRequestSamples: 0, costSamples: 2, costUSD: 4 },
+      ],
+      curation: {
+        everRecorded: false,
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
+    expect(screen.getByText("Total AI cost · all gaggles")).toBeInTheDocument();
+    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    const coreLink = screen.getByRole("link", {
+      name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+    });
+    expect(coreLink).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /View instance spend for gaggle tools/ }),
+    ).not.toBeInTheDocument();
+
+    // Selecting a narrower scope must not change the instance-wide rollup —
+    // it always reports across all gaggles regardless of the Scope dropdown.
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Gaggle · core" }),
+    );
+    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(coreLink).toBeInTheDocument();
+  });
+
+  it("flags spend against a configured soft budget threshold", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [
+        { model: "claude", usageSamples: 1, inputTokenSamples: 1, outputTokenSamples: 1, premiumRequestSamples: 0, costSamples: 1, costUSD: 10 },
+      ],
+      curation: {
+        everRecorded: false,
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByText("$10.00")).toBeInTheDocument();
+    const budgetInput = screen.getByLabelText("Soft budget (USD)");
+
+    await user.type(budgetInput, "5");
+    await user.tab();
+    expect(await screen.findByText(/over by \$5\.00/)).toBeInTheDocument();
+
+    await user.clear(budgetInput);
+    await user.type(budgetInput, "50");
+    await user.tab();
+    expect(await screen.findByText("20% of budget")).toBeInTheDocument();
+    expect(screen.queryByText(/over by/)).not.toBeInTheDocument();
+  });
+
   it("drills into every matching run error while keeping the selected filters", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");
