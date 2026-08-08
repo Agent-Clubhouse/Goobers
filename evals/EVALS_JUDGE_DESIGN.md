@@ -241,7 +241,7 @@ What #2667 needs to implement, and what it gets for free:
 | Decide pass / fail / human-review | done — `route_for_review` |
 | Implement `LLMJudgePlugin._call_model` for a real model backend | #2667 |
 | Implement a classifier `JudgePlugin` | future child issue (classifier judges are reserved in the contract, not scheduled) |
-| Persist evidence, compute aggregate metrics, build the annotation queue | #2667 / a later CI-gating child issue (#2666-adjacent) |
+| Persist evidence, compute aggregate metrics, build the annotation queue | #2667 / a later CI-gating child issue (#2668-adjacent) |
 
 ## Acceptance criteria (this issue, #2664)
 
@@ -260,4 +260,4 @@ What #2667 needs to implement, and what it gets for free:
 - A real LLM API call (`LLMJudgePlugin._call_model` stays abstract).
 - A trained classifier judge.
 - The annotation UI itself (contract only, above).
-- CI gating / baseline management (#2666).
+- CI gating / baseline management (#2668).
