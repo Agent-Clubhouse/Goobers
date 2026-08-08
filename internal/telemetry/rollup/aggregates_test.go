@@ -527,3 +527,118 @@ func TestAggregateQueriesRedactCanary(t *testing.T) {
 		t.Fatalf("canary leaked into TopErrorSignatures() result: %#v", sigs[0])
 	}
 }
+
+// TestStatsExcludesStuckAbortedRunDuration seeds one run that hung and was
+// later aborted by the watchdog's max-duration expiry (run_duration_exceeded)
+// alongside two genuinely fast runs, and asserts the stuck run's inflated
+// duration is excluded from run- and stage-level avg/min/max/percentiles
+// while its count is disclosed rather than silently dropped (#2534).
+func TestStatsExcludesStuckAbortedRunDuration(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	writeRun := func(runID string, startedAt time.Time, events []string) {
+		t.Helper()
+		dir := filepath.Join(runsDir, runID)
+		mustMkdirAll(t, dir)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, startedAt))
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(events, "\n")+"\n")
+	}
+
+	// Fast run 1: build (1s) completes normally.
+	writeRun("1111111111111111aaaaaaaaaaaaaaaa", base, []string{
+		eventLine(1, base, `"type":"run.started"`),
+		eventLine(2, base, `"type":"stage.started","stage":"build","attempt":1`),
+		eventLine(3, base.Add(time.Second), `"type":"stage.finished","stage":"build","attempt":1,"status":"success"`),
+		eventLine(4, base.Add(time.Second), `"type":"run.finished","status":"completed"`),
+	})
+	// Fast run 2: build (3s) completes normally.
+	fast2Start := base.Add(time.Hour)
+	writeRun("2222222222222222aaaaaaaaaaaaaaaa", fast2Start, []string{
+		eventLine(1, fast2Start, `"type":"run.started"`),
+		eventLine(2, fast2Start, `"type":"stage.started","stage":"build","attempt":1`),
+		eventLine(3, fast2Start.Add(3*time.Second), `"type":"stage.finished","stage":"build","attempt":1,"status":"success"`),
+		eventLine(4, fast2Start.Add(3*time.Second), `"type":"run.finished","status":"completed"`),
+	})
+	// Stuck run: build completes normally (1s), but the watchdog aborts the
+	// run 10 hours in — the runner emits a run-level error (no "stage" field,
+	// matching internal/runner/stalled.go's interruptEvent) before
+	// run.finished, mirroring ExpireRun's actual event shape.
+	stuckStart := base.Add(2 * time.Hour)
+	stuckAbortedAt := stuckStart.Add(10 * time.Hour)
+	writeRun("3333333333333333aaaaaaaaaaaaaaaa", stuckStart, []string{
+		eventLine(1, stuckStart, `"type":"run.started"`),
+		eventLine(2, stuckStart, `"type":"stage.started","stage":"build","attempt":1`),
+		eventLine(3, stuckStart.Add(time.Second), `"type":"stage.finished","stage":"build","attempt":1,"status":"success"`),
+		eventLine(4, stuckStart.Add(2*time.Second), `"type":"stage.started","stage":"deploy","attempt":1`),
+		eventLine(5, stuckAbortedAt, `"type":"stage.finished","stage":"deploy","attempt":1,"status":"failure"`),
+		eventLine(6, stuckAbortedAt, `"type":"error","error":{"code":"run_duration_exceeded","message":"run exceeded maximum duration"}`),
+		eventLine(7, stuckAbortedAt, `"type":"run.finished","status":"aborted"`),
+	})
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	stats, err := db.Stats(context.Background(), StatsRequest{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+
+	if len(stats.Runs) != 1 {
+		t.Fatalf("len(Runs) = %d, want 1", len(stats.Runs))
+	}
+	run := stats.Runs[0]
+	if run.TotalRuns != 3 {
+		t.Fatalf("TotalRuns = %d, want 3", run.TotalRuns)
+	}
+	if run.StuckAbortedRuns != 1 {
+		t.Fatalf("StuckAbortedRuns = %d, want 1", run.StuckAbortedRuns)
+	}
+	// MaxDurationMs must come from fast run 2 (3s), not the stuck run's ~10h.
+	if run.MaxDurationMs != 3000 {
+		t.Fatalf("MaxDurationMs = %d, want 3000 (stuck run's ~10h duration must be excluded)", run.MaxDurationMs)
+	}
+	if run.MinDurationMs != 1000 {
+		t.Fatalf("MinDurationMs = %d, want 1000", run.MinDurationMs)
+	}
+	if run.AvgDurationMs != 2000 {
+		t.Fatalf("AvgDurationMs = %v, want 2000 (average of the two fast runs only)", run.AvgDurationMs)
+	}
+
+	var build, deploy StageStats
+	for _, s := range stats.Stages {
+		switch s.Stage {
+		case "build":
+			build = s
+		case "deploy":
+			deploy = s
+		}
+	}
+	// build ran fast in every run, including the stuck-aborted one — but that
+	// run's terminal cause still excludes all its attempts, a simpler and
+	// safer rule than trying to pinpoint exactly which attempt hung.
+	if build.TotalAttempts != 3 || build.StuckAbortedAttempts != 1 {
+		t.Fatalf("build stage stats = %#v", build)
+	}
+	if build.MaxDurationMs != 3000 {
+		t.Fatalf("build MaxDurationMs = %d, want 3000", build.MaxDurationMs)
+	}
+	if build.DurationSamples != 2 {
+		t.Fatalf("build DurationSamples = %d, want 2 (excludes the stuck-aborted run's attempt)", build.DurationSamples)
+	}
+	if build.P95DurationMs != 3000 {
+		t.Fatalf("build P95DurationMs = %d, want 3000 (percentiles must also exclude the stuck-aborted run)", build.P95DurationMs)
+	}
+	// deploy only ran in the stuck-aborted run, with a ~10h duration —
+	// entirely excluded, leaving no samples.
+	if deploy.TotalAttempts != 1 || deploy.StuckAbortedAttempts != 1 {
+		t.Fatalf("deploy stage stats = %#v", deploy)
+	}
+	if deploy.HasDuration {
+		t.Fatalf("deploy HasDuration = true, want false (its only attempt is stuck-aborted)")
+	}
+	if deploy.DurationSamples != 0 {
+		t.Fatalf("deploy DurationSamples = %d, want 0", deploy.DurationSamples)
+	}
+}

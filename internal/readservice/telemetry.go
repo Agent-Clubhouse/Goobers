@@ -132,6 +132,11 @@ type TelemetryRunStats struct {
 	AvgDurationMs  *float64 `json:"avgDurationMs,omitempty"`
 	MinDurationMs  *int64   `json:"minDurationMs,omitempty"`
 	MaxDurationMs  *int64   `json:"maxDurationMs,omitempty"`
+	// StuckAbortedRuns is how many of TotalRuns were excluded from
+	// Avg/Min/MaxDurationMs because they hung and were later aborted (the
+	// watchdog's max-duration expiry) rather than reaching a designed
+	// terminal — disclosed rather than silently dropped (#2534, #1439).
+	StuckAbortedRuns int `json:"stuckAbortedRuns"`
 }
 
 // TelemetryStageStats is the attempt aggregate for one stage.
@@ -162,6 +167,11 @@ type TelemetryStageStats struct {
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+	// StuckAbortedAttempts is how many of TotalAttempts belong to a run that
+	// hung and was later aborted (the watchdog's max-duration expiry),
+	// excluded from Avg/Min/MaxDurationMs and from P50/P95DurationMs —
+	// disclosed rather than silently dropped (#2534, #1439).
+	StuckAbortedAttempts int `json:"stuckAbortedAttempts"`
 }
 
 // TelemetryUsageStats is an exact AI usage rollup for one operational scope.
@@ -374,14 +384,15 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Runs {
 		item := TelemetryRunStats{
-			Gaggle:         stat.Gaggle,
-			Workflow:       stat.Workflow,
-			Model:          stat.Model,
-			HarnessVersion: stat.HarnessVersion,
-			TotalRuns:      stat.TotalRuns,
-			CompletedRuns:  stat.CompletedRuns,
-			FailedRuns:     stat.FailedRuns,
-			OtherRuns:      stat.OtherRuns,
+			Gaggle:           stat.Gaggle,
+			Workflow:         stat.Workflow,
+			Model:            stat.Model,
+			HarnessVersion:   stat.HarnessVersion,
+			TotalRuns:        stat.TotalRuns,
+			CompletedRuns:    stat.CompletedRuns,
+			FailedRuns:       stat.FailedRuns,
+			OtherRuns:        stat.OtherRuns,
+			StuckAbortedRuns: stat.StuckAbortedRuns,
 		}
 		if stat.CompletedRuns+stat.FailedRuns > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
@@ -395,19 +406,20 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Stages {
 		item := TelemetryStageStats{
-			Gaggle:             stat.Gaggle,
-			Workflow:           stat.Workflow,
-			Stage:              stat.Stage,
-			Branch:             stat.Branch,
-			Model:              stat.Model,
-			HarnessVersion:     stat.HarnessVersion,
-			TotalAttempts:      stat.TotalAttempts,
-			SucceededAttempts:  stat.SucceededAttempts,
-			FailedAttempts:     stat.FailedAttempts,
-			DurationSamples:    stat.DurationSamples,
-			TokenSamples:       stat.TokenSamples,
-			CostSamples:        stat.CostSamples,
-			RetryWasteAttempts: stat.RetryWasteAttempts,
+			Gaggle:               stat.Gaggle,
+			Workflow:             stat.Workflow,
+			Stage:                stat.Stage,
+			Branch:               stat.Branch,
+			Model:                stat.Model,
+			HarnessVersion:       stat.HarnessVersion,
+			TotalAttempts:        stat.TotalAttempts,
+			SucceededAttempts:    stat.SucceededAttempts,
+			FailedAttempts:       stat.FailedAttempts,
+			DurationSamples:      stat.DurationSamples,
+			TokenSamples:         stat.TokenSamples,
+			CostSamples:          stat.CostSamples,
+			RetryWasteAttempts:   stat.RetryWasteAttempts,
+			StuckAbortedAttempts: stat.StuckAbortedAttempts,
 		}
 		if stat.SucceededAttempts+stat.FailedAttempts > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)

@@ -213,13 +213,13 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	)
 	assertJSONObjectKeys(t, document.Runs[0],
 		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
-		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs", "stuckAbortedRuns",
 	)
 	assertJSONObjectKeys(t, document.Stages[0],
 		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
-		"tokenSamples", "costSamples", "retryWasteAttempts",
+		"tokenSamples", "costSamples", "retryWasteAttempts", "stuckAbortedAttempts",
 	)
 	assertJSONObjectKeys(t, document.Models[0],
 		"model", "usageSamples",

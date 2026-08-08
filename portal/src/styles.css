@@ -2158,6 +2158,10 @@ a.telemetry-error-row:hover {
   white-space: nowrap;
 }
 
+.distribution-excluded {
+  color: var(--warning, var(--muted-strong));
+}
+
 .distribution-plot {
   display: block;
   height: 20px;
