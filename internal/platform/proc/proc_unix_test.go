@@ -174,6 +174,47 @@ func TestKillTreeReapsEscapedDescendantAfterDumpReparentsIt(t *testing.T) {
 	}
 }
 
+func TestKillTreeDoesNotSignalReusedDescendantPID(t *testing.T) {
+	if _, ok := StartTime(os.Getpid()); !ok {
+		t.Skip("process start time is unavailable on this platform")
+	}
+
+	cmd := exec.Command("sleep", "300")
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start tree: %v", err)
+	}
+
+	unrelated := exec.Command("sleep", "300")
+	if err := unrelated.Start(); err != nil {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("Start unrelated process: %v", err)
+	}
+	unrelatedPID := unrelated.Process.Pid
+	defer func() {
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	}()
+
+	started, ok := StartTime(unrelatedPID)
+	if !ok {
+		t.Fatal("start time unavailable for running process")
+	}
+	tree.descendants = []processIdentity{{
+		pid:       unrelatedPID,
+		startTime: started.Add(-time.Second),
+	}}
+
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill tree: %v", err)
+	}
+	_ = cmd.Wait()
+	if !probeAlive(unrelatedPID) {
+		t.Fatalf("Kill signaled unrelated process %d after descendant PID reuse", unrelatedPID)
+	}
+}
+
 func TestEscapedSessionProcess(t *testing.T) {
 	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
 		return

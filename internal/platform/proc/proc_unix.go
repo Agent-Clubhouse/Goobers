@@ -7,13 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Tree on unix tracks its session-leader pid and descendants captured before a
 // diagnostic signal can reparent them.
 type Tree struct {
 	pid         int
-	descendants []int
+	descendants []processIdentity
+}
+
+type processIdentity struct {
+	pid       int
+	startTime time.Time
 }
 
 // configure puts the child in a NEW SESSION (Setsid), not merely a new process
@@ -42,18 +48,40 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	return &Tree{pid: cmd.Process.Pid}, nil
 }
 
+func identifyProcesses(pids []int) []processIdentity {
+	identities := make([]processIdentity, 0, len(pids))
+	for _, pid := range pids {
+		started, ok := StartTime(pid)
+		if !ok {
+			continue
+		}
+		identities = append(identities, processIdentity{pid: pid, startTime: started})
+	}
+	return identities
+}
+
+func (p processIdentity) signal(sig syscall.Signal) {
+	started, ok := StartTime(p.pid)
+	if !ok || !started.Equal(p.startTime) {
+		return
+	}
+	_ = syscall.Kill(p.pid, sig)
+}
+
 // kill snapshots descendants before terminating the process group so children
 // that escaped into another session cannot be orphaned by their parent's exit.
 func (t *Tree) kill() error {
-	descendants := append(t.descendants, descendantPIDs(t.pid)...)
+	descendants := make(map[int]processIdentity, len(t.descendants))
+	for _, process := range t.descendants {
+		descendants[process.pid] = process
+	}
+	t.descendants = nil
+	for _, process := range identifyProcesses(descendantPIDs(t.pid)) {
+		descendants[process.pid] = process
+	}
 	groupErr := syscall.Kill(-t.pid, syscall.SIGKILL)
-	signaled := make(map[int]struct{}, len(descendants))
-	for _, pid := range descendants {
-		if _, ok := signaled[pid]; ok {
-			continue
-		}
-		signaled[pid] = struct{}{}
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+	for _, process := range descendants {
+		process.signal(syscall.SIGKILL)
 	}
 	return groupErr
 }
@@ -63,7 +91,7 @@ func (t *Tree) kill() error {
 func (t *Tree) requestDump() (bool, error) {
 	// Keep ownership of descendants that may exit the stage's session and be
 	// reparented when their direct parent handles SIGQUIT.
-	t.descendants = append(t.descendants, descendantPIDs(t.pid)...)
+	t.descendants = append(t.descendants, identifyProcesses(descendantPIDs(t.pid))...)
 	return true, syscall.Kill(-t.pid, syscall.SIGQUIT)
 }
 
