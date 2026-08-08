@@ -46,6 +46,10 @@ describe("operational overview", () => {
       await screen.findByRole("heading", { name: "Daemon is ready." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
+    // The guided walkthrough leads as the recommended newcomer path, with the
+    // manual init command kept alongside it.
+    expect(screen.getByText(/The guided walkthrough builds a working instance/)).toBeInTheDocument();
+    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
     expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
