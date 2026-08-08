@@ -518,12 +518,11 @@ jobs:
   # to remove: that one published a red check the Goobers merge flow (which has no
   # notion of an advisory check, see #961) read as a hard block. This one is
   # different in kind — it actually passes. It cross-checks that the whole tree
-  # builds and vets for Windows, then runs focused native-runtime regressions,
-  # green as of #623's proc Job-Object impl + the build-tags on the unix-only
-  # commands/tests. That makes it safe to gate on: it only reds on a real,
-  # fixable Windows regression — never as an expected-red. The focused tests
-  # exercise platform seams, then the node validation drives the real foreground
-  # daemon and canonical fake-harness implementation workflow end to end.
+  # builds and vets for Windows, then runs the complete default-tag Go test suite
+  # natively. That makes it safe to gate on: it only reds on a real, fixable
+  # Windows regression — never as an expected-red. The node validation then
+  # drives the real foreground daemon and canonical fake-harness implementation
+  # workflow end to end.
   #
   # #2048: that "never an expected-red" contract briefly went false — two
   # focused tests (proc's attach/resume test, dashboard's port-increment
@@ -536,12 +535,15 @@ jobs:
   # yet, and per its own scope note explicitly excludes required-gate jobs
   # like this one regardless. The contract stands restored, not weakened.
   windows-smoke:
-    name: windows gate (build · vet · runtime smoke)
+    name: windows gate (build · vet · behavioral suite)
     if: ${{ github.event_name != 'push' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # The full suite includes release compatibility tests that inspect tags.
+          fetch-depth: 0
 
       # Platform-scoped Go cache (setup-go keys by runner OS/arch), so the
       # windows leg neither shares nor evicts the ubuntu/macos caches.
@@ -593,47 +595,28 @@ jobs:
       - name: make build (windows)
         run: make build-scheduler
 
-      - name: Windows platform runtime
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
-
-      - name: Windows inline script runtime
-        run: go test ./internal/executor -run '^TestShellExecutor_RunScript$'
-
-      - name: Windows credential files
-        run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
-
-      - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
-
-      # The read model and its sibling stores open SQLite files BY PATH, which
-      # is the single operation whose behaviour differs most between Windows and
-      # POSIX — and none of these packages were covered here until #1997.
-      #
-      # That bug was `file:` + url.URL{Path: "C:/dir/intake.db"}.String(), which
-      # yields `file:./C:/...` because url.URL prefixes `./` to any first
-      # segment containing a colon. SQLite answered SQLITE_CANTOPEN, the daemon
-      # logged a warning, and the intake store was silently unavailable on every
-      # Windows install. `go build` and `go vet` cannot see it: the expression is
-      # valid Go, and the fault only appears when something CONSTRUCTS a URI from
-      # a Windows path at runtime.
-      #
-      # POSIX paths begin with `/`, so the first segment is empty and the bug is
-      # unreachable on Linux and macOS — which is exactly why a full green suite
-      # on those platforms proved nothing about this.
-      - name: Windows read model and stores
-        run: go test ./internal/readmodel/... ./internal/readservice
-
-      - name: Windows worktree and event stream
+      # Policy: Windows runs every package and test selected by the module's
+      # default build tags. There is no package or named-test allowlist; tests
+      # behind explicit opt-in tags remain owned by their dedicated CI jobs.
+      - name: Windows behavioral suite
         env:
           GIT_CONFIG_COUNT: "2"
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
           GIT_CONFIG_KEY_1: core.safecrlf
           GIT_CONFIG_VALUE_1: "false"
-        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit'
-
-      - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
+        # -timeout 30m (go test's per-package default is 10m): the widest
+        # packages here (cmd/goobers, internal/runner, test/scale,
+        # test/shippedworkflows) enumerate hundreds of process-spawning,
+        # git-shelling subtests, and Windows process creation/git-shelling is
+        # measurably slower than POSIX for the same workload — the first run
+        # of this widened suite hit `panic: test timed out after 10m0s` in
+        # exactly those four packages with the dump showing an individual
+        # subtest only seconds in, i.e. cumulative package time exceeding the
+        # default, not a hung test. Widening the timeout is not the same as
+        # excluding a test: everything still runs, and a genuine deadlock
+        # still fails loudly, just against a budget sized for this platform.
+        run: go test -timeout 30m ./...
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers

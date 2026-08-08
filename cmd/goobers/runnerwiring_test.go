@@ -956,8 +956,13 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 	}
 	script := `printf '%s' "$MSBUILDDISABLENODEREUSE"`
 	if runtime.GOOS == "windows" {
-		script = `@echo off
-echo|set /p="%MSBUILDDISABLENODEREUSE%"`
+		// cmd.exe's piped `echo|set /p="%VAR%"` no-newline trick spawns a
+		// nested cmd.exe instance to run `set /p`, which doesn't reliably
+		// inherit the script's expanded variable and exits 1 (see the
+		// matching fix/comment on TestShellExecutor_DefaultEnvCanBeOverriddenByStage
+		// in internal/executor/shell_test.go). Use the simpler `echo %VAR%`
+		// construct instead, trimming the trailing CRLF it adds.
+		script = "@echo off\r\necho %MSBUILDDISABLENODEREUSE%"
 	}
 	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
 		TaskID:    "build",
@@ -969,7 +974,8 @@ echo|set /p="%MSBUILDDISABLENODEREUSE%"`
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("result = %+v, want success", result)
 	}
-	if got := string(recorder["build/stdout.log"]); got != "1" {
+	got := strings.TrimRight(string(recorder["build/stdout.log"]), "\r\n")
+	if got != "1" {
 		t.Fatalf("MSBUILDDISABLENODEREUSE = %q, want preset default 1", got)
 	}
 }
