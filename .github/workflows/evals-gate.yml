@@ -59,3 +59,14 @@ jobs:
       #     name: evals-run-report-${{ github.run_id }}
       #     path: evals-run-report.json
       #     retention-days: 30
+
+      # Guards partial activation: if a future edit uncomments the trigger
+      # and this guard starts passing (evals/cmd + baselines exist) without
+      # also uncommenting the run step above, this is the only thing left to
+      # catch a green "gate" that never actually ran anything.
+      - name: Verify the gate actually ran
+        run: |
+          if [ ! -f evals-run-report.json ]; then
+            echo "::error title=EvalSuite gate activation incomplete::evals-run-report.json was not produced. Uncomment the commented 'Run EvalSuite against committed baselines' step above (not just the provisioning guard) before enabling this workflow's triggers."
+            exit 1
+          fi

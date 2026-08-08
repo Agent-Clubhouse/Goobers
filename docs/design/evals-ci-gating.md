@@ -297,7 +297,8 @@ name: EvalSuite gate
 
 on:
   workflow_dispatch:
-  # Enable once #2667 lands a runner and #4 baselines are committed:
+  # Enable once #2667 lands a runner and baselines are committed (see
+  # docs/design/evals-ci-gating.md §4):
   # pull_request:
   #   paths: ["evals/**"]
   # schedule:
@@ -321,8 +322,8 @@ jobs:
 
       - name: Verify runner is provisioned
         run: |
-          if [ ! -d evals ]; then
-            echo "::error title=EvalSuite runner not yet implemented::evals/ does not exist. Blocked on #2667 (runner integration) landing; see docs/design/evals-ci-gating.md."
+          if [ ! -d evals/cmd ] || [ ! -d evals/testdata/baselines ]; then
+            echo "::error title=EvalSuite runner not yet implemented::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) don't exist yet. This is a distinct gate from evals-tests.yml, which already runs the evals/ schema/unit tests (#2670-#2672); this one is blocked on #2667 (runner integration) landing. See docs/design/evals-ci-gating.md."
             exit 1
           fi
 
@@ -348,6 +349,17 @@ jobs:
       #     name: evals-run-report-${{ github.run_id }}
       #     path: evals-run-report.json
       #     retention-days: 30
+
+      # Guards partial activation: if a future edit uncomments the trigger
+      # and this guard starts passing (evals/cmd + baselines exist) without
+      # also uncommenting the run step above, this is the only thing left to
+      # catch a green "gate" that never actually ran anything.
+      - name: Verify the gate actually ran
+        run: |
+          if [ ! -f evals-run-report.json ]; then
+            echo "::error title=EvalSuite gate activation incomplete::evals-run-report.json was not produced. Uncomment the commented 'Run EvalSuite against committed baselines' step above (not just the provisioning guard) before enabling this workflow's triggers."
+            exit 1
+          fi
 ```
 
 ## 7. Open questions for #2667 / #2669
