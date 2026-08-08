@@ -523,6 +523,49 @@ describe("workflow and gaggle inventory", () => {
     ).toBeInTheDocument();
   });
 
+  it("collapses the attention section and persists that durably across remounts (#2660)", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    const toggle = within(attentionSection).getByRole("button", {
+      name: "Collapse needs attention",
+    });
+    // Defaults to expanded for a first-time visitor with no stored preference.
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(attentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const reattentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const reattentionSection = reattentionHeading.closest("section");
+    if (!reattentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(reattentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("reports an unknown gaggle without substituting another inventory", async () => {
     window.location.hash = "#/gaggle/missing";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
