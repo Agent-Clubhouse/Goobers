@@ -1,6 +1,7 @@
 import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   latestWorkflowOutcome,
   type GaggleInventory,
@@ -97,15 +98,18 @@ function GaggleSection({
       <div className="gaggle-heading">
         <div>
           <p className="section-kicker">Gaggle</p>
-          <h2 id={headingId}>
-            <a
-              className="gaggle-detail-link"
-              href={routeHash({ page: "gaggle", id: gaggle.name })}
-            >
-              {gaggle.displayName}
-              <Icon name="arrow" size={16} />
-            </a>
-          </h2>
+          <div className="gaggle-heading-line">
+            <h2 id={headingId}>
+              <a
+                className="gaggle-detail-link"
+                href={routeHash({ page: "gaggle", id: gaggle.name })}
+              >
+                {gaggle.displayName}
+                <Icon name="arrow" size={16} />
+              </a>
+            </h2>
+            <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+          </div>
           <p>
             {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
           </p>
@@ -160,11 +164,18 @@ function GaggleSection({
                     gaggle: workflow.identity.gaggle,
                     id: workflow.identity.name,
                   })}
+                  interactiveChildren
                   key={`${workflow.identity.gaggle}/${workflow.identity.name}`}
                   label={`Open workflow ${workflow.displayName} for gaggle ${gaggle.displayName}`}
                 >
                   <span className="row-primary">
-                    <span className="row-title">{workflow.displayName}</span>
+                    <span className="row-title row-title-with-pivot">
+                      <span className="row-title-text">{workflow.displayName}</span>
+                      <ScopePivot
+                        label={`${gaggle.displayName} / ${workflow.displayName}`}
+                        scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+                      />
+                    </span>
                     <span className="row-subtitle">{workflow.purpose}</span>
                   </span>
                   <span>{formatTriggers(workflow)}</span>

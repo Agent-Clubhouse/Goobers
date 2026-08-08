@@ -5,6 +5,7 @@ import type { ConfigurationWarningsProps } from "../components/ConfigurationWarn
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   type OperationalOverview,
   useOperationalOverview,
@@ -193,11 +194,12 @@ function Overview({
                       onChange={() => toggleSelected(run.id)}
                       type="checkbox"
                     />
-                    <a
-                      aria-label={`Open run ${run.id}`}
-                      className="attention-link"
-                      href={routeHash({ page: "run", id: run.id })}
-                    >
+                    <div className="attention-link-shell data-row-stretched">
+                      <a
+                        aria-label={`Open run ${run.id}`}
+                        className="data-row-stretch-link"
+                        href={routeHash({ page: "run", id: run.id })}
+                      />
                       <span className="attention-icon">
                         <Icon name="alert" />
                       </span>
@@ -212,13 +214,19 @@ function Overview({
                         </span>
                       </span>
                       <span className="attention-meta">
-                        <span>{workflowDisplayName(overview, run)}</span>
+                        <span className="attention-workflow">
+                          {workflowDisplayName(overview, run)}
+                          <ScopePivot
+                            label={workflowDisplayName(overview, run)}
+                            scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                          />
+                        </span>
                         <time dateTime={run.finishedAt ?? run.startedAt}>
                           {formatTimestamp(run.finishedAt ?? run.startedAt)}
                         </time>
                       </span>
                       <Icon name="arrow" />
-                    </a>
+                    </div>
                     <button
                       aria-label={`Dismiss run ${run.id}`}
                       className="attention-dismiss"
@@ -422,6 +430,7 @@ function RunSection({
           {runs.map((run) => (
             <DataRow
               href={routeHash({ page: "run", id: run.id })}
+              interactiveChildren
               key={run.id}
               label={`Open run ${run.id}`}
             >
@@ -434,7 +443,13 @@ function RunSection({
               </span>
               {active ? (
                 <>
-                  <span>{workflowDisplayName(overview, run)}</span>
+                  <span className="row-workflow">
+                    {workflowDisplayName(overview, run)}
+                    <ScopePivot
+                      label={workflowDisplayName(overview, run)}
+                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                    />
+                  </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
                     {run.currentStage ?? "Awaiting stage"}
@@ -443,7 +458,13 @@ function RunSection({
               ) : (
                 <>
                   <StatusBadge status={run.phase} />
-                  <span>{workflowDisplayName(overview, run)}</span>
+                  <span className="row-workflow">
+                    {workflowDisplayName(overview, run)}
+                    <ScopePivot
+                      label={workflowDisplayName(overview, run)}
+                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                    />
+                  </span>
                 </>
               )}
               <span className="mono">{formatDuration(run.durationMillis)}</span>

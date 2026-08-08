@@ -1049,6 +1049,25 @@ describe("run detail", () => {
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 
+  it("pivots the run's gaggle/workflow identity into a pre-scoped Runs and Insight view (#2529)", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ400FAILED");
+
+    await screen.findByRole("heading", { name: "Run 01JZ400FAILED" });
+    expect(
+      screen.getByRole("link", { name: "View core / implementation in Insight" }),
+    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(
+      screen.getByRole("link", { name: "View core / implementation in Runs" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
+      "core / implementation",
+    );
+  });
+
   it("surfaces the coded failure reason and deep-links from a failed run", async () => {
     const user = userEvent.setup();
     renderRun("01JZ400FAILED");

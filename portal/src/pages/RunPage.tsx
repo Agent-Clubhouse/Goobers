@@ -4,6 +4,7 @@ import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   WorkflowTopologyGraph,
   type WorkflowGraphFullscreenMode,
@@ -269,8 +270,14 @@ function RunDetailWorkspace({
             <span className="mono run-id">{run.id}</span>
           </div>
           <h1>Run {run.id}</h1>
-          <p>
-            {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
+          <p className="run-identity-line">
+            <span>
+              {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
+            </span>
+            <ScopePivot
+              label={`${run.gaggle} / ${run.workflow}`}
+              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+            />
           </p>
           {!portalConfigLoading && portalConfig.capabilities.revealRun && (
             <div className="run-file-actions">
