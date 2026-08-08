@@ -56,25 +56,25 @@ bin/goobers trace <run-id> ./demo-instance
 ## 2. Graduate to the token-bearing quickstart template
 
 Next, use the versioned `quickstart@v1` template for a first autonomous run
-against a disposable GitHub repository. This path requires a GitHub token and
-an authenticated Copilot CLI. Copy the paired sample into a separate throwaway
-directory:
+against a disposable GitHub repository you control. This path requires a
+GitHub token and an authenticated Copilot CLI.
+
+### Materialize the sample and the instance
+
+Copy the paired sample into a separate throwaway directory, then scaffold the
+instance that will operate on it:
 
 ```sh
 bin/goobers onboarding stub-sample \
   --destination ./getting-started-task-api \
   --json
+bin/goobers init --template=quickstart ./tutorial-instance
 ```
 
-The action is non-interactive, embeds the release-matched sample, and is safe to
-re-run. It refuses conflicting user-owned files unless `--force` is explicit.
-To also seed the catalog's labels and issues into an existing disposable GitHub
-repository, add `--work-tracking owner/repo`; the command reads
-`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,
-the JSON envelope reports the issues pending and still materializes the local
-sample without network access. It never creates or pushes a remote.
-
-The `--json` output is a versioned action envelope:
+`stub-sample` is non-interactive, embeds the release-matched sample, and is
+safe to re-run; it refuses conflicting user-owned files unless `--force` is
+explicit, and never creates or pushes a remote itself. Its `--json` output is
+a versioned action envelope:
 
 ```json
 {
@@ -88,15 +88,61 @@ The `--json` output is a versioned action envelope:
 ```
 
 `created` lists paths written in this run; `skipped` lists paths already
-present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`
-entries appear in `created` when newly seeded and in `skipped` when the label
-or issue already exists. Without a
-configured token, seed entries appear as `issue:<id> (pending: <reason>)` in
-`skipped`. `nextCommand` is the next command to run.
+present. `nextCommand` is the next command to run. `init --template=quickstart`
+materializes `./tutorial-instance` still pointing at the template's
+placeholder repository (`your-org/your-repo`); the next step replaces that
+with a real one.
+
+### Create a disposable repository and connect the instance to it
+
+1. Create a new, empty GitHub repository to hold the sample, and push it —
+   any name, delete it whenever you're done. With the GitHub CLI:
+
+   ```sh
+   gh repo create <owner>/<repo> --private --source ./getting-started-task-api --push
+   ```
+
+   Without it, create the repository at <https://github.com/new>, then:
+
+   ```sh
+   git -C ./getting-started-task-api init -b main
+   git -C ./getting-started-task-api add -A
+   git -C ./getting-started-task-api commit -m "Getting Started sample"
+   git -C ./getting-started-task-api remote add origin https://github.com/<owner>/<repo>.git
+   git -C ./getting-started-task-api push -u origin main
+   ```
+
+   Already have a disposable repository you'd rather reuse? Skip this step
+   and use its `<owner>/<repo>` below instead.
+
+2. Export a GitHub token with repo/issues access, once, under the name
+   `connect` expects by default:
+
+   ```sh
+   export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+3. Point the instance at the repository, and seed it in the same step:
+
+   ```sh
+   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance
+   ```
+
+   `connect` rewrites the placeholder `your-org/your-repo` in
+   `./tutorial-instance`'s `instance.yaml` and gaggle config to the repository
+   you gave it, records `GOOBERS_GITHUB_TOKEN` (or the name you passed via
+   `--token-env NAME`, if you keep the token under a different variable) as
+   the credential reference by name only — the value never passes through
+   this command — and validates the result in-process. `--seed` derives the
+   labels the quickstart workflow's backlog selector requires, ensures they
+   exist on the repository, and files one safe starter issue, using that same
+   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.
+   Configuration already pointing at a real repository is left alone unless
+   you pass `--replace`.
+
+### Run it
 
 ```sh
-bin/goobers init --template=quickstart ./tutorial-instance
-bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
 ```
 
@@ -124,6 +170,12 @@ or preserved file and the validation command to run next:
 bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
+
+Prefer a guided walkthrough over typing these commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md#goobers-getting-started)
+for its exact steps.
 
 Continue with section 3 to configure a regular instance and run its selected
 canonical workflow. Once that works, read the

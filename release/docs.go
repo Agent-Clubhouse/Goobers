@@ -64,22 +64,21 @@ const (
 		"the first manual run below uses the workflow the guided setup created. Guided\n" +
 		"setup validates the instance and refuses an already configured target.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
-		"against a disposable GitHub repository. This path requires a GitHub token and\n" +
-		"an authenticated Copilot CLI. Copy the paired sample into a separate throwaway\n" +
-		"directory:\n\n" +
+		"against a disposable GitHub repository you control. This path requires a\n" +
+		"GitHub token and an authenticated Copilot CLI.\n\n" +
+		"### Materialize the sample and the instance\n\n" +
+		"Copy the paired sample into a separate throwaway directory, then scaffold the\n" +
+		"instance that will operate on it:\n\n" +
 		"```sh\n" +
 		"bin/goobers onboarding stub-sample \\\n" +
 		"  --destination ./getting-started-task-api \\\n" +
 		"  --json\n" +
+		"bin/goobers init --template=quickstart ./tutorial-instance\n" +
 		"```\n\n" +
-		"The action is non-interactive, embeds the release-matched sample, and is safe to\n" +
-		"re-run. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
-		"To also seed the catalog's labels and issues into an existing disposable GitHub\n" +
-		"repository, add `--work-tracking owner/repo`; the command reads\n" +
-		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
-		"the JSON envelope reports the issues pending and still materializes the local\n" +
-		"sample without network access. It never creates or pushes a remote.\n\n" +
-		"The `--json` output is a versioned action envelope:\n\n" +
+		"`stub-sample` is non-interactive, embeds the release-matched sample, and is\n" +
+		"safe to re-run; it refuses conflicting user-owned files unless `--force` is\n" +
+		"explicit, and never creates or pushes a remote itself. Its `--json` output is\n" +
+		"a versioned action envelope:\n\n" +
 		"```json\n" +
 		"{\n" +
 		"  \"action\": \"stub-sample\",\n" +
@@ -91,11 +90,51 @@ const (
 		"}\n" +
 		"```\n\n" +
 		"`created` lists paths written in this run; `skipped` lists paths already\n" +
-		"present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`\n" +
-		"entries appear in `created` when newly seeded and in `skipped` when the label\n" +
-		"or issue already exists. Without a\n" +
-		"configured token, seed entries appear as `issue:<id> (pending: <reason>)` in\n" +
-		"`skipped`. `nextCommand` is the next command to run.\n\n"
+		"present. `nextCommand` is the next command to run. `init --template=quickstart`\n" +
+		"materializes `./tutorial-instance` still pointing at the template's\n" +
+		"placeholder repository (`your-org/your-repo`); the next step replaces that\n" +
+		"with a real one.\n\n" +
+		"### Create a disposable repository and connect the instance to it\n\n" +
+		"1. Create a new, empty GitHub repository to hold the sample, and push it —\n" +
+		"   any name, delete it whenever you're done. With the GitHub CLI:\n\n" +
+		"   ```sh\n" +
+		"   gh repo create <owner>/<repo> --private --source ./getting-started-task-api --push\n" +
+		"   ```\n\n" +
+		"   Without it, create the repository at <https://github.com/new>, then:\n\n" +
+		"   ```sh\n" +
+		"   git -C ./getting-started-task-api init -b main\n" +
+		"   git -C ./getting-started-task-api add -A\n" +
+		"   git -C ./getting-started-task-api commit -m \"Getting Started sample\"\n" +
+		"   git -C ./getting-started-task-api remote add origin https://github.com/<owner>/<repo>.git\n" +
+		"   git -C ./getting-started-task-api push -u origin main\n" +
+		"   ```\n\n" +
+		"   Already have a disposable repository you'd rather reuse? Skip this step\n" +
+		"   and use its `<owner>/<repo>` below instead.\n\n" +
+		"2. Export a GitHub token with repo/issues access, once, under the name\n" +
+		"   `connect` expects by default:\n\n" +
+		"   ```sh\n" +
+		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
+		"   ```\n\n" +
+		"3. Point the instance at the repository, and seed it in the same step:\n\n" +
+		"   ```sh\n" +
+		"   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance\n" +
+		"   ```\n\n" +
+		"   `connect` rewrites the placeholder `your-org/your-repo` in\n" +
+		"   `./tutorial-instance`'s `instance.yaml` and gaggle config to the repository\n" +
+		"   you gave it, records `GOOBERS_GITHUB_TOKEN` (or the name you passed via\n" +
+		"   `--token-env NAME`, if you keep the token under a different variable) as\n" +
+		"   the credential reference by name only — the value never passes through\n" +
+		"   this command — and validates the result in-process. `--seed` derives the\n" +
+		"   labels the quickstart workflow's backlog selector requires, ensures they\n" +
+		"   exist on the repository, and files one safe starter issue, using that same\n" +
+		"   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.\n" +
+		"   Configuration already pointing at a real repository is left alone unless\n" +
+		"   you pass `--replace`.\n\n" +
+		"### Run it\n\n" +
+		"```sh\n" +
+		"bin/goobers run quickstart ./tutorial-instance\n" +
+		"bin/goobers dashboard ./tutorial-instance\n" +
+		"```\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
