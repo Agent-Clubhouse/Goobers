@@ -186,6 +186,22 @@ type remediationState struct {
 	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
 	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
 	StructuralCollisionContext string `json:"structuralCollisionContext,omitempty"`
+	// EscalationCauses is the cause set observed on the cycle that escalated —
+	// the cause CLASS escalationBaseAdvanceUnparks reads to decide whether a
+	// base-branch advance alone may release the park. Empty on a forced or
+	// policy-excluded escalation (no cause was ever observed, so no rebase
+	// addresses it) and on records written before this field shipped;
+	// EscalationGeneration separates those two cases.
+	EscalationCauses []remediationCause `json:"escalationCauses,omitempty"`
+	// EscalationGeneration counts how many times in a row this PR has been
+	// parked at the SAME head SHA: 1 the first time a head is parked, +1 on
+	// every re-escalation of that unchanged head. It is churn telemetry, never
+	// a give-up threshold — no code path consults it to refuse work, so every
+	// documented escape hatch stays reachable. It doubles as the marker that a
+	// record was written by a binary that persists EscalationCauses (a zero
+	// value means "cause class unknown", which keeps the pre-existing
+	// unconditional base-advance self-heal).
+	EscalationGeneration int `json:"escalationGeneration,omitempty"`
 	// LastSeenCommentAt is the RFC3339 created-at of the newest issue-level PR
 	// comment observed at the moment this cycle was recorded — the watermark
 	// rebase-pr's human-comment detection (hasNewHumanCommentSince) compares
@@ -277,10 +293,23 @@ func parseRemediationStateComment(body string) (remediationState, bool) {
 func renderRemediationComment(state remediationState) string {
 	var prose string
 	if state.Escalated {
+		// State the exit that actually applies to THIS park's cause class,
+		// rather than the blanket "head or base" the old text promised for
+		// every escalation.
+		unpark := "this PR's head changes"
+		if escalationBaseAdvanceUnparks(state) {
+			unpark = "this PR's head or base changes"
+		}
 		prose = fmt.Sprintf(
-			"**pr-remediation escalated**\n\n%s. Parked until this PR's head or base changes, or a human removes `%s`.",
-			state.EscalatedReason, remediationEscalatedLabel,
+			"**pr-remediation escalated**\n\n%s. Parked until %s, or a human removes `%s`.",
+			state.EscalatedReason, unpark, remediationEscalatedLabel,
 		)
+		if state.EscalationGeneration > 1 {
+			prose += fmt.Sprintf(
+				"\n\nThis is escalation %d for this unchanged head — remediation has already re-run and re-escalated it %d times.",
+				state.EscalationGeneration, state.EscalationGeneration-1,
+			)
+		}
 		if state.SiblingOverlapContext != "" {
 			prose += "\n\n**Known sibling-overlap findings from merge-review:**\n" + state.SiblingOverlapContext
 		}
@@ -339,15 +368,20 @@ func postOrRecreateRemediationComment(ctx context.Context, provider remediationP
 // carrying the label is never blocked by this check (false, nil) — this is
 // the ordinary case for the vast majority of candidates and costs nothing.
 //
-// A PR that DOES carry the label is only genuinely still stuck if BOTH its
-// head is unchanged AND its base branch has not advanced since the snapshot
-// remediation-checkpoint recorded at the moment it escalated: nothing about
-// the PR's situation has moved since a human or the agent last looked, so
-// re-selecting it would just reproduce the same escalation. If EITHER has
-// moved — new commits pushed (head SHA changed), or a sibling merge advanced
-// the base branch — the PR's context has genuinely changed and selection
-// re-enables automatically (AC2's self-heal), without a human clearing the
-// label by hand.
+// A PR that DOES carry the label is genuinely still stuck while its head is
+// unchanged since the snapshot remediation-checkpoint recorded at the moment
+// it escalated: nothing anyone did has moved the PR, so re-selecting it would
+// just reproduce the same escalation. New commits (head SHA changed) always
+// self-heal the park (AC2), without a human clearing the label by hand.
+//
+// A base-branch advance self-heals the park only when the recorded escalation
+// cause is one a rebase onto the new base can plausibly cure —
+// escalationBaseAdvanceUnparks. Treating ANY base advance as a self-heal made
+// parking useless in a repo that merges dozens of PRs a day: every merge
+// unparked every escalated PR, so a deterministically-doomed PR re-entered
+// remediation within minutes and burned an agent session each time (the audit
+// found 144 escalations across 48 PRs, one of them escalated 41 times in five
+// days at an unchanged head).
 //
 // Base-advance detection compares the snapshot against the LIVE base-branch
 // tip (provider.BranchTipSHA), NOT pr.BaseSHA. GitHub's pull_request.base.sha
@@ -356,14 +390,11 @@ func postOrRecreateRemediationComment(ctx context.Context, provider remediationP
 // that could never fire, so escalations were permanent-until-human and whole
 // file-overlap clusters deadlocked. EscalatedBaseSHA is recorded as the live
 // base tip at escalation time (see runRemediationCheckpoint), so this compares
-// like-for-like. This applies uniformly to every escalation reason: a base
-// advance genuinely can resolve an overlap-driven content rejection too, and
-// any re-attempt that is still wrong simply re-escalates, bounded by the
-// per-cause repass budgets (#364/#953) — so an unblock is always safe, never
-// a loop.
+// like-for-like.
 //
-// Fetches comments (and one ref lookup) only for PRs that carry the label — a
-// small, by-design subset — so this stays cheap for the common unlabeled case.
+// Fetches comments only for PRs that carry the label — a small, by-design
+// subset — so this stays cheap for the common unlabeled case, and the extra
+// ref lookup only for the parks a base advance can actually release.
 func escalationStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
 		return false, nil
@@ -396,6 +427,11 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	if head != pr.HeadSHA {
 		return false, nil
 	}
+	if !escalationBaseAdvanceUnparks(state) {
+		// No rebase addresses this park's cause, so the base tip carries no
+		// information about it — skip the ref lookup entirely.
+		return true, nil
+	}
 	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
 	if err != nil {
 		return false, err
@@ -406,10 +442,86 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	return true, nil
 }
 
+// escalationBaseAdvanceUnparks reports whether a base-branch advance ALONE may
+// release state's park, i.e. whether a rebase onto the new base tip can
+// plausibly cure the recorded escalation cause. A head change always releases
+// a park regardless of this answer, so every escape hatch (push a commit,
+// remove the label) stays reachable for every cause class.
+//
+// Rebase-curable: a rebase conflict, and a sibling-overlap rejection whose
+// resolution IS the sibling landing on the base branch. Not rebase-curable: a
+// substantive reviewer rejection, failing CI, and a human comment — those are
+// properties of the PR's own content, so re-running remediation against an
+// unchanged head reproduces the same escalation no matter how far the base has
+// moved. Same for infrastructure-failure and policy-excluded outcomes (the PR
+// was never evaluated on its merits, and no base advance changes that) and for
+// a structural collision, which is escalated precisely because retrying the
+// patch cannot resolve it.
+func escalationBaseAdvanceUnparks(state remediationState) bool {
+	if !state.Escalated || state.EscalationGeneration == 0 {
+		// Not an escalation record (the #1855 fallback reads an ordinary
+		// cycle's head/base), or an escalation recorded before the cause class
+		// was persisted: the cause is unknowable, so keep the pre-existing
+		// unconditional base-advance self-heal rather than retro-parking PRs.
+		// Records age out on the next checkpoint, which rewrites the sticky
+		// comment in place.
+		return true
+	}
+	switch state.EscalationOutcome {
+	case remediationOutcomeInfrastructure, remediationOutcomePolicyExcluded:
+		return false
+	}
+	if state.StructuralCollisionContext != "" {
+		return false
+	}
+	if len(state.EscalationCauses) == 0 {
+		// A forced escalation (a reviewer verdict of fail, or a repeated
+		// implementer no-op) observed no remediation cause at all.
+		return false
+	}
+	for _, cause := range state.EscalationCauses {
+		if !baseAdvanceCuresRemediationCause(cause) {
+			return false
+		}
+	}
+	return true
+}
+
+func baseAdvanceCuresRemediationCause(cause remediationCause) bool {
+	switch cause {
+	case remediationCauseConflict, remediationCauseSiblingOverlap:
+		return true
+	default:
+		return false
+	}
+}
+
+// nextEscalationGeneration returns the EscalationGeneration to record when
+// headSHA is parked on top of prior: 1 for the first park of a given head, +1
+// for each re-escalation of that same unchanged head. An escalation record
+// written before the counter shipped counts as the first park of its head, so
+// an upgraded fleet reports the churn it can still prove rather than restarting
+// every parked PR's count at 1.
+func nextEscalationGeneration(prior remediationState, headSHA string) int {
+	if !prior.Escalated || prior.EscalatedHeadSHA == "" || prior.EscalatedHeadSHA != headSHA {
+		return 1
+	}
+	generation := prior.EscalationGeneration
+	if generation < 1 {
+		generation = 1
+	}
+	return generation + 1
+}
+
 // refreshEscalationSnapshotAfterRepeatFail closes the one-shot self-heal
 // window after merge-review re-evaluates an already-escalated PR. Without this,
 // a base advance stays different from the original snapshot forever, making an
 // unchanged PR eligible on every subsequent poll (#2378).
+//
+// Its caller only reaches here on a verdict of fail, which is a rejection of
+// the PR's content: no rebase cures that, so the refreshed snapshot drops any
+// rebase-curable cause the earlier park recorded — a further base advance is
+// not new evidence about a PR a reviewer just re-failed at this same head.
 func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment) error {
 	state, commentID, found := latestRemediationState(comments)
 	if !found || commentID == "" {
@@ -422,9 +534,11 @@ func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider reme
 	if state.Escalated && state.EscalatedHeadSHA == pr.HeadSHA && state.EscalatedBaseSHA == liveBaseTip {
 		return nil
 	}
+	state.EscalationGeneration = nextEscalationGeneration(state, pr.HeadSHA)
 	state.Escalated = true
 	state.EscalatedHeadSHA = pr.HeadSHA
 	state.EscalatedBaseSHA = liveBaseTip
+	state.EscalationCauses = nil
 	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
 }
 
@@ -980,6 +1094,17 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", base, selectedNumber), err, "")
 		}
+		// A forced escalation — a reviewer verdict of fail, a policy exclusion,
+		// or a repeated implementer no-op — is not attributable to an observed
+		// remediation cause: no cause was parsed on those paths, and the ones
+		// that were (the no-op guard) are precisely the ones re-running has
+		// already proven inert. Record none, so the park holds until the head
+		// moves rather than until the next sibling merge.
+		escalationCauses := causes
+		if forced {
+			escalationCauses = nil
+		}
+		escalation.Generation = nextEscalationGeneration(prior, current.HeadSHA)
 		state = remediationState{
 			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
@@ -990,6 +1115,8 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			SiblingOverlapContext:      renderSiblingOverlapContext(overlaps),
 			StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
 			LastSeenCommentAt:          watermark,
+			EscalationCauses:           escalationCauses,
+			EscalationGeneration:       escalation.Generation,
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,
@@ -1005,7 +1132,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, escalation); err != nil {
 			return 1
 		}
-		pf(stdout, "escalated PR #%d: %s\n", selectedNumber, reason)
+		pf(stdout, "escalated PR #%d (escalation %d for head %s): %s\n", selectedNumber, escalation.Generation, current.HeadSHA, reason)
 		return 0
 	}
 
@@ -1147,6 +1274,11 @@ type remediationEscalation struct {
 	Attempted       bool
 	AttemptedCauses []remediationCause
 	Reason          string
+	// Generation is the escalation's EscalationGeneration — how many times this
+	// unchanged head has now been parked. Emitted so a workflow or telemetry
+	// query can see re-escalation churn without reconstructing it from PR
+	// comments. Zero on a non-escalating checkpoint.
+	Generation int
 }
 
 func attemptedRemediationCauses(attempts remediationAttempts) []remediationCause {
@@ -1312,6 +1444,7 @@ func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedN
 		"remediationAttempted": strconv.FormatBool(escalation.Attempted),
 		"attemptedCauses":      strings.Join(attemptedCauses, ","),
 		"escalationReason":     escalation.Reason,
+		"escalationGeneration": strconv.Itoa(escalation.Generation),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal checkpoint result: %v\n", err)
