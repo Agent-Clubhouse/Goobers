@@ -59,6 +59,81 @@ func TestSchemaEmitsEveryEmbeddedContractByteForByte(t *testing.T) {
 	}
 }
 
+// Reproduces the cold-start probes (docs/audits/2026-08-08-gaggle-reliability/
+// coldstart): every flavor reached for `goobers schema instance` and
+// `goobers explain instance.repos` on the first file `goobers init` tells them
+// to edit, and got `unknown schema kind "instance"` /
+// `unknown selector "instance.repos"` — the only major object with no
+// introspection. Both now answer.
+func TestSchemaAndExplainIntrospectInstanceConfig(t *testing.T) {
+	code, stdout, stderr := runArgs(t, "schema", "instance")
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema instance: code=%d stderr=%q", code, stderr)
+	}
+	var document struct {
+		Kind   string `json:"kind"`
+		Schema struct {
+			Title      string         `json:"title"`
+			Required   []string       `json:"required"`
+			Properties map[string]any `json:"properties"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Kind != "instance" || document.Schema.Title != "Instance" {
+		t.Fatalf("schema instance emitted kind=%q title=%q", document.Kind, document.Schema.Title)
+	}
+	for _, section := range []string{"repos", "credentials", "telemetry", "runConditions", "runner"} {
+		if _, ok := document.Schema.Properties[section]; !ok {
+			t.Errorf("instance schema does not publish %q", section)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "schema", "--list")
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema --list: code=%d stderr=%q", code, stderr)
+	}
+	var list schemaListOutput
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, kind := range list.Kinds {
+		if kind == "instance" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("schema --list omits instance: %v", list.Kinds)
+	}
+
+	for _, selector := range []string{
+		"instance.repos",
+		"instance.repos[].provider",
+		"instance.repos[].project",
+		"instance.credentials[].capability",
+		"instance.telemetry.retention",
+		"instance.runConditions.maxParallelRuns",
+		"instance.runner.capabilities",
+		"instance.runner.envPassthrough",
+		"instance.runner.defaultStageTimeout",
+	} {
+		explanation := runExplainJSON(t, selector)
+		if strings.TrimSpace(explanation.Description) == "" ||
+			explanation.Type == nil ||
+			explanation.Stability == "" ||
+			explanation.SinceVersion == "" {
+			t.Errorf("explain %q: incomplete guidance: %+v", selector, explanation)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "explain", "--human", "instance.runner.capabilities")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "never schedules a single run") {
+		t.Fatalf("explain --human instance.runner.capabilities: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	root := initDemo(t)
 	t.Chdir(root)
