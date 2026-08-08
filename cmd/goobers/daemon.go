@@ -615,7 +615,7 @@ func buildSchedulerDefinitions(
 		runners[gaggle] = rn
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Gaggles, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
 	if err != nil {
 		return nil, err
 	}

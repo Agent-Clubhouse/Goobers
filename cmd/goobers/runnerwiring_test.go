@@ -2755,26 +2755,92 @@ func repoConfig() *instance.Config {
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(&instance.Config{}, nil, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), nil, wfs, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), nil, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}
 		if r == nil {
 			t.Fatal("expected a non-nil refresher for a repo-backed, capped instance")
 		}
+	})
+	t.Run("counts each gaggle project repository", func(t *testing.T) {
+		t.Setenv("FIRST_OPENPR_TOK", "first-token")
+		t.Setenv("SECOND_OPENPR_TOK", "second-token")
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "first", Token: instance.TokenRef{Env: "FIRST_OPENPR_TOK"}},
+			{Provider: "github", Owner: "acme", Name: "second", Token: instance.TokenRef{Env: "SECOND_OPENPR_TOK"}},
+		}}
+		gaggles := []apiv1.Gaggle{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "first"}}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "second"}}},
+		}
+		prev := newOpenPRProvider
+		newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+			switch token {
+			case "first-token":
+				return &fakeHeadLister{heads: []string{"first/implementation/run-1"}}
+			case "second-token":
+				return &fakeHeadLister{heads: []string{"second/implementation/run-1", "second/implementation/run-2"}}
+			default:
+				t.Fatalf("unexpected open PR token %q", token)
+				return nil
+			}
+		}
+		t.Cleanup(func() { newOpenPRProvider = prev })
+
+		r, err := buildOpenPRRefresher(
+			cfg,
+			gaggles,
+			[]apiv1.Workflow{
+				{Spec: apiv1.WorkflowSpec{Gaggle: "first", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}},
+				{Spec: apiv1.WorkflowSpec{Gaggle: "second", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}},
+			},
+			&escTestRegistrar{},
+			map[string]string{"first": "first", "second": "second"},
+			"",
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("buildOpenPRRefresher: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
+
+		deadline := time.After(2 * time.Second)
+		for {
+			first, firstKnown := r.OpenPRCount("first", "implementation")
+			second, secondKnown := r.OpenPRCount("second", "implementation")
+			if firstKnown && secondKnown {
+				if first != 1 || second != 2 {
+					t.Fatalf("counts = first:%d second:%d, want first:1 second:2", first, second)
+				}
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("refresher did not poll both gaggle repositories")
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		cancel()
+		<-done
 	})
 }
 
@@ -2794,7 +2860,11 @@ func (f *fakeHeadLister) ListOpenPullRequests(context.Context, providers.Reposit
 // authenticated provider.
 func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	t.Setenv("OPENPR_TOK", "list-token-value")
-	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "OPENPR_TOK"}})
+	t.Setenv("SECOND_OPENPR_TOK", "second-list-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{
+		{Name: "acme/web", Env: "OPENPR_TOK"},
+		{Name: "acme/api", Env: "SECOND_OPENPR_TOK"},
+	})
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
@@ -2809,7 +2879,7 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	}
 	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
+	l := &resolvingOpenPRLister{resolver: resolver, reg: reg}
 	prs, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
 	if err != nil {
 		t.Fatalf("ListOpenPullRequests: %v", err)
@@ -2828,6 +2898,13 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 	}
 	if !registered {
 		t.Fatalf("resolved token not registered for scrubbing; registered=%v", reg.registered)
+	}
+
+	if _, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "api"}); err != nil {
+		t.Fatalf("ListOpenPullRequests for second repo: %v", err)
+	}
+	if gotToken != "second-list-token-value" {
+		t.Fatalf("second repo provider built with token %q, want its resolved token", gotToken)
 	}
 }
 

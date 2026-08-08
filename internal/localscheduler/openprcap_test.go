@@ -85,6 +85,15 @@ type fakeOpenPRLister struct {
 	calls  int
 }
 
+type repoOpenPRLister struct {
+	prs  map[providers.RepositoryRef][]providers.OpenPRSummary
+	errs map[providers.RepositoryRef]error
+}
+
+func (f *repoOpenPRLister) ListOpenPullRequests(_ context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
+	return f.prs[repo], f.errs[repo]
+}
+
 func (f *fakeOpenPRLister) ListOpenPullRequests(_ context.Context, _ providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
 	f.calls++
 	if f.err != nil {
@@ -153,6 +162,60 @@ func TestOpenPRRefresherCountsPerGaggleNamespace(t *testing.T) {
 	// The acme gaggle counts only its own "acme/…" heads (2), not the default one.
 	if n, known := r.OpenPRCount("acme", "implementation"); !known || n != 2 {
 		t.Errorf("acme namespace: count=%d known=%v, want 2/true", n, known)
+	}
+}
+
+func TestOpenPRRefresherCountsPerGaggleRepository(t *testing.T) {
+	first := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "first"}
+	second := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "second"}
+	lister := &repoOpenPRLister{prs: map[providers.RepositoryRef][]providers.OpenPRSummary{
+		first:  {{Head: "first/implementation/run-1"}},
+		second: {{Head: "second/implementation/run-1"}, {Head: "second/implementation/run-2"}},
+	}}
+	r := NewMultiRepoOpenPRRefresher(
+		lister,
+		first,
+		map[string]providers.RepositoryRef{"first": first, "second": second},
+		time.Hour,
+		nil,
+		map[string]string{"first": "first", "second": "second"},
+	)
+
+	r.pollOnce(context.Background())
+
+	if n, known := r.OpenPRCount("first", "implementation"); !known || n != 1 {
+		t.Errorf("first repository: count=%d known=%v, want 1/true", n, known)
+	}
+	if n, known := r.OpenPRCount("second", "implementation"); !known || n != 2 {
+		t.Errorf("second repository: count=%d known=%v, want 2/true", n, known)
+	}
+}
+
+func TestOpenPRRefresherRepositoryErrorsAreIsolated(t *testing.T) {
+	first := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "first"}
+	second := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "second"}
+	lister := &repoOpenPRLister{
+		prs: map[providers.RepositoryRef][]providers.OpenPRSummary{
+			second: {{Head: "second/implementation/run-1"}},
+		},
+		errs: map[providers.RepositoryRef]error{first: errors.New("first unavailable")},
+	}
+	r := NewMultiRepoOpenPRRefresher(
+		lister,
+		first,
+		map[string]providers.RepositoryRef{"first": first, "second": second},
+		time.Hour,
+		nil,
+		map[string]string{"first": "first", "second": "second"},
+	)
+
+	r.pollOnce(context.Background())
+
+	if _, known := r.OpenPRCount("first", "implementation"); known {
+		t.Error("first repository count should be unknown after its poll fails")
+	}
+	if n, known := r.OpenPRCount("second", "implementation"); !known || n != 1 {
+		t.Errorf("second repository: count=%d known=%v, want 1/true", n, known)
 	}
 }
 

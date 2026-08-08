@@ -28,14 +28,15 @@ type OpenPRLister interface {
 	ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error)
 }
 
-// OpenPRRefresher polls the provider on its own interval for open PR heads and
-// caches them, so the scheduler's admit-time MaxOpenPRs cap (#353) reads a
+// OpenPRRefresher polls configured repositories on its own interval for open PR
+// heads and caches them, so the scheduler's admit-time MaxOpenPRs cap (#353) reads a
 // workflow-specific in-memory count instead of making a
 // network call under the tick loop's lock (which Admit must never do — it holds
 // Conditions.mu and "never fails a tick"). It implements OpenPRCounter.
 type OpenPRRefresher struct {
 	lister        OpenPRLister
-	repo          providers.RepositoryRef
+	defaultRepo   providers.RepositoryRef
+	gaggleRepos   map[string]providers.RepositoryRef
 	interval      time.Duration
 	excludeLabels map[string]bool
 	// branchNamespaces maps each gaggle to its configured run-branch namespace
@@ -46,8 +47,8 @@ type OpenPRRefresher struct {
 	branchNamespaces map[string]string
 
 	mu    sync.RWMutex
-	prs   []providers.OpenPRSummary
-	known bool
+	prs   map[providers.RepositoryRef][]providers.OpenPRSummary
+	known map[providers.RepositoryRef]bool
 }
 
 // NewOpenPRRefresher builds a refresher over lister for repo. interval <= 0 uses
@@ -62,6 +63,12 @@ type OpenPRRefresher struct {
 // preserving pre-#1115 behavior. The count starts "unknown" until the first poll
 // completes (Admit fails open until then).
 func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
+	return NewMultiRepoOpenPRRefresher(lister, repo, nil, interval, excludeLabels, branchNamespaces)
+}
+
+// NewMultiRepoOpenPRRefresher builds a refresher that polls every distinct
+// repository used by gaggleRepos. Gaggles absent from the map use defaultRepo.
+func NewMultiRepoOpenPRRefresher(lister OpenPRLister, defaultRepo providers.RepositoryRef, gaggleRepos map[string]providers.RepositoryRef, interval time.Duration, excludeLabels []string, branchNamespaces map[string]string) *OpenPRRefresher {
 	if interval <= 0 {
 		interval = DefaultOpenPRRefreshInterval
 	}
@@ -69,7 +76,16 @@ func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, inter
 	for _, l := range excludeLabels {
 		excluded[l] = true
 	}
-	return &OpenPRRefresher{lister: lister, repo: repo, interval: interval, excludeLabels: excluded, branchNamespaces: branchNamespaces}
+	return &OpenPRRefresher{
+		lister:           lister,
+		defaultRepo:      defaultRepo,
+		gaggleRepos:      gaggleRepos,
+		interval:         interval,
+		excludeLabels:    excluded,
+		branchNamespaces: branchNamespaces,
+		prs:              make(map[providers.RepositoryRef][]providers.OpenPRSummary),
+		known:            make(map[providers.RepositoryRef]bool),
+	}
 }
 
 // OpenPRCount returns the last polled count of the gaggle's own open run-branch
@@ -78,7 +94,11 @@ func NewOpenPRRefresher(lister OpenPRLister, repo providers.RepositoryRef, inter
 func (r *OpenPRRefresher) OpenPRCount(gaggle, workflow string) (int, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.known {
+	repo := r.defaultRepo
+	if configured, ok := r.gaggleRepos[gaggle]; ok {
+		repo = configured
+	}
+	if !r.known[repo] {
 		return 0, false
 	}
 
@@ -91,7 +111,7 @@ func (r *OpenPRRefresher) OpenPRCount(gaggle, workflow string) (int, bool) {
 	// namespace via BranchNameIn, so its count is unchanged.
 	prefix := providers.BranchNameIn(r.branchNamespaces[gaggle], workflow, "")
 	count := 0
-	for _, pr := range r.prs {
+	for _, pr := range r.prs[repo] {
 		if !strings.HasPrefix(pr.Head, prefix) {
 			continue
 		}
@@ -104,7 +124,7 @@ func (r *OpenPRRefresher) OpenPRCount(gaggle, workflow string) (int, bool) {
 }
 
 // hasExcludedLabel reports whether pr carries any label the refresher was told
-// to drop from the count (caller holds r.mu).
+// to drop from the count.
 func (r *OpenPRRefresher) hasExcludedLabel(pr providers.OpenPRSummary) bool {
 	for _, l := range pr.Labels {
 		if r.excludeLabels[l] {
@@ -132,18 +152,29 @@ func (r *OpenPRRefresher) Run(ctx context.Context) {
 }
 
 func (r *OpenPRRefresher) pollOnce(ctx context.Context) {
+	repos := make(map[providers.RepositoryRef]struct{}, len(r.gaggleRepos)+1)
+	repos[r.defaultRepo] = struct{}{}
+	for _, repo := range r.gaggleRepos {
+		repos[repo] = struct{}{}
+	}
+	for repo := range repos {
+		r.pollRepo(ctx, repo)
+	}
+}
+
+func (r *OpenPRRefresher) pollRepo(ctx context.Context, repo providers.RepositoryRef) {
 	pollCtx, cancel := context.WithTimeout(ctx, openPRPollTimeout)
-	defer cancel()
-	prs, err := r.lister.ListOpenPullRequests(pollCtx, r.repo)
+	prs, err := r.lister.ListOpenPullRequests(pollCtx, repo)
+	cancel()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {
 		// Fail open: a transient GitHub error must not stall dispatch, so leave
 		// the count "unknown" until a poll succeeds (Admit then skips the cap).
-		r.known = false
+		r.known[repo] = false
 		return
 	}
-	r.prs = append(r.prs[:0], prs...)
-	r.known = true
+	r.prs[repo] = append(r.prs[repo][:0], prs...)
+	r.known[repo] = true
 }

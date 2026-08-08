@@ -1543,16 +1543,16 @@ var newOpenPRProvider = func(token string, opts ...func(*providers.GitHubProvide
 // and lists open PR heads through a freshly-authenticated provider. It is the
 // OpenPRLister the #353 open-PR-count refresher polls off-tick.
 type resolvingOpenPRLister struct {
-	ref          string
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
 }
 
 func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
-	token, err := l.resolver.Resolve(ctx, l.ref)
+	ref := repo.Owner + "/" + repo.Name
+	token, err := l.resolver.Resolve(ctx, ref)
 	if err != nil {
-		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
+		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", ref, err)
 	}
 	l.reg.Register([]byte(token))
 	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
@@ -1561,38 +1561,62 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // buildOpenPRRefresher constructs the #353 open-PR-count refresher only when the
 // instance actually needs it — a repo is configured AND some workflow opts into
 // the MaxOpenPRs cap — so an instance that doesn't use the cap grows no GitHub
-// poller and needs no token for it. Returns nil otherwise. Only the `up` daemon
-// starts/wires the returned refresher; a single `goobers run` has no accretion
-// to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
-// is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
+// poller and needs no token for it. Each capped gaggle's project repository is
+// polled independently. Returns nil otherwise. Only the `up` daemon starts/wires
+// the returned refresher; a single `goobers run` has no accretion to throttle.
+// resolver is a fresh credential resolver over cfg (buildCredentials is read-only
+// and idempotent), used only to authenticate the polls.
+func buildOpenPRRefresher(cfg *instance.Config, gaggles []apiv1.Gaggle, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
-	capped := false
+	cappedGaggles := make(map[string]struct{})
 	for i := range workflows {
 		if workflows[i].Spec.Readiness.MaxOpenPRs > 0 {
-			capped = true
-			break
+			cappedGaggles[workflows[i].Spec.Gaggle] = struct{}{}
 		}
 	}
-	if !capped {
+	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
 	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
-	repo := cfg.Repos[0]
-	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+	lister := &resolvingOpenPRLister{resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+	defaultConfigured := cfg.Repos[0]
+	defaultRepo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(defaultConfigured.Provider),
+		Owner:    defaultConfigured.Owner,
+		Project:  defaultConfigured.Project,
+		Name:     defaultConfigured.Name,
+	}
+	gaggleRepos := make(map[string]providers.RepositoryRef, len(gaggles))
+	for i := range gaggles {
+		if _, capped := cappedGaggles[gaggles[i].Name]; !capped {
+			continue
+		}
+		configured, ok := configuredRepoForProject(cfg, gaggles[i].Spec.Project)
+		if !ok {
+			continue
+		}
+		gaggleRepos[gaggles[i].Name] = providers.RepositoryRef{
+			Provider: providers.ProviderKind(configured.Provider),
+			Owner:    configured.Owner,
+			Project:  configured.Project,
+			Name:     configured.Name,
+		}
+		if len(gaggleRepos) == 1 {
+			defaultRepo = gaggleRepos[gaggles[i].Name]
+		}
+	}
 	// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 	// the daemon's "parked pending a human" signal on a PR — it cannot be
 	// drained autonomously, so counting it against MaxOpenPRs only starves new
 	// implementation work. needs-remediation / blocked-on-sibling are
 	// deliberately NOT excluded: the daemon can still drain those (remediation,
 	// sibling sequencing), and the cap must keep applying backpressure to them.
-	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
+	return localscheduler.NewMultiRepoOpenPRRefresher(lister, defaultRepo, gaggleRepos, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
