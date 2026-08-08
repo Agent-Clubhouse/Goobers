@@ -69,6 +69,77 @@ func TestIsSelfReviewError(t *testing.T) {
 	}
 }
 
+func TestIsFineGrainedPATReviewNotFoundError(t *testing.T) {
+	reviewEndpoint := "https://api.github.com/repos/o/r/pulls/828/reviews"
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{
+			name: "fine-grained PAT review refusal",
+			err: &providerResponseError{
+				method: http.MethodPost, endpoint: reviewEndpoint,
+				statusCode: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			},
+			want: true,
+		},
+		{
+			name: "wrapped refusal",
+			err: fmt.Errorf("submit review: %w", &providerResponseError{
+				method: http.MethodPost, endpoint: reviewEndpoint,
+				statusCode: http.StatusNotFound, body: `{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/reviews"}`,
+			}),
+			want: true,
+		},
+		{
+			name: "different endpoint",
+			err: &providerResponseError{
+				method: http.MethodPost, endpoint: "https://api.github.com/repos/o/r/issues/828/comments",
+				statusCode: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			},
+			want: false,
+		},
+		{
+			name: "different method",
+			err: &providerResponseError{
+				method: http.MethodGet, endpoint: reviewEndpoint,
+				statusCode: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			},
+			want: false,
+		},
+		{
+			name: "different status",
+			err: &providerResponseError{
+				method: http.MethodPost, endpoint: reviewEndpoint,
+				statusCode: http.StatusForbidden, body: `{"message":"Not Found"}`,
+			},
+			want: false,
+		},
+		{
+			name: "different message",
+			err: &providerResponseError{
+				method: http.MethodPost, endpoint: reviewEndpoint,
+				statusCode: http.StatusNotFound, body: `{"message":"Repository not found"}`,
+			},
+			want: false,
+		},
+		{
+			name: "stringified response is insufficient",
+			err:  errors.New(`POST https://api.github.com/repos/o/r/pulls/828/reviews failed: status 404: {"message":"Not Found"}`),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsFineGrainedPATReviewNotFoundError(tt.err); got != tt.want {
+				t.Fatalf("IsFineGrainedPATReviewNotFoundError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsSelfReviewErrorFromLiveProvider proves the predicate fires on the
 // actual error SubmitPullRequestReview returns when the server replies with
 // GitHub's real self-review 422 — the value apply-verdict inspects, not a
