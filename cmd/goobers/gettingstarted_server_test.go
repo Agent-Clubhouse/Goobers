@@ -16,6 +16,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
@@ -168,6 +170,38 @@ func TestGettingStartedActionArgv(t *testing.T) {
 			want: []string{"init", "--template=quickstart", tutorial},
 		},
 		{
+			name: "init-instance explicit quickstart",
+			invoke: func(h http.Handler) *httptest.ResponseRecorder {
+				return guidedPost(h, "/guided/actions/init-instance", `{"template":"quickstart"}`)
+			},
+			want: []string{"init", "--template=quickstart", tutorial},
+		},
+		{
+			name: "init-instance starter",
+			invoke: func(h http.Handler) *httptest.ResponseRecorder {
+				return guidedPost(h, "/guided/actions/init-instance", `{"template":"starter"}`)
+			},
+			want: []string{"init", tutorial},
+		},
+		{
+			name: "connect minimal",
+			invoke: func(h http.Handler) *httptest.ResponseRecorder {
+				return guidedPost(h, "/guided/actions/connect", `{"repo":"acme/web"}`)
+			},
+			want: []string{"connect", "acme/web", "--json", tutorial},
+		},
+		{
+			name: "connect all options",
+			invoke: func(h http.Handler) *httptest.ResponseRecorder {
+				return guidedPost(h, "/guided/actions/connect",
+					`{"repo":"acme/web","tokenEnv":"MY_TOKEN","seed":true,"replace":true}`)
+			},
+			want: []string{
+				"connect", "acme/web", "--json",
+				"--token-env", "MY_TOKEN", "--seed", "--replace", tutorial,
+			},
+		},
+		{
 			name: "validate default",
 			invoke: func(h http.Handler) *httptest.ResponseRecorder {
 				return guidedPost(h, "/guided/actions/validate", `{"checkHarness":false,"checkRepos":false}`)
@@ -205,6 +239,108 @@ func TestGettingStartedActionArgv(t *testing.T) {
 				t.Fatalf("response missing exitCode: %v", body)
 			}
 		})
+	}
+}
+
+func TestGettingStartedAllowlistRejections(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	handler := http.HandlerFunc(server.serveGuided)
+	calls := stubGuidedExec(t, `printf '{}'`)
+
+	cases := []struct {
+		name     string
+		path     string
+		body     string
+		wantCode string
+	}{
+		{"unknown init template", "/guided/actions/init-instance", `{"template":"demo"}`, "invalid_template"},
+		{"connect without repo", "/guided/actions/connect", `{}`, "invalid_repo"},
+		{"unknown run workflow", "/guided/actions/run", `{"workflow":"merge-review"}`, "invalid_workflow"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := guidedPost(handler, testCase.path, testCase.body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			if body := decodeGuidedResponse[guidedErrorBody](t, recorder); body.Code != testCase.wantCode {
+				t.Fatalf("error code = %q, want %q", body.Code, testCase.wantCode)
+			}
+		})
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("rejected requests must never exec: %v", *calls)
+	}
+}
+
+func TestGettingStartedRunWorkflowChooser(t *testing.T) {
+	workdir := t.TempDir()
+	tutorial := filepath.Join(workdir, "tutorial-instance")
+	for _, testCase := range []struct {
+		body string
+		want []string
+	}{
+		{`{}`, []string{"run", "quickstart", tutorial}},
+		{`{"workflow":"quickstart"}`, []string{"run", "quickstart", tutorial}},
+		{`{"workflow":"default-implement"}`, []string{"run", "default-implement", tutorial}},
+	} {
+		server := newTestGuidedServer(t, workdir)
+		handler := http.HandlerFunc(server.serveGuided)
+		calls := stubGuidedExec(t, `exit 0`)
+		accepted := guidedPost(handler, "/guided/actions/run", testCase.body)
+		if accepted.Code != http.StatusAccepted {
+			t.Fatalf("run %s status = %d body = %q", testCase.body, accepted.Code, accepted.Body.String())
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for len(*calls) == 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0], testCase.want) {
+			t.Fatalf("run %s argv = %v, want [%v]", testCase.body, *calls, testCase.want)
+		}
+		if err := server.close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestGettingStartedStateReportsConnectedRepo(t *testing.T) {
+	workdir := t.TempDir()
+	t.Setenv(connectDefaultTokenEnv, "")
+	server := newTestGuidedServer(t, workdir)
+	handler := http.HandlerFunc(server.serveGuided)
+
+	// No instance yet: connected.repo is explicit null.
+	before := guidedGet(handler, "/guided/state")
+	state := decodeGuidedResponse[guidedStateBody](t, before)
+	if state.Connected.Repo != nil {
+		t.Fatalf("connected before init = %+v", state.Connected)
+	}
+	if !strings.Contains(before.Body.String(), `"connected":{"repo":null}`) {
+		t.Fatalf("state body missing explicit null connected repo: %q", before.Body.String())
+	}
+
+	// A placeholder instance is not connected.
+	if _, err := instance.InitQuickstart(server.instancePath); err != nil {
+		t.Fatal(err)
+	}
+	state = decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if state.Connected.Repo != nil {
+		t.Fatalf("connected with placeholder = %+v", state.Connected)
+	}
+
+	// After a real connect, the state names the repository.
+	if code := executeConnect(connectOptions{
+		owner:    "acme",
+		name:     "web",
+		root:     server.instancePath,
+		tokenEnv: connectDefaultTokenEnv,
+	}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("connect exit = %d", code)
+	}
+	state = decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if state.Connected.Repo == nil || *state.Connected.Repo != "acme/web" {
+		t.Fatalf("connected after connect = %+v", state.Connected)
 	}
 }
 

@@ -84,6 +84,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
 	},
+	"connect": {
+		{name: "token-env", takesArg: true, desc: "Repository token environment variable name"},
+		{name: "seed", desc: "Ensure selector labels and one starter issue on the repository"},
+		{name: "replace", desc: "Also rewrite entries already pointing at a real repository"},
+		{name: "json", desc: "Emit the versioned onboarding action envelope"},
+	},
 	"preflight": {
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},

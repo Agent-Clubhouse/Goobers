@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -49,6 +49,10 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Prompt f
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d 'Seed the template as a checked-in config source'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'
+complete -c goobers -n '__fish_seen_subcommand_from connect' -l token-env -r -d 'Repository token environment variable name'
+complete -c goobers -n '__fish_seen_subcommand_from connect' -l seed -d 'Ensure selector labels and one starter issue on the repository'
+complete -c goobers -n '__fish_seen_subcommand_from connect' -l replace -d 'Also rewrite entries already pointing at a real repository'
+complete -c goobers -n '__fish_seen_subcommand_from connect' -l json -d 'Emit the versioned onboarding action envelope'
 complete -c goobers -n '__fish_seen_subcommand_from preflight' -l distro -r -d 'Select the WSL distro to check'
 complete -c goobers -n '__fish_seen_subcommand_from preflight' -l launch-wsl -d 'Run the trailing Goobers command inside WSL'
 complete -c goobers -n '__fish_seen_subcommand_from onboarding; and __fish_seen_subcommand_from stub-agent-instructions' -l source-tree -r -d 'Config source repository root'

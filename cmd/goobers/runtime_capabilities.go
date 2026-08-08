@@ -93,6 +93,14 @@ func init() {
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
+			withSynopsis(synopsisByID["connect"]).
+			withHelp("connect an instance to your own GitHub repository", connectHelp).
+			withExamples(
+				"goobers connect acme/web ./my-instance",
+				"goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance",
+				"goobers connect acme/web --json ./my-instance",
+			),
 		command("preflight", apicontract.ActionWorkflowExecution, runOnboardingPreflight).
 			withSynopsis(synopsisByID["preflight"]).
 			withHelp("check WSL full-isolation readiness and optionally hand off a command", wslPreflightHelp).

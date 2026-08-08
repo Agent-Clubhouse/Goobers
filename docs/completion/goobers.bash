@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -16,6 +16,9 @@ _goobers_completion()
     case "${command}" in
         init)
             flags+=" --demo --guided --template --source-tree --json"
+            ;;
+        connect)
+            flags+=" --token-env --seed --replace --json"
             ;;
         preflight)
             flags+=" --distro --launch-wsl"
