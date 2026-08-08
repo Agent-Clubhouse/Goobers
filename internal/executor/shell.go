@@ -743,7 +743,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
-	if excerpt := stderrTailExcerpt(errBytes); excerpt != "" {
+	if excerpt := stderrFailureExcerpt(errBytes); excerpt != "" {
 		result.Error.Message += "; stderr: " + excerpt
 	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
@@ -926,23 +926,20 @@ func stderrExcerpt(errBytes []byte) string {
 	return s
 }
 
-// Generic command failures keep the tail, where tools conventionally print the
-// terminal cause, while the complete scrubbed stderr remains an artifact.
-func stderrTailExcerpt(errBytes []byte) string {
+// Generic command failures keep both ends: runtimes may print the cause before
+// a long stack dump, while tools conventionally print terminal causes last.
+func stderrFailureExcerpt(errBytes []byte) string {
 	if len(errBytes) == 0 {
 		return ""
 	}
-	b := errBytes
-	truncated := false
-	if len(b) > missingResultFileStderrExcerptBytes {
-		b = b[len(b)-missingResultFileStderrExcerptBytes:]
-		truncated = true
+	if len(errBytes) <= missingResultFileStderrExcerptBytes {
+		return strings.TrimSpace(string(errBytes))
 	}
-	s := strings.TrimSpace(string(b))
-	if truncated {
-		s = "…" + s
-	}
-	return s
+	headBytes := missingResultFileStderrExcerptBytes / 2
+	tailBytes := missingResultFileStderrExcerptBytes - headBytes
+	head := strings.TrimSpace(string(errBytes[:headBytes]))
+	tail := strings.TrimSpace(string(errBytes[len(errBytes)-tailBytes:]))
+	return head + "…" + tail
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {
