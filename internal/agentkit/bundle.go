@@ -152,6 +152,7 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 		{"docs/adr/0001-agentic-sandbox-mechanism.md", "docs/adr/0001-agentic-sandbox-mechanism.md"},
 		{"docs/adr/0002-provider-neutral-capability-namespaces.md", "docs/adr/0002-provider-neutral-capability-namespaces.md"},
 		{"docs/design/cobrand.md", "docs/design/cobrand.md"},
+		{"docs/design/notification-output.md", "docs/design/notification-output.md"},
 		{"docs/design/static-fan-out-fan-in.md", "docs/design/static-fan-out-fan-in.md"},
 		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
 		{"docs/guides/quickstart.md", "docs/guides/quickstart.md"},

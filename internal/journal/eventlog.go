@@ -39,6 +39,12 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventGateOverridden && ev.Target == "" {
 		return nil, fmt.Errorf("%s requires a target", EventGateOverridden)
 	}
+	if ev.Type == EventNotificationRequested && ev.NotificationRequest == nil {
+		return nil, fmt.Errorf("%s requires a notification request", EventNotificationRequested)
+	}
+	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
+		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
+	}
 	return json.Marshal(event(ev))
 }
 

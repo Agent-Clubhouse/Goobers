@@ -129,6 +129,38 @@ github.com/goobers/goobers/internal/decomposition.Primitives.findComment # DEC-3
 github.com/goobers/goobers/internal/decomposition.markedBody # DEC-3 stable marker renderer is reachable through the reserved DEC-4 entrypoints (#2245).
 github.com/goobers/goobers/internal/decomposition.markerKeyLine # DEC-3 exact marker-key renderer is reachable through the reserved DEC-4 entrypoints (#2245).
 github.com/goobers/goobers/internal/decomposition.containsLine # DEC-3 exact marker matcher is reachable through the reserved DEC-4 entrypoints (#2245).
+# Notification output boundary (#1451) ships ahead of its mission-control
+# workflow caller (#1450); each entry is exercised by notification package tests.
+github.com/goobers/goobers/internal/notification.NewJournalRecorder # Durable notification journal adapter reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.RecordRequest # Notification request persistence method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.RecordReceipt # Notification receipt persistence method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.recordReceipt # Locked receipt append helper reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.ClaimDelivery # Atomic delivery-claim method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.Policy.normalized # Notification policy validator reached through the reserved dispatcher constructor (#1450).
+github.com/goobers/goobers/internal/notification.NewDispatcher # Notification dispatcher constructor reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.Dispatch # Notification dispatch entrypoint reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.dispatchSink # Per-sink delivery helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.persist # Durable receipt helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.startDelivery # Bounded asynchronous sink helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.deliveryAttempt.wait # Delivery timeout helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.resolvePending # Timed-out delivery resolution helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.receipt # Delivery receipt builder reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.idempotencyDigest # Receipt idempotency helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.sinkRef # Provider-neutral sink reference helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.ValidateRequest # Notification contract validator reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.validSHA256Digest # Evidence digest validator reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.sanitizeError # Credential-aware error sanitizer reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.NewRegistry # Notification sink registry constructor reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Registry.Register # Notification sink registration entrypoint reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Registry.lookup # Sink lookup helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.RecordingSink.Kind # Hermetic sink contract method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Version # Hermetic sink contract method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Deliver # Hermetic sink delivery method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Requests # Hermetic sink assertion accessor retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.NewTerminalSink # Development terminal sink constructor reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development terminal sink contract method reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
 github.com/goobers/goobers/internal/engine.Registry.Register # Name+spec registration convenience wrapper over RegisterDefinition (#1251 moved production callers to RegisterDefinition for DSL-version plumbing), retained for tier 3 and exercised by registry package tests.

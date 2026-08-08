@@ -102,6 +102,12 @@ var Journal = map[string]string{
 	"run":   "journal-run.schema.json",
 }
 
+// Notification maps the generic notification request and receipt contracts.
+var Notification = map[string]string{
+	"request": "notification-request.schema.json",
+	"receipt": "notification-receipt.schema.json",
+}
+
 // Entry identifies one embedded schema by its CLI-facing kind and file name.
 type Entry struct {
 	Kind         string
