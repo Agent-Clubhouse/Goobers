@@ -155,6 +155,7 @@ future-design docs above until its child issues land.
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
 | `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
+| `evals/` | EvalSuite design docs (sandbox/adapter API, cassette format) for deterministic, reproducible workflow evaluation | Design — no runner/adapter implementation shipped yet |
 | `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
 | `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
