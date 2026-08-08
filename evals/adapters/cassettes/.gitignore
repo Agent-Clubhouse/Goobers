@@ -1,0 +1,5 @@
+# Default cassette store root: recorded cassettes are local/dev artifacts,
+# not something to commit — populate it locally with `record` or point at
+# a different --cassettes-dir for anything meant to be shared/reviewed.
+*
+!.gitignore
