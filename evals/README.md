@@ -40,25 +40,30 @@ commits:
 
 | Vendored path | Source branch | Source commit |
 |---|---|---|
-| `evals/eval_schema.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `839fd22f` |
+| `evals/eval_schema.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `c334399c` |
 | `evals/judge_plugin_interface.py` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
 | `evals/judge_templates/` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
 | `evals/tests/test_judge_plugin_interface_vendored.py` | `patient-wasp/2664-evals-judge-harness` | `50a89fbb` |
 | `evals/adapters/shim.py`, `evals/adapters/__init__.py` | `noble-salmon/2666-evals-adapter-shim-prototype` | `89fadcab` |
-| `evals/samples/mvp-evals.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `839fd22f` |
+| `evals/samples/mvp-evals.json` | `gritty-bear/2663-evals-dsl-schema-tests` | `c334399c` |
 | `evals/.gitignore`, `evals/adapters/cassettes/.gitignore` | `noble-salmon/2666-evals-adapter-shim-prototype` | `89fadcab` |
 
 **Reconciliation, once the real PRs land:** these paths should be
 overwritten by the actual merges, not coexist with two copies. If a
 vendored file here is byte-identical to what merges, the merge is a no-op
-diff for that file. If the sibling PR's file diverged during its own review
-(e.g. #2665/#2671's `mode` vs `mock_type` field-naming reconciliation that
-was in progress at the time of this PR — see `_adapter_mode()` below), take
-the merged version and re-run `evals/tests/` — this runner reads the
-sibling contracts structurally (attribute/field access), not by pinning to
-a specific vendored revision, so it should keep passing against small
-shape changes; anything that doesn't is a real integration bug worth
-finding now rather than after both land silently out of sync.
+diff for that file. This runner reads the sibling contracts structurally
+(attribute/field access), not by pinning to a specific vendored revision,
+so it should keep passing against small shape changes; anything that
+doesn't is a real integration bug worth finding now rather than after both
+land silently out of sync. One such change already happened during this
+PR's own review: `eval_schema.json`'s `stages[].tool_mocks.<adapter_id>`
+naming was resolved to `mode` (4-value enum), matching the wire-level
+`/adapter/invoke` field exactly — re-synced here (see `eval_schema.json`'s
+and `samples/mvp-evals.json`'s commit above) after `_adapter_mode()` was
+already written to accept both `mode` and the earlier `mock_type` name, so
+no runner code change was needed, only a vendored-file re-sync. The
+`mock_type` fallback in `_adapter_mode()` is left in place as harmless
+backward compatibility for any suite authored against the earlier name.
 
 `server.py` and `cli.py` from the adapter shim prototype were **not**
 vendored — this runner talks to `AdapterShim` in-process (direct Python
@@ -83,13 +88,13 @@ noted in `runner.py`'s module docstring.
    it to human-review rather than the runner fabricating a score. Swapping
    in a real model client is a documented one-method follow-up
    (`_call_model`), not this issue's scope.
-3. **`stages[].tool_mocks`' mode field name.** `EVALS_SANDBOX_API.md` names
-   it `mode`; gritty-bear's own sample suite (`evals/samples/mvp-evals.json`,
-   not vendored here) uses `mock_type` for the same purpose — an
-   in-progress naming reconciliation between #2663 and #2665 as of this
-   writing. `runner.py`'s `_adapter_mode()` accepts either key (preferring
-   `mode`) so this runner works regardless of which name the schema settles
-   on.
+3. **`stages[].tool_mocks`' mode field name — resolved.** `EVALS_SANDBOX_API.md`
+   named it `mode`; an earlier revision of gritty-bear's sample suite used
+   `mock_type` for the same purpose. #2663/#2665/#2671 reconciled this to
+   `mode` (4-value enum, matching the wire-level `/adapter/invoke` field
+   exactly) partway through this PR's own review — vendored files re-synced
+   to the resolved name. `runner.py`'s `_adapter_mode()` still accepts the
+   earlier `mock_type` key as a harmless fallback.
 4. **Shadow-run adapter policy is enforced by the runner, provisionally.**
    `EVALS_SANDBOX_API.md` §6.1 rule 2 says a shadow run's adapter set
    defaults to `no-op` for any adapter with a non-empty `side_effects`

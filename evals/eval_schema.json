@@ -87,7 +87,16 @@
         },
         "tool_mocks": {
           "type": "object",
-          "description": "Per-tool mock/replay configuration keyed by tool name."
+          "description": "Per-adapter mock/replay configuration, keyed by adapter id. Each entry's `mode` selects the adapter's behavior (see EVALS_SANDBOX_API.md); other keys are adapter-specific extras such as a recorded `response` override.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": ["real", "mock", "replay", "no-op"]
+              }
+            }
+          }
         }
       }
     },

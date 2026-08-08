@@ -32,7 +32,7 @@
           "type": "agentic",
           "tool_mocks": {
             "bank_api": {
-              "mock_type": "no-op",
+              "mode": "no-op",
               "response": { "status": "ok", "tx_id": "mock-tx-123" }
             }
           }
