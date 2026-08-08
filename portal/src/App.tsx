@@ -230,6 +230,7 @@ function Portal({
         client={client}
         currentScope={currentScope}
         navigate={navigate}
+        showGettingStarted={mode === "getting-started"}
         standalone={standalone}
         theme={theme}
         toggleTheme={toggleTheme}
