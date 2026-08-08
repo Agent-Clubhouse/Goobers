@@ -34,10 +34,32 @@ of `real`, see §3.2) writes to.
 | `replay` | Looks up a cassette by request signature and returns its recorded response verbatim. | The default mode for CI, side-by-side comparisons, and shadow runs. | No. |
 | `no-op` | Returns a fixed, adapter-declared inert response without touching a cassette or a real endpoint. | Tool calls whose side effect is irrelevant to the scenario under test (e.g. a notification adapter during a shadow run) but whose absence would otherwise fail the stage. | No. |
 
-A stage selects its adapter's mode via `stages[].tool_mocks` in the EvalSuite
-DSL (`eval_schema.json`); see §3.1 for the exact field. Mode selection is
-**per adapter, per stage** — a single scenario may run its `payments` adapter
-in `no-op` while its `catalog` adapter runs in `replay`.
+A stage selects its adapter's mode via `stages[].tool_mocks.<adapter_id>.mode`
+in the EvalSuite DSL (`eval_schema.json`, §2663) — the same field name and
+four-value enum as the wire-level `/adapter/invoke` request (§3.1), so the
+runner forwards the DSL value straight through with no translation:
+
+```json
+{
+  "name": "agentic_action",
+  "type": "agentic",
+  "tool_mocks": {
+    "bank_api": {
+      "mode": "no-op",
+      "response": { "status": "ok", "tx_id": "mock-tx-123" }
+    }
+  }
+}
+```
+
+`response` (and any other adapter-specific configuration, e.g. a mock
+template) is a sibling of `mode` under the same adapter key — `tool_mocks`
+itself stays an unconstrained object in the schema so each adapter can carry
+whatever extra config its `mock`/`no-op` behavior needs without a schema
+change per adapter.
+
+Mode selection is **per adapter, per stage** — a single scenario may run its
+`payments` adapter in `no-op` while its `catalog` adapter runs in `replay`.
 
 `real` is the exception to every rule in this document — see §6 for why it is
 gated separately from the other three.
