@@ -265,9 +265,9 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 
 	connectedWorkflow := ""
 	if opts.seed || checksPassed {
-		set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+		set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 		if err != nil {
-			pf(stderr, "error: load connected configuration: %v\n", err)
+			pf(stderr, "error: load connected configuration: %v (report: %+v)\n", err, report)
 			return 1
 		}
 		labels, workflow := connectSelectorLabels(set, opts.owner, opts.name)

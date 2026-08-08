@@ -5,6 +5,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     $topLevel = @(
         'version'
         'init'
+        'connect'
         'examples'
         'scaffold'
         'validate'
