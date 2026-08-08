@@ -218,6 +218,29 @@ func TestReferenceImplementationHandlesProviderMutationsOnlyWithEvidence(t *test
 	}
 }
 
+func TestReferenceReviewerUsesFindingsAsCompleteBlockerLedger(t *testing.T) {
+	path := filepath.Join(
+		"..", "..", "reference-workflows", "gaggles", "goobers",
+		"goobers", "reviewer", "instructions.md",
+	)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read reviewer instructions: %v", err)
+	}
+	instructions := strings.Join(strings.Fields(string(raw)), " ")
+	for _, required := range []string{
+		"Structured findings are the complete blocker ledger.",
+		"every distinct condition you describe as blocking readiness MUST have a corresponding entry in `findings`",
+		"Never leave a blocker only in prose.",
+		"do not add a proxy finding or describe failing CI as a verdict blocker",
+		"requires exactly one response per entry",
+	} {
+		if !strings.Contains(instructions, required) {
+			t.Errorf("reviewer instructions omit verdict completeness contract %q", required)
+		}
+	}
+}
+
 func TestReferenceWorkflowsCuratorDeclaresRoadmapMutation(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
