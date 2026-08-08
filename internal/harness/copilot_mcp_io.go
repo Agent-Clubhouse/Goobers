@@ -33,7 +33,7 @@ const goobersIORuntimeSubdir = ".goobers/mcp-io"
 // privileged capability or credential access, so auto-granting them needs no
 // per-goober tools: declaration — unlike shell/github, there is no SEC-030
 // reason to gate them behind explicit opt-in.
-var goobersIOTools = []string{"publish_output", "list_inputs", "read_input", "grep_input"}
+var goobersIOTools = []string{"get_run_info", "publish_output", "list_inputs", "read_input", "grep_input"}
 
 // goobersIOAvailableToolNames returns goobersIOTools prefixed the way
 // Copilot's own --available-tools allowlist expects an external server's
@@ -54,15 +54,11 @@ func goobersIOAvailableToolNames() []string {
 	return out
 }
 
-// autoGoobersIOEligible reports whether this invocation has anything for
-// goobers-io to handle: a declared artifactFile output, or any
-// already-materialized upstream input to read. A task with neither gets no
-// auto-wiring — nothing changes for it. This is now the single source of
-// truth for whether goobers-io is active this invocation — see
-// goobersIOAdditionalMCPConfigArg.
+// autoGoobersIOEligible reports whether this invocation has a run identity for
+// goobers-io to expose. Valid agentic invocations always do; artifact and
+// context inputs additionally enable the server's write and read operations.
 func autoGoobersIOEligible(req RunRequest) bool {
-	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
-	return artifactFile != "" || len(req.ContextPaths) > 0
+	return req.Envelope.RunID != ""
 }
 
 // withAutoGoobersIO grants req.Tools the goobers-io tool names when eligible
@@ -107,6 +103,10 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
 		Inputs:       req.ContextPaths,
+		RunID:        req.Envelope.RunID,
+		WorkflowID:   req.Envelope.WorkflowID,
+		TaskID:       req.Envelope.TaskID,
+		Gaggle:       req.Envelope.Gaggle,
 	}
 	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
@@ -134,10 +134,10 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 	return string(data), nil
 }
 
-// goobersIOPromptSection explains how to use whichever goobers-io tools this
-// invocation actually has a reason to call — only the write directive when
-// there's a declared artifactFile, only the read directive when there's
-// upstream context, both when there's both. Getting the model to actually
+// goobersIOPromptSection explains that run identity is available and how to
+// use whichever artifact tools this invocation has a reason to call — only
+// the write directive when there's a declared artifactFile, only the read
+// directive when there's upstream context. Getting the model to actually
 // use these tools instead of a generic file-editing tool requires naming
 // them explicitly here — a goober's own instructions.md describing an output
 // shape ("artifacts.findingsRef pointing at X.md") is not enough on its own;
@@ -147,6 +147,7 @@ func goobersIOPromptSection(req RunRequest) string {
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
 	var b strings.Builder
 	b.WriteString("## goobers-io tools\n\n")
+	b.WriteString("Use `get_run_info` when you need this stage's run, workflow, task, or gaggle identity; do not guess these values.\n\n")
 	if artifactFile != "" {
 		b.WriteString("Call `publish_output` with your complete final output when you are done — do not write it to a file yourself with any other tool.\n\n")
 	}

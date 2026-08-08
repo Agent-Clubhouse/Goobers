@@ -34,6 +34,24 @@ func NewToolset(cfg Config) *Toolset {
 	return &Toolset{cfg: cfg}
 }
 
+// RunInfo is get_run_info's return shape.
+type RunInfo struct {
+	RunID      string `json:"runId"`
+	WorkflowID string `json:"workflowId"`
+	TaskID     string `json:"taskId"`
+	Gaggle     string `json:"gaggle"`
+}
+
+// GetRunInfo returns the stage identity captured in the invocation envelope.
+func (t *Toolset) GetRunInfo() RunInfo {
+	return RunInfo{
+		RunID:      t.cfg.RunID,
+		WorkflowID: t.cfg.WorkflowID,
+		TaskID:     t.cfg.TaskID,
+		Gaggle:     t.cfg.Gaggle,
+	}
+}
+
 // resolveInWorkspace resolves rel against the workspace root using the same
 // no-follow-anywhere-in-the-chain discipline as resolveRooted (see its doc
 // comment) — this is just that logic scoped to t.cfg.Workspace.

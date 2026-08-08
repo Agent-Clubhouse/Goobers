@@ -26,6 +26,25 @@ func newTestToolset(t *testing.T, files map[string]string) (*Toolset, string) {
 	return NewToolset(Config{Workspace: ws, ArtifactFile: "out.md", Inputs: inputs}), ws
 }
 
+func TestGetRunInfo(t *testing.T) {
+	tool := NewToolset(Config{
+		RunID:      "run-123",
+		WorkflowID: "implementation",
+		TaskID:     "implement",
+		Gaggle:     "goobers",
+	})
+	got := tool.GetRunInfo()
+	want := RunInfo{
+		RunID:      "run-123",
+		WorkflowID: "implementation",
+		TaskID:     "implement",
+		Gaggle:     "goobers",
+	}
+	if got != want {
+		t.Fatalf("GetRunInfo() = %+v, want %+v", got, want)
+	}
+}
+
 func TestListInputsReportsLineCount(t *testing.T) {
 	tool, _ := newTestToolset(t, map[string]string{
 		"three-lines":  "a\nb\nc\n",
