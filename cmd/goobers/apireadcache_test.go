@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -621,5 +622,75 @@ func TestAPIReadCacheSnapshotPreservesPullRequestFilteringAndOrder(t *testing.T)
 	}
 	if requests != 1 {
 		t.Fatalf("provider list reads = %d, want 1 shared raw snapshot", requests)
+	}
+}
+
+// TestNewAPIReadCacheCleansStaleListLocksAtStartup covers the per-list-key
+// lock file debris (apiReadListLockPath): lock.Acquire creates its file with
+// O_CREATE but Release only unlocks and closes it, never unlinking it, so
+// every distinct list-request key a scheduler dir has ever seen leaves a
+// permanent zero-byte file behind. newAPIReadCache's startup sweep must
+// remove only the ones old enough to be safely considered abandoned, leave a
+// fresh one untouched, and never touch the single shared cache-file lock
+// (same name, no per-key suffix).
+func TestNewAPIReadCacheCleansStaleListLocksAtStartup(t *testing.T) {
+	dir := t.TempDir()
+
+	stale := apiReadListLockPath(dir, "stale-key")
+	if err := os.WriteFile(stale, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(stale, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := apiReadListLockPath(dir, "fresh-key")
+	if err := os.WriteFile(fresh, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mainLock := filepath.Join(dir, apiReadCacheLockName)
+	if err := os.WriteFile(mainLock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(mainLock, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale list lock survived startup cleanup: err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh list lock was removed: %v", err)
+	}
+	if _, err := os.Stat(mainLock); err != nil {
+		t.Fatalf("shared cache-file lock (not a per-list-key lock) was removed: %v", err)
+	}
+}
+
+// TestNewAPIReadCacheCleanupSkipsHeldLock guards the TOCTOU-avoidance half
+// of the sweep: even a lock file old enough to pass the age check must
+// survive if a peer still holds it — cleanStaleAPIReadCacheLocks confirms
+// via a non-blocking lock.TryAcquire before removing anything.
+func TestNewAPIReadCacheCleanupSkipsHeldLock(t *testing.T) {
+	dir := t.TempDir()
+	held := apiReadListLockPath(dir, "held-key")
+	handle, err := lock.Acquire(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Release() }()
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(held, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(held); err != nil {
+		t.Fatalf("held (even if old) list lock was removed out from under its holder: %v", err)
 	}
 }

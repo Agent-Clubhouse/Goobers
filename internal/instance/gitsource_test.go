@@ -138,6 +138,45 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 	}
 }
 
+// TestGitSourceRemoteAuthenticatesWithRelativeInstanceRoot pins the
+// gitsource half of the askpass-relative-residual finding: NewGitSource
+// resolves InstanceRoot to an absolute path before deriving managedRoot,
+// repositoryDir, and the askpass script path from it, so a relative
+// InstanceRoot (e.g. "." — the default `goobers up`/`goobers apply`
+// instance root) must still authenticate even though this source's git
+// subprocesses set no cmd.Dir override at all (gitOutputWithEnv), relying
+// entirely on the paths baked into GIT_ASKPASS and its --git-dir/-C
+// arguments already being absolute at construction time.
+func TestGitSourceRemoteAuthenticatesWithRelativeInstanceRoot(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "relative-root-v1\n")
+	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "workflow-source-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-source-token")
+	registrar := &gitSourceTestRegistrar{}
+
+	instanceRoot := t.TempDir()
+	t.Chdir(instanceRoot)
+
+	source, err := NewWorkflowGitSource(".", WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Ref:   "main",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, registrar, nil)
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+	if !filepath.IsAbs(source.askpass) {
+		t.Fatalf("askpass path %q is not absolute for relative instance root %q", source.askpass, ".")
+	}
+
+	if _, err := source.Resolve(context.Background()); err != nil {
+		t.Fatalf("Resolve with relative instance root: %v", err)
+	}
+	if auth.accepted.Load() == 0 {
+		t.Fatal("authenticated Git server did not receive the workflow-source token")
+	}
+}
+
 func TestWorkflowGitSourceFailsWhenDedicatedTokenIsWrong(t *testing.T) {
 	repo := newGitSourceTestRepo(t, "remote\n")
 	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "correct-workflow-token")

@@ -695,6 +695,39 @@ func TestTrackingChecklistIssueIDs(t *testing.T) {
 	}
 }
 
+// TestParseBacklogReconcileRunIDRoundTripsFormat pins the shape
+// reserveBacklogClaimReconciliation persists into the claim ledger:
+// claims.go's claimHolderTerminal must keep parsing it to recover the
+// owning run, so the format/parse pair must stay inverses, and anything
+// that only superficially resembles the shape (wrong segment count, a
+// non-numeric pid/seq, or an empty owner) must not parse.
+func TestParseBacklogReconcileRunIDRoundTripsFormat(t *testing.T) {
+	got := formatBacklogReconcileRunID("run-123", 4242, 7)
+	want := "run-123/backlog-reconcile/4242/7"
+	if got != want {
+		t.Fatalf("formatBacklogReconcileRunID = %q, want %q", got, want)
+	}
+	owner, ok := parseBacklogReconcileRunID(got)
+	if !ok || owner != "run-123" {
+		t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, %v), want (\"run-123\", true)", got, owner, ok)
+	}
+
+	for _, malformed := range []string{
+		"",
+		"run-123",
+		"run-123/backlog-reconcile/4242",
+		"run-123/backlog-reconcile/not-a-pid/7",
+		"run-123/backlog-reconcile/4242/not-a-seq",
+		"/backlog-reconcile/4242/7",
+		"run-123/backlog-reconcile/4242/7/extra",
+		"run-123/some-other-kind/4242/7",
+	} {
+		if owner, ok := parseBacklogReconcileRunID(malformed); ok {
+			t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, true), want ok=false", malformed, owner)
+		}
+	}
+}
+
 func defaultBacklogStalenessPolicy() backlogStalenessPolicy {
 	return backlogStalenessPolicy{thresholdDays: int(defaultStaleAfter / (24 * time.Hour))}
 }

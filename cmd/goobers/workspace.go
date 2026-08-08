@@ -78,7 +78,15 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	workcopiesRoot := layout.WorkcopiesBaseDir()
+	// GIT_ASKPASS is resolved by git against its own process cwd, not this
+	// command's — a relative workcopiesRoot (e.g. the default instance root
+	// ".") produces an askpass path that only resolves by accident. Mirror
+	// the daemon-path fix (a3b2e636, cmd/goobers/runnerwiring.go) here.
+	workcopiesRoot, err := filepath.Abs(layout.WorkcopiesBaseDir())
+	if err != nil {
+		pf(stderr, "error: resolve workcopies root: %v\n", err)
+		return 1
+	}
 	cloneURL := repoCloneURL
 	if cloneURL == nil {
 		cloneURL = runner.DefaultRepoCloneURL

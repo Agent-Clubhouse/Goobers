@@ -107,7 +107,16 @@ func recoverClaims(
 		}
 		if terminal {
 			terminalEntries = append(terminalEntries, entry)
-			if _, prepared := terminalUpdates[entry.RunID]; !prepared {
+			if _, isReconcileClaim := parseBacklogReconcileRunID(entry.RunID); isReconcileClaim {
+				// A backlog-reconcile claim's RunID (backlogreconcile.go) is a
+				// synthesized lease identity, not a workflow run — it has no
+				// rebase-pr/implement stages of its own for
+				// preparePRRemediationNoopUpdate to find, and FindRunDir
+				// rejects the id outright (it contains "/"). claimHolderTerminal
+				// above already resolved terminality against the OWNING run;
+				// that run's own claim (if any) still gets its own remediation
+				// update prepared when this loop reaches it directly.
+			} else if _, prepared := terminalUpdates[entry.RunID]; !prepared {
 				update, err := preparePRRemediationNoopUpdate(l, entry.RunID)
 				if err != nil {
 					return nil, err

@@ -168,6 +168,53 @@ func reconcileBacklogMetadata(
 	return reconciled, nil
 }
 
+// backlogReconcileRunIDComponent is the fixed literal between the owning
+// run's id and the pid/sequence suffix in a synthesized backlog-reconcile
+// claim RunID (formatBacklogReconcileRunID). instance.Layout.FindRunDir
+// rejects any run id containing "/" (runtime.go:139), so a claim reaper
+// cannot look this synthesized id up directly — it must recover the OWNING
+// run's id via parseBacklogReconcileRunID first and inspect that instead.
+const backlogReconcileRunIDComponent = "backlog-reconcile"
+
+// formatBacklogReconcileRunID synthesizes the claim RunID reserved for one
+// backlog item's stale-metadata inspection: "<owner-run>/backlog-reconcile/
+// <pid>/<seq>". This value is persisted directly into the claim ledger, so
+// its shape must stay in sync with parseBacklogReconcileRunID below —
+// existing ledger entries already use this exact format and must keep
+// parsing after any change here.
+func formatBacklogReconcileRunID(ownerRunID string, pid int, seq uint64) string {
+	return fmt.Sprintf("%s/%s/%d/%d", ownerRunID, backlogReconcileRunIDComponent, pid, seq)
+}
+
+// parseBacklogReconcileRunID recovers the owning run id from a claim RunID
+// produced by formatBacklogReconcileRunID. ok is false for any other shape,
+// including a plain (non-reconcile) run id or a reconcile-shaped id whose
+// pid/sequence suffix isn't purely numeric — callers must treat that as
+// unparseable, not guess at a prefix.
+func parseBacklogReconcileRunID(runID string) (ownerRunID string, ok bool) {
+	before, after, found := strings.Cut(runID, "/"+backlogReconcileRunIDComponent+"/")
+	if !found || before == "" {
+		return "", false
+	}
+	pidPart, seqPart, ok := strings.Cut(after, "/")
+	if !ok || !isDigitString(pidPart) || !isDigitString(seqPart) {
+		return "", false
+	}
+	return before, true
+}
+
+func isDigitString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func reserveBacklogClaimReconciliation(
 	l instance.Layout,
 	repo providers.RepositoryRef,
@@ -179,12 +226,7 @@ func reserveBacklogClaimReconciliation(
 	if ownerRunID == "" {
 		ownerRunID = "standalone"
 	}
-	runID := fmt.Sprintf(
-		"%s/backlog-reconcile/%d/%d",
-		ownerRunID,
-		os.Getpid(),
-		backlogReconcileReservationSequence.Add(1),
-	)
+	runID := formatBacklogReconcileRunID(ownerRunID, os.Getpid(), backlogReconcileReservationSequence.Add(1))
 	reservation := &backlogReconcileReservation{
 		itemID:   itemID,
 		gaggle:   gaggle,
