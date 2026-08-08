@@ -135,6 +135,35 @@ def test_stage_missing_type_is_rejected():
     assert_invalid(suite)
 
 
+def test_tool_mocks_valid_adapter_mode_is_accepted():
+    # stages[].tool_mocks.<adapter_id>.mode, per EVALS_SANDBOX_API.md's
+    # real/mock/replay/no-op contract (#2671/#2672 coordination).
+    suite = minimal_valid_suite()
+    suite["scenarios"][0]["stages"] = [
+        {
+            "name": "step",
+            "type": "agentic",
+            "tool_mocks": {"bank_api": {"mode": "no-op", "response": {"status": "ok"}}},
+        }
+    ]
+    schema = load_schema()
+    validator = Draft7Validator(schema)
+    errors = list(validator.iter_errors(suite))
+    assert not errors, f"Expected valid tool_mocks.mode to pass: {errors}"
+
+
+def test_tool_mocks_invalid_adapter_mode_is_rejected():
+    suite = minimal_valid_suite()
+    suite["scenarios"][0]["stages"] = [
+        {
+            "name": "step",
+            "type": "agentic",
+            "tool_mocks": {"bank_api": {"mode": "not-a-real-mode"}},
+        }
+    ]
+    assert_invalid(suite)
+
+
 @pytest.mark.parametrize("threshold", [-0.1, 1.1])
 def test_judge_threshold_out_of_range_is_rejected(threshold):
     suite = minimal_valid_suite()
