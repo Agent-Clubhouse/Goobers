@@ -423,6 +423,15 @@ func (p *ADOProvider) lookupBranchSHA(ctx context.Context, repo RepositoryRef, b
 }
 
 func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, error) {
+	return p.repoURLVersion(repo, "7.1", elems...)
+}
+
+// repoURLVersion builds a git-repository-scoped ADO endpoint with an explicit
+// api-version, mirroring workURL/workURLVersion. The PR-labels endpoints
+// (AddPullRequestLabels/RemovePullRequestLabel) are published only under the
+// "7.1-preview.1" version and reject a plain "7.1", so they cannot use the
+// 7.1-pinned repoURL.
+func (p *ADOProvider) repoURLVersion(repo RepositoryRef, version string, elems ...string) (string, error) {
 	repoID := repo.ID
 	if repoID == "" {
 		repoID = repo.Name
@@ -433,7 +442,7 @@ func (p *ADOProvider) repoURL(repo RepositoryRef, elems ...string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	return addQuery(endpoint, url.Values{"api-version": []string{"7.1"}})
+	return addQuery(endpoint, url.Values{"api-version": []string{version}})
 }
 
 func (p *ADOProvider) workURL(project string, elems ...string) (string, error) {

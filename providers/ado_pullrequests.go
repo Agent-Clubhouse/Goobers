@@ -127,6 +127,15 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 	return nil
 }
 
+// adoLabelNames maps ADO PR labels to their bare names.
+func adoLabelNames(labels []adoLabel) []string {
+	names := make([]string, 0, len(labels))
+	for _, l := range labels {
+		names = append(names, l.Name)
+	}
+	return names
+}
+
 // PollPullRequest reports an Azure DevOps pull request's review decision and
 // combined check state. The check state is derived from the repository's
 // blocking branch-policy evaluations (build validation, status checks, required
@@ -165,6 +174,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
+		Labels:             adoLabelNames(pr.Labels),
 		URL:                prURL,
 		Integrity:          apiintegrity.Unapproved,
 	}

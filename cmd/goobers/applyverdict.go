@@ -587,6 +587,18 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 		if !githubSelected {
+			// Azure DevOps non-pass bridge (remediation-wiring plan Part 1): a
+			// needs-changes/fail verdict that is NOT objectively moot is handed off
+			// to the pr-remediation loop — a failed goobers/validation PR status, a
+			// goobers:needs-remediation PR label (via the native PR-labels endpoint,
+			// never UpdateWorkItem(ID: PR#), the wrong-object hazard), and the
+			// findings + verdict-json on a PR thread — instead of the old hard-fail.
+			// The GitHub-only duplicate/superseded-sibling closes below read PR
+			// *issue* comments and submit a native review, neither of which exists
+			// on ADO, so the ADO path returns here.
+			if adoProvider, ok := provider.(*providers.ADOProvider); ok {
+				return publishADONonPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+			}
 			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 			return 1
 		}
@@ -611,9 +623,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// label write) does not apply on ADO: there is no self-review to submit,
 		// and UpdateWorkItem(ID: PR#) would mutate the unrelated work item that
 		// shares the PR's numeric id (the wrong-object hazard, ~789 below).
-		// Non-pass ADO verdicts stay unsupported here for now — an objectively
-		// moot one is already closed above; the rest defer to the ADO merge
-		// epic (#2061).
+		// Non-pass ADO verdicts are handled by the earlier publishADONonPassVerdict
+		// bridge (they return before reaching here); this gate is reached on ADO
+		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
 			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, resultFile, stdout, stderr)
 		}
@@ -1435,6 +1447,73 @@ func publishADOPassVerdict(
 	}
 	pf(stdout, "approved PR #%d at %s via goobers/validation PR status\n", selectedNumber, current.HeadSHA)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(apiv1.VerdictPass), "", stderr)
+}
+
+// publishADONonPassVerdict publishes a non-pass (needs-changes or fail)
+// merge-review verdict on Azure DevOps and hands it off to the pr-remediation
+// loop — the symmetric counterpart to publishADOPassVerdict. ADO has neither a
+// native changes-requested review to submit nor the GitHub sticky-comment/label
+// verdict transport (the GitHub path's UpdateWorkItem(ID: PR#) would address the
+// unrelated work item that shares the PR's numeric id — the wrong-object
+// hazard), so the verdict rides on three provider-native surfaces, each the ADO
+// analog of a GitHub handoff channel:
+//
+//  1. A failed goobers/validation PR status (the same surface publishADOPassVerdict
+//     and report-pr-status publish) an ADO status-check branch policy gates the
+//     merge on. needs-changes and fail BOTH publish CheckStateFailing ("failed"):
+//     the PR must not land until reworked, and a status genre cannot carry the
+//     needs-changes/fail split — the remediation label below is the routing
+//     signal, exactly as GitHub carries it in verdictLabel.
+//  2. The goobers:needs-remediation PR label, written via the native ADO
+//     PR-labels endpoint (AddPullRequestLabels), NEVER UpdateWorkItem(ID: PR#).
+//     ListPullRequests already surfaces ADO PR labels, so pr-remediation's
+//     existing selector (remediationPriorityFor) fires on it unmodified.
+//  3. The findings + verdict-json machine payload posted as a PR thread comment
+//     (PostPullRequestThreadComment) — the ADO analog of the GitHub sticky
+//     status comment. gather-pr-context reads this thread back to recover the
+//     findings the remediating agent works from, so the verdict is SHA-pinned to
+//     the reviewed head/base (verified equal to the deterministic pin by
+//     verdictPinVoidReason above) before rendering.
+//
+// It emits the decision into the result file so merge-review's published-verdict
+// gate routes away from merge (any non-pass decision terminates), and returns 0
+// so the run completes cleanly instead of the old hard-fail. See the ADO merge
+// epic (#2061).
+func publishADONonPassVerdict(
+	ctx context.Context,
+	provider *providers.ADOProvider,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	current providers.PullRequestSummary,
+	verdict apiv1.Verdict,
+	resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	pullID := strconv.Itoa(selectedNumber)
+	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
+		Repository:  repo,
+		PullID:      pullID,
+		Genre:       "goobers",
+		Name:        "validation",
+		State:       providers.CheckStateFailing,
+		Description: "goobers merge-review verdict: " + string(verdict.Decision),
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
+	}
+	if err := provider.AddPullRequestLabels(ctx, repo, pullID, []string{needsRemediationLabel}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("apply %s label to PR #%d", needsRemediationLabel, selectedNumber), err, resultFile)
+	}
+	// SHA-pin the published verdict to the reviewed state (== the deterministic
+	// pin, checked above) so gather-pr-context can trust the head/base it reads
+	// back from the thread, mirroring the GitHub path's posted.HeadSHA/BaseSHA.
+	verdict.HeadSHA = current.HeadSHA
+	verdict.BaseSHA = current.BaseSHA
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, %s label, and PR thread\n",
+		verdict.Decision, selectedNumber, current.HeadSHA, needsRemediationLabel)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {

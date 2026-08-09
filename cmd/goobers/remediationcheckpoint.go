@@ -696,6 +696,16 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Azure DevOps reaches a NEW branch that talks to the small ADO primitive
+	// surface (PR threads + PR labels + PollPullRequest), mirroring the
+	// merge-review ADO stages (runPRSelectADO, runGatherSiblingContextADO). It is
+	// entered before any github:pr:write token is resolved — ADO carries its own
+	// org-scoped auth (remediation-wiring-plan §3.5). The forced-escalation flags
+	// (--escalate/--escalation-outcome/--budget) are already parsed and validated
+	// above, so they flow in; every other input the ADO body reads itself.
+	if repo.Provider == providers.ProviderADO {
+		return runRemediationCheckpointADO(root, repo, selectedNumber, *escalateReason, forcedOutcome, *budgetOverride, stdout, stderr)
+	}
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -1177,6 +1187,338 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		selectedNumber, cycles, renderRemediationAttempts(attempts), digest,
 	)
 	return 0
+}
+
+// runRemediationCheckpointADO is the Azure DevOps counterpart of
+// runRemediationCheckpoint's loop-control body (remediation-wiring-plan §3.5).
+// ADO gaps every surface the GitHub path leans on for this stage, so the loop is
+// rebuilt on the small ADO primitives Phase 1 added, reached only when the
+// routed repo is ADO — every GitHub call site stays byte-identical:
+//
+//   - The sticky remediation-state comment — the durable cross-run channel that
+//     carries the per-cause attempt counters, the last diff digest, and (the
+//     single most important checkpoint output for the loop) the pre-remediation
+//     head SHA push-remediated leases against — lives on a PR THREAD:
+//     posted/updated via PostPullRequestThreadComment /
+//     UpdatePullRequestThreadComment and read back via
+//     ListPullRequestThreadComments. ADO has no PR-comment transport, so the
+//     GitHub ListComments/UpdateComment/UpdateWorkItem(comment) trio — all of
+//     which address WORK ITEMS on ADO (the PR-as-work-item wrong-object hazard,
+//     §0.5) — is never reached.
+//   - Escalation (add goobers:merge-escalated, clear goobers:needs-remediation)
+//     and the self-heal clear (remove goobers:merge-escalated) go through the
+//     native PR-LABEL surface (AddPullRequestLabels / RemovePullRequestLabel),
+//     NEVER UpdateWorkItem(ID: PR#) (the GitHub path's :1121 / :1151), which on
+//     ADO mutates the unrelated work item that shares the PR's numeric id.
+//
+// Two ADO provider facts shape it: GetPullRequest → PollPullRequest does NOT
+// populate ADO PR labels (only ListPullRequests maps them), so the PR's live
+// head/base/state come from GetPullRequest while its labels come from the
+// ListPullRequests snapshot; and there is no per-ref check surface, none of
+// which this loop-control stage needs.
+//
+// Deliberately narrower than the GitHub body for the first working ADO loop (§6
+// scope cut): the escalation self-heal snapshot (escalationStillBlocks /
+// base-advance unpark, which needs BranchTipSHA + the sibling scan) is
+// RECORD-ONLY here — pr-select's ADO branch does not consult it (§6) — and the
+// structural-collision, sibling-overlap-context, no-op-guard, and multi-read
+// stabilization paths are omitted. A forced escalation (a reviewer verdict of
+// fail via --escalate, or a declared-policy exclusion) skips the git checkout +
+// diff digest exactly as on GitHub.
+func runRemediationCheckpointADO(
+	root string,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	escalateReason string,
+	forcedOutcome remediationEscalationOutcome,
+	budgetOverride int,
+	stdout, stderr io.Writer,
+) int {
+	provider, err := newADOProviderForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	base := providerInput("base", providerBaseBranch())
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
+	pullID := strconv.Itoa(selectedNumber)
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
+	moot := func() int {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
+		if err := writeCheckpointResult(stderr, false, selectedNumber, "", "", remediationEscalation{}); err != nil {
+			return 1
+		}
+		return 0
+	}
+
+	// A forced escalation is not attributable to an observed remediation cause,
+	// consults no digest, and touches no git — decide it before resolving the
+	// push credential or checking out the branch, exactly like the GitHub body.
+	// *escalateReason (the reviewer-fail path) wins if both are set.
+	policyExcluded, err := strconv.ParseBool(providerInput("policyExcluded", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid policyExcluded input: %v\n", err)
+		return 1
+	}
+	escalateReasonValue := escalateReason
+	if escalateReasonValue == "" && policyExcluded {
+		escalateReasonValue = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
+	}
+	forced := escalateReasonValue != ""
+	if budgetOverride < 0 {
+		pf(stderr, "error: --budget must not be negative\n")
+		return 1
+	}
+
+	// ADO's ListPullRequests is the ONLY surface that maps native PR labels
+	// (GetPullRequest → PollPullRequest leaves them empty), so the escalated/
+	// needs-remediation label reads below must come from it. GetPullRequest then
+	// supplies the authoritative live head/base/state (the snapshot may be stale
+	// and leaves State empty on ADO); the labels are carried over.
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+	})
+	if err != nil {
+		return failProviderStage(stderr, "list pull requests", err, "")
+	}
+	var listedLabels []string
+	found := false
+	for i := range prs {
+		if prs[i].Number == selectedNumber {
+			listedLabels = prs[i].Labels
+			found = true
+			break
+		}
+	}
+	if !found {
+		// ADO's active-PR list excludes completed/abandoned PRs, so a vanished
+		// selection is moot — nothing to remediate (#392).
+		return moot()
+	}
+	refreshed, err := provider.GetPullRequest(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if refreshed.State != "open" || refreshed.Merged {
+		return moot()
+	}
+	refreshed.Labels = listedLabels
+	current := &refreshed
+
+	var causes []remediationCause
+	var budgets remediationBudgets
+	if !forced {
+		rawCauses := providerInput("remediationCauses", "")
+		if strings.TrimSpace(rawCauses) != "" {
+			causes, err = parseRemediationCauses(rawCauses)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			budgets, err = declaredRemediationBudgets(budgetOverride)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+		}
+	}
+	hasObservedCause := len(causes) > 0
+
+	// This cycle's diff digest against the PR's base — the same-diff stall
+	// signal (§6 D5). Only on the non-forced path, and only after the stage's own
+	// re-checkout of the PR branch (this stage gets a fresh worktree). The git
+	// operations are provider-neutral and work on ADO with the repo:push
+	// credential; a forced escalation skips them entirely, so its repo:push is
+	// never required.
+	digest := ""
+	if !forced {
+		pushToken, tokErr := providerToken(capability.RepoPush)
+		if tokErr != nil {
+			pf(stderr, "error: %v\n", tokErr)
+			return 1
+		}
+		onBranch, brErr := currentBranchIs(".", current.Head)
+		if brErr != nil {
+			pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, brErr)
+			return 1
+		}
+		if !onBranch {
+			fetchedSHA, coErr := checkoutExistingBranch(".", current.Head, pushToken)
+			if coErr != nil {
+				pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, coErr)
+				return 1
+			}
+			current.HeadSHA = fetchedSHA
+		}
+		digest, err = diffDigest(".", current.BaseSHA)
+		if err != nil {
+			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
+			return 1
+		}
+	}
+
+	rawComments, err := provider.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("list thread comments on PR #%d", selectedNumber), err, "")
+	}
+	prior, priorCommentID, _ := latestRemediationStateForPR(current.Body, rawComments)
+
+	// An operator clearing goobers:merge-escalated is an explicit request for a
+	// fresh attempt: the repass counter lives in the sticky comment, not the
+	// label, so drop the whole prior record (keeping priorCommentID so this cycle
+	// still edits the sticky thread in place rather than posting a new one).
+	if prior.Escalated && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		pf(stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
+			selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
+		prior = remediationState{}
+	}
+
+	watermark := latestCommentTimestamp(rawComments)
+	if watermark == "" {
+		watermark = prior.LastSeenCommentAt
+	}
+
+	stalled := remediationStalled(prior, digest, current.BaseSHA)
+	cycles := prior.Cycles + 1
+	exhaustedCause, exceeded := exhaustedRemediationCause(prior.AttemptsByCause, causes, budgets)
+
+	if exceeded || stalled || forced {
+		reason := ""
+		escalation := remediationEscalation{
+			Outcome:         remediationOutcomeDidNotConverge,
+			Attempted:       true,
+			AttemptedCauses: attemptedRemediationCauses(prior.AttemptsByCause),
+		}
+		if forced {
+			escalation.Outcome = forcedOutcome
+		}
+		if exceeded {
+			escalation.Outcome = remediationOutcomeBudgetExhausted
+			reason = fmt.Sprintf(
+				"remediation cause %q exhausted its budget after %d/%d attempts",
+				exhaustedCause,
+				prior.AttemptsByCause.forCause(exhaustedCause),
+				budgets.forCause(exhaustedCause),
+			)
+		}
+		if stalled {
+			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
+		}
+		// A caller-supplied or policy-excluded reason always wins the prose.
+		if forced {
+			reason = escalateReasonValue
+		}
+		if policyExcluded {
+			escalation.Outcome = remediationOutcomePolicyExcluded
+			escalation.Attempted = false
+			escalation.AttemptedCauses = nil
+		}
+		escalation.Reason = reason
+		// Forced escalations observe no cause; record none so the churn/self-heal
+		// fields stay consistent with the GitHub shape even though ADO's
+		// record-only self-heal never reads them back.
+		escalationCauses := causes
+		if forced {
+			escalationCauses = nil
+		}
+		escalation.Generation = nextEscalationGeneration(prior, current.HeadSHA)
+		state := remediationState{
+			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
+			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+			Escalated: true, EscalatedReason: reason,
+			EscalationOutcome: escalation.Outcome, RemediationAttempted: escalation.Attempted,
+			AttemptedCauses:  escalation.AttemptedCauses,
+			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
+			LastSeenCommentAt:    watermark,
+			EscalationCauses:     escalationCauses,
+			EscalationGeneration: escalation.Generation,
+		}
+		// Escalate via the native PR-label surface — NEVER UpdateWorkItem(PR#).
+		// Add merge-escalated first, then clear needs-remediation, so a failure
+		// between the two leaves the PR blocked (escalated) rather than
+		// selectable-but-unmarked.
+		if err := provider.AddPullRequestLabels(ctx, repo, pullID, []string{remediationEscalatedLabel}); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("escalate PR #%d", selectedNumber), err, "")
+		}
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, needsRemediationLabel); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from PR #%d", selectedNumber), err, "")
+		}
+		if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, pullID, priorCommentID, renderRemediationComment(state)); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
+		}
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, escalation); err != nil {
+			return 1
+		}
+		pf(stdout, "escalated PR #%d (escalation %d for head %s): %s\n", selectedNumber, escalation.Generation, current.HeadSHA, reason)
+		return 0
+	}
+
+	attempts := prior.AttemptsByCause
+	for _, cause := range causes {
+		attempts.increment(cause)
+	}
+	state := remediationState{
+		Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: digest,
+		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+		LastSeenCommentAt: watermark,
+	}
+	// A self-healed escalation (head/base advanced since the park): clear the
+	// label before replacing the escalation snapshot, so a failed clear leaves
+	// the PR parked rather than in a non-escalated state that fails closed.
+	if hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, remediationEscalatedLabel); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", selectedNumber), err, "")
+		}
+	}
+	if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, pullID, priorCommentID, renderRemediationComment(state)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
+	}
+	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
+		return 1
+	}
+	if !hasObservedCause {
+		pf(
+			stdout,
+			"recorded no-cause checkpoint for PR #%d: cycle %d, counters unchanged, digest %s; remediation halted without consuming an allowance\n",
+			selectedNumber, cycles, digest,
+		)
+		return 0
+	}
+	pf(
+		stdout,
+		"recorded checkpoint for PR #%d: cycle %d, attempts by cause %s, digest %s\n",
+		selectedNumber, cycles, renderRemediationAttempts(attempts), digest,
+	)
+	return 0
+}
+
+// postOrUpdateStickyThreadComment is the ADO analog of postOrUpdateStickyComment:
+// it edits the existing sticky remediation-state thread comment in place when one
+// was found (existingCommentID is the composite "<pullID>/<threadId>/<commentId>"
+// a prior List/Post returned), otherwise opens a new PR thread. It never touches
+// wit/workitems (the PR-as-work-item wrong-object hazard the GitHub
+// UpdateWorkItem(comment) fallback would trip on ADO).
+func postOrUpdateStickyThreadComment(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pullID, existingCommentID, body string) error {
+	if existingCommentID != "" {
+		return provider.UpdatePullRequestThreadComment(ctx, repo, existingCommentID, body)
+	}
+	_, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, body)
+	return err
+}
+
+// postOrRecreateRemediationThreadComment is postOrRecreateRemediationComment for
+// ADO threads: a human may delete the sticky thread comment after the list read,
+// so a confirmed not-found on the in-place update falls back to posting a fresh
+// thread. Every other provider error stays stage-fatal.
+func postOrRecreateRemediationThreadComment(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pullID, existingCommentID, body string) error {
+	err := postOrUpdateStickyThreadComment(ctx, provider, repo, pullID, existingCommentID, body)
+	if existingCommentID == "" || !providers.IsNotFoundError(err) {
+		return err
+	}
+	return postOrUpdateStickyThreadComment(ctx, provider, repo, pullID, "", body)
 }
 
 func parseRemediationCauses(raw string) ([]remediationCause, error) {
