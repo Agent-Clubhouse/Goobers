@@ -133,6 +133,18 @@ const (
 		"### Run it\n\n" +
 		"```sh\n" +
 		"bin/goobers run quickstart ./tutorial-instance\n" +
+		"```\n\n" +
+		"`run` waits for the run to reach a terminal state by default. This is a real\n" +
+		"autonomous run against your disposable repository, so it takes noticeably\n" +
+		"longer than the offline demo: it claims one approved issue, implements it,\n" +
+		"performs an advisory code-review task, pushes the run branch, and opens a\n" +
+		"pull request. It is **not for production**: it intentionally omits CI gates,\n" +
+		"remediation loops, bounded escalation, merge policy, and issue close-out so\n" +
+		"the onboarding happy path has no stall points.\n\n" +
+		"`dashboard` blocks until interrupted, so open it in a second terminal to\n" +
+		"browse the run in the Portal, and press Ctrl-C there when you're done:\n\n" +
+		"```sh\n" +
+		"# second terminal\n" +
 		"bin/goobers dashboard ./tutorial-instance\n" +
 		"```\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
