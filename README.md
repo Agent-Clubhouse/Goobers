@@ -113,6 +113,11 @@ first-run path: a credential-free local demo, a disposable GitHub-backed run,
 and then a regular instance using the
 [production-oriented configuration examples](config-examples/README.md).
 
+Prefer a guided walkthrough over typing CLI commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](docs/cli/README.md#goobers-getting-started).
+
 For deeper context, read the
 [historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
 [architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/),
