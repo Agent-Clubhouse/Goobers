@@ -1,8 +1,7 @@
 package main
 
 // validatereality.go teaches `goobers validate` the blind spots the
-// 2026-08-08 cold-start exercise proved certify never-working configs
-// (docs/audits/2026-08-08-gaggle-reliability/coldstart/, README items 1-2):
+// 2026-08-08 cold-start exercise proved certify never-working configs:
 //
 //   - static (every validate run): a gaggle/stage requiredCapabilities token
 //     no instance runner claims (CAP003 — dotnet #7, swift probes), and an

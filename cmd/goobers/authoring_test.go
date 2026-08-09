@@ -59,8 +59,7 @@ func TestSchemaEmitsEveryEmbeddedContractByteForByte(t *testing.T) {
 	}
 }
 
-// Reproduces the cold-start probes (docs/audits/2026-08-08-gaggle-reliability/
-// coldstart): every flavor reached for `goobers schema instance` and
+// Reproduces the cold-start probes: every flavor reached for `goobers schema instance` and
 // `goobers explain instance.repos` on the first file `goobers init` tells them
 // to edit, and got `unknown schema kind "instance"` /
 // `unknown selector "instance.repos"` — the only major object with no

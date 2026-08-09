@@ -89,8 +89,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps merge epic (docs/audits/2026-08-08-gaggle-reliability/
-	// ado-conformance/merge-wiring-plan.md §1b): pr-select's ADO branch dispatches
+	// Azure DevOps merge epic: pr-select's ADO branch dispatches
 	// selection through the provider-neutral Dispatcher and never resolves a
 	// github:pr:write token. Every GitHub path below stays byte-identical — the
 	// ADO behavior is a wholly separate function reached only on this switch.
@@ -372,9 +371,8 @@ func pullRequestsForSelection(
 	return prs, openPRs, nil
 }
 
-// runPRSelectADO is pr-select's Azure DevOps branch (ADO merge epic —
-// docs/audits/2026-08-08-gaggle-reliability/ado-conformance/merge-wiring-plan.md
-// §1b/§2/§7-step-4). It mirrors runPRSelect's GitHub selection, but through the
+// runPRSelectADO is pr-select's Azure DevOps branch (ADO merge epic). It
+// mirrors runPRSelect's GitHub selection, but through the
 // provider-neutral *Dispatcher rather than a concrete *providers.GitHubProvider:
 //
 //   - The provider is built from config-sourced ADO auth via

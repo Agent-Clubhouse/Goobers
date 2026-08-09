@@ -115,8 +115,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// GitHub-only helpers below (tutor classification, branch cleanup) stay
 	// unreachable. Every conjunct check between here and the land is shared and
 	// unchanged; every GitHub code path stays byte-identical (all ADO behavior
-	// is gated behind isADO, which is always false on GitHub). See the ADO merge
-	// epic: docs/audits/2026-08-08-gaggle-reliability/ado-conformance/merge-wiring-plan.md.
+	// is gated behind isADO, which is always false on GitHub) — part of the ADO
+	// merge epic.
 	isADO := repo.Provider == providers.ProviderADO
 
 	// prProvider is the concrete *GitHubProvider the GitHub-only helpers

@@ -68,8 +68,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps land oracle (docs/audits/2026-08-08-gaggle-reliability/
-	// ado-conformance/merge-wiring-plan.md §1d/§7-step-2). Dispatch to the ADO
+	// Azure DevOps land oracle (ADO merge epic). Dispatch to the ADO
 	// branch here so the GitHub-only merge-queue machinery below stays
 	// unreachable on ADO: the opt-out DequeuePullRequest, the eviction/timeout
 	// PR-as-work-item remediation labeling (UpdateWorkItem(ID: prNumber) —

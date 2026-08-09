@@ -18,8 +18,8 @@ import (
 )
 
 // `goobers scaffold gaggle` is the missing scaffold-ladder rung the cold-start
-// exercise found (docs/audits/2026-08-08-gaggle-reliability/coldstart/: swift
-// #1, dotnet #9 — "there is no `goobers scaffold gaggle` and no rename path
+// exercise found (swift #1, dotnet #9 — "there is no `goobers scaffold gaggle`
+// and no rename path
 // (5 fields, 2 files, 1 directory by hand)"). With no --from it creates an
 // empty gaggle (directory + gaggle.yaml + manifest registration), matching
 // `scaffold goober`/`scaffold workflow`'s additive, never-clobber shape. With

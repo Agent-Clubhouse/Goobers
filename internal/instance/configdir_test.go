@@ -81,8 +81,7 @@ func TestLoadConfigDirValid(t *testing.T) {
 }
 
 // TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings reproduces the
-// cold-start SKILL002 probe (docs/audits/2026-08-08-gaggle-reliability/
-// coldstart/: "goobers init scaffolds goobers whose spec.skills reference
+// cold-start SKILL002 probe ("goobers init scaffolds goobers whose spec.skills reference
 // packages init does not create — its own post-init validation prints
 // SKILL002 warnings on a virgin scaffold", hit by all five cold-start
 // flavors). A virgin copy of the starter template must now validate with
