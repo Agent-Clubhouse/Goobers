@@ -27,6 +27,7 @@ new 2.0 epic (#2695/#2698/#2700), and repass accounting overlaps approved
 - `parallel-authoring-defaults-and-discoverability.md` — silent-drop fix, projection parity, concurrency default
 
 **Tier 3 — parity and DX:**
+- `ado-merge-review-and-lifecycle-parity.md` — **[EPIC, customer-blocking]** the ADO half that isn't wired: merge chain, lifecycle close, assignee/identity parity (added 2026-08-09 from the live deep-dive; claim-tag leak already fixed on-branch)
 - `ado-capability-vocabulary-dead-values-and-github-spelled-requirements.md` — note: the `report-pr-status` fix already exists in v_next and needs **backporting to v_current**; that slice is Tier-1 severity for any ADO user
 - `ado-onboarding-path-parity.md`
 - `ci-command-multi-step-and-local-ci-inheritance.md` — docs stopgap is S and independently shippable
