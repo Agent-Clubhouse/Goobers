@@ -132,25 +132,45 @@ func adoCheckpointMux(t *testing.T, repo providers.RepositoryRef, prNumber int, 
 		writeJSONResp(t, w, map[string]interface{}{"id": 100, "content": body.Content})
 	})
 
-	// PR-label add (POST) + remove (DELETE) — the hazard-free escalate/clear.
+	// PR-label list (GET, for GetPullRequest's label fetch and the name->id
+	// resolution RemovePullRequestLabel does), add (POST), and remove-by-id
+	// (DELETE) — the hazard-free escalate/clear. ADO 400s on delete-by-name for
+	// colon-bearing names, so removal resolves the id via GET then DELETEs it.
+	labelIDs := make([]interface{}, 0, len(prLabels))
+	nameByLabelID := map[string]string{}
+	for i, name := range prLabels {
+		lid := "label-guid-" + strconv.Itoa(i)
+		nameByLabelID[lid] = name
+		labelIDs = append(labelIDs, map[string]interface{}{"id": lid, "name": name})
+	}
 	mux.HandleFunc(prBase+"/"+id+"/labels", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("labels method = %s, want POST", r.Method)
+		switch r.Method {
+		case http.MethodGet:
+			writeJSONResp(t, w, map[string]interface{}{"value": labelIDs})
+		case http.MethodPost:
+			var body struct {
+				Name string `json:"name"`
+			}
+			decodeFakeJSON(r, &body)
+			rec.mu.Lock()
+			rec.addedLabels = append(rec.addedLabels, body.Name)
+			rec.mu.Unlock()
+			writeJSONResp(t, w, map[string]interface{}{"id": "label-guid", "name": body.Name})
+		default:
+			t.Fatalf("labels method = %s, want GET or POST", r.Method)
 		}
-		var body struct {
-			Name string `json:"name"`
-		}
-		decodeFakeJSON(r, &body)
-		rec.mu.Lock()
-		rec.addedLabels = append(rec.addedLabels, body.Name)
-		rec.mu.Unlock()
-		writeJSONResp(t, w, map[string]interface{}{"id": "label-guid", "name": body.Name})
 	})
 	mux.HandleFunc(prBase+"/"+id+"/labels/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("label delete method = %s, want DELETE", r.Method)
 		}
-		name := strings.TrimPrefix(r.URL.Path, prBase+"/"+id+"/labels/")
+		// RemovePullRequestLabel deletes by id; map it back to the label name so
+		// the assertions still read in terms of names.
+		lid := strings.TrimPrefix(r.URL.Path, prBase+"/"+id+"/labels/")
+		name := nameByLabelID[lid]
+		if name == "" {
+			name = lid
+		}
 		rec.mu.Lock()
 		rec.removedLabels = append(rec.removedLabels, name)
 		rec.mu.Unlock()

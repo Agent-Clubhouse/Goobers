@@ -154,11 +154,51 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	return nil
 }
 
+// pullRequestLabelsWithIDs fetches a PR's labels as a lowercased-name -> id
+// map. ADO returns labels only from this dedicated sub-endpoint for a single
+// PR (the PR object and $expand=labels both omit them — verified live); the
+// id is needed to delete a label whose name contains a colon.
+func (p *ADOProvider) pullRequestLabelsWithIDs(ctx context.Context, repo RepositoryRef, pullID string) (map[string]string, error) {
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Value []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"value"`
+	}
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
+		return nil, err
+	}
+	m := make(map[string]string, len(out.Value))
+	for _, l := range out.Value {
+		m[strings.ToLower(l.Name)] = l.ID
+	}
+	return m, nil
+}
+
+// PullRequestLabelNames returns a PR's active label names via the dedicated
+// labels sub-endpoint (the single-PR GET omits them — verified live).
+func (p *ADOProvider) PullRequestLabelNames(ctx context.Context, repo RepositoryRef, pullID string) ([]string, error) {
+	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(labels))
+	for name := range labels {
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // RemovePullRequestLabel deletes one native Azure DevOps PR label. It is the
 // re-entry trigger clearing the goobers:needs-remediation marker so merge-review
 // re-selects a reworked PR (push-remediated), and the clean-rebase clear
-// (rebase-pr). Absence is treated as benign: a 404 for a label already gone is
-// not an error.
+// (rebase-pr). Absence is treated as benign: a label already gone is not an
+// error. ADO's delete-by-name endpoint 400s on a colon-containing name, so this
+// resolves the label id first and deletes by id.
 func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo RepositoryRef, pullID, name string) error {
 	if err := requireRepo(repo); err != nil {
 		return err
@@ -169,7 +209,19 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("label name is required")
 	}
-	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", name)
+	// ADO's delete-by-name endpoint 400s on a label whose name contains a
+	// colon (e.g. goobers:needs-remediation) — verified live. Resolve the
+	// label's id and delete by id, which ADO accepts.
+	labels, err := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	if err != nil {
+		return err
+	}
+	id, present := labels[strings.ToLower(name)]
+	if !present {
+		// Already absent — benign, mirror GitHub's 404-is-not-an-error removal.
+		return nil
+	}
+	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels", id)
 	if err != nil {
 		return err
 	}
@@ -177,8 +229,6 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 	if err != nil {
 		return err
 	}
-	// A label that is already absent (the PR never carried it, or a concurrent
-	// clear won) is benign — mirror GitHub's 404-is-not-an-error label removal.
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close()
 		return nil
@@ -233,6 +283,11 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 	if err != nil {
 		return PullRequestSummary{}, err
 	}
+	// GetPullRequest deliberately does NOT fetch labels: no ADO caller reads them
+	// off this path (the checkpoint re-fetches via ListPullRequests, apply-verdict
+	// reads them via PullRequestLabelNames, and the rest use only head/base/state/
+	// body), so an extra /labels round-trip on every call would be pure overhead.
+	// A caller that needs a PR's labels calls PullRequestLabelNames directly.
 	return PullRequestSummary{
 		ID:                 pullID,
 		Number:             poll.Number,

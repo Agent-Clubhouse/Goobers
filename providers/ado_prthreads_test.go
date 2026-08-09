@@ -206,9 +206,19 @@ func TestADOProviderAddPullRequestLabels(t *testing.T) {
 }
 
 func TestADOProviderRemovePullRequestLabel(t *testing.T) {
+	// ADO 400s on delete-by-name when the name contains a colon (verified
+	// live), so the provider resolves the label id via the /labels sub-endpoint
+	// and deletes by id.
+	const labelID = "ac1c1f66-a685-4e62-95da-b7b7ce927cb6"
 	deleted := false
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels/goobers:needs-remediation", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"value": []map[string]interface{}{{"id": labelID, "name": "goobers:needs-remediation"}},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels/"+labelID, func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodDelete)
 		if got := r.URL.Query().Get("api-version"); got != "7.1-preview.1" {
 			t.Fatalf("api-version = %q, want 7.1-preview.1", got)
@@ -229,14 +239,21 @@ func TestADOProviderRemovePullRequestLabel(t *testing.T) {
 		t.Fatalf("RemovePullRequestLabel returned error: %v", err)
 	}
 	if !deleted {
-		t.Fatal("DELETE endpoint was not called")
+		t.Fatal("DELETE-by-id endpoint was not called")
 	}
 }
 
 func TestADOProviderRemovePullRequestLabelAbsentIsBenign(t *testing.T) {
+	// The label the caller asks to clear is not on the PR: the /labels lookup
+	// returns an empty set and no DELETE is issued. Removal is a no-op, not an
+	// error (mirrors GitHub's 404-is-benign label removal).
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels/goobers:needs-remediation", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "label not found", http.StatusNotFound)
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/labels/", func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("DELETE must not be issued for an absent label")
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()

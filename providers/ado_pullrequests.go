@@ -174,7 +174,6 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		BaseSHA:            pr.LastMergeTargetCommit.CommitID,
 		Body:               pr.Description,
 		ReviewDecision:     adoReviewDecision(pr.Reviewers),
-		Labels:             adoLabelNames(pr.Labels),
 		URL:                prURL,
 		Integrity:          apiintegrity.Unapproved,
 	}
@@ -365,7 +364,11 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 	values := url.Values{
 		"searchCriteria.status":       []string{"active"},
 		"searchCriteria.includeLinks": []string{"true"},
-		"$top":                        []string{strconv.Itoa(adoPullRequestPageSize)},
+		// ADO omits PR labels from the list response unless explicitly asked;
+		// without this the label-based remediation selector sees nothing
+		// (verified against the live API).
+		"includeLabels": []string{"true"},
+		"$top":          []string{strconv.Itoa(adoPullRequestPageSize)},
 	}
 	if req.Base != "" {
 		values.Set("searchCriteria.targetRefName", "refs/heads/"+strings.TrimPrefix(req.Base, "refs/heads/"))
@@ -400,10 +403,7 @@ func (p *ADOProvider) ListPullRequests(ctx context.Context, req ListPullRequests
 		if !req.MatchesIdentityFields(author, nil, requestedReviewers) {
 			continue
 		}
-		labels := make([]string, 0, len(pr.Labels))
-		for _, label := range pr.Labels {
-			labels = append(labels, label.Name)
-		}
+		labels := adoLabelNames(pr.Labels)
 		prURL := pr.URL
 		if pr.Links.Web.Href != "" {
 			prURL = pr.Links.Web.Href

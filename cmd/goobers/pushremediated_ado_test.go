@@ -102,11 +102,27 @@ func (s *adoRemediationServerState) start(t *testing.T) *httptest.Server {
 		})
 	})
 
+	// GET the labels (with ids) — RemovePullRequestLabel resolves the id here
+	// before deleting, because ADO 400s on delete-by-name for colon-bearing
+	// names. The id embeds the name so the DELETE can map it back.
+	mux.HandleFunc(idPath+"/labels", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("labels method = %s, want GET", r.Method)
+		}
+		s.mu.Lock()
+		vals := make([]map[string]interface{}, 0, len(s.labels))
+		for _, l := range s.labels {
+			vals = append(vals, map[string]interface{}{"id": "labelid-" + l, "name": l})
+		}
+		s.mu.Unlock()
+		writeJSONResp(t, w, map[string]interface{}{"value": vals})
+	})
 	mux.HandleFunc(idPath+"/labels/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("label method = %s, want DELETE", r.Method)
 		}
-		name := strings.TrimPrefix(r.URL.Path, idPath+"/labels/")
+		// Delete-by-id: map the id back to the label name for the assertions.
+		name := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, idPath+"/labels/"), "labelid-")
 		s.mu.Lock()
 		var kept []string
 		for _, l := range s.labels {
