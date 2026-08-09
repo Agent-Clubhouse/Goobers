@@ -21,7 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 // The guided endpoints are thin process wrappers over the documented CLI
@@ -152,6 +155,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
 		s.handleValidate(w, r)
+	case r.URL.Path == "/guided/actions/probe-backlog":
+		s.handleProbeBacklog(w, r)
 	case r.URL.Path == "/guided/actions/run":
 		s.handleRun(w, r)
 	case strings.HasPrefix(r.URL.Path, "/guided/jobs/"):
@@ -417,6 +422,104 @@ func (s *guidedServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	argv = append(argv, s.instancePath)
 	s.respondEnvelope(w, r, argv)
+}
+
+// guidedProbeBody is a purpose-built envelope, not `backlog-query
+// --read-only`'s raw output: that subcommand has no --json mode (adding one
+// is out of #2638's scope — cmd/goobers/backlogquery.go is read-only,
+// don't-modify evidence for this issue), so this handler parses its plain-
+// text stdout itself and reports only what the wizard needs.
+//
+// EligibleCount is nil when the probe could not run at all (no issues token
+// exported yet) — distinct from a real zero, so the wizard can tell "haven't
+// checked" from "checked: none eligible".
+type guidedProbeBody struct {
+	ExitCode      int    `json:"exitCode"`
+	EligibleCount *int   `json:"eligibleCount"`
+	Stderr        string `json:"stderr"`
+}
+
+// handleProbeBacklog runs the SAME read-only eligibility scan the sample
+// quickstart's query-backlog stage is about to run when dispatched
+// (`goobers backlog-query --read-only`, cmd/goobers/backlogquery.go's
+// runReadOnlyBacklogQuery — read-only, untouched by this issue), but before
+// the run starts, so the wizard can warn "0 eligible issues" instead of
+// letting the user watch a run complete with nothing to show for it (#2638).
+//
+// This is deliberately NOT how a workflow stage normally gets its
+// capability-scoped credential (the runner injects GOOBERS_CRED_* env vars
+// per declared capability, buildStageEnv) — there is no run yet to inject
+// one. Standalone use is the documented fallback (providerToken's own error
+// message: "or set %s directly for standalone use"), so this handler
+// performs that same translation itself: the plain issues token the wizard
+// already tracks (state.env.goobersGithubIssuesToken) into the
+// capability-scoped var backlog-query's --read-only path reads.
+func (s *guidedServer) handleProbeBacklog(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	token := os.Getenv(defaultWorkTrackingTokenEnv)
+	if token == "" {
+		token = os.Getenv("GOOBERS_GITHUB_TOKEN")
+	}
+	if token == "" {
+		// No token exported yet — this is a normal, early wizard state (the
+		// "export the token" step hasn't happened), not a probe failure.
+		writeGuidedJSON(w, http.StatusOK, guidedProbeBody{})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), guidedSyncActionTimeout)
+	defer cancel()
+	command := guidedExecCommand(ctx, s.executable, "backlog-query", "--read-only", s.instancePath)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	command.Env = append(
+		os.Environ(),
+		executor.CredentialEnvVar(string(capability.GitHubIssuesRead))+"="+token,
+		// The sample quickstart's own query-backlog stage inputs
+		// (internal/instance/quickstart-v1/gaggles/example/workflows/quickstart.yaml)
+		// — mirrored here (#2638) so this probe asks the exact same question
+		// that stage is about to ask when the run actually dispatches, sourced
+		// through the same providers label constants the stage-name lint wants
+		// rather than as bare literals. Sample-path only: an own-repo
+		// connect's label conventions are the user's own (#2609's `goobers
+		// connect --seed` choreography), not a fixed pair this server can
+		// assume.
+		executor.InputEnvVar("trustLabel")+"="+providers.LabelApproved,
+		executor.InputEnvVar("requireLabels")+"="+providers.LabelReady,
+	)
+	err := command.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			writeGuidedExecFailure(w, err)
+			return
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	count := countEligibleBacklogLines(stdout.String())
+	writeGuidedJSON(w, http.StatusOK, guidedProbeBody{
+		ExitCode:      exitCode,
+		EligibleCount: &count,
+		Stderr:        stderr.String(),
+	})
+}
+
+// countEligibleBacklogLines parses runReadOnlyBacklogQuery's plain-text
+// stdout (cmd/goobers/backlogquery.go): "no eligible items" on its own line
+// when the scan found nothing, otherwise one "ID\tTitle" line per eligible
+// item. That contract is a comment away from this function, not a
+// compile-time link, but it's read-only production behavior (#233) that
+// isn't expected to change casually.
+func countEligibleBacklogLines(stdout string) int {
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" || trimmed == "no eligible items" {
+		return 0
+	}
+	return len(strings.Split(trimmed, "\n"))
 }
 
 func (s *guidedServer) handleStatus(w http.ResponseWriter, r *http.Request) {

@@ -357,6 +357,8 @@ describe("GettingStartedPage", () => {
                 "created run 01JZGUIDEDRUN (workflow=quickstart gaggle=example)",
                 "stage implement started (run=01JZGUIDEDRUN, attempt=1, elapsed=1s)",
                 "stage implement finished (run=01JZGUIDEDRUN, attempt=1, status=success, elapsed=9s)",
+                "stage open-pr started (run=01JZGUIDEDRUN, attempt=1, elapsed=10s)",
+                "stage open-pr finished (run=01JZGUIDEDRUN, attempt=1, status=success, elapsed=11s)",
               ],
             },
           }),
@@ -381,6 +383,109 @@ describe("GettingStartedPage", () => {
     ).toBeInTheDocument();
     const implement = await screen.findByText("implement", { selector: ".guided-stage" });
     expect(implement).toHaveAttribute("data-state", "done");
+    const openPr = await screen.findByText("open-pr", { selector: ".guided-stage" });
+    expect(openPr).toHaveAttribute("data-state", "done");
+  });
+
+  // #2638: a run that exits 0 but never reaches the open-pr stage found no
+  // eligible backlog item — the wizard must say so, not claim success.
+  it("renders the no-eligible-issues state instead of Success when the run never reaches open-pr", async () => {
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({
+              sampleExists: true,
+              instanceExists: true,
+              job: {
+                id: "job-nowork",
+                kind: "run",
+                done: true,
+                exitCode: 0,
+                runId: "01JZNOWORKRUN",
+              },
+            }),
+          }),
+          "/guided/jobs/job-nowork": () => ({
+            body: {
+              id: "job-nowork",
+              kind: "run",
+              done: true,
+              exitCode: 0,
+              runId: "01JZNOWORKRUN",
+              output: [
+                "created run 01JZNOWORKRUN (workflow=quickstart gaggle=example)",
+                "stage query-backlog started (run=01JZNOWORKRUN, attempt=1, elapsed=1s)",
+                "no work: no eligible items",
+                "stage query-backlog finished (run=01JZNOWORKRUN, attempt=1, status=success, elapsed=1s)",
+              ],
+            },
+          }),
+          "/guided/actions/probe-backlog": () => ({
+            body: { exitCode: 0, eligibleCount: 0, stderr: "" },
+          }),
+        })}
+      />,
+    );
+
+    expect(await screen.findByText(/No eligible issues found\./)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Your first autonomous (PR opened|run finished)/),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-run" })).toBeInTheDocument();
+  });
+
+  it("warns before the run when the pre-run probe finds no eligible issues", async () => {
+    const user = userEvent.setup();
+    let probeCalls = 0;
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({ sampleExists: true, instanceExists: true }),
+          }),
+          "/guided/actions/validate": () => ({
+            body: { exitCode: 0, envelope: { ok: true, counts: { errors: 0, warnings: 0 } }, stderr: "" },
+          }),
+          "/guided/actions/probe-backlog": () => {
+            probeCalls += 1;
+            return { body: { exitCode: 0, eligibleCount: 0, stderr: "" } };
+          },
+        })}
+      />,
+    );
+
+    await chooseSample(user);
+    await user.click(screen.getByRole("button", { name: "Run the checks" }));
+
+    expect(await screen.findByText(/0 eligible issues found\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
+    expect(probeCalls).toBeGreaterThan(0);
+  });
+
+  it("reports eligible issues found by the pre-run probe without a warning", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({ sampleExists: true, instanceExists: true }),
+          }),
+          "/guided/actions/validate": () => ({
+            body: { exitCode: 0, envelope: { ok: true, counts: { errors: 0, warnings: 0 } }, stderr: "" },
+          }),
+          "/guided/actions/probe-backlog": () => ({
+            body: { exitCode: 0, eligibleCount: 2, stderr: "" },
+          }),
+        })}
+      />,
+    );
+
+    await chooseSample(user);
+    await user.click(screen.getByRole("button", { name: "Run the checks" }));
+
+    expect(await screen.findByText(/2 eligible issues found — ready to run\./)).toBeInTheDocument();
+    expect(screen.queryByText(/0 eligible issues found\./)).toBeNull();
   });
 
   it("walks the own-repo branch and sends the exact action payloads", async () => {
