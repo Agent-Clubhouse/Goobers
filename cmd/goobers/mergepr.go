@@ -108,21 +108,60 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// The capability check IS the "capability absent → refused" acceptance
-	// criterion: providerToken fails closed (no merge attempted, no PR
-	// state even polled) unless this stage's declaration actually grants
-	// github:pr:merge — the same fail-closed mechanism every other
-	// provider-chain subcommand already relies on.
-	token, err := providerToken(capability.GitHubPRMerge)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	// Azure DevOps reaches a distinct provider-construction branch (mirroring
+	// the issue-close-out dispatch template): the merge/completion authority
+	// rides on the ADO-specific capability, the provider is built from the
+	// instance's configured ADO auth (never a github: token), and the
+	// GitHub-only helpers below (tutor classification, branch cleanup) stay
+	// unreachable. Every conjunct check between here and the land is shared and
+	// unchanged; every GitHub code path stays byte-identical (all ADO behavior
+	// is gated behind isADO, which is always false on GitHub). See the ADO merge
+	// epic: docs/audits/2026-08-08-gaggle-reliability/ado-conformance/merge-wiring-plan.md.
+	isADO := repo.Provider == providers.ProviderADO
+
+	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
+	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
+	// ADO, where both helpers are gated OFF. dispatcher is the provider-neutral
+	// landing seam (CONF-1 #2074) every poll/compare/detect/enqueue/merge call
+	// flows through, so both providers run one shared code path.
+	var prProvider *providers.GitHubProvider
+	var dispatcher *providers.Dispatcher
+	if isADO {
+		// Merge/completion authority on ADO rides on the dedicated
+		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
+		// github:pr:merge — so the decider≠executor capability isolation
+		// (docs/design/v0/pr-lifecycle-loop.md §7) is preserved on ADO too.
+		// Resolve that grant fail-closed FIRST (mirroring the github:pr:merge
+		// check on the GitHub branch), then construct the completion-authorized
+		// provider: a stage carrying only ado:pr:write must never silently
+		// acquire completion authority (merge-wiring-plan §3).
+		if _, err := providerToken(capability.ADOPRComplete); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		adoProvider, aerr := newADOProviderForStage(root, repo)
+		if aerr != nil {
+			pf(stderr, "error: %v\n", aerr)
+			return 1
+		}
+		dispatcher = providers.NewDispatcher(adoProvider)
+	} else {
+		// The capability check IS the "capability absent → refused" acceptance
+		// criterion: providerToken fails closed (no merge attempted, no PR
+		// state even polled) unless this stage's declaration actually grants
+		// github:pr:merge — the same fail-closed mechanism every other
+		// provider-chain subcommand already relies on.
+		token, terr := providerToken(capability.GitHubPRMerge)
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
+		prProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+		// dispatcher is the capability-checked seam (CONF-1 #2074) for the
+		// landing-surface calls below (CompareCommits/DetectMergePolicy/
+		// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
+		dispatcher = providers.NewDispatcher(prProvider)
 	}
-	provider := newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	// dispatcher is the capability-checked seam (CONF-1 #2074) for the
-	// landing-surface calls below (CompareCommits/DetectMergePolicy/
-	// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
-	dispatcher := providers.NewDispatcher(provider)
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -192,7 +231,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		// actual current state right before deciding, now guaranteed to be
 		// the latest state relative to any other run's merge under this
 		// same lock.
-		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		// PollPullRequest is a mandatory Provider method: routing it through the
+		// dispatcher (which promotes the embedded Provider's method unchanged)
+		// works for both GitHub and ADO — behavior on GitHub is identical to the
+		// former concrete call.
+		poll, pollErr = dispatcher.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 		if pollErr != nil {
 			return nil
 		}
@@ -238,9 +281,14 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 				reasons = append(reasons, fmt.Sprintf("base moved: verdict pinned to %s, PR is now based on %s, and that movement touches files this PR also changes — verdict is stale", expectedBaseSHA, poll.BaseSHA))
 			}
 		}
-		if isTutorBranch(poll.HeadBranch, providerBranchNamespace()) {
+		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
+		// takes the concrete *GitHubProvider and the tutor lane does not run on
+		// ADO, so gate the whole block OFF on ADO (no-op; ADO tutor parity is
+		// tracked by the ADO merge epic, merge-wiring-plan §1a). On GitHub !isADO
+		// is always true, so behavior is unchanged.
+		if !isADO && isTutorBranch(poll.HeadBranch, providerBranchNamespace()) {
 			classification, classifyErr := classifyRemoteTutorChanges(
-				ctx, provider, repo, pullNumber, poll.BaseSHA, poll.HeadSHA,
+				ctx, prProvider, repo, pullNumber, poll.BaseSHA, poll.HeadSHA,
 			)
 			switch {
 			case classifyErr != nil:
@@ -277,13 +325,30 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		commitTitle := ""
 		mergeCommitMessage := commitMessage
 		if strings.TrimSpace(mergeCommitMessage) == "" {
-			if verdictAuthor == "" {
+			switch {
+			case isADO:
+				// THE single hard blocker (merge-wiring-plan §1a/§2/§8): ADO
+				// PollPullRequest returns an empty CommentsSince (there is no
+				// merge-review sticky-verdict comment surface on ADO), so
+				// structuredMergeCommitMessage's pinnedPassVerdict lookup ALWAYS
+				// fails on ADO — a clean pass with a green Build policy would set
+				// commitErr and hard-return 1 below, never landing. Build the
+				// commit directly from the PR's own title + closing refs (the same
+				// non-verdict assembly structuredMergeCommitMessage does at
+				// mergepr.go:443-453), bypassing the verdict comment. verdictAuthor
+				// is not required on ADO (no comment to attribute).
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll)
+				if commitErr != nil {
+					return nil
+				}
+			case verdictAuthor == "":
 				commitErr = fmt.Errorf("verdictAuthor input is required when commitMessage is empty")
 				return nil
-			}
-			commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll, verdictAuthor)
-			if commitErr != nil {
-				return nil
+			default:
+				commitTitle, mergeCommitMessage, commitErr = structuredMergeCommitMessage(poll, verdictAuthor)
+				if commitErr != nil {
+					return nil
+				}
 			}
 		}
 
@@ -375,8 +440,14 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var cleanup *mergeBranchCleanup
-	if landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+	// Branch cleanup is GitHub-only: cleanupMergedBranch takes the concrete
+	// *GitHubProvider and ADO PollPullRequest never populates HeadRepository, so
+	// on ADO it could only ever fail "did not report a head repository". Gate OFF
+	// (no-op); ADO source-branch deletion rides on the enqueue/merge
+	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
+	// §1a/§8). On GitHub !isADO is always true, so behavior is unchanged.
+	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
+		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -447,6 +518,30 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 	if rationale != "" && rationale != summary {
 		parts = append(parts, rationale)
 	}
+	for _, issue := range closingIssueNumbers(poll.Body) {
+		parts = append(parts, "Closes #"+issue)
+	}
+	return title, strings.Join(parts, "\n\n"), nil
+}
+
+// adoMergeCommitMessage builds the land's commit title and body for an Azure
+// DevOps pull request directly from the PR's own fields, bypassing the
+// merge-review sticky-comment verdict lookup structuredMergeCommitMessage
+// depends on. ADO PollPullRequest returns an empty CommentsSince (ADO has no
+// merge-review sticky-verdict comment surface — merge-wiring-plan §2), so the
+// verdict-rationale assembly is unavailable there; the title and "Closes #N"
+// closing refs are exactly the non-verdict parts the GitHub assembly already
+// produces (mergepr.go:443-453). This is the fix for the single hard blocker:
+// without it, structuredMergeCommitMessage always errors on ADO and a clean
+// green-Build-policy pass hard-fails the stage instead of landing
+// (merge-wiring-plan §1a/§8). Errors only on the same empty-title condition the
+// GitHub assembly rejects, so an ADO PR with no title is still a business error.
+func adoMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+	title := strings.TrimSpace(poll.Title)
+	if title == "" {
+		return "", "", fmt.Errorf("pull request title is empty")
+	}
+	var parts []string
 	for _, issue := range closingIssueNumbers(poll.Body) {
 		parts = append(parts, "Closes #"+issue)
 	}

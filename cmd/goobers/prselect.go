@@ -89,6 +89,14 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Azure DevOps merge epic (docs/audits/2026-08-08-gaggle-reliability/
+	// ado-conformance/merge-wiring-plan.md §1b): pr-select's ADO branch dispatches
+	// selection through the provider-neutral Dispatcher and never resolves a
+	// github:pr:write token. Every GitHub path below stays byte-identical — the
+	// ADO behavior is a wholly separate function reached only on this switch.
+	if repo.Provider == providers.ProviderADO {
+		return runPRSelectADO(root, repo, stdout, stderr)
+	}
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -362,6 +370,274 @@ func pullRequestsForSelection(
 		prs = append(prs, pr)
 	}
 	return prs, openPRs, nil
+}
+
+// runPRSelectADO is pr-select's Azure DevOps branch (ADO merge epic —
+// docs/audits/2026-08-08-gaggle-reliability/ado-conformance/merge-wiring-plan.md
+// §1b/§2/§7-step-4). It mirrors runPRSelect's GitHub selection, but through the
+// provider-neutral *Dispatcher rather than a concrete *providers.GitHubProvider:
+//
+//   - The provider is built from config-sourced ADO auth via
+//     newADOProviderForStage — no github:pr:write token is resolved. The
+//     GitHubPRWrite grant maps to ado:pr:write on ADO, carried by the configured
+//     auth source; pr-select performs no merge/completion, so it needs no
+//     ado:pr:complete authority (that grant gates merge-pr/queue-watch only).
+//   - Candidate CheckState comes from PollPullRequest's branch-policy
+//     evaluations — ADO has no RefCheckState/RefCheckStates (§2).
+//   - The webhook-targeted PR is resolved via PollPullRequest — ADO has no
+//     GetPullRequest (§2).
+//   - Identity falls to the branch-prefix heuristic: ADO has no
+//     AuthenticatedLogin, so daemonIdentityAuthorLogin's login is "" (§2/§8).
+//   - The blocked-on-sibling, foundation-coupling, escalation, demotion, and
+//     Tutor gates are GitHub-only remediation-lane machinery and are gated OFF
+//     as documented no-ops (§1b/§7): their helpers take a concrete
+//     *providers.GitHubProvider / remediationProvider that *ADOProvider does not
+//     satisfy, and several would otherwise issue a PR-as-work-item write against
+//     wit/workitems (wrong-object hazard). No sibling is parked here.
+func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	adoProvider, err := newADOProviderForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider := providers.NewDispatcher(adoProvider)
+
+	base := providerInput("base", providerBaseBranch())
+	headPrefixes := mergeReviewHeadPrefixes()
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
+		return 1
+	}
+	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	identityFilters := providers.ListPullRequestsRequest{
+		Author:            providerInput("author", ""),
+		Assignee:          providerInput("assignee", ""),
+		RequestedReviewer: providerInput("requestedReviewer", ""),
+	}
+
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	now := time.Now().UTC()
+	// ADO has no AuthenticatedLogin (merge-wiring-plan §2): daemonIdentityAuthorLogin
+	// would return "" here, so isOwnPullRequest falls to the branch-prefix
+	// heuristic against headPrefixes. See §8 (the advisoryMode misfire): the ADO
+	// run-branch namespace must appear in the gaggle's headPrefixes or a
+	// goobers-authored ADO PR is misclassified as advisory and never merges.
+	expectedAuthorLogin := ""
+	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
+	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
+	if err != nil {
+		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
+		return 1
+	}
+	prs, _, err := pullRequestsForSelectionADO(
+		ctx, provider, repo, base, headPrefixes, authorScope, identityFilters, triggerRef, completeness, expectedAuthorLogin,
+	)
+	if err != nil {
+		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
+	}
+
+	// merge-wiring-plan §1b/§7: the blocked-on-sibling / foundation-coupling scan
+	// and the per-candidate escalation/demotion/sibling/Tutor gates are gated OFF
+	// on ADO. Nothing parks a sibling, so no dependent is aging-boosted here.
+	blockedDependents := map[int]int{}
+
+	var eligible []providers.PullRequestSummary
+	for _, pr := range prs {
+		if pr.State != "open" || pr.Base != base ||
+			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
+			continue
+		}
+		if pr.Draft {
+			continue
+		}
+		if pr.CheckState != providers.CheckStatePassing {
+			continue
+		}
+		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
+			continue
+		}
+		eligible = append(eligible, pr)
+	}
+
+	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
+	if err != nil {
+		pf(stderr, "error: update PR fairness state: %v\n", err)
+		return 1
+	}
+	if len(eligible) == 0 {
+		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
+	}
+	eligible, priorities, fairness := rankEligiblePullRequests(
+		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
+	)
+	if observation.CurrentRunHasLiveClaim {
+		if len(observation.CurrentRunClaimEligible) == 0 {
+			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
+		}
+		eligible, priorities, _ = rankEligiblePullRequests(
+			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
+		)
+	}
+	if len(eligible) == 0 {
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	}
+
+	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
+	if err != nil {
+		pf(stderr, "error: claim eligible PR: %v\n", err)
+		return 1
+	}
+	if claimed == nil {
+		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	}
+	selected := *claimed
+	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
+	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
+		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
+		return 1
+	}
+	priority := priorities[selected.Number]
+
+	resultFile := providerInput("resultFile", "selected-pr.json")
+	data, err := json.Marshal(map[string]string{
+		"number":                 strconv.Itoa(selected.Number),
+		"head":                   selected.Head,
+		"base":                   selected.Base,
+		"headSha":                selected.HeadSHA,
+		"baseSha":                selected.BaseSHA,
+		"url":                    selected.URL,
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
+		"eligibleSince":          priority.EligibleSince.Format(time.RFC3339Nano),
+		"eligibleWaitSeconds":    strconv.FormatInt(int64(priority.Wait/time.Second), 10),
+		"agingBoost":             strconv.FormatInt(priority.AgingBoost, 10),
+		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
+		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
+		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
+	})
+	if err != nil {
+		pf(stderr, "error: marshal selected PR: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+
+	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
+	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
+		priority.Wait.Round(time.Second),
+		fairness.MaxWait.Round(time.Second),
+		priority.StarvationGuarded,
+		noneIfEmpty(joinPRNumbers(fairness.Starved)),
+	)
+	return 0
+}
+
+// adoSelectProvider is the minimal mandatory-Provider surface pr-select's ADO
+// branch reads through — satisfied by *providers.Dispatcher (production) and a
+// fake (tests). Only mandatory Provider methods appear, so no optional ADO
+// landing capability is probed during selection (merge-wiring-plan §2/§8).
+type adoSelectProvider interface {
+	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	PollPullRequest(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
+}
+
+// pullRequestsForSelectionADO is pullRequestsForSelection's Azure DevOps
+// counterpart (merge-wiring-plan §1b/§2). ADO has no RefCheckState/RefCheckStates
+// and no GetPullRequest, so each candidate's CheckState — and its open/merged
+// State, which ADO's ListPullRequests leaves empty — is resolved from
+// PollPullRequest's branch-policy evaluations, and the webhook-targeted PR is
+// resolved via PollPullRequest rather than GetPullRequest. The second return
+// value (all open PRs) mirrors the GitHub signature for symmetry; the ADO branch
+// discards it because the sibling/foundation scans that consumed it are gated OFF.
+func pullRequestsForSelectionADO(
+	ctx context.Context,
+	provider adoSelectProvider,
+	repo providers.RepositoryRef,
+	base string,
+	headPrefixes []string,
+	authorScope string,
+	identityFilters providers.ListPullRequestsRequest,
+	triggerRef string,
+	completeness prSelectSnapshotCompleteness,
+	expectedAuthorLogin string,
+) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	openPRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, SkipCheckState: true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
+	}
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
+	if targeted && completeness != prSelectCompleteSnapshot {
+		pr, err := adoSelectionCandidate(ctx, provider, repo, pullID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
+		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+			return nil, openPRs, nil
+		}
+		return []providers.PullRequestSummary{pr}, openPRs, nil
+	}
+
+	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
+	for _, pr := range openPRs {
+		if authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) {
+			continue
+		}
+		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
+			continue
+		}
+		poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+			Repository: repo, PullID: strconv.Itoa(pr.Number),
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("read pull request #%d checks: %w", pr.Number, err)
+		}
+		pr.CheckState = poll.CheckState
+		// ADO's ListPullRequests only returns active PRs but leaves Summary.State
+		// empty; the eligibility filter gates on State=="open", so take the live
+		// open/merged/abandoned mapping PollPullRequest already computed.
+		if poll.State != "" {
+			pr.State = poll.State
+		}
+		prs = append(prs, pr)
+	}
+	return prs, openPRs, nil
+}
+
+// adoSelectionCandidate resolves one Azure DevOps PR into the selection summary
+// shape via PollPullRequest — ADO has no GetPullRequest (merge-wiring-plan §2).
+// PollPullRequest already carries the branch-policy CheckState and the
+// open/merged State, so the returned summary needs no RefCheckState follow-up.
+func adoSelectionCandidate(ctx context.Context, provider adoSelectProvider, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error) {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo, PullID: pullID,
+	})
+	if err != nil {
+		return providers.PullRequestSummary{}, err
+	}
+	return providers.PullRequestSummary{
+		ID:                 strconv.Itoa(poll.Number),
+		Number:             poll.Number,
+		URL:                poll.URL,
+		Author:             poll.Author,
+		Assignees:          poll.Assignees,
+		RequestedReviewers: poll.RequestedReviewers,
+		State:              poll.State,
+		Merged:             poll.Merged,
+		Head:               poll.HeadBranch,
+		Base:               poll.BaseBranch,
+		HeadSHA:            poll.HeadSHA,
+		BaseSHA:            poll.BaseSHA,
+		Draft:              poll.Draft,
+		Labels:             poll.Labels,
+		CheckState:         poll.CheckState,
+		Body:               poll.Body,
+	}, nil
 }
 
 func hasAnyHeadPrefix(head string, prefixes []string) bool {

@@ -603,6 +603,20 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if !githubSelected {
+		// Azure DevOps: a PASS verdict is published as a provider-native PR
+		// status (genre goobers, name validation — the same surface
+		// report-pr-status publishes) so the published-verdict gate and any ADO
+		// status-check branch policy observe it. The GitHub verdict-publication
+		// path below (native self-review + sticky comment + PR-as-work-item
+		// label write) does not apply on ADO: there is no self-review to submit,
+		// and UpdateWorkItem(ID: PR#) would mutate the unrelated work item that
+		// shares the PR's numeric id (the wrong-object hazard, ~789 below).
+		// Non-pass ADO verdicts stay unsupported here for now — an objectively
+		// moot one is already closed above; the rest defer to the ADO merge
+		// epic (#2061).
+		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
+			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, resultFile, stdout, stderr)
+		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
 	}
@@ -1389,6 +1403,38 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	default:
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
+}
+
+// publishADOPassVerdict publishes a PASS merge-review verdict on Azure DevOps.
+// ADO has neither a native self-review to submit nor the GitHub
+// sticky-comment/label verdict transport (the GitHub path's
+// UpdateWorkItem(ID: PR#) would address the unrelated work item that shares the
+// PR's numeric id — the wrong-object hazard), so the verdict rides on a
+// provider-native PR status (genre "goobers", name "validation" — the same
+// surface report-pr-status publishes) that an ADO status-check branch policy can
+// gate on. It emits decision=pass into the result file so merge-review's
+// published-verdict gate advances to merge-pr. See the ADO merge epic (#2061).
+func publishADOPassVerdict(
+	ctx context.Context,
+	provider providers.PullRequestStatusPublisher,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	current providers.PullRequestSummary,
+	resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
+		Repository:  repo,
+		PullID:      strconv.Itoa(selectedNumber),
+		Genre:       "goobers",
+		Name:        "validation",
+		State:       providers.CheckStatePassing,
+		Description: "goobers merge-review verdict: pass",
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "approved PR #%d at %s via goobers/validation PR status\n", selectedNumber, current.HeadSHA)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(apiv1.VerdictPass), "", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {

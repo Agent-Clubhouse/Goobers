@@ -300,6 +300,7 @@
             "ado:pr:comment",
             "ado:pr:write",
             "ado:pr:status",
+            "ado:pr:complete",
             "ado:work-items:write",
             "telemetry:read",
             "journal:read",
