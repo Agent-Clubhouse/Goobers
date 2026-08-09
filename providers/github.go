@@ -1073,6 +1073,18 @@ func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePol
 	}
 	var rules []githubBranchRule
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &rules); err != nil {
+		// The rules endpoint is entitlement-gated: private repos on free
+		// plans answer 403 ("Upgrade to ...") even to an admin token. That
+		// is a plan limitation, not an auth failure — treating it as one
+		// fails every merge and can latch the auth circuit. No readable
+		// rules means no merge-queue rule is detectable; degrade to
+		// direct-merge and let GitHub remain the enforcer at merge time (a
+		// server-side queue requirement still rejects the direct merge
+		// loudly there).
+		var respErr *providerResponseError
+		if errors.As(err, &respErr) && respErr.statusCode == http.StatusForbidden {
+			return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+		}
 		return RepoMergePolicyResult{}, err
 	}
 	for _, rule := range rules {
