@@ -262,6 +262,12 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 		_, _ = w.Write([]byte(`{"id":7}`))
 	})
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/labels", func(w http.ResponseWriter, r *http.Request) {
+		// GET is the escalation-suppression label read; return no labels so the
+		// needs-changes verdict routes to remediation (not suppressed).
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"value":[]}`))
+			return
+		}
 		labelMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&labelBody)
 		_, _ = w.Write([]byte(`{"id":"label-guid","name":"goobers:needs-remediation"}`))
@@ -331,6 +337,95 @@ func TestPublishADONonPassVerdictPublishesFailedStatusLabelAndThread(t *testing.
 	result := readVerdictResult(t, resultFile)
 	if result["decision"] != "needs-changes" {
 		t.Fatalf("result = %+v, want decision=needs-changes", result)
+	}
+}
+
+// TestPublishADOFailVerdictEscalatesAndClearsRemediation pins the escalate/park
+// contract (§4 D2): a fail verdict is NEVER burned on the remediation budget —
+// it applies goobers:merge-escalated and clears goobers:needs-remediation so the
+// PR parks for a human instead of re-entering pr-remediation. Removal is
+// delete-by-id (colon-name delete 400s on ADO), so the stage first reads the
+// labels to resolve the id.
+func TestPublishADOFailVerdictEscalatesAndClearsRemediation(t *testing.T) {
+	var (
+		addedLabel   string
+		removedLabel string
+		statusState  string
+	)
+	const nrID = "nr-label-guid"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		statusState, _ = body["state"].(string)
+		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/labels", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			// The PR carries needs-remediation from a prior needs-changes cycle;
+			// the fail must clear it. Return it with an id so remove-by-id resolves.
+			_, _ = w.Write([]byte(`{"value":[{"id":"` + nrID + `","name":"` + needsRemediationLabel + `"}]}`))
+		case http.MethodPost:
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			addedLabel, _ = body["name"].(string)
+			_, _ = w.Write([]byte(`{"id":"esc-guid","name":"` + remediationEscalatedLabel + `"}`))
+		default:
+			t.Fatalf("labels method = %s, want GET or POST", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/labels/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("label delete method = %s, want DELETE", r.Method)
+		}
+		if id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/org/project/_apis/git/repositories/repo/pullrequests/359/labels/"), "/"); id == nrID {
+			removedLabel = needsRemediationLabel
+		} else {
+			t.Fatalf("delete by id = %q, want the needs-remediation id %q", id, nrID)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/threads", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":11,"comments":[{"id":1,"content":"posted"}]}`))
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/359", func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("wit/workitems/359 was mutated — the PR-as-work-item wrong-object write ran on ADO")
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	var stdout, stderr bytes.Buffer
+	resultFile := filepath.Join(t.TempDir(), "verdict-result.json")
+	code := publishADONonPassVerdict(
+		context.Background(),
+		provider,
+		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
+		359,
+		providers.PullRequestSummary{Number: 359, HeadSHA: "head-sha", BaseSHA: "base-sha"},
+		apiv1.Verdict{Decision: apiv1.VerdictFail, Summary: "Fundamentally wrong approach.", HeadSHA: "head-sha", BaseSHA: "base-sha"},
+		resultFile,
+		&stdout,
+		&stderr,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if statusState != "failed" {
+		t.Fatalf("status state = %q, want failed", statusState)
+	}
+	if addedLabel != remediationEscalatedLabel {
+		t.Fatalf("added label = %q, want %q (fail escalates, not remediates)", addedLabel, remediationEscalatedLabel)
+	}
+	if removedLabel != needsRemediationLabel {
+		t.Fatalf("removed label = %q, want %q (fail clears remediation, never burns the budget)", removedLabel, needsRemediationLabel)
+	}
+	result := readVerdictResult(t, resultFile)
+	if result["decision"] != "fail" {
+		t.Fatalf("result = %+v, want decision=fail", result)
 	}
 }
 
@@ -451,8 +546,14 @@ func adoNeedsChangesMux(t *testing.T, repo providers.RepositoryRef, prNumber int
 		_, _ = w.Write([]byte(`{"id":7}`))
 	})
 	mux.HandleFunc(pr+"/labels", func(w http.ResponseWriter, r *http.Request) {
+		// GET is the escalation-suppression label read; return no labels so the
+		// needs-changes verdict routes to remediation (not suppressed).
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"value":[]}`))
+			return
+		}
 		if r.Method != http.MethodPost {
-			t.Fatalf("labels method = %s, want POST", r.Method)
+			t.Fatalf("labels method = %s, want GET or POST", r.Method)
 		}
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)

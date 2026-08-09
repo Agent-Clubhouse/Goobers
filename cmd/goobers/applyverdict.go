@@ -1500,8 +1500,45 @@ func publishADONonPassVerdict(
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
 	}
-	if err := provider.AddPullRequestLabels(ctx, repo, pullID, []string{needsRemediationLabel}); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("apply %s label to PR #%d", needsRemediationLabel, selectedNumber), err, resultFile)
+	// Route the label by decision, mirroring the GitHub verdictLabel contract
+	// (§4 D2): a fail escalates for a human (goobers:merge-escalated) and is
+	// NEVER burned on the remediation budget, while needs-changes routes to
+	// remediation (goobers:needs-remediation). Clearing needs-remediation on a
+	// fail — and declining to re-arm it while an escalation still blocks — is
+	// what parks a stuck PR for a human instead of looping it forever.
+	label := verdictLabel(verdict.Decision, verdict.Findings)
+	var addLabels, removeLabels []string
+	switch label {
+	case remediationEscalatedLabel:
+		addLabels = []string{remediationEscalatedLabel}
+		removeLabels = []string{needsRemediationLabel}
+	case needsRemediationLabel:
+		// Verdict-side escalation suppression (behavior 3d): if the PR already
+		// carries an active escalation, keep it parked — clear any stale
+		// needs-remediation rather than pulling it back into the budget.
+		names, err := provider.PullRequestLabelNames(ctx, repo, pullID)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("read labels for PR #%d", selectedNumber), err, resultFile)
+		}
+		if hasAnyLabel(names, []string{remediationEscalatedLabel}) {
+			removeLabels = []string{needsRemediationLabel}
+		} else {
+			addLabels = []string{needsRemediationLabel}
+		}
+	default:
+		// blocked-on-sibling has no ADO analogue (no sibling election); route it
+		// to remediation as the prior behavior did.
+		addLabels = []string{needsRemediationLabel}
+	}
+	if len(addLabels) > 0 {
+		if err := provider.AddPullRequestLabels(ctx, repo, pullID, addLabels); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("apply %v label to PR #%d", addLabels, selectedNumber), err, resultFile)
+		}
+	}
+	for _, name := range removeLabels {
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, name); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear %s label on PR #%d", name, selectedNumber), err, resultFile)
+		}
 	}
 	// SHA-pin the published verdict to the reviewed state (== the deterministic
 	// pin, checked above) so gather-pr-context can trust the head/base it reads
@@ -1511,8 +1548,8 @@ func publishADONonPassVerdict(
 	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
-	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, %s label, and PR thread\n",
-		verdict.Decision, selectedNumber, current.HeadSHA, needsRemediationLabel)
+	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
+		verdict.Decision, selectedNumber, current.HeadSHA, addLabels, removeLabels)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
 }
 
