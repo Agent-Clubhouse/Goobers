@@ -170,8 +170,17 @@ type guidedErrorBody struct {
 }
 
 type guidedEnvState struct {
-	GoobersGithubToken       bool `json:"goobersGithubToken"`
-	GoobersGithubIssuesToken bool `json:"goobersGithubIssuesToken"`
+	// TokenEnv is the RECORDED repository-token environment variable name —
+	// the connect-time --token-env value persisted in instance.yaml, or
+	// connectDefaultTokenEnv when the instance has not connected a repo yet.
+	// GoobersGithubToken reports presence for exactly this name, in THIS
+	// server process's environment. Never a client-supplied name: there is
+	// no query parameter that lets a caller ask "is <arbitrary env var> set"
+	// (#2639) — this is a presence check against one fixed, server-chosen
+	// name, not a general environment-oracle endpoint.
+	TokenEnv                 string `json:"tokenEnv"`
+	GoobersGithubToken       bool   `json:"goobersGithubToken"`
+	GoobersGithubIssuesToken bool   `json:"goobersGithubIssuesToken"`
 }
 
 type guidedJobSummary struct {
@@ -243,6 +252,7 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	apiReady := s.api != nil
 	s.mu.Unlock()
+	tokenEnv := s.recordedTokenEnv()
 	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
 		Version:        guidedStateVersion,
 		Workdir:        s.workdir,
@@ -252,13 +262,29 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 		InstanceExists: instanceExists,
 		Env: guidedEnvState{
 			// Presence only — the values themselves never cross this API.
-			GoobersGithubToken:       os.Getenv("GOOBERS_GITHUB_TOKEN") != "",
+			TokenEnv:                 tokenEnv,
+			GoobersGithubToken:       os.Getenv(tokenEnv) != "",
 			GoobersGithubIssuesToken: os.Getenv(defaultWorkTrackingTokenEnv) != "",
 		},
 		Job:       job,
 		APIReady:  apiReady,
 		Connected: connected,
 	})
+}
+
+// recordedTokenEnv is the one env var name /guided/state reports presence
+// for and handleRun's preflight (below) checks — the connect-time
+// --token-env value persisted in instance.yaml when the instance has
+// connected a repository, otherwise the CLI's own default. This process's
+// environment is fixed at launch (os.Environ() below is a snapshot, not a
+// live view — see handleRun), so this always answers "does the server that
+// is actually about to exec a run have this token," never "did the user's
+// current shell export something" (#2639).
+func (s *guidedServer) recordedTokenEnv() string {
+	if env := connectedTokenEnv(s.instancePath); env != "" {
+		return env
+	}
+	return connectDefaultTokenEnv
 }
 
 type guidedStubSampleRequest struct {
@@ -426,6 +452,24 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Credential preflight (#2639): the subprocess below inherits THIS
+	// process's environment, fixed at server launch — no export a user runs
+	// afterward, in any shell, can ever reach it. Checking here, synchronously,
+	// before a job is even created, turns a run that would silently fail deep
+	// inside the CLI (or worse, dispatch and let the workflow's own git-auth
+	// step fail unhelpfully) into one actionable error at the point the
+	// server actually knows the credential is missing.
+	tokenEnv := s.recordedTokenEnv()
+	if os.Getenv(tokenEnv) == "" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code: "token_env_unset",
+			Message: fmt.Sprintf(
+				"%s is not set in the getting-started server's own process — export it in the shell that runs \"goobers getting-started\" and restart the server; a later export in a different shell cannot reach an already-running process",
+				tokenEnv,
+			),
+		})
+		return
+	}
 	s.mu.Lock()
 	if s.job != nil && !s.job.isDone() {
 		s.mu.Unlock()
@@ -446,8 +490,13 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	// terminal user would see them.
 	command.Stdout = job
 	command.Stderr = job
-	// The subprocess inherits this process's environment — that is how the
-	// exported tokens reach it, same as any shell invocation.
+	// The subprocess inherits this process's environment — a snapshot fixed
+	// at server launch, NOT a live view of any shell. A token exported after
+	// the server started, in any shell (including the one that launched it),
+	// is not in os.Environ() here; only a token exported before launch, or a
+	// server restart after exporting, changes what this actually contains.
+	// The preflight above already refused to reach this line if the recorded
+	// token env is unset in this snapshot.
 	command.Env = os.Environ()
 	go func() {
 		defer cancel()

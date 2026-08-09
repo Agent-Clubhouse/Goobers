@@ -120,9 +120,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [client]);
 
-  // Server truth is polled: env-token badges, sample/instance existence, and
-  // the connected repository update live as the user works in a terminal
-  // alongside this page.
+  // Server truth is polled: sample/instance existence and the connected
+  // repository reflect the filesystem on every poll. The env-token badges do
+  // NOT — they read the getting-started server's own process environment,
+  // fixed at server launch (#2639). A token exported in any terminal after
+  // the server started, including the one that launched it, never reaches
+  // this process; only exporting before launch (or restarting the server
+  // after exporting) changes what these badges report.
   useEffect(() => {
     void refreshState();
     const timer = setInterval(() => void refreshState(), statePollIntervalMs);
@@ -506,8 +510,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             />
           </div>
           <p className="guided-note">
-            Token badges update live from this machine's environment; token values never
-            reach this page — only whether each variable is set.
+            Token badges reflect the getting-started server's own environment as of when it
+            launched — not this machine's environment generally, and not anything exported
+            afterward. Export before running <code>goobers getting-started</code>, or restart
+            it after exporting. Token values never reach this page — only whether each
+            variable is set.
           </p>
           {!welcomeDone && (
             <button
@@ -685,24 +692,25 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
 
             <GuidedStep index={4} manual status={stepStatus(4)} title="Export the token">
               <p>
-                <strong>Manual step.</strong> The instance reads your GitHub token from the
-                environment variable named at connect time — export it in the shell that
-                launched <code>goobers getting-started</code>. Only its presence is checked;
-                the value never reaches this page.
+                <strong>Manual step.</strong> The instance reads your GitHub token from{" "}
+                <code>{state.env.tokenEnv}</code>, the environment variable named at connect
+                time — but only from the getting-started server's OWN process, fixed at
+                launch. Export it in the shell that will LAUNCH{" "}
+                <code>goobers getting-started</code>, then (re)start that command; exporting
+                in the already-running shell, or any other shell, does not reach this
+                process. Only presence is checked — the value never reaches this page.
               </p>
-              <RecoveryCommand command={`export ${tokenEnvName}=...`} />
+              <RecoveryCommand command={`export ${state.env.tokenEnv}=...`} />
+              <p className="guided-note">
+                Then relaunch: <code>goobers getting-started</code> resumes this walkthrough
+                from the instance you already created.
+              </p>
               <div aria-label="Connect token status" className="guided-badges">
                 <EnvBadge
-                  name="GOOBERS_GITHUB_TOKEN"
+                  name={state.env.tokenEnv}
                   present={state.env.goobersGithubToken}
                 />
               </div>
-              {tokenEnvName !== defaultConnectTokenEnv && (
-                <p className="guided-note">
-                  The live badge tracks <code>GOOBERS_GITHUB_TOKEN</code> only; confirm your
-                  custom variable is exported, then check the box.
-                </p>
-              )}
               <label className="guided-check">
                 <input
                   checked={tokenExported}
@@ -909,9 +917,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   <code>spec.backlog.project</code> (<code>your-org/your-repo</code>).
                 </li>
                 <li>
-                  Make sure <code>GOOBERS_GITHUB_TOKEN</code> is exported in the shell that
-                  launched <code>goobers getting-started</code> — the instance's token ref
-                  reads it from the environment.
+                  Make sure <code>{state.env.tokenEnv}</code> is exported in the shell that
+                  will LAUNCH <code>goobers getting-started</code>, then (re)start that
+                  command — the instance's token ref reads it from the getting-started
+                  server's own process environment, fixed at launch, not from any shell an
+                  export happens in afterward.
                 </li>
               </ul>
               <label className="guided-check">

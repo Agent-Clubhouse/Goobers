@@ -600,3 +600,30 @@ func connectedRepository(root string) string {
 	}
 	return ""
 }
+
+// connectedTokenEnv reports the environment variable name `goobers connect`
+// recorded for the connected repository's credential, or "" when the
+// instance has no connected repository yet. Shared with the guided server's
+// state endpoint and run-dispatch preflight (#2639) — this is the one
+// authoritative source for "which env var name actually matters," so both
+// read paths agree with what `connect --token-env` actually persisted
+// instead of assuming the default name.
+func connectedTokenEnv(root string) string {
+	configFile := instance.NewLayout(root).ConfigFile()
+	if _, err := os.Stat(configFile); err != nil {
+		return ""
+	}
+	cfg, err := instance.LoadConfig(configFile)
+	if err != nil {
+		return ""
+	}
+	for _, repo := range cfg.Repos {
+		if repo.Owner == connectPlaceholderOwner && repo.Name == connectPlaceholderName {
+			continue
+		}
+		if repo.Provider == "github" && repo.Owner != "" && repo.Name != "" {
+			return repo.Token.Env
+		}
+	}
+	return ""
+}

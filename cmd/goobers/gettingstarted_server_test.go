@@ -276,6 +276,7 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 func TestGettingStartedRunWorkflowChooser(t *testing.T) {
 	workdir := t.TempDir()
 	tutorial := filepath.Join(workdir, "tutorial-instance")
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	for _, testCase := range []struct {
 		body string
 		want []string
@@ -341,6 +342,89 @@ func TestGettingStartedStateReportsConnectedRepo(t *testing.T) {
 	state = decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
 	if state.Connected.Repo == nil || *state.Connected.Repo != "acme/web" {
 		t.Fatalf("connected after connect = %+v", state.Connected)
+	}
+}
+
+// TestGettingStartedRunRefusesWhenRecordedTokenEnvUnset is the #2639
+// regression: a token export reaching some OTHER variable than the one the
+// server actually recorded (default GOOBERS_GITHUB_TOKEN, or whatever
+// `connect --token-env` persisted) must never mark credentials ready or
+// unblock dispatch — there is no mechanism, live or otherwise, for a client
+// to make the server's own process environment agree with a shell the
+// server doesn't share. The only thing that changes the outcome is the
+// RECORDED name's own variable, in THIS process, before the request.
+func TestGettingStartedRunRefusesWhenRecordedTokenEnvUnset(t *testing.T) {
+	workdir := t.TempDir()
+	t.Setenv(connectDefaultTokenEnv, "")
+	server := newTestGuidedServer(t, workdir)
+	handler := http.HandlerFunc(server.serveGuided)
+	calls := stubGuidedExec(t, `exit 0`)
+
+	// Unconnected instance, default recorded name, nothing exported: refused.
+	refused := guidedPost(handler, "/guided/actions/run", `{}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("unset-token run status = %d body = %q", refused.Code, refused.Body.String())
+	}
+	body := decodeGuidedResponse[guidedErrorBody](t, refused)
+	if body.Code != "token_env_unset" || !strings.Contains(body.Message, connectDefaultTokenEnv) {
+		t.Fatalf("unset-token run body = %+v", body)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("refused run still exec'd: %v", *calls)
+	}
+	state := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if state.Env.GoobersGithubToken {
+		t.Fatalf("state reported ready with nothing exported: %+v", state.Env)
+	}
+
+	// Connect with a NON-default recorded name.
+	if _, err := instance.InitQuickstart(server.instancePath); err != nil {
+		t.Fatal(err)
+	}
+	if code := executeConnect(connectOptions{
+		owner:    "acme",
+		name:     "web",
+		root:     server.instancePath,
+		tokenEnv: "MY_CUSTOM_TOKEN",
+	}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("connect exit = %d", code)
+	}
+
+	// A post-launch export landing on the DEFAULT name (what an operator who
+	// missed the "--token-env" detail, or exported in the wrong shell, would
+	// actually do) must not satisfy the preflight — the recorded name is
+	// MY_CUSTOM_TOKEN now, not the default, and that is the only name that
+	// counts.
+	t.Setenv(connectDefaultTokenEnv, "token-value")
+	wrongName := guidedPost(handler, "/guided/actions/run", `{}`)
+	if wrongName.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-name run status = %d body = %q", wrongName.Code, wrongName.Body.String())
+	}
+	wrongNameBody := decodeGuidedResponse[guidedErrorBody](t, wrongName)
+	if wrongNameBody.Code != "token_env_unset" || !strings.Contains(wrongNameBody.Message, "MY_CUSTOM_TOKEN") {
+		t.Fatalf("wrong-name run body = %+v", wrongNameBody)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("run with wrong exported name still exec'd: %v", *calls)
+	}
+	stateAfterConnect := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if stateAfterConnect.Env.TokenEnv != "MY_CUSTOM_TOKEN" {
+		t.Fatalf("state.env.tokenEnv = %q, want MY_CUSTOM_TOKEN", stateAfterConnect.Env.TokenEnv)
+	}
+	if stateAfterConnect.Env.GoobersGithubToken {
+		t.Fatalf("state reported ready for the recorded name despite only the default being exported: %+v", stateAfterConnect.Env)
+	}
+
+	// Exporting the actually-recorded name, in THIS process (standing in for
+	// "before the server launched"), is the only thing that unblocks it.
+	t.Setenv("MY_CUSTOM_TOKEN", "token-value")
+	ready := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if !ready.Env.GoobersGithubToken {
+		t.Fatalf("state still not ready with the recorded name exported: %+v", ready.Env)
+	}
+	accepted := guidedPost(handler, "/guided/actions/run", `{}`)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("run with the recorded name exported status = %d body = %q", accepted.Code, accepted.Body.String())
 	}
 }
 
@@ -436,6 +520,7 @@ func TestGettingStartedPostRejectsUnknownFields(t *testing.T) {
 
 func TestGettingStartedJobLifecycle(t *testing.T) {
 	workdir := t.TempDir()
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	server := newTestGuidedServer(t, workdir)
 	handler := http.HandlerFunc(server.serveGuided)
 	calls := stubGuidedExec(t,
@@ -491,6 +576,7 @@ func TestGettingStartedJobLifecycle(t *testing.T) {
 }
 
 func TestGettingStartedSecondRunWhileRunningConflicts(t *testing.T) {
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	server := newTestGuidedServer(t, t.TempDir())
 	handler := http.HandlerFunc(server.serveGuided)
 	stubGuidedExec(t, `sleep 5`)
