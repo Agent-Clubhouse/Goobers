@@ -235,7 +235,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
 	// policy decision. #2333 restricts park-needs-human to an explicit reviewer
 	// fail that states the exact policy or product question a human must answer.
-	const wantDigest = "sha256:2d9f19c4f6bd0acf0ab39ee0085c0860434c9b7d46de43d1331b1e500324f35f"
+	// #2698: the reference workflow migrated dslVersion 1.4 -> 2.0 and pinned
+	// automated.pollIntervalSeconds: 10 explicitly on ci-gate (DSL 2.0's
+	// ci-poll input builder injects that default where 1.4 left it unset), so
+	// the compiled runtime behavior is identical; only the hashed definition
+	// (DSLVersion + the now-explicit pin) moved the digest.
+	const wantDigest = "sha256:e2744c769f96d917c6797a17aa3ba9e8fe115846a8ff744da8b9a5358e7829ad"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

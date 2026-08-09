@@ -369,7 +369,17 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	warningCount := len(report.Warnings()) + len(placeholderFindings)
+	// Deprecation notices (DVL020) are strict-neutral by ruling: a deprecated
+	// dslVersion stays fully supported, so nudging users to migrate must never
+	// turn an existing green pipeline red. They print and land in diagnostics
+	// but are excluded from --strict's promotion.
+	deprecationCount := 0
+	for _, w := range report.Warnings() {
+		if w.Code == validate.WarningDeprecatedDSLVersion {
+			deprecationCount++
+		}
+	}
+	warningCount := len(report.Warnings()) - deprecationCount + len(placeholderFindings)
 	if options.strict && warningCount > 0 {
 		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1

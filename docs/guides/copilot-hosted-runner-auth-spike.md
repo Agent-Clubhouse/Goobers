@@ -119,7 +119,7 @@ completion file and do nothing else.
 # workflows/auth-spike.yaml
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: auth-spike
 spec:

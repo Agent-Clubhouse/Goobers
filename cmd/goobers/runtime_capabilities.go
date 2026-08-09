@@ -376,7 +376,7 @@ func init() {
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
-			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
+			withExamples("goobers features", "goobers features --json --dsl-version 2.0", "goobers features --used"),
 		command("schema", apicontract.ActionReadOnlyNavigation, runSchema).
 			withSynopsis(synopsisByID["schema"]).
 			withHelp("emit a JSON Schema embedded in this build", schemaHelp).

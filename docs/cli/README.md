@@ -1144,7 +1144,7 @@ config, 2 = usage/IO error.
 
 ~~~console
 $ goobers features
-$ goobers features --json --dsl-version 1.4
+$ goobers features --json --dsl-version 2.0
 $ goobers features --used
 ~~~
 
