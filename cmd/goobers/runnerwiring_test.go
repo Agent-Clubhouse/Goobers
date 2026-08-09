@@ -2727,18 +2727,6 @@ func TestEscalationCommenterRoutesADOAwayFromGitHubToken(t *testing.T) {
 // ADO park must remove the status-label form goobers/status:claimed (what
 // ClaimWorkItem writes), not the GitHub plain LabelClaimed, while leaving other
 // removals (LabelReady) untouched.
-func TestADOParkRemovalLabelsTranslatesClaimMarker(t *testing.T) {
-	got := adoParkRemovalLabels([]string{providers.LabelReady, providers.LabelClaimed})
-	want := []string{providers.LabelReady, providers.StatusLabelFor(providers.WorkItemStatusClaimed)}
-	if !slices.Equal(got, want) {
-		t.Fatalf("adoParkRemovalLabels = %v, want %v", got, want)
-	}
-	if want[1] != "goobers/status:claimed" {
-		t.Fatalf("ADO claim marker = %q, want goobers/status:claimed", want[1])
-	}
-}
-
-// --- #353: open-PR-count refresher wiring ---
 
 func cappedWorkflows() []apiv1.Workflow {
 	return []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}}}

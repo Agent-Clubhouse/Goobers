@@ -945,7 +945,6 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
 		}
 		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
-		req.RemoveLabels = adoParkRemovalLabels(req.RemoveLabels)
 		return provider.UpdateWorkItem(ctx, req)
 	}
 	if req.Repository.Provider == providers.ProviderGitea {
@@ -999,25 +998,6 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 		return provider.ListComments(ctx, repository, itemID)
 	}
 	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
-}
-
-// adoParkRemovalLabels rewrites a park/close removal set for an Azure DevOps
-// board. GitHub mirrors a claim with the plain LabelClaimed ("goobers:claimed")
-// tag, but ADO's ClaimWorkItem writes the status-label form
-// ("goobers/status:claimed") — so removing LabelClaimed verbatim never matches
-// and the claim marker leaks past a park. Every other label (e.g. LabelReady,
-// which ADO boards don't carry) passes through untouched: an absent tag removal
-// is a harmless no-op.
-func adoParkRemovalLabels(labels []string) []string {
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if label == providers.LabelClaimed {
-			out = append(out, providers.StatusLabelFor(providers.WorkItemStatusClaimed))
-			continue
-		}
-		out = append(out, label)
-	}
-	return out
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
