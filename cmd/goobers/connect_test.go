@@ -278,10 +278,10 @@ func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 	}
 
 	for _, identity := range []string{
-		"freemasoninc/Goobers/goobers-testbed-ado",
-		"https://dev.azure.com/freemasoninc/Goobers/_git/goobers-testbed-ado",
-		"https://freemasoninc.visualstudio.com/Goobers/_git/goobers-testbed-ado",
-		"git@ssh.dev.azure.com:v3/freemasoninc/Goobers/goobers-testbed-ado",
+		"contoso/example-project/example-repo",
+		"https://dev.azure.com/contoso/example-project/_git/example-repo",
+		"https://contoso.visualstudio.com/example-project/_git/example-repo",
+		"git@ssh.dev.azure.com:v3/contoso/example-project/example-repo",
 	} {
 		code, _, stderr := runArgs(t, "connect", identity, "--token-env", "GOOBERS_ADO_TOKEN", root)
 		if code != 2 {
@@ -291,9 +291,9 @@ func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 			connectADOIdentityCode,
 			"Azure DevOps organization/project/repository identity",
 			"provider: ado",
-			"owner: freemasoninc",
-			"project: Goobers",
-			"name: goobers-testbed-ado",
+			"owner: contoso",
+			"project: example-project",
+			"name: example-repo",
 			"env: GOOBERS_ADO_TOKEN",
 			"spec.backlog.project",
 			"docs/guides/ado-authentication.md",
@@ -318,16 +318,16 @@ func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 // Azure DevOps spelling resolves to all three coordinates, and nothing that is
 // (or could be) a GitHub identity is ever claimed as ADO.
 func TestConnectADOIdentityRecognition(t *testing.T) {
-	want := connectADORepo{Organization: "freemasoninc", Project: "Goobers", Repository: "goobers-testbed-ado"}
+	want := connectADORepo{Organization: "contoso", Project: "example-project", Repository: "example-repo"}
 	for _, value := range []string{
-		"freemasoninc/Goobers/goobers-testbed-ado",
-		"freemasoninc/Goobers/goobers-testbed-ado.git",
-		"  freemasoninc/Goobers/goobers-testbed-ado  ",
-		"https://dev.azure.com/freemasoninc/Goobers/_git/goobers-testbed-ado",
-		"https://dev.azure.com/freemasoninc/Goobers/_git/goobers-testbed-ado.git",
-		"https://freemasoninc.visualstudio.com/Goobers/_git/goobers-testbed-ado",
-		"https://freemasoninc.visualstudio.com/DefaultCollection/Goobers/_git/goobers-testbed-ado",
-		"git@ssh.dev.azure.com:v3/freemasoninc/Goobers/goobers-testbed-ado",
+		"contoso/example-project/example-repo",
+		"contoso/example-project/example-repo.git",
+		"  contoso/example-project/example-repo  ",
+		"https://dev.azure.com/contoso/example-project/_git/example-repo",
+		"https://dev.azure.com/contoso/example-project/_git/example-repo.git",
+		"https://contoso.visualstudio.com/example-project/_git/example-repo",
+		"https://contoso.visualstudio.com/DefaultCollection/example-project/_git/example-repo",
+		"git@ssh.dev.azure.com:v3/contoso/example-project/example-repo",
 	} {
 		got, ok := connectADOIdentity(value)
 		if !ok || got != want {
@@ -337,8 +337,8 @@ func TestConnectADOIdentityRecognition(t *testing.T) {
 
 	// The short dev.azure.com form ADO emits when project and repository share
 	// a name.
-	if got, ok := connectADOIdentity("https://dev.azure.com/freemasoninc/_git/goobers"); !ok ||
-		got != (connectADORepo{Organization: "freemasoninc", Project: "goobers", Repository: "goobers"}) {
+	if got, ok := connectADOIdentity("https://dev.azure.com/contoso/_git/example-repo"); !ok ||
+		got != (connectADORepo{Organization: "contoso", Project: "example-repo", Repository: "example-repo"}) {
 		t.Errorf("short dev.azure.com form = %+v, %v", got, ok)
 	}
 
@@ -365,7 +365,7 @@ func TestConnectADOIdentityRecognition(t *testing.T) {
 // not a legal variable name falls back to the ADO hint.
 func TestConnectADORefusalNeverEchoesPastedToken(t *testing.T) {
 	root := connectTestInstance(t, "quickstart")
-	code, _, stderr := runArgs(t, "connect", "freemasoninc/Goobers/goobers-testbed-ado",
+	code, _, stderr := runArgs(t, "connect", "contoso/example-project/example-repo",
 		"--token-env", "ghp_abcdef0123456789", root)
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
@@ -401,13 +401,13 @@ func TestConnectTwoPartADOGuessLeavesNothingOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, _, stderr := runArgs(t, "connect", "freemasoninc/goobers-testbed-ado", "--token-env", tokenEnv, root)
+	code, _, stderr := runArgs(t, "connect", "contoso/example-repo", "--token-env", tokenEnv, root)
 	if code != 1 {
 		t.Fatalf("connect code = %d, want 1; stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
 		connectUnreachableCode,
-		"freemasoninc/goobers-testbed-ado is not reachable with the credential named by " + tokenEnv,
+		"contoso/example-repo is not reachable with the credential named by " + tokenEnv,
 		"nothing was written",
 		"docs/guides/ado-authentication.md",
 	} {
@@ -480,9 +480,9 @@ func TestConnectRefusesForeignProviderEntry(t *testing.T) {
 	}
 	cfg.Repos = []instance.RepoRef{{
 		Provider: "ado",
-		Owner:    "freemasoninc",
-		Project:  "Goobers",
-		Name:     "goobers-testbed-ado",
+		Owner:    "contoso",
+		Project:  "example-project",
+		Name:     "example-repo",
 		Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT},
 		Token:    instance.TokenRef{Env: "GOOBERS_ADO_TOKEN"},
 	}}
@@ -495,8 +495,8 @@ func TestConnectRefusesForeignProviderEntry(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"connect", "freemasoninc/goobers-testbed-ado", root},
-		{"connect", "freemasoninc/goobers-testbed-ado", "--replace", root},
+		{"connect", "contoso/example-repo", root},
+		{"connect", "contoso/example-repo", "--replace", root},
 	} {
 		code, _, stderr := runArgs(t, args...)
 		if code != 1 {
@@ -505,7 +505,7 @@ func TestConnectRefusesForeignProviderEntry(t *testing.T) {
 		for _, want := range []string{
 			connectForeignProviderCode,
 			`repos[0] declares provider "ado"`,
-			"freemasoninc/Goobers/goobers-testbed-ado",
+			"contoso/example-project/example-repo",
 			"provider: github entries only",
 			"docs/guides/ado-authentication.md",
 		} {

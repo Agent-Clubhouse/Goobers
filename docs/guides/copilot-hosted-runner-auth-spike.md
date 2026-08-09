@@ -38,14 +38,14 @@ dispatched because the clean-profile production preflight fails before Goobers
 creates a run. The failure is in shared Go code and the Copilot CLI invocation,
 not an OS-specific branch.
 
-The control was captured at `2026-07-28T05:53:03Z` with:
+The control was captured with:
 
 | Component | Captured value |
 |---|---|
-| Host | macOS 26.5.2, Darwin 25.5.0, arm64 |
+| Host | macOS (Apple silicon) |
 | Go | 1.26.5 |
 | Copilot CLI | 1.0.75 |
-| Goobers | source build at `b8cbedd6` |
+| Goobers | a local source build |
 
 The results were:
 
@@ -53,7 +53,7 @@ The results were:
 |---|---|---|---|---|
 | Empty `HOME` and `COPILOT_HOME`, no ambient model token | Copilot CLI exited 1 with `No authentication information found` and directed the operator to login or set a supported token | The shipped `goobers run` failed its automatic harness preflight; no stage started | Not reached | No run ID or journal was created |
 | Empty profile with an `agent:model` token ref configured | Identical preflight failure; the capability credential was not resolved for the probe | Identical failure before run creation | Not reached | Run-directory count remained unchanged |
-| Operator profile with a stored Copilot CLI sign-in | Production auth probe succeeded | Run `01946515ef595e8dded1dee9f554193c` completed; `echo` attempt 1 succeeded in 24.2 seconds | Passed; output was the exact sentinel | `stage.finished` seq 6 records the sentinel and `run.finished` seq 8 records `completed` |
+| Operator profile with a stored Copilot CLI sign-in | Production auth probe succeeded | A run completed; the `echo` attempt succeeded | Passed; output was the exact sentinel | `stage.finished` seq 6 records the sentinel and `run.finished` seq 8 records `completed` |
 
 The successful control also recorded a `copilot-cli.transcript` span. Its
 contents are intentionally not reproduced because transcripts can contain
