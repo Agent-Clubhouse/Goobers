@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -270,6 +272,131 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("rejected requests must never exec: %v", *calls)
+	}
+}
+
+// stubGuidedExecCapturingCmd is stubGuidedExec's sibling: it hands back the
+// live *exec.Cmd the handler goes on to configure, so a test can inspect
+// .Env after the handler sets it (unlike argv, which stubGuidedExec's
+// closure parameters already capture, .Env is set by the CALLER on the
+// returned *exec.Cmd, so it isn't visible until after the handler runs).
+func stubGuidedExecCapturingCmd(t *testing.T, script string) (argv *[]string, cmd **exec.Cmd) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("guided exec stubs use /bin/sh")
+	}
+	previous := guidedExecCommand
+	var gotArgv []string
+	var gotCmd *exec.Cmd
+	guidedExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotArgv = append([]string{}, args...)
+		gotCmd = exec.CommandContext(ctx, "/bin/sh", "-c", script)
+		return gotCmd
+	}
+	t.Cleanup(func() { guidedExecCommand = previous })
+	return &gotArgv, &gotCmd
+}
+
+func TestGettingStartedProbeBacklogNoTokenYetSkipsExec(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+	t.Setenv(defaultWorkTrackingTokenEnv, "")
+	calls := stubGuidedExec(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	body := decodeGuidedResponse[guidedProbeBody](t, recorder)
+	if body.EligibleCount != nil {
+		t.Fatalf("eligibleCount = %v, want nil (no token exported yet)", *body.EligibleCount)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("must not exec backlog-query without a token: %v", *calls)
+	}
+}
+
+func TestGettingStartedProbeBacklogParsesEligibleCount(t *testing.T) {
+	cases := []struct {
+		name   string
+		stdout string
+		want   int
+	}{
+		{"none eligible", "no eligible items\n", 0},
+		{"one eligible", "123\tFix the flaky test\n", 1},
+		{"multiple eligible", "1\tFirst\n2\tSecond\n3\tThird\n", 3},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newTestGuidedServer(t, t.TempDir())
+			t.Setenv(defaultWorkTrackingTokenEnv, "issues-token")
+			stubGuidedExec(t, fmt.Sprintf("printf %q", testCase.stdout))
+
+			recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			body := decodeGuidedResponse[guidedProbeBody](t, recorder)
+			if body.EligibleCount == nil || *body.EligibleCount != testCase.want {
+				t.Fatalf("eligibleCount = %v, want %d", body.EligibleCount, testCase.want)
+			}
+		})
+	}
+}
+
+func TestGettingStartedProbeBacklogArgvAndCredentialEnv(t *testing.T) {
+	workdir := t.TempDir()
+	tutorial := filepath.Join(workdir, "tutorial-instance")
+	server := newTestGuidedServer(t, workdir)
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+	t.Setenv(defaultWorkTrackingTokenEnv, "super-secret-issues-token")
+	argv, cmd := stubGuidedExecCapturingCmd(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+
+	wantArgv := []string{"backlog-query", "--read-only", tutorial}
+	if !reflect.DeepEqual(*argv, wantArgv) {
+		t.Fatalf("argv = %v, want %v", *argv, wantArgv)
+	}
+	if *cmd == nil {
+		t.Fatal("guidedExecCommand was not invoked")
+	}
+	wantEnvContains := []string{
+		"GOOBERS_CRED_GITHUB_ISSUES_READ=super-secret-issues-token",
+		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
+		"GOOBERS_INPUT_REQUIRELABELS=goobers:ready",
+	}
+	for _, want := range wantEnvContains {
+		if !slices.Contains((*cmd).Env, want) {
+			t.Fatalf("command.Env missing %q; env = %v", want, (*cmd).Env)
+		}
+	}
+}
+
+func TestGettingStartedProbeBacklogFallsBackToMainToken(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	t.Setenv(defaultWorkTrackingTokenEnv, "")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "main-token-value")
+	_, cmd := stubGuidedExecCapturingCmd(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	want := "GOOBERS_CRED_GITHUB_ISSUES_READ=main-token-value"
+	if !slices.Contains((*cmd).Env, want) {
+		t.Fatalf("command.Env missing %q (main-token fallback); env = %v", want, (*cmd).Env)
+	}
+}
+
+func TestGettingStartedProbeBacklogRejectsPost(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog", `{}`)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", recorder.Code)
 	}
 }
 
