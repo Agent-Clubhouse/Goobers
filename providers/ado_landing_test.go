@@ -29,6 +29,7 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 			getCalls++
 			writeJSON(t, w, map[string]interface{}{
 				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
+				"lastMergeSourceCommit": map[string]string{"commitId": "head1"},
 			})
 		case http.MethodPatch:
 			body, err := io.ReadAll(r.Body)
@@ -66,9 +67,40 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	if !ok || opts["mergeStrategy"] != "squash" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=squash", patched["completionOptions"])
 	}
-	guard, ok := patched["lastMergeSourceCommit"].(map[string]interface{})
-	if !ok || guard["commitId"] != "head1" {
-		t.Fatalf("lastMergeSourceCommit = %#v, want commitId=head1", patched["lastMergeSourceCommit"])
+	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (sending
+	// it returns a 400); the head pin is enforced against the fetched detail
+	// before the PATCH, not carried in the body.
+	if _, present := patched["lastMergeSourceCommit"]; present {
+		t.Fatalf("PATCH body must not carry the read-only lastMergeSourceCommit: %#v", patched["lastMergeSourceCommit"])
+	}
+}
+
+// TestADOProviderMergePullRequestRejectsMovedHead pins the pre-PATCH head guard:
+// when the fetched detail's source head no longer matches ExpectedHeadSHA, the
+// merge is refused before any completion PATCH.
+func TestADOProviderMergePullRequestRejectsMovedHead(t *testing.T) {
+	patchCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patchCalls++
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-moved"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+	})
+	if err == nil {
+		t.Fatal("expected an error when the head moved, got nil")
+	}
+	if patchCalls != 0 {
+		t.Fatalf("PATCH calls = %d, want 0 (refuse before completing)", patchCalls)
 	}
 }
 

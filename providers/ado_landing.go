@@ -141,14 +141,15 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
+	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
+		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
+		return EnqueuePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	}
 	body := map[string]interface{}{
 		"autoCompleteSetBy": map[string]string{"id": detail.CreatedBy.ID},
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy: adoMergeStrategy(req.MergeMethod),
 		},
-	}
-	if req.ExpectedHeadSHA != "" {
-		body["lastMergeSourceCommit"] = map[string]string{"commitId": req.ExpectedHeadSHA}
 	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
@@ -259,15 +260,19 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
+	// lastMergeSourceCommit is read-only on ADO's PR-update endpoint (it
+	// rejects any attempt to set it), so the head pin is enforced by
+	// comparing the freshly fetched detail rather than sent in the PATCH.
+	if req.ExpectedHeadSHA != "" && detail.LastMergeSourceCommit.CommitID != "" &&
+		!strings.EqualFold(detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA) {
+		return MergePullRequestResult{}, fmt.Errorf("pull request head moved to %s, expected %s", detail.LastMergeSourceCommit.CommitID, req.ExpectedHeadSHA)
+	}
 	body := map[string]interface{}{
 		"status": "completed",
 		"completionOptions": adoCompletionOptions{
 			MergeStrategy:      adoMergeStrategy(req.MergeMethod),
 			MergeCommitMessage: req.CommitMessage,
 		},
-	}
-	if req.ExpectedHeadSHA != "" {
-		body["lastMergeSourceCommit"] = map[string]string{"commitId": req.ExpectedHeadSHA}
 	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {

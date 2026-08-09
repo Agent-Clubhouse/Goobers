@@ -333,6 +333,11 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
 	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	// ADO PR completion authority is repo-token-backed like the GitHub grants
+	// above; only stages that declare ado:pr:complete receive its credential,
+	// preserving the decider/executor isolation (merge-review completes; the
+	// implementation and remediation lanes never can).
+	capability.ADOPRComplete,
 }
 
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
