@@ -12,6 +12,7 @@ new 2.0 epic (#2695/#2698/#2700), and repass accounting overlaps approved
 ## Recommended filing order
 
 **Tier 1 — beta-blockers (config-as-truth / catches-mistakes-early):**
+- `sibling-ordering-strategies.md` — the zero-merge deadlock's structural fix, operator-ratified "both, opt-in" (added 2026-08-09 after the live incident)
 - `validate-materialize-effective-capability-grants.md` — the K4 class; also proposes the missing scoped-override DSL surface (fold into #1794)
 - `structured-artifact-handoffs.md` — VISION wish 1; the incident class prompt-hints cannot reach
 - `one-budget-primitive.md` — VISION wish 4; ~3-line minimum viable half flagged
