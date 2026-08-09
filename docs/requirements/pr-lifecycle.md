@@ -288,6 +288,14 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   enters full remediation. A PR carrying `goobers:needs-human` MUST be excluded
   from every remediation tier until a human clears that explicit park state;
   it cannot retain selection priority and starve another eligible PR.
+- **PRL-050a (MAY, Shipped):** The within-tier selection order is a named,
+  configurable `remediationAlgorithm` input (default and only supported value
+  `fifo` — oldest eligible PR, i.e. lowest number, first), mirroring the
+  election-policy seam (PRL-022). An unrecognized value warns and falls back to
+  `fifo` rather than failing the stage. Sibling-overlap serialization (the
+  crowning of a lander over its parked dependents) is a GitHub-only refinement
+  layered on top of FIFO; on providers without sibling election (Azure DevOps),
+  selection is pure FIFO and the stage emits a note stating so.
 - **PRL-051 (MUST, Shipped):** The entry stage MUST check out the **PR's own
   branch**, rebind the run's workspace branch to it for every later stage
   (#392 — so the reviewer's computed diff is the PR's real diff), and emit the

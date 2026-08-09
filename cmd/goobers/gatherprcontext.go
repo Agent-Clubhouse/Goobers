@@ -86,14 +86,18 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps pr-remediation epic (docs/audits/2026-08-08-gaggle-reliability/
-	// ado-conformance/remediation-wiring-plan.md §3.1): gather-pr-context's ADO
-	// branch selects a needs-remediation PR from the label tier, rebinds its
-	// branch, and recovers the merge-review verdict from the PR THREAD (ADO has no
-	// PR-comment transport). It never resolves a github:* token and never touches
-	// the GitHub-concrete remediationProvider helpers. Every GitHub path below
-	// stays byte-identical — the ADO behavior is a wholly separate function reached
-	// only on this switch, mirroring runPRSelectADO / runGatherSiblingContextADO.
+	// The remediation loop selects flagged PRs oldest-first (FIFO). Validate
+	// any configured remediationAlgorithm override up front — provider-agnostic,
+	// so it runs before the ADO branch — so an unrecognized value warns rather
+	// than silently selecting fifo anyway.
+	validateRemediationAlgorithm(stderr)
+	// Azure DevOps pr-remediation epic: gather-pr-context's ADO branch selects a
+	// needs-remediation PR from the label tier, rebinds its branch, and recovers
+	// the merge-review verdict from the PR THREAD (ADO has no PR-comment
+	// transport). It never resolves a github:* token and never touches the
+	// GitHub-concrete remediationProvider helpers. Every GitHub path below stays
+	// byte-identical — the ADO behavior is a wholly separate function reached only
+	// on this switch, mirroring runPRSelectADO / runGatherSiblingContextADO.
 	if repo.Provider == providers.ProviderADO {
 		return runGatherPRContextADO(root, repo, stdout, stderr)
 	}
@@ -410,6 +414,11 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Sibling-overlap serialization is a GitHub-only refinement; on Azure DevOps
+	// the remediation loop is pure FIFO. State it plainly so an operator is not
+	// surprised that two overlapping ADO PRs are remediated independently rather
+	// than serialized behind one another.
+	pf(stderr, "note: Azure DevOps supports only the %q remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order\n", remediationAlgorithmFIFO)
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
@@ -848,6 +857,25 @@ func resolveMinSeverity(stderr io.Writer) apiv1.Severity {
 	}
 }
 
+// remediationAlgorithmFIFO selects the oldest eligible PR (lowest number) first.
+// It is the only supported remediation algorithm today and the default, mirroring
+// the electionPolicy "fifo" default: the safe, boring, fully-reproducible order.
+const remediationAlgorithmFIFO = "fifo"
+
+// validateRemediationAlgorithm checks the configured PR-selection algorithm for
+// the remediation loop. Exposing it as an explicit, named input ("fifo") makes
+// the selection order a declared, provider-portable contract rather than
+// incidental behaviour. FIFO is the only value accepted today; an unknown value
+// warns and is treated as fifo (never a hard failure — mirrors resolveMinSeverity
+// and resolveElectionPolicy). Honouring it is a no-op on the selection path,
+// which already orders same-tier candidates by ascending PR number.
+func validateRemediationAlgorithm(stderr io.Writer) {
+	if raw := providerInput("remediationAlgorithm", remediationAlgorithmFIFO); raw != remediationAlgorithmFIFO {
+		pf(stderr, "warning: remediationAlgorithm %q is not supported (only %q); using %q\n",
+			raw, remediationAlgorithmFIFO, remediationAlgorithmFIFO)
+	}
+}
+
 func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, minSeverity apiv1.Severity) bool {
 	if verdict == nil {
 		return false
@@ -862,7 +890,15 @@ func verdictHasSubstantiveFindingForPR(verdict *apiv1.Verdict, prNumber int, min
 }
 
 func substantiveFindingAppliesToPR(finding apiv1.Finding, target string, minSeverity apiv1.Severity) bool {
-	if !finding.Class.RequiresCodeChange() {
+	// A finding's class routes it to the right remediation action, so an
+	// explicitly non-code-change class (cross-pr-blocked, rebase-needed) is not
+	// a substantive-rework signal. But an UNSET class is treated liberally — the
+	// same liberal default the unset-Severity branch below uses — because a
+	// reviewer that omits the tag must not silently drop a real defect from
+	// remediation. (A live ADO command-injection finding carried no class and
+	// stalled the whole loop until this backstop existed; the severity floor
+	// still filters low-value classless noise.)
+	if finding.Class != "" && !finding.Class.RequiresCodeChange() {
 		return false
 	}
 	// An unset Severity (verdicts recorded before this field existed, or
