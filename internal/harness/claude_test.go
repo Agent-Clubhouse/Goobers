@@ -522,6 +522,35 @@ func TestClaudeAdapterRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestClaudeAdapterValidateConfigRejectsUnsupportedModel(t *testing.T) {
+	adapter := &ClaudeAdapter{}
+	err := adapter.ValidateConfig("claude-nonexistent-model", nil)
+	if err == nil {
+		t.Fatal("expected unsupported model to fail admission")
+	}
+	if !strings.Contains(err.Error(), "claude-nonexistent-model") {
+		t.Fatalf("error does not name the rejected model: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude-sonnet-5") {
+		t.Fatalf("error does not list a valid model: %v", err)
+	}
+}
+
+func TestClaudeAdapterValidateConfigAcceptsKnownModels(t *testing.T) {
+	adapter := &ClaudeAdapter{}
+	if err := adapter.ValidateConfig("", nil); err != nil {
+		t.Fatalf("empty model should defer to the harness default: %v", err)
+	}
+	if err := adapter.ValidateConfig("auto", nil); err != nil {
+		t.Fatalf(`"auto" should defer to the harness default: %v`, err)
+	}
+	for model := range claudeKnownModels {
+		if err := adapter.ValidateConfig(model, nil); err != nil {
+			t.Fatalf("ValidateConfig(%q): %v", model, err)
+		}
+	}
+}
+
 func TestClaudeAdapterConfinesSandboxRuntime(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
@@ -669,6 +698,77 @@ func TestSeedClaudeCredentialsMissingFileRemainsOptionalOutsideMacOS(t *testing.
 	}
 	if called {
 		t.Fatal("Keychain reader called outside macOS")
+	}
+}
+
+// TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox plants a fake ambient
+// ~/.claude — settings.json with a hook, a plugin directory, and an MCP
+// server config — and asserts an unsandboxed run neither points
+// CLAUDE_CONFIG_DIR at it nor copies any of it into the isolated runtime
+// directory the run actually uses; only stored credentials cross over.
+func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ambientDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(filepath.Join(ambientDir, "plugins", "evil-plugin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, "settings.json"),
+		[]byte(`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo ambient-hook-fired"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, "plugins", "evil-plugin", "plugin.json"),
+		[]byte(`{"name":"evil-plugin"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, ".mcp.json"),
+		[]byte(`{"mcpServers":{"ambient":{"command":"ambient-mcp"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, ".credentials.json"),
+		[]byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var configDir string
+	for _, entry := range runner.lastReq.Env {
+		if v, ok := strings.CutPrefix(entry, "CLAUDE_CONFIG_DIR="); ok {
+			configDir = v
+		}
+	}
+	if configDir == "" {
+		t.Fatal("expected CLAUDE_CONFIG_DIR override on an unsandboxed run")
+	}
+	if configDir == ambientDir {
+		t.Fatalf("CLAUDE_CONFIG_DIR points at the ambient config directory: %s", configDir)
+	}
+	for _, name := range []string{"settings.json", "plugins", ".mcp.json"} {
+		if _, err := os.Stat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("ambient %s is visible in the isolated config dir: %v", name, err)
+		}
+	}
+	copied, err := os.ReadFile(filepath.Join(configDir, ".credentials.json"))
+	if err != nil {
+		t.Fatalf("read isolated credential copy: %v", err)
+	}
+	if string(copied) != `{"oauthToken":"stored-login"}` {
+		t.Fatalf("isolated credential copy = %q", copied)
 	}
 }
 
