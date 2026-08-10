@@ -613,24 +613,44 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 
 func TestSequencingOnlyRemediationWaitUsesLiveState(t *testing.T) {
 	pr := providers.PullRequestSummary{CheckState: providers.CheckStatePassing}
-	if !sequencingOnlyRemediationWait(pr, []int{41}) {
+	state := blockedOnSiblingState{Blockers: []int{41}}
+	if !shouldParkRemediation(pr, state) {
 		t.Fatal("sequencing-only blocked PR was not parked")
 	}
 
 	pr.CheckState = providers.CheckStateFailing
-	if sequencingOnlyRemediationWait(pr, []int{41}) {
+	if shouldParkRemediation(pr, state) {
 		t.Fatal("failing CI was treated as sequencing-only")
 	}
 
 	pr.CheckState = providers.CheckStatePassing
 	pr.Labels = []string{needsRemediationLabel}
-	if sequencingOnlyRemediationWait(pr, []int{41}) {
+	if shouldParkRemediation(pr, state) {
 		t.Fatal("live needs-remediation state was treated as sequencing-only")
 	}
 
 	pr.Labels = nil
-	if sequencingOnlyRemediationWait(pr, nil) {
+	state.Blockers = nil
+	if shouldParkRemediation(pr, state) {
 		t.Fatal("resolved blocker was treated as live sequencing")
+	}
+}
+
+func TestFoundationCoupledRemediationWaitParksUntilFoundationResolves(t *testing.T) {
+	pr := providers.PullRequestSummary{
+		Labels:     []string{needsRemediationLabel},
+		CheckState: providers.CheckStatePassing,
+	}
+	state := blockedOnSiblingState{
+		Blockers: []int{41},
+		Reason:   "foundation-coupled to PR #41, which substantially rewrites shared files",
+	}
+	if !shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR was not parked while its foundation is live")
+	}
+	pr.CheckState = providers.CheckStateFailing
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR with failing CI was parked")
 	}
 }
 

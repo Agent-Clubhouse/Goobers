@@ -668,14 +668,15 @@ func filterRemediationPullRequests(ctx context.Context, provider remediationProv
 		if blocked {
 			continue
 		}
-		liveBlockers, err := liveBlockedOnSiblingBlockers(ctx, provider, repo, pr)
+		blockedState, err := liveBlockedOnSiblingState(ctx, provider, repo, pr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
 		}
+		liveBlockers := blockedState.Blockers
 		for _, blocker := range liveBlockers {
 			blockedDependents[blocker]++
 		}
-		if sequencingOnlyRemediationWait(pr, liveBlockers) {
+		if shouldParkRemediation(pr, blockedState) {
 			continue
 		}
 		eligible = append(eligible, pr)
@@ -683,10 +684,17 @@ func filterRemediationPullRequests(ctx context.Context, provider remediationProv
 	return eligible, blockedDependents, nil
 }
 
-func sequencingOnlyRemediationWait(pr providers.PullRequestSummary, liveBlockers []int) bool {
-	return len(liveBlockers) > 0 &&
-		!hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) &&
-		pr.CheckState != providers.CheckStateFailing
+func shouldParkRemediation(pr providers.PullRequestSummary, blockedState blockedOnSiblingState) bool {
+	if len(blockedState.Blockers) == 0 {
+		return false
+	}
+	if pr.CheckState == providers.CheckStateFailing {
+		return false
+	}
+	if strings.HasPrefix(blockedState.Reason, "foundation-coupled to PR #") {
+		return true
+	}
+	return !hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,

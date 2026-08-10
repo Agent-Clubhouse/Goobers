@@ -76,6 +76,29 @@ func liveBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvi
 	if err != nil {
 		return nil, err
 	}
+	return filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, blockers)
+}
+
+func liveBlockedOnSiblingState(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (blockedOnSiblingState, error) {
+	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
+		return blockedOnSiblingState{}, nil
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return blockedOnSiblingState{}, err
+	}
+	state, _, found := latestBlockedOnSiblingState(comments)
+	if !found {
+		return blockedOnSiblingState{}, nil
+	}
+	state.Blockers, err = filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, state.Blockers)
+	if err != nil {
+		return blockedOnSiblingState{}, err
+	}
+	return state, nil
+}
+
+func filterLiveBlockedOnSiblingBlockers(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blockers []int) ([]int, error) {
 	var open []int
 	seen := make(map[int]bool)
 	for _, blocker := range blockers {
