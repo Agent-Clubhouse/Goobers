@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -715,5 +716,23 @@ func TestIssueCloseOutMissingRunIDFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+// TestCloseOutClaimMarkerIsPlainOnEveryProvider pins the cross-provider claim
+// contract: ClaimWorkItem defaults the marker to the plain LabelClaimed on
+// GitHub, Gitea, AND ADO, so close-out must remove that same constant — a
+// provider-conditional translation here is how the ADO stale-marker leak
+// happened (removal targeted a status-form tag the claim never writes).
+func TestCloseOutClaimMarkerIsPlainOnEveryProvider(t *testing.T) {
+	if providers.LabelClaimed != "goobers:claimed" {
+		t.Fatalf("LabelClaimed = %q, want goobers:claimed", providers.LabelClaimed)
+	}
+	src, err := os.ReadFile("issuecloseout.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "StatusLabelFor(providers.WorkItemStatusClaimed)") {
+		t.Fatal("issuecloseout.go reintroduced a status-form claim-marker translation; the claim path writes the plain LabelClaimed on every provider")
 	}
 }

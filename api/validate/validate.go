@@ -93,6 +93,30 @@ const (
 	// WarningMissingSkillPackage identifies a declared goober skill whose
 	// package directory is absent.
 	WarningMissingSkillPackage WarningCode = "SKILL002"
+	// WarningUnclaimedRunnerCapability identifies a gaggle/stage
+	// requiredCapabilities token that instance.yaml's runner.capabilities
+	// does not claim (RRQ-1/#1101). Schedule-time matching is an exact
+	// string set-membership check (internal/runnercap), so an unclaimed
+	// token means the scheduler refuses placement of every run of that
+	// gaggle and `goobers up` fails closed at startup
+	// (instance.CheckCapabilityRequirements) — a structural no-run state
+	// the config validator can see statically because it reads both files
+	// in the same pass (2026-08-08 cold-start audit, dotnet #7 / swift
+	// probes).
+	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
+	// WarningGateCompletionHidesFailure identifies an automated gate branch
+	// that is keyed on a failure-implying outcome (status-equals'
+	// default/success "fail", failure-class "fail"/"infra") and routes to
+	// workflow completion (""), while a stage feeding that gate does not set
+	// continueOnError. The branch IS taken — a failed stage whose `next`
+	// names a gate always delivers its honest failed status to the gate
+	// (internal/runner taskOutcome) — but the run then terminates failed,
+	// not completed: the runner refuses to complete a run whose final stage
+	// failure was neither tolerated (continueOnError) nor affirmatively
+	// cleared by a pass/human verdict (#849's unresolved-failure rule). The
+	// declared completion is therefore unreachable dead config (2026-08-08
+	// cold-start audit, swift #3's verified shape).
+	WarningGateCompletionHidesFailure WarningCode = "WF018"
 )
 
 const (

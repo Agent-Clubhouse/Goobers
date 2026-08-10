@@ -119,6 +119,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"scaffold workflow": {
 		{name: "force", desc: "Replace generated files that already exist"},
 	},
+	"scaffold gaggle": {
+		{name: "force", desc: "Replace generated files that already exist (only without --from)"},
+		{name: "from", takesArg: true, desc: "Rename an existing gaggle to <name>"},
+	},
 	"agent-kit install": {
 		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},
 	},

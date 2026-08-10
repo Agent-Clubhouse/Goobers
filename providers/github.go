@@ -1073,6 +1073,18 @@ func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePol
 	}
 	var rules []githubBranchRule
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &rules); err != nil {
+		// The rules endpoint is entitlement-gated: private repos on free
+		// plans answer 403 ("Upgrade to ...") even to an admin token. That
+		// is a plan limitation, not an auth failure — treating it as one
+		// fails every merge and can latch the auth circuit. No readable
+		// rules means no merge-queue rule is detectable; degrade to
+		// direct-merge and let GitHub remain the enforcer at merge time (a
+		// server-side queue requirement still rejects the direct merge
+		// loudly there).
+		var respErr *providerResponseError
+		if errors.As(err, &respErr) && respErr.statusCode == http.StatusForbidden {
+			return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+		}
 		return RepoMergePolicyResult{}, err
 	}
 	for _, rule := range rules {
@@ -2639,6 +2651,55 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 		},
 	})
 	return item, nil
+}
+
+// RepositoryLabelNames lists the repository's issue-label names, read-only —
+// the validator's selector-reality pass compares config selectors against
+// them and must never create anything (creation is EnsureWorkItemLabels'
+// job, invoked only by connect --seed).
+func (p *GitHubProvider) RepositoryLabelNames(ctx context.Context, repo RepositoryRef) ([]string, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageLabels []githubLabel
+		if err := json.Unmarshal(page, &pageLabels); err != nil {
+			return fmt.Errorf("decode labels page: %w", err)
+		}
+		for _, label := range pageLabels {
+			names = append(names, label.Name)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// ActionsWorkflowCount reports how many GitHub Actions workflows the
+// repository defines — the cheap "does anything here produce check runs"
+// signal the validator's ci-poll reality warning keys on. External check
+// apps are invisible to this probe by design; callers must hedge.
+func (p *GitHubProvider) ActionsWorkflowCount(ctx context.Context, repo RepositoryRef) (int, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return 0, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "workflows")
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := p.doStatus(ctx, http.MethodGet, endpoint, nil, &out, nil); err != nil {
+		return 0, err
+	}
+	return out.TotalCount, nil
 }
 
 // EnsureWorkItemLabels creates missing GitHub issue labels without modifying existing labels.

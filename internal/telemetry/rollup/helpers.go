@@ -1,10 +1,12 @@
 package rollup
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -85,6 +87,37 @@ func marshalAttributes(attrs map[string]string) (sql.NullString, error) {
 		return sql.NullString{}, fmt.Errorf("rollup: marshal span event attributes: %w", err)
 	}
 	return sql.NullString{String: string(b), Valid: true}, nil
+}
+
+// maxStoredMessageLen bounds every free-text error message column ingest
+// writes (run_errors.message, scheduler_errors.message). Without a cap, one
+// pathological event grows a rollup row without bound: a Jul 21-22 incident's
+// errors.Join of ~1,715 per-directory failures produced a single 2.6MB
+// message, and 108 such rows totaled 281MB — 33% of telemetry.db.
+const maxStoredMessageLen = 64 * 1024
+
+// capMessage bounds message to maxStoredMessageLen bytes. Call it AFTER
+// redaction (telemetry.Redact) so a secret-shaped substring can never be left
+// half-exposed by a cut landing inside it. Anything past the limit is
+// replaced by a marker carrying the untruncated (already-redacted) size and a
+// SHA-256 prefix of the full text, so a truncated row can still be correlated
+// against the untruncated line in its source journal during forensics — the
+// journal itself is never capped, only what this rollup stores.
+func capMessage(message string) string {
+	if len(message) <= maxStoredMessageLen {
+		return message
+	}
+	sum := sha256.Sum256([]byte(message))
+	marker := fmt.Sprintf("...[truncated %d bytes, sha256:%x]", len(message), sum[:8])
+	keep := maxStoredMessageLen - len(marker)
+	if keep < 0 {
+		keep = 0
+	}
+	// Never split a multi-byte UTF-8 rune at the cut point.
+	for keep > 0 && !utf8.RuneStart(message[keep]) {
+		keep--
+	}
+	return message[:keep] + marker
 }
 
 // operationFromRunner reads a string "operation" annotation from the journal

@@ -2689,6 +2689,15 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 				shouldRetry = infrastructureFailures < DefaultMaxInfrastructureAttempts
 				nextRetryClass = journal.AttemptInfra
 			}
+			// The event's Error.Code stays the generic executor_error: it is
+			// the conformance-normative marker for "this attempt failed
+			// before it could report a result", and the attempt-boundary
+			// projections outside this package recognize it by that exact
+			// string. What the attempt failed OF is carried alongside it in
+			// the runner namespace, where telemetry reads it — otherwise
+			// clone-403, askpass, DNS and claims-lock failures all land in
+			// one unqueryable bucket (2026-08-08 reliability audit).
+			errorCode, errorClass := classifyDispatchFailure(dispatchErr)
 			// A journal that cannot be written stops the run (§2.6): this
 			// write failing means the run's own record of what happened is
 			// now unreliable, so it is fatal, not best-effort.
@@ -2698,13 +2707,15 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 				Runner: map[string]any{
 					retryFailureClassKey:  string(failureClass),
 					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
+					stageErrorCodeKey:     errorCode,
+					stageErrorClassKey:    string(errorClass),
 				},
 			}); aerr != nil {
 				err := fmt.Errorf("runner: journal executor error for %q: %w", t.Name, aerr)
 				span.Fail(err)
 				return apiv1.ResultEnvelope{}, nil, err
 			}
-			span.FailWithCode(dispatchErr, "executor_error")
+			span.FailWithCode(dispatchErr, errorCode)
 			if shouldRetry {
 				retryDelay := infrastructureRetryDelay(dispatchErr, backoff, time.Now())
 				if retryDelay > 0 {
@@ -3021,10 +3032,16 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		// reconstruction, or journaling. Auth/missing-ref/other deterministic
 		// worktree failures are unmarked and fail the run immediately, same
 		// as before this check existed.
+		//
+		// Either way the failure is typed at construction (the only point
+		// where git's uniform exit 128 can still be told apart from a host
+		// or credential fault) so it journals as its own cause rather than
+		// as an undifferentiated executor error.
+		coded := codedStageFailure(provisionFailureCode(err), prepErr)
 		if worktree.IsTransientProvisionError(err) {
-			return apiv1.ResultEnvelope{}, nil, invoke.InfrastructureFailure(prepErr), nil
+			return apiv1.ResultEnvelope{}, nil, invoke.InfrastructureFailure(coded), nil
 		}
-		return apiv1.ResultEnvelope{}, nil, prepErr, nil
+		return apiv1.ResultEnvelope{}, nil, coded, nil
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
 	env.InstructionAddendum = instructionAddendum

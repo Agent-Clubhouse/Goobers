@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -124,7 +125,63 @@ type apiReadCache struct {
 // pass-through (standalone/manual invocation with no instance scheduler dir to
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
+	cleanStaleAPIReadCacheLocks(schedulerDir)
 	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID}
+}
+
+// apiReadCacheStaleLockAge is how old an api-read-cache per-list-key lock
+// file (apiReadListLockPath) must be before startup cleanup treats it as
+// debris rather than a lock a peer might still be contending for.
+// lock.Acquire creates its file with O_CREATE but Release only unlocks and
+// closes it (internal/platform/lock) — by design, nothing ever unlinks it —
+// so every distinct list-request key this scheduler dir has ever seen leaves
+// a permanent zero-byte file behind. No withFileLock critical section here
+// runs anywhere close to this long, so a file this old is safe to remove.
+const apiReadCacheStaleLockAge = 24 * time.Hour
+
+// apiReadCacheLockCleanupDone tracks which scheduler dirs have already had
+// their stale per-list-key locks swept in this process, so a long-lived
+// daemon does the directory scan once at startup rather than on every cache
+// construction.
+var apiReadCacheLockCleanupDone sync.Map // schedulerDir -> *sync.Once
+
+// cleanStaleAPIReadCacheLocks removes apiReadListLockPath lock files older
+// than apiReadCacheStaleLockAge. Before removing one it takes a non-blocking
+// lock on it, which both confirms no peer currently holds it and closes the
+// TOCTOU window between the age check and the removal — a peer that opens
+// the path afterward simply creates a fresh file and locks that instead.
+// Best effort throughout: any error just leaves the file for a later sweep,
+// and this must never fail cache construction.
+func cleanStaleAPIReadCacheLocks(schedulerDir string) {
+	if schedulerDir == "" {
+		return
+	}
+	onceVal, _ := apiReadCacheLockCleanupDone.LoadOrStore(schedulerDir, new(sync.Once))
+	onceVal.(*sync.Once).Do(func() {
+		entries, err := os.ReadDir(schedulerDir)
+		if err != nil {
+			return
+		}
+		prefix := apiReadCacheLockName + "."
+		cutoff := time.Now().Add(-apiReadCacheStaleLockAge)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			path := filepath.Join(schedulerDir, name)
+			held, err := lock.TryAcquire(path)
+			if err != nil {
+				continue // a live peer holds it (or it's otherwise unavailable) — leave it
+			}
+			_ = os.Remove(path)
+			_ = held.Release()
+		}
+	})
 }
 
 func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {

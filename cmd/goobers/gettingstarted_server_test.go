@@ -746,7 +746,8 @@ func TestGettingStartedAPIUnavailableThenReady(t *testing.T) {
 	if code, _, stderr := runArgs(t, "init", server.instancePath); code != 0 {
 		t.Fatalf("init tutorial instance: code = %d stderr = %q", code, stderr)
 	}
-	createDeclaredSkillPackages(t, server.instancePath, "implement", "run-tests")
+	// The starter scaffold ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix); no shared-level stand-ins needed here.
 
 	after := guidedGet(handler, "/api/v1/health")
 	if after.Code != http.StatusOK {

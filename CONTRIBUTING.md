@@ -227,6 +227,14 @@ it `deprecated`. Adding deprecated and unsupported history in one change does
 not satisfy the released-minor window; before the first tag, no version may
 become unsupported.
 
+**Current state:** DSL `2.0` is the supported authoring version; every
+shipped, reference, and example workflow pins it. DSL `1.4` is `deprecated`
+(replacement `2.0`, unsupported after `v0.2.0`) — a workflow pinned to `1.4`
+still loads and runs, but `goobers validate` emits a `DVL020` warning. Migrate
+a pinned workflow mechanically with `goobers fix --to 2.0`; the only semantic
+delta the migrator pins is `automated.pollIntervalSeconds: 10` on gates fed by
+a `ci-poll` task, where 2.0's input builder injects that default.
+
 ## Binary maintenance policy
 
 The `goobers` **binary** (distinct from the DSL compatibility policy above) is

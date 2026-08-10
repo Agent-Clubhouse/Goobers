@@ -4,7 +4,7 @@
 # changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: implementation
 spec:
@@ -426,6 +426,10 @@ spec:
         check: ci-status
         params:
           equals: "passing"
+        # Pinned explicitly at the 1.4 -> 2.0 migration: DSL 2.0's ci-poll
+        # input builder injects this default where DSL 1.4 left it unset, so
+        # the pin keeps compiled behavior identical across the version bump.
+        pollIntervalSeconds: 10
       branches:
         pass: close-out
         # Provider-authored failure evidence remains unapproved and is routed

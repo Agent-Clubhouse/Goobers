@@ -27,6 +27,7 @@ type legacyUndocumented struct {
 var authorFacingSchemaRoots = map[string]bool{
 	"gaggle.schema.json":     true,
 	"goober.schema.json":     true,
+	"instance.schema.json":   true,
 	"invocation.schema.json": true,
 	"manifest.schema.json":   true,
 	"workflow.schema.json":   true,

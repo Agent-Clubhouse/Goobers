@@ -593,4 +593,22 @@ CREATE INDEX IF NOT EXISTS idx_runs_gaggle_recency ON runs(gaggle, started_at DE
 CREATE INDEX IF NOT EXISTS idx_runs_gaggle_workflow_recency ON runs(gaggle, workflow, started_at DESC, run_id ASC);
 CREATE INDEX IF NOT EXISTS idx_runs_recency ON runs(started_at DESC, run_id ASC);
 `,
+
+	// v18 (telemetry storage hygiene audit, 2026-08-08): scheduler-span ingest
+	// had no cursor — every IngestSchedulerLog call (after each scheduler tick,
+	// each finished run, and shutdown) re-read the ENTIRE
+	// scheduler/spans/spans.jsonl and delete+reinserted every span in it,
+	// growing O(all-spans-ever) per cycle (75,012 spans / 55.6MB observed
+	// live). JournalSpanExporter only ever appends to that file (O_APPEND), so
+	// a byte-offset cursor is safe the same way scheduler_ingest_cursor already
+	// is for events.jsonl: steady-state ingest now reads only the newly
+	// appended tail. Single-row table (id pinned to 1); a full Rebuild drops
+	// the db file and starts the cursor empty, replaying the whole spans file
+	// exactly once.
+	`
+CREATE TABLE IF NOT EXISTS spans_ingest_cursor (
+	id          INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	byte_offset INTEGER NOT NULL
+);
+`,
 }

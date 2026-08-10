@@ -37,19 +37,19 @@ var exceptions = []exception{
 	{Path: "internal/instance/instance.go", Line: 26, Value: "docs-updater", Reason: "canonical scaffold directory name"},
 	{Path: "internal/providerstage/manifest.go", Line: 180, Value: "post-merge", Reason: "stage command registry key"},
 	{Path: "cmd/goobers/clisynopsis.go", Line: 32, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 265, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 266, Value: "self-update", Reason: "CLI command registry lookup"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Line: 271, Value: "self-update", Reason: "CLI command registry key"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Line: 272, Value: "self-update", Reason: "CLI command registry lookup"},
 	{Path: "cmd/goobers/selfupdate.go", Line: 27, Value: "self-update", Reason: "CLI flag-set name"},
 	{Path: "cmd/goobers/selfupdate.go", Line: 34, Value: "self-update", Reason: "CLI help lookup"},
-	{Path: "cmd/goobers/completionmodel.go", Line: 171, Value: "self-update", Reason: "CLI completion flag-spec registry key"},
+	{Path: "cmd/goobers/completionmodel.go", Line: 175, Value: "self-update", Reason: "CLI completion flag-spec registry key"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Line: 76, Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.
 	{Path: "internal/telemetry/rollup/aggregates.go", Line: 418, Value: "backlog-curation", Reason: "#2494"},
 	{Path: "internal/telemetry/rollup/curation.go", Line: 172, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 383, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 394, Value: "implementation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Line: 427, Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Line: 438, Value: "implementation", Reason: "#2494"},
 
 	// These are canonical stage-owned status labels, not config-facing routing
 	// labels. Configurable approval/readiness labels must come from stage inputs.
@@ -62,7 +62,7 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/prselect.go", Line: 33, Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Line: 34, Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/remediationcheckpoint.go", Line: 25, Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/runabortlabel.go", Line: 31, Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
+	{Path: "cmd/goobers/runabortlabel.go", Line: 32, Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
 	{Path: "cmd/goobers/scopedrift.go", Line: 17, Value: "goobers:scope-drift", Reason: "canonical scope-review label"},
 	{Path: "cmd/goobers/scopegate1313.go", Line: 13, Value: "goobers:scope-gate", Reason: "canonical scope-review label"},
 	{Path: "cmd/goobers/scopegate1313.go", Line: 20, Value: "goobers:scope-gate-ack", Reason: "canonical scope-review label"},

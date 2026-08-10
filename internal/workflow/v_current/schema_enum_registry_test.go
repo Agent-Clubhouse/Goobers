@@ -100,6 +100,7 @@ var constBackedEnums = []enumRule{
 	{schema: "workflow.schema.json", path: "$defs/task/properties/capabilities/items/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
 	{schema: "invocation.schema.json", path: "properties/capabilities/items/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
 	{schema: "goober.schema.json", path: "$defs/mcpCredentialRef/properties/capability/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
+	{schema: "instance.schema.json", path: "$defs/credentialGrant/properties/capability/enum", source: "internal/capability.All() minus runner-only", want: allCapabilities, exclude: runnerOnlyCapabilities},
 
 	// --- policy actions (3 locations, one vocabulary) ---
 	{schema: "goober.schema.json", path: "properties/spec/properties/policyActions/items/enum", source: "compiler policy-action vocabulary", want: policyActionVocabulary},
@@ -161,12 +162,15 @@ var constBackedEnums = []enumRule{
 	{schema: "gaggle.schema.json", path: "$defs/backlogRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/backlogItem/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/repoRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
+	{schema: "instance.schema.json", path: "$defs/repo/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
+	{schema: "instance.schema.json", path: "$defs/harnessName/enum", source: "api/v1alpha1.Harness", want: goConsts("api/v1alpha1/goober_types.go", "Harness")},
 
 	// --- feature / support-matrix / sandbox types ---
 	{schema: "features.schema.json", path: "properties/features/items/properties/stability/enum", source: "internal/workflow/v_current.SupportLevel", want: goConsts("internal/workflow/v_current/features.go", "SupportLevel")},
 	{schema: "agent-toolkit-manifest.schema.json", path: "$defs/dslVersion/properties/level/enum", source: "internal/supportmatrix.Level", want: goConsts("internal/supportmatrix/supportmatrix.go", "Level")},
 	{schema: "agent-toolkit-manifest.schema.json", path: "$defs/dslVersion/properties/history/items/properties/level/enum", source: "internal/supportmatrix.Level", want: goConsts("internal/supportmatrix/supportmatrix.go", "Level")},
 	{schema: "gaggle.schema.json", path: "properties/spec/properties/sandbox/properties/agentic/enum", source: "internal/instance.SandboxPosture", want: goConsts("internal/instance/sandbox.go", "SandboxPosture")},
+	{schema: "instance.schema.json", path: "properties/sandbox/properties/agentic/enum", source: "internal/instance.SandboxPosture", want: goConsts("internal/instance/sandbox.go", "SandboxPosture")},
 }
 
 // notConstBackedEnums documents every schema enum that has no named Go const
@@ -180,6 +184,14 @@ var notConstBackedEnums = map[string]string{
 	"workflow.schema.json\x00$defs/task/properties/run/allOf/0/not/properties/workspace/enum":       "structural exclusion constraint (a subset of WorkspaceMode), not a value domain",
 	"manifest.schema.json\x00$defs/connection/properties/type/enum":                                 "connection kinds are schema-only string literals; no Go typed const",
 	"instance-repository-execution.schema.json\x00properties/workspace/properties/cleanPolicy/enum": "backing workspace clean-policy constants are untyped strings",
+	"instance.schema.json\x00$defs/repoAuth/properties/kind/enum":                                   "repository auth kinds are untyped string constants (internal/instance ADOAuth*/GitHubAuth*), and the schema enum is the UNION of two provider-specific sets no single Go type expresses",
+	"instance.schema.json\x00$defs/daemonIdentity/properties/kind/enum":                             "daemon identity kinds reuse the same untyped GitHubAuthPAT/GitHubAuthApp constants; DaemonIdentityConfig.Kind is deliberately an open string, not a named enum type",
+	"instance.schema.json\x00$defs/secretStore/properties/kind/enum":                                "secret store vendor kinds are untyped string constants (internal/instance.SecretStoreKind*)",
+	"instance.schema.json\x00$defs/secretStore/properties/auth/properties/kind/enum":                "secret store ambient-auth kinds are untyped string constants (internal/instance.SecretStoreAuth*)",
+	"instance.schema.json\x00$defs/workflowSource/properties/kind/enum":                             "workflow source kinds are untyped string constants (internal/instance.WorkflowSourceKind*)",
+	"instance.schema.json\x00$defs/repoPolicy/properties/requiredMergeMethod/enum":                  "merge methods are schema-only string literals compared inline in instance config validation; no Go const source",
+	"instance.schema.json\x00$defs/speech/properties/engine/enum":                                   "speech engines are untyped string constants (internal/speechnotify.Engine*)",
+	"instance.schema.json\x00$defs/externalTelemetryConnector/properties/auth/properties/mode/enum": "external telemetry auth modes are untyped string constants (internal/externaltelemetry.Auth*)",
 	"config-source-action.schema.json\x00properties/action/enum":                                    "onboarding action names are schema-only string literals",
 	"candidate-findings-v1.schema.json\x00$defs/finding/properties/kind/enum":                       "tutor finding kinds are compared as bare string literals (internal/tutorguard); no typed const",
 	"diagnostics.schema.json\x00$defs/finding/properties/severity/enum":                             "error/warning is duplicated across several Severity types (configdiff/validate/v1alpha1); no single canonical source to bind",

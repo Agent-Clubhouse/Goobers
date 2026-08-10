@@ -161,6 +161,13 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so pull-request merge fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so merged-branch cleanup fails at runtime"),
+			// Azure DevOps land: the ADO branch resolves ado:pr:complete (the ADO
+			// counterpart to github:pr:merge) via providerToken to preserve the
+			// decider≠executor grant isolation. Marked optional — it is
+			// provider-conditional (used only when repo.Provider is ADO), so it
+			// must NOT be auto-derived onto GitHub merge-pr tasks; the ADO
+			// merge-review workflow declares it explicitly on this stage instead.
+			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps pull-request completion fails at runtime"),
 		},
 	},
 	"merge-queue-poll": {
@@ -169,6 +176,7 @@ var commands = map[string]Command{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so merge-queue polling fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so eviction remediation fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so queue-merged branch cleanup fails at runtime"),
+			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps queue completion fails at runtime"),
 		},
 	},
 	"open-pr": {

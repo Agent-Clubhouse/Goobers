@@ -9,8 +9,8 @@ Usage:
                                 connect an instance to your own GitHub repository
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow [flags] <name> [path]
-                                scaffold a goober or workflow in a gaggle
+  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
+                                scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
@@ -59,8 +59,8 @@ Usage:
                                 connect an instance to your own GitHub repository
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow [flags] <name> [path]
-                                scaffold a goober or workflow in a gaggle
+  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
+                                scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
@@ -111,8 +111,8 @@ Core commands:
                                 connect an instance to your own GitHub repository
   goobers examples list | show <name>
                                 browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow [flags] <name> [path]
-                                scaffold a goober or workflow in a gaggle
+  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
+                                scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
@@ -669,15 +669,27 @@ variable name (default GOOBERS_GITHUB_TOKEN) in the repo's token
 reference. Token values never pass through this command; a value that looks
 like a pasted token is rejected.
 
---seed derives the labels the connected gaggles' backlog selectors actually
-require (backlog labels plus each workflow's trustLabel/requireLabels
-inputs), idempotently ensures they exist on the repository, and files one
-safe starter issue carrying exactly those labels. Seeding uses the same
+Only GitHub repositories can be connected. An Azure DevOps identity (an
+organization/project/repository slug or a dev.azure.com URL) is refused
+with the instance.yaml block to write by hand — see
+docs/guides/ado-authentication.md.
+
+--seed derives two label sets from the connected gaggles and idempotently
+ensures every one of them exists on the repository: the backlog SELECTORS
+(backlog labels plus each workflow's trustLabel/requireLabels inputs) and
+the labels those workflows WRITE or exclude on (the goobers:claimed claim
+mirror, each issue-close-out stage's park/status label, readyLabel inputs,
+and every excludeLabels entry) — a run dies at its first park or close-out
+when those do not exist yet. The one safe starter issue it files carries
+the selector labels only, never the lifecycle ones. Seeding uses the same
 --token-env; when that variable is unset the issue is reported pending and
 the local rewrite still completes.
 
 When the token variable is set, the target repository's reachability is
-also checked with the exact credential path a real run would use.
+checked with the exact credential path a real run would use BEFORE any
+file is written, and a failed connect leaves the instance exactly as it
+was. After a successful connect the same credential reports how many of
+the repository's open issues your backlog selectors currently match.
 
 Flags:
   --token-env <name>  repository token environment variable name (default GOOBERS_GITHUB_TOKEN)
@@ -1494,26 +1506,82 @@ goobers scaffold: unknown kind "-h"
 
 Usage: goobers scaffold goober [--force] <name> [path]
        goobers scaffold workflow [--force] <name> [path]
+       goobers scaffold gaggle [--force] <name> [path]
+       goobers scaffold gaggle --from <existing-gaggle> <name> [path]
 
-Generate a valid goober or workflow in the current gaggle. path may be
-an instance root or a gaggle directory and defaults to ".". Existing
-files are never replaced unless --force is set.
+Generate a valid goober, workflow, or gaggle. For goober/workflow, path
+may be an instance root or a gaggle directory and defaults to ".". For
+gaggle, path is always an instance root. Existing files are never
+replaced unless --force is set.
+
+`scaffold gaggle` with no --from creates an empty gaggle: gaggle.yaml
+plus its manifest.yaml registration, ready for scaffold goober/workflow.
+`scaffold gaggle --from <existing-gaggle>` instead renames that gaggle to
+<name>: it moves gaggles/<existing-gaggle> to gaggles/<name> and rewrites
+every identity reference — gaggle.yaml's metadata.name and
+isolation.namespace, the manifest.yaml gaggles list entry, and every
+contained goober/workflow's spec.gaggle — while project, backlog,
+ciCommand, instructions, and workflow bodies move untouched. --force is
+not accepted with --from.
+
+### scaffold gaggle
+Usage: goobers scaffold gaggle [--force | --from <existing-gaggle>] <name> [path]
+
+Create a new gaggle in the instance at path (an instance root, default
+"."). With no --from, scaffolds an empty gaggle: gaggle.yaml plus its
+manifest.yaml registration, ready for `goobers scaffold goober`/
+`scaffold workflow`. Existing files are never replaced unless --force is
+set.
+
+--from <existing-gaggle> instead renames that gaggle to <name>: it moves
+gaggles/<existing-gaggle> to gaggles/<name> and rewrites every identity
+reference in place — gaggle.yaml's metadata.name and isolation.namespace,
+the manifest.yaml gaggles list entry, and every contained goober/workflow's
+spec.gaggle back-reference — while leaving project, backlog, ciCommand,
+instructions, and workflow bodies untouched. --force is not accepted
+with --from: a rename never overwrites an existing gaggle directory.
 
 ### scaffold goober
 Usage: goobers scaffold goober [--force] <name> [path]
        goobers scaffold workflow [--force] <name> [path]
+       goobers scaffold gaggle [--force] <name> [path]
+       goobers scaffold gaggle --from <existing-gaggle> <name> [path]
 
-Generate a valid goober or workflow in the current gaggle. path may be
-an instance root or a gaggle directory and defaults to ".". Existing
-files are never replaced unless --force is set.
+Generate a valid goober, workflow, or gaggle. For goober/workflow, path
+may be an instance root or a gaggle directory and defaults to ".". For
+gaggle, path is always an instance root. Existing files are never
+replaced unless --force is set.
+
+`scaffold gaggle` with no --from creates an empty gaggle: gaggle.yaml
+plus its manifest.yaml registration, ready for scaffold goober/workflow.
+`scaffold gaggle --from <existing-gaggle>` instead renames that gaggle to
+<name>: it moves gaggles/<existing-gaggle> to gaggles/<name> and rewrites
+every identity reference — gaggle.yaml's metadata.name and
+isolation.namespace, the manifest.yaml gaggles list entry, and every
+contained goober/workflow's spec.gaggle — while project, backlog,
+ciCommand, instructions, and workflow bodies move untouched. --force is
+not accepted with --from.
 
 ### scaffold workflow
 Usage: goobers scaffold goober [--force] <name> [path]
        goobers scaffold workflow [--force] <name> [path]
+       goobers scaffold gaggle [--force] <name> [path]
+       goobers scaffold gaggle --from <existing-gaggle> <name> [path]
 
-Generate a valid goober or workflow in the current gaggle. path may be
-an instance root or a gaggle directory and defaults to ".". Existing
-files are never replaced unless --force is set.
+Generate a valid goober, workflow, or gaggle. For goober/workflow, path
+may be an instance root or a gaggle directory and defaults to ".". For
+gaggle, path is always an instance root. Existing files are never
+replaced unless --force is set.
+
+`scaffold gaggle` with no --from creates an empty gaggle: gaggle.yaml
+plus its manifest.yaml registration, ready for scaffold goober/workflow.
+`scaffold gaggle --from <existing-gaggle>` instead renames that gaggle to
+<name>: it moves gaggles/<existing-gaggle> to gaggles/<name> and rewrites
+every identity reference — gaggle.yaml's metadata.name and
+isolation.namespace, the manifest.yaml gaggles list entry, and every
+contained goober/workflow's spec.gaggle — while project, backlog,
+ciCommand, instructions, and workflow bodies move untouched. --force is
+not accepted with --from.
 
 ### schema
 Usage: goobers schema [--human] <kind>

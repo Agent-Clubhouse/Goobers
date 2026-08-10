@@ -333,6 +333,11 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
 	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	// ADO PR completion authority is repo-token-backed like the GitHub grants
+	// above; only stages that declare ado:pr:complete receive its credential,
+	// preserving the decider/executor isolation (merge-review completes; the
+	// implementation and remediation lanes never can).
+	capability.ADOPRComplete,
 }
 
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
@@ -945,7 +950,6 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
 		}
 		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
-		req.RemoveLabels = adoParkRemovalLabels(req.RemoveLabels)
 		return provider.UpdateWorkItem(ctx, req)
 	}
 	if req.Repository.Provider == providers.ProviderGitea {
@@ -999,25 +1003,6 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 		return provider.ListComments(ctx, repository, itemID)
 	}
 	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
-}
-
-// adoParkRemovalLabels rewrites a park/close removal set for an Azure DevOps
-// board. GitHub mirrors a claim with the plain LabelClaimed ("goobers:claimed")
-// tag, but ADO's ClaimWorkItem writes the status-label form
-// ("goobers/status:claimed") — so removing LabelClaimed verbatim never matches
-// and the claim marker leaks past a park. Every other label (e.g. LabelReady,
-// which ADO boards don't carry) passes through untouched: an absent tag removal
-// is a harmless no-op.
-func adoParkRemovalLabels(labels []string) []string {
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if label == providers.LabelClaimed {
-			out = append(out, providers.StatusLabelFor(providers.WorkItemStatusClaimed))
-			continue
-		}
-		out = append(out, label)
-	}
-	return out
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
@@ -1558,41 +1543,75 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
 }
 
-// buildOpenPRRefresher constructs the #353 open-PR-count refresher only when the
-// instance actually needs it — a repo is configured AND some workflow opts into
-// the MaxOpenPRs cap — so an instance that doesn't use the cap grows no GitHub
-// poller and needs no token for it. Returns nil otherwise. Only the `up` daemon
-// starts/wires the returned refresher; a single `goobers run` has no accretion
-// to throttle. resolver is a fresh credential resolver over cfg (buildCredentials
-// is read-only and idempotent), used only to authenticate the poll.
-func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresher, error) {
+// buildOpenPRRefresher constructs the #353 open-PR-count refreshers only when
+// the instance actually needs them — a repo is configured AND some workflow
+// opts into the MaxOpenPRs cap — so an instance that doesn't use the cap grows
+// no GitHub poller and needs no token for it. Returns nil otherwise. One
+// refresher is built per distinct repo among the capped workflows' gaggle
+// projects (#2692), each listing through that repo's OWN owner/name token ref
+// (the same binding credentials.RunnerGrants scopes the run path by): a
+// gaggle's cap must bind on its own repo's PR count, never the first repo's.
+// A gaggle whose project is zero or has no configured binding falls back to
+// the first repo — byte-identical to RunnerGrants' first-binding default for
+// such gaggles. Only the `up` daemon starts/wires the returned set; a single
+// `goobers run` has no accretion to throttle. resolver is a fresh credential
+// resolver over cfg (buildCredentials is read-only and idempotent), used only
+// to authenticate the polls.
+func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gaggleProjects map[string]apiv1.RepoRef, reg runner.SecretRegistrar, branchNamespaces map[string]string, schedulerDir string, stores credentials.StoreResolver) (*localscheduler.OpenPRRefresherSet, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
-	capped := false
+	cappedGaggles := make(map[string]bool)
 	for i := range workflows {
 		if workflows[i].Spec.Readiness.MaxOpenPRs > 0 {
-			capped = true
-			break
+			cappedGaggles[workflows[i].Spec.Gaggle] = true
 		}
 	}
-	if !capped {
+	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
 	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
 	}
-	repo := cfg.Repos[0]
-	lister := &resolvingOpenPRLister{ref: repo.Owner + "/" + repo.Name, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
-	repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
-	// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
-	// the daemon's "parked pending a human" signal on a PR — it cannot be
-	// drained autonomously, so counting it against MaxOpenPRs only starves new
-	// implementation work. needs-remediation / blocked-on-sibling are
-	// deliberately NOT excluded: the daemon can still drain those (remediation,
-	// sibling sequencing), and the cap must keep applying backpressure to them.
-	return localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces), nil
+	byRepo := make(map[string]*localscheduler.OpenPRRefresher)
+	byGaggle := make(map[string]*localscheduler.OpenPRRefresher, len(cappedGaggles))
+	for gaggle := range cappedGaggles {
+		repo := cfg.Repos[0]
+		if configured, ok := configuredRepoForProject(cfg, gaggleProjects[gaggle]); ok {
+			repo = configured
+		} else if project := gaggleProjects[gaggle]; project.Owner != "" && project.Name != "" {
+			// A project with no configured binding is polled under its own
+			// owner/name ref; token resolution fails per-poll and the count
+			// stays "unknown" (Admit fails open) instead of silently reading
+			// the first repo's PRs.
+			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
+		}
+		if repo.Provider == "ado" {
+			// The cap counts GitHub PR heads; an ADO-projected gaggle has no
+			// list to poll, so its count stays "unknown" (Admit fails open).
+			continue
+		}
+		key := repo.Owner + "/" + repo.Name
+		refresher := byRepo[key]
+		if refresher == nil {
+			lister := &resolvingOpenPRLister{ref: key, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+			repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+			// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
+			// the daemon's "parked pending a human" signal on a PR — it cannot be
+			// drained autonomously, so counting it against MaxOpenPRs only starves new
+			// implementation work. needs-remediation / blocked-on-sibling are
+			// deliberately NOT excluded: the daemon can still drain those (remediation,
+			// sibling sequencing), and the cap must keep applying backpressure to them.
+			refresher = localscheduler.NewOpenPRRefresher(lister, repoRef, localscheduler.DefaultOpenPRRefreshInterval, []string{remediationEscalatedLabel}, branchNamespaces)
+			byRepo[key] = refresher
+		}
+		byGaggle[gaggle] = refresher
+	}
+	if len(byGaggle) == 0 {
+		return nil, nil
+	}
+	return localscheduler.NewOpenPRRefresherSet(byGaggle), nil
 }
 
 // backlogCounter adapts a provider + repo + label selector into a
@@ -1747,7 +1766,10 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 		return nil, fmt.Errorf("workflow %q backlog field predicate: %w", wf.Name, err)
 	}
 	counter := &backlogCounter{
-		ref:            cfg.Repos[0].Owner + "/" + cfg.Repos[0].Name,
+		// ref must follow the workflow's own repo (#2692 sibling): the query
+		// below targets repoRef, so its token must resolve from the same
+		// owner/name binding — matching buildScheduleDemandCounter.
+		ref:            repoRef.Owner + "/" + repoRef.Name,
 		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
 		labels:         labels,
 		labelPredicate: predicate,

@@ -603,7 +603,12 @@ spec:
       goober: coder
       goal: Complete the fixture task.
 `)
-	skillPath := filepath.Join(root, "skills", "implement", "SKILL.md")
+	// Scoped (gaggles/example/skills/implement) always wins over the shared
+	// instance-level fallback (skillPackagePaths) — and the starter scaffold
+	// now ships a scoped implement package by default (SKILL002 fix) — so
+	// the digest transition below must be authored at the scoped path, or it
+	// is masked by that (untouched) scoped package.
+	skillPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "skills", "implement", "SKILL.md")
 	writeFixture(t, skillPath, "# Original implementation skill\n")
 
 	fixtureRepo := newDaemonFixtureRepo(t)

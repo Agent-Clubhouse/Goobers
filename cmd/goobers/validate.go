@@ -286,6 +286,19 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	printValidationWarnings(stdout, skillWarnings)
 
+	// Static reality cross-checks (2026-08-08 cold-start audit): a
+	// requiredCapabilities token no runner claims (CAP003) and an automated
+	// gate completion branch a failed stage can never complete through
+	// (WF018). Appended to the report like the harness/skill warnings above,
+	// so --strict and the JSON report treat them as ordinary config
+	// warnings.
+	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, report)
+	for _, finding := range staticRealityWarnings {
+		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
+			string(finding.warning.Severity), finding.warning.Explanation)
+		pln(stdout, finding.warning.String())
+	}
+
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
 	// the filesystem half — a declared root that does not exist in the
@@ -347,9 +360,26 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		if !checkTargetRepositoriesAtFile(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics) {
 			return 1
 		}
+		// Selector/CI reality (2026-08-08 cold-start audit, README item 1):
+		// --check-repos just contacted every repository, so additionally
+		// compare each repo's actual label set, live eligible-item count, and
+		// CI-workflow presence against what the config demands of it.
+		// Advisory only — repo state is not config, so these warnings never
+		// change the exit code (same contract as the #1547 size warning).
+		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	warningCount := len(report.Warnings()) + len(placeholderFindings)
+	// Deprecation notices (DVL020) are strict-neutral by ruling: a deprecated
+	// dslVersion stays fully supported, so nudging users to migrate must never
+	// turn an existing green pipeline red. They print and land in diagnostics
+	// but are excluded from --strict's promotion.
+	deprecationCount := 0
+	for _, w := range report.Warnings() {
+		if w.Code == validate.WarningDeprecatedDSLVersion {
+			deprecationCount++
+		}
+	}
+	warningCount := len(report.Warnings()) - deprecationCount + len(placeholderFindings)
 	if options.strict && warningCount > 0 {
 		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1

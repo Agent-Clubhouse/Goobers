@@ -203,6 +203,11 @@ func TestGatherSiblingContextFatalProviderPathInventory(t *testing.T) {
 		"list files for selected PR #%d":      1,
 		"list pull requests":                  1,
 		"resolve merge-review verdict author": 1,
+		// The Azure DevOps branch (runGatherSiblingContextADO) resolves the
+		// selected PR's deterministic pin with a single PollPullRequest; its
+		// failure envelope is covered by
+		// TestGatherSiblingContextADOPollFailureKeepsGenericEnvelope.
+		"poll pull request #%s": 1,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)

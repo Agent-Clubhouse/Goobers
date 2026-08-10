@@ -22,6 +22,7 @@ func TestScaffoldTemplatesGolden(t *testing.T) {
 	}{
 		{"goober", "templates/scaffold/goober.yaml.tmpl", "testdata/scaffold/goober.yaml.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"instructions", "templates/scaffold/instructions.md.tmpl", "testdata/scaffold/instructions.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
+		{"skill", "templates/scaffold/SKILL.md.tmpl", "testdata/scaffold/SKILL.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"workflow", "templates/scaffold/workflow.yaml.tmpl", "testdata/scaffold/workflow.yaml.golden", scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "reviewer2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +51,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	}
 	wantGooberOutput := "created " + filepath.Join(gaggleDir, "goobers", "reviewer2", "goober.yaml") + "\n" +
 		"created " + filepath.Join(gaggleDir, "goobers", "reviewer2", "instructions.md") + "\n" +
+		"created " + filepath.Join(gaggleDir, "skills", "reviewer2", "SKILL.md") + "\n" +
 		"next: goobers validate " + root + "\n"
 	if stdout != wantGooberOutput {
 		t.Fatalf("scaffold goober stdout = %q, want %q", stdout, wantGooberOutput)
@@ -69,6 +71,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	for path, golden := range map[string]string{
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "goober.yaml"):     "testdata/scaffold/goober.yaml.golden",
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "instructions.md"): "testdata/scaffold/instructions.md.golden",
+		filepath.Join(gaggleDir, "skills", "reviewer2", "SKILL.md"):         "testdata/scaffold/SKILL.md.golden",
 		workflowPath: "testdata/scaffold/workflow.yaml.golden",
 	} {
 		got, err := os.ReadFile(path)
@@ -91,7 +94,6 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	wantWarnings := []string{
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/my-flow: workflow \"my-flow\" has no schedule trigger; it will not fire autonomously — run it with `goobers run my-flow`",
-		"WARNING SKILL002 gaggles/example/goobers/reviewer2/goober.yaml Goober/reviewer2: spec.skills declares \"reviewer2\", but no skill package directory was found at \"gaggles/example/skills/reviewer2\" or \"skills/reviewer2\"",
 	}
 	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
 	if !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
@@ -116,7 +118,6 @@ func TestScaffoldScalarNamesValidate(t *testing.T) {
 	wantWarnings := []string{
 		"WARNING Workflow/default-implement: workflow \"default-implement\" has no schedule trigger; it will not fire autonomously — run it with `goobers run default-implement`",
 		"WARNING Workflow/true: workflow \"true\" has no schedule trigger; it will not fire autonomously — run it with `goobers run true`",
-		"WARNING SKILL002 gaggles/example/goobers/123/goober.yaml Goober/123: spec.skills declares \"123\", but no skill package directory was found at \"gaggles/example/skills/123\" or \"skills/123\"",
 	}
 	assertScaffoldValidationWarnings(t, stdout, wantWarnings)
 }
@@ -168,6 +169,10 @@ func TestScaffoldRefusesOverwriteUnlessForced(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "instructions.md")); !os.IsNotExist(err) {
 		t.Fatalf("instructions.md was created despite all-file overwrite preflight: %v", err)
 	}
+	skillPath := filepath.Join(root, "config", "gaggles", "example", "skills", "reviewer2", "SKILL.md")
+	if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
+		t.Fatalf("SKILL.md was created despite all-file overwrite preflight: %v", err)
+	}
 
 	code, _, stderr = runArgs(t, "scaffold", "goober", "reviewer2", "--force", root)
 	if code != 0 {
@@ -175,6 +180,9 @@ func TestScaffoldRefusesOverwriteUnlessForced(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "instructions.md")); err != nil {
 		t.Fatalf("forced scaffold did not create instructions.md: %v", err)
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("forced scaffold did not create SKILL.md: %v", err)
 	}
 }
 

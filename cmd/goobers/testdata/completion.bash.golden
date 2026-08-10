@@ -39,6 +39,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 goober) flags+=" --force" ;;
                 workflow) flags+=" --force" ;;
+                gaggle) flags+=" --force --from" ;;
             esac
             ;;
         agent-kit)
@@ -229,7 +230,7 @@ _goobers_completion()
             ;;
         scaffold)
             if (( COMP_CWORD == 2 )); then
-                candidates="goober workflow"
+                candidates="goober workflow gaggle"
             fi
             ;;
         agent-kit)

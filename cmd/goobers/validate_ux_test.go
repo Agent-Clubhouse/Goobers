@@ -332,6 +332,7 @@ func TestValidateCheckRepos(t *testing.T) {
 	t.Cleanup(func() { targetRepositoryReachable = original })
 	originalSize := targetRepositorySize
 	t.Cleanup(func() { targetRepositorySize = originalSize })
+	stubRepositoryRealityChecks(t, []string{"goobers", "goobers:claimed"}, 1, 1)
 
 	called := 0
 	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
@@ -380,6 +381,34 @@ func TestValidateCheckRepos(t *testing.T) {
 	}
 	if strings.Contains(stdout, "test-token") {
 		t.Fatalf("repository check output leaked the resolved token: %q", stdout)
+	}
+}
+
+// TestValidateStrictExemptsDeprecationNotices pins the #2700 ruling: a
+// deprecated-but-supported dslVersion must nudge, never break — DVL020
+// prints under --strict and does not promote to an error.
+func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("strict validate code=%d, want 0 (deprecation notices are strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "DVL020") {
+		t.Fatalf("strict validate did not render the DVL020 deprecation notice:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "--strict treats warnings as errors") {
+		t.Fatalf("strict validate promoted a deprecation notice:\n%s", stdout)
 	}
 }
 
@@ -506,7 +535,11 @@ func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *tes
 
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
-	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+	// The starter scaffold now ships its scoped packages under
+	// config/gaggles/example/skills (SKILL002 fix) rather than the
+	// instance-level fallback; remove those to reproduce the missing-package
+	// probe.
+	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "skills")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -581,7 +614,7 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 1.4 (supported)") {
+	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 2.0 (supported)") {
 		t.Fatalf("validate output missing the DSL version summary line:\n%s", stdout)
 	}
 }
@@ -589,16 +622,20 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	replaceInFile(t, workflowPath, "dslVersion: \"1.4\"\n", "")
+	replaceInFile(t, workflowPath, "dslVersion: \"2.0\"\n", "")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	// An unpinned workflow still defaults to 1.4 (the #2699 unpinned-default
+	// decision is pending), so post-#2700 the defaulted version additionally
+	// carries the DVL020 deprecation warning and a deprecated summary line.
 	for _, want := range []string{
 		"DVL001",
 		`spec has no dslVersion pin; defaulting to "1.4"`,
-		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (supported)",
+		"DVL020",
+		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (deprecated, replacement 2.0, unsupported after v0.2.0)",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)

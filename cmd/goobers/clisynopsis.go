@@ -18,7 +18,7 @@ var synopsisByID = map[string]string{
 	"preflight":              "  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]\n                                check WSL full-isolation readiness and optionally hand off a command\n",
 	"onboarding":             "  goobers onboarding stub-agent-instructions|stub-sample [flags]\n                                run non-interactive onboarding actions\n",
 	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",
-	"scaffold":               "  goobers scaffold goober|workflow [flags] <name> [path]\n                                scaffold a goober or workflow in a gaggle\n",
+	"scaffold":               "  goobers scaffold goober|workflow|gaggle [flags] <name> [path]\n                                scaffold a goober, workflow, or gaggle\n",
 	"agent-kit":              "  goobers agent-kit install|check|update [flags] [path]\n                                install, inspect, or explicitly update the release-matched agent toolkit\n",
 	"validate":               "  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n                                validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n                                lint config via the single authoritative validation engine (alias for validate)\n",

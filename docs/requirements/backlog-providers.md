@@ -58,8 +58,13 @@ same abstraction, whose shape is unchanged.
   PR open/poll/close, and PR **review request/submit** (request a review; post a
   review verdict) across GitHub and ADO (used by runs and the Tutor). Review
   request/submit lands **V1** alongside ADO parity (`BL-033`); V0 ships open/poll/
-  close (`BL-031`). At tiers 1–2 "fresh copy" is realized as a managed working copy +
-  per-run worktrees (`DEP-026`); the provider contract is the same at every tier.
+  close (`BL-031`). On Azure DevOps, "post a review verdict" is realized as a
+  provider-native **PR status** (`ado:pr:status`, the status-check branch-policy
+  surface) plus a machine-readable **PR-thread** comment — ADO does not submit a
+  native code review (`pr.review.submit` is GitHub-only in the provider capability
+  matrix; `pr.status.publish` carries the ADO verdict). At tiers 1–2 "fresh copy" is
+  realized as a managed working copy + per-run worktrees (`DEP-026`); the provider
+  contract is the same at every tier.
 - **BL-011 (MUST):** Provider-native item types/states MUST be mapped to the common model
   (`BL-002`).
 

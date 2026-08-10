@@ -186,6 +186,22 @@ type remediationState struct {
 	EscalatedBaseSHA           string `json:"escalatedBaseSha,omitempty"`
 	SiblingOverlapContext      string `json:"siblingOverlapContext,omitempty"`
 	StructuralCollisionContext string `json:"structuralCollisionContext,omitempty"`
+	// EscalationCauses is the cause set observed on the cycle that escalated —
+	// the cause CLASS escalationBaseAdvanceUnparks reads to decide whether a
+	// base-branch advance alone may release the park. Empty on a forced or
+	// policy-excluded escalation (no cause was ever observed, so no rebase
+	// addresses it) and on records written before this field shipped;
+	// EscalationGeneration separates those two cases.
+	EscalationCauses []remediationCause `json:"escalationCauses,omitempty"`
+	// EscalationGeneration counts how many times in a row this PR has been
+	// parked at the SAME head SHA: 1 the first time a head is parked, +1 on
+	// every re-escalation of that unchanged head. It is churn telemetry, never
+	// a give-up threshold — no code path consults it to refuse work, so every
+	// documented escape hatch stays reachable. It doubles as the marker that a
+	// record was written by a binary that persists EscalationCauses (a zero
+	// value means "cause class unknown", which keeps the pre-existing
+	// unconditional base-advance self-heal).
+	EscalationGeneration int `json:"escalationGeneration,omitempty"`
 	// LastSeenCommentAt is the RFC3339 created-at of the newest issue-level PR
 	// comment observed at the moment this cycle was recorded — the watermark
 	// rebase-pr's human-comment detection (hasNewHumanCommentSince) compares
@@ -277,10 +293,23 @@ func parseRemediationStateComment(body string) (remediationState, bool) {
 func renderRemediationComment(state remediationState) string {
 	var prose string
 	if state.Escalated {
+		// State the exit that actually applies to THIS park's cause class,
+		// rather than the blanket "head or base" the old text promised for
+		// every escalation.
+		unpark := "this PR's head changes"
+		if escalationBaseAdvanceUnparks(state) {
+			unpark = "this PR's head or base changes"
+		}
 		prose = fmt.Sprintf(
-			"**pr-remediation escalated**\n\n%s. Parked until this PR's head or base changes, or a human removes `%s`.",
-			state.EscalatedReason, remediationEscalatedLabel,
+			"**pr-remediation escalated**\n\n%s. Parked until %s, or a human removes `%s`.",
+			state.EscalatedReason, unpark, remediationEscalatedLabel,
 		)
+		if state.EscalationGeneration > 1 {
+			prose += fmt.Sprintf(
+				"\n\nThis is escalation %d for this unchanged head — remediation has already re-run and re-escalated it %d times.",
+				state.EscalationGeneration, state.EscalationGeneration-1,
+			)
+		}
 		if state.SiblingOverlapContext != "" {
 			prose += "\n\n**Known sibling-overlap findings from merge-review:**\n" + state.SiblingOverlapContext
 		}
@@ -339,15 +368,20 @@ func postOrRecreateRemediationComment(ctx context.Context, provider remediationP
 // carrying the label is never blocked by this check (false, nil) — this is
 // the ordinary case for the vast majority of candidates and costs nothing.
 //
-// A PR that DOES carry the label is only genuinely still stuck if BOTH its
-// head is unchanged AND its base branch has not advanced since the snapshot
-// remediation-checkpoint recorded at the moment it escalated: nothing about
-// the PR's situation has moved since a human or the agent last looked, so
-// re-selecting it would just reproduce the same escalation. If EITHER has
-// moved — new commits pushed (head SHA changed), or a sibling merge advanced
-// the base branch — the PR's context has genuinely changed and selection
-// re-enables automatically (AC2's self-heal), without a human clearing the
-// label by hand.
+// A PR that DOES carry the label is genuinely still stuck while its head is
+// unchanged since the snapshot remediation-checkpoint recorded at the moment
+// it escalated: nothing anyone did has moved the PR, so re-selecting it would
+// just reproduce the same escalation. New commits (head SHA changed) always
+// self-heal the park (AC2), without a human clearing the label by hand.
+//
+// A base-branch advance self-heals the park only when the recorded escalation
+// cause is one a rebase onto the new base can plausibly cure —
+// escalationBaseAdvanceUnparks. Treating ANY base advance as a self-heal made
+// parking useless in a repo that merges dozens of PRs a day: every merge
+// unparked every escalated PR, so a deterministically-doomed PR re-entered
+// remediation within minutes and burned an agent session each time (the audit
+// found 144 escalations across 48 PRs, one of them escalated 41 times in five
+// days at an unchanged head).
 //
 // Base-advance detection compares the snapshot against the LIVE base-branch
 // tip (provider.BranchTipSHA), NOT pr.BaseSHA. GitHub's pull_request.base.sha
@@ -356,14 +390,11 @@ func postOrRecreateRemediationComment(ctx context.Context, provider remediationP
 // that could never fire, so escalations were permanent-until-human and whole
 // file-overlap clusters deadlocked. EscalatedBaseSHA is recorded as the live
 // base tip at escalation time (see runRemediationCheckpoint), so this compares
-// like-for-like. This applies uniformly to every escalation reason: a base
-// advance genuinely can resolve an overlap-driven content rejection too, and
-// any re-attempt that is still wrong simply re-escalates, bounded by the
-// per-cause repass budgets (#364/#953) — so an unblock is always safe, never
-// a loop.
+// like-for-like.
 //
-// Fetches comments (and one ref lookup) only for PRs that carry the label — a
-// small, by-design subset — so this stays cheap for the common unlabeled case.
+// Fetches comments only for PRs that carry the label — a small, by-design
+// subset — so this stays cheap for the common unlabeled case, and the extra
+// ref lookup only for the parks a base advance can actually release.
 func escalationStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
 		return false, nil
@@ -396,6 +427,11 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	if head != pr.HeadSHA {
 		return false, nil
 	}
+	if !escalationBaseAdvanceUnparks(state) {
+		// No rebase addresses this park's cause, so the base tip carries no
+		// information about it — skip the ref lookup entirely.
+		return true, nil
+	}
 	liveBaseTip, err := provider.BranchTipSHA(ctx, repo, pr.Base)
 	if err != nil {
 		return false, err
@@ -406,10 +442,86 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	return true, nil
 }
 
+// escalationBaseAdvanceUnparks reports whether a base-branch advance ALONE may
+// release state's park, i.e. whether a rebase onto the new base tip can
+// plausibly cure the recorded escalation cause. A head change always releases
+// a park regardless of this answer, so every escape hatch (push a commit,
+// remove the label) stays reachable for every cause class.
+//
+// Rebase-curable: a rebase conflict, and a sibling-overlap rejection whose
+// resolution IS the sibling landing on the base branch. Not rebase-curable: a
+// substantive reviewer rejection, failing CI, and a human comment — those are
+// properties of the PR's own content, so re-running remediation against an
+// unchanged head reproduces the same escalation no matter how far the base has
+// moved. Same for infrastructure-failure and policy-excluded outcomes (the PR
+// was never evaluated on its merits, and no base advance changes that) and for
+// a structural collision, which is escalated precisely because retrying the
+// patch cannot resolve it.
+func escalationBaseAdvanceUnparks(state remediationState) bool {
+	if !state.Escalated || state.EscalationGeneration == 0 {
+		// Not an escalation record (the #1855 fallback reads an ordinary
+		// cycle's head/base), or an escalation recorded before the cause class
+		// was persisted: the cause is unknowable, so keep the pre-existing
+		// unconditional base-advance self-heal rather than retro-parking PRs.
+		// Records age out on the next checkpoint, which rewrites the sticky
+		// comment in place.
+		return true
+	}
+	switch state.EscalationOutcome {
+	case remediationOutcomeInfrastructure, remediationOutcomePolicyExcluded:
+		return false
+	}
+	if state.StructuralCollisionContext != "" {
+		return false
+	}
+	if len(state.EscalationCauses) == 0 {
+		// A forced escalation (a reviewer verdict of fail, or a repeated
+		// implementer no-op) observed no remediation cause at all.
+		return false
+	}
+	for _, cause := range state.EscalationCauses {
+		if !baseAdvanceCuresRemediationCause(cause) {
+			return false
+		}
+	}
+	return true
+}
+
+func baseAdvanceCuresRemediationCause(cause remediationCause) bool {
+	switch cause {
+	case remediationCauseConflict, remediationCauseSiblingOverlap:
+		return true
+	default:
+		return false
+	}
+}
+
+// nextEscalationGeneration returns the EscalationGeneration to record when
+// headSHA is parked on top of prior: 1 for the first park of a given head, +1
+// for each re-escalation of that same unchanged head. An escalation record
+// written before the counter shipped counts as the first park of its head, so
+// an upgraded fleet reports the churn it can still prove rather than restarting
+// every parked PR's count at 1.
+func nextEscalationGeneration(prior remediationState, headSHA string) int {
+	if !prior.Escalated || prior.EscalatedHeadSHA == "" || prior.EscalatedHeadSHA != headSHA {
+		return 1
+	}
+	generation := prior.EscalationGeneration
+	if generation < 1 {
+		generation = 1
+	}
+	return generation + 1
+}
+
 // refreshEscalationSnapshotAfterRepeatFail closes the one-shot self-heal
 // window after merge-review re-evaluates an already-escalated PR. Without this,
 // a base advance stays different from the original snapshot forever, making an
 // unchanged PR eligible on every subsequent poll (#2378).
+//
+// Its caller only reaches here on a verdict of fail, which is a rejection of
+// the PR's content: no rebase cures that, so the refreshed snapshot drops any
+// rebase-curable cause the earlier park recorded — a further base advance is
+// not new evidence about a PR a reviewer just re-failed at this same head.
 func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, comments []providers.Comment) error {
 	state, commentID, found := latestRemediationState(comments)
 	if !found || commentID == "" {
@@ -422,9 +534,11 @@ func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider reme
 	if state.Escalated && state.EscalatedHeadSHA == pr.HeadSHA && state.EscalatedBaseSHA == liveBaseTip {
 		return nil
 	}
+	state.EscalationGeneration = nextEscalationGeneration(state, pr.HeadSHA)
 	state.Escalated = true
 	state.EscalatedHeadSHA = pr.HeadSHA
 	state.EscalatedBaseSHA = liveBaseTip
+	state.EscalationCauses = nil
 	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
 }
 
@@ -581,6 +695,16 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// Azure DevOps reaches a NEW branch that talks to the small ADO primitive
+	// surface (PR threads + PR labels + PollPullRequest), mirroring the
+	// merge-review ADO stages (runPRSelectADO, runGatherSiblingContextADO). It is
+	// entered before any github:pr:write token is resolved — ADO carries its own
+	// org-scoped auth (remediation-wiring-plan §3.5). The forced-escalation flags
+	// (--escalate/--escalation-outcome/--budget) are already parsed and validated
+	// above, so they flow in; every other input the ADO body reads itself.
+	if repo.Provider == providers.ProviderADO {
+		return runRemediationCheckpointADO(root, repo, selectedNumber, *escalateReason, forcedOutcome, *budgetOverride, stdout, stderr)
 	}
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
@@ -980,6 +1104,17 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", base, selectedNumber), err, "")
 		}
+		// A forced escalation — a reviewer verdict of fail, a policy exclusion,
+		// or a repeated implementer no-op — is not attributable to an observed
+		// remediation cause: no cause was parsed on those paths, and the ones
+		// that were (the no-op guard) are precisely the ones re-running has
+		// already proven inert. Record none, so the park holds until the head
+		// moves rather than until the next sibling merge.
+		escalationCauses := causes
+		if forced {
+			escalationCauses = nil
+		}
+		escalation.Generation = nextEscalationGeneration(prior, current.HeadSHA)
 		state = remediationState{
 			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
 			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
@@ -990,6 +1125,8 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 			SiblingOverlapContext:      renderSiblingOverlapContext(overlaps),
 			StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
 			LastSeenCommentAt:          watermark,
+			EscalationCauses:           escalationCauses,
+			EscalationGeneration:       escalation.Generation,
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repo,
@@ -1005,7 +1142,7 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, escalation); err != nil {
 			return 1
 		}
-		pf(stdout, "escalated PR #%d: %s\n", selectedNumber, reason)
+		pf(stdout, "escalated PR #%d (escalation %d for head %s): %s\n", selectedNumber, escalation.Generation, current.HeadSHA, reason)
 		return 0
 	}
 
@@ -1050,6 +1187,338 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		selectedNumber, cycles, renderRemediationAttempts(attempts), digest,
 	)
 	return 0
+}
+
+// runRemediationCheckpointADO is the Azure DevOps counterpart of
+// runRemediationCheckpoint's loop-control body (remediation-wiring-plan §3.5).
+// ADO gaps every surface the GitHub path leans on for this stage, so the loop is
+// rebuilt on the small ADO primitives Phase 1 added, reached only when the
+// routed repo is ADO — every GitHub call site stays byte-identical:
+//
+//   - The sticky remediation-state comment — the durable cross-run channel that
+//     carries the per-cause attempt counters, the last diff digest, and (the
+//     single most important checkpoint output for the loop) the pre-remediation
+//     head SHA push-remediated leases against — lives on a PR THREAD:
+//     posted/updated via PostPullRequestThreadComment /
+//     UpdatePullRequestThreadComment and read back via
+//     ListPullRequestThreadComments. ADO has no PR-comment transport, so the
+//     GitHub ListComments/UpdateComment/UpdateWorkItem(comment) trio — all of
+//     which address WORK ITEMS on ADO (the PR-as-work-item wrong-object hazard,
+//     §0.5) — is never reached.
+//   - Escalation (add goobers:merge-escalated, clear goobers:needs-remediation)
+//     and the self-heal clear (remove goobers:merge-escalated) go through the
+//     native PR-LABEL surface (AddPullRequestLabels / RemovePullRequestLabel),
+//     NEVER UpdateWorkItem(ID: PR#) (the GitHub path's :1121 / :1151), which on
+//     ADO mutates the unrelated work item that shares the PR's numeric id.
+//
+// Two ADO provider facts shape it: GetPullRequest → PollPullRequest does NOT
+// populate ADO PR labels (only ListPullRequests maps them), so the PR's live
+// head/base/state come from GetPullRequest while its labels come from the
+// ListPullRequests snapshot; and there is no per-ref check surface, none of
+// which this loop-control stage needs.
+//
+// Deliberately narrower than the GitHub body for the first working ADO loop (§6
+// scope cut): the escalation self-heal snapshot (escalationStillBlocks /
+// base-advance unpark, which needs BranchTipSHA + the sibling scan) is
+// RECORD-ONLY here — pr-select's ADO branch does not consult it (§6) — and the
+// structural-collision, sibling-overlap-context, no-op-guard, and multi-read
+// stabilization paths are omitted. A forced escalation (a reviewer verdict of
+// fail via --escalate, or a declared-policy exclusion) skips the git checkout +
+// diff digest exactly as on GitHub.
+func runRemediationCheckpointADO(
+	root string,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	escalateReason string,
+	forcedOutcome remediationEscalationOutcome,
+	budgetOverride int,
+	stdout, stderr io.Writer,
+) int {
+	provider, err := newADOProviderForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	base := providerInput("base", providerBaseBranch())
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
+	pullID := strconv.Itoa(selectedNumber)
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
+	moot := func() int {
+		pln(stdout, "PR is no longer open (merged/closed since selection) — checkpoint moot, nothing to record")
+		if err := writeCheckpointResult(stderr, false, selectedNumber, "", "", remediationEscalation{}); err != nil {
+			return 1
+		}
+		return 0
+	}
+
+	// A forced escalation is not attributable to an observed remediation cause,
+	// consults no digest, and touches no git — decide it before resolving the
+	// push credential or checking out the branch, exactly like the GitHub body.
+	// *escalateReason (the reviewer-fail path) wins if both are set.
+	policyExcluded, err := strconv.ParseBool(providerInput("policyExcluded", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid policyExcluded input: %v\n", err)
+		return 1
+	}
+	escalateReasonValue := escalateReason
+	if escalateReasonValue == "" && policyExcluded {
+		escalateReasonValue = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
+	}
+	forced := escalateReasonValue != ""
+	if budgetOverride < 0 {
+		pf(stderr, "error: --budget must not be negative\n")
+		return 1
+	}
+
+	// ADO's ListPullRequests is the ONLY surface that maps native PR labels
+	// (GetPullRequest → PollPullRequest leaves them empty), so the escalated/
+	// needs-remediation label reads below must come from it. GetPullRequest then
+	// supplies the authoritative live head/base/state (the snapshot may be stale
+	// and leaves State empty on ADO); the labels are carried over.
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+	})
+	if err != nil {
+		return failProviderStage(stderr, "list pull requests", err, "")
+	}
+	var listedLabels []string
+	found := false
+	for i := range prs {
+		if prs[i].Number == selectedNumber {
+			listedLabels = prs[i].Labels
+			found = true
+			break
+		}
+	}
+	if !found {
+		// ADO's active-PR list excludes completed/abandoned PRs, so a vanished
+		// selection is moot — nothing to remediate (#392).
+		return moot()
+	}
+	refreshed, err := provider.GetPullRequest(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if refreshed.State != "open" || refreshed.Merged {
+		return moot()
+	}
+	refreshed.Labels = listedLabels
+	current := &refreshed
+
+	var causes []remediationCause
+	var budgets remediationBudgets
+	if !forced {
+		rawCauses := providerInput("remediationCauses", "")
+		if strings.TrimSpace(rawCauses) != "" {
+			causes, err = parseRemediationCauses(rawCauses)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			budgets, err = declaredRemediationBudgets(budgetOverride)
+			if err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+		}
+	}
+	hasObservedCause := len(causes) > 0
+
+	// This cycle's diff digest against the PR's base — the same-diff stall
+	// signal (§6 D5). Only on the non-forced path, and only after the stage's own
+	// re-checkout of the PR branch (this stage gets a fresh worktree). The git
+	// operations are provider-neutral and work on ADO with the repo:push
+	// credential; a forced escalation skips them entirely, so its repo:push is
+	// never required.
+	digest := ""
+	if !forced {
+		pushToken, tokErr := providerToken(capability.RepoPush)
+		if tokErr != nil {
+			pf(stderr, "error: %v\n", tokErr)
+			return 1
+		}
+		onBranch, brErr := currentBranchIs(".", current.Head)
+		if brErr != nil {
+			pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, brErr)
+			return 1
+		}
+		if !onBranch {
+			fetchedSHA, coErr := checkoutExistingBranch(".", current.Head, pushToken)
+			if coErr != nil {
+				pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, coErr)
+				return 1
+			}
+			current.HeadSHA = fetchedSHA
+		}
+		digest, err = diffDigest(".", current.BaseSHA)
+		if err != nil {
+			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
+			return 1
+		}
+	}
+
+	rawComments, err := provider.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("list thread comments on PR #%d", selectedNumber), err, "")
+	}
+	prior, priorCommentID, _ := latestRemediationStateForPR(current.Body, rawComments)
+
+	// An operator clearing goobers:merge-escalated is an explicit request for a
+	// fresh attempt: the repass counter lives in the sticky comment, not the
+	// label, so drop the whole prior record (keeping priorCommentID so this cycle
+	// still edits the sticky thread in place rather than posting a new one).
+	if prior.Escalated && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		pf(stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
+			selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
+		prior = remediationState{}
+	}
+
+	watermark := latestCommentTimestamp(rawComments)
+	if watermark == "" {
+		watermark = prior.LastSeenCommentAt
+	}
+
+	stalled := remediationStalled(prior, digest, current.BaseSHA)
+	cycles := prior.Cycles + 1
+	exhaustedCause, exceeded := exhaustedRemediationCause(prior.AttemptsByCause, causes, budgets)
+
+	if exceeded || stalled || forced {
+		reason := ""
+		escalation := remediationEscalation{
+			Outcome:         remediationOutcomeDidNotConverge,
+			Attempted:       true,
+			AttemptedCauses: attemptedRemediationCauses(prior.AttemptsByCause),
+		}
+		if forced {
+			escalation.Outcome = forcedOutcome
+		}
+		if exceeded {
+			escalation.Outcome = remediationOutcomeBudgetExhausted
+			reason = fmt.Sprintf(
+				"remediation cause %q exhausted its budget after %d/%d attempts",
+				exhaustedCause,
+				prior.AttemptsByCause.forCause(exhaustedCause),
+				budgets.forCause(exhaustedCause),
+			)
+		}
+		if stalled {
+			reason = fmt.Sprintf("this cycle's diff is byte-identical to the immediately prior cycle's on the same base (digest %s) — an unchanged diff on an unchanged base cannot make progress", digest)
+		}
+		// A caller-supplied or policy-excluded reason always wins the prose.
+		if forced {
+			reason = escalateReasonValue
+		}
+		if policyExcluded {
+			escalation.Outcome = remediationOutcomePolicyExcluded
+			escalation.Attempted = false
+			escalation.AttemptedCauses = nil
+		}
+		escalation.Reason = reason
+		// Forced escalations observe no cause; record none so the churn/self-heal
+		// fields stay consistent with the GitHub shape even though ADO's
+		// record-only self-heal never reads them back.
+		escalationCauses := causes
+		if forced {
+			escalationCauses = nil
+		}
+		escalation.Generation = nextEscalationGeneration(prior, current.HeadSHA)
+		state := remediationState{
+			Cycles: cycles, AttemptsByCause: prior.AttemptsByCause, LastDiffDigest: digest,
+			HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+			Escalated: true, EscalatedReason: reason,
+			EscalationOutcome: escalation.Outcome, RemediationAttempted: escalation.Attempted,
+			AttemptedCauses:  escalation.AttemptedCauses,
+			EscalatedHeadSHA: current.HeadSHA, EscalatedBaseSHA: current.BaseSHA,
+			LastSeenCommentAt:    watermark,
+			EscalationCauses:     escalationCauses,
+			EscalationGeneration: escalation.Generation,
+		}
+		// Escalate via the native PR-label surface — NEVER UpdateWorkItem(PR#).
+		// Add merge-escalated first, then clear needs-remediation, so a failure
+		// between the two leaves the PR blocked (escalated) rather than
+		// selectable-but-unmarked.
+		if err := provider.AddPullRequestLabels(ctx, repo, pullID, []string{remediationEscalatedLabel}); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("escalate PR #%d", selectedNumber), err, "")
+		}
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, needsRemediationLabel); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from PR #%d", selectedNumber), err, "")
+		}
+		if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, pullID, priorCommentID, renderRemediationComment(state)); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
+		}
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, escalation); err != nil {
+			return 1
+		}
+		pf(stdout, "escalated PR #%d (escalation %d for head %s): %s\n", selectedNumber, escalation.Generation, current.HeadSHA, reason)
+		return 0
+	}
+
+	attempts := prior.AttemptsByCause
+	for _, cause := range causes {
+		attempts.increment(cause)
+	}
+	state := remediationState{
+		Cycles: cycles, AttemptsByCause: attempts, LastDiffDigest: digest,
+		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA,
+		LastSeenCommentAt: watermark,
+	}
+	// A self-healed escalation (head/base advanced since the park): clear the
+	// label before replacing the escalation snapshot, so a failed clear leaves
+	// the PR parked rather than in a non-escalated state that fails closed.
+	if hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, remediationEscalatedLabel); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", selectedNumber), err, "")
+		}
+	}
+	if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, pullID, priorCommentID, renderRemediationComment(state)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
+	}
+	if err := writeCheckpointResult(stderr, hasObservedCause, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
+		return 1
+	}
+	if !hasObservedCause {
+		pf(
+			stdout,
+			"recorded no-cause checkpoint for PR #%d: cycle %d, counters unchanged, digest %s; remediation halted without consuming an allowance\n",
+			selectedNumber, cycles, digest,
+		)
+		return 0
+	}
+	pf(
+		stdout,
+		"recorded checkpoint for PR #%d: cycle %d, attempts by cause %s, digest %s\n",
+		selectedNumber, cycles, renderRemediationAttempts(attempts), digest,
+	)
+	return 0
+}
+
+// postOrUpdateStickyThreadComment is the ADO analog of postOrUpdateStickyComment:
+// it edits the existing sticky remediation-state thread comment in place when one
+// was found (existingCommentID is the composite "<pullID>/<threadId>/<commentId>"
+// a prior List/Post returned), otherwise opens a new PR thread. It never touches
+// wit/workitems (the PR-as-work-item wrong-object hazard the GitHub
+// UpdateWorkItem(comment) fallback would trip on ADO).
+func postOrUpdateStickyThreadComment(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pullID, existingCommentID, body string) error {
+	if existingCommentID != "" {
+		return provider.UpdatePullRequestThreadComment(ctx, repo, existingCommentID, body)
+	}
+	_, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, body)
+	return err
+}
+
+// postOrRecreateRemediationThreadComment is postOrRecreateRemediationComment for
+// ADO threads: a human may delete the sticky thread comment after the list read,
+// so a confirmed not-found on the in-place update falls back to posting a fresh
+// thread. Every other provider error stays stage-fatal.
+func postOrRecreateRemediationThreadComment(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pullID, existingCommentID, body string) error {
+	err := postOrUpdateStickyThreadComment(ctx, provider, repo, pullID, existingCommentID, body)
+	if existingCommentID == "" || !providers.IsNotFoundError(err) {
+		return err
+	}
+	return postOrUpdateStickyThreadComment(ctx, provider, repo, pullID, "", body)
 }
 
 func parseRemediationCauses(raw string) ([]remediationCause, error) {
@@ -1147,6 +1616,11 @@ type remediationEscalation struct {
 	Attempted       bool
 	AttemptedCauses []remediationCause
 	Reason          string
+	// Generation is the escalation's EscalationGeneration — how many times this
+	// unchanged head has now been parked. Emitted so a workflow or telemetry
+	// query can see re-escalation churn without reconstructing it from PR
+	// comments. Zero on a non-escalating checkpoint.
+	Generation int
 }
 
 func attemptedRemediationCauses(attempts remediationAttempts) []remediationCause {
@@ -1312,6 +1786,7 @@ func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedN
 		"remediationAttempted": strconv.FormatBool(escalation.Attempted),
 		"attemptedCauses":      strings.Join(attemptedCauses, ","),
 		"escalationReason":     escalation.Reason,
+		"escalationGeneration": strconv.Itoa(escalation.Generation),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal checkpoint result: %v\n", err)

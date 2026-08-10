@@ -273,7 +273,23 @@ func printClaimReleasePreview(w io.Writer, entry localscheduler.ClaimEntry, now 
 }
 
 func claimHolderTerminal(root string, entry localscheduler.ClaimEntry) (bool, error) {
-	runDir, err := instance.NewLayout(root).FindRunDir(entry.RunID)
+	runID := entry.RunID
+	if owner, ok := parseBacklogReconcileRunID(runID); ok {
+		// A backlog-reconcile claim's holder is the reconcile invocation
+		// itself (backlogreconcile.go's synthesized "<owner-run>/
+		// backlog-reconcile/<pid>/<seq>" RunID), not a run FindRunDir can
+		// look up — it is terminal iff the run that spawned it is.
+		runID = owner
+	} else if strings.Contains(runID, "/") {
+		// Some other slash-containing (and therefore, per FindRunDir,
+		// structurally invalid) run id — including a reconcile-shaped id
+		// whose pid/sequence suffix failed to parse. Hold conservatively
+		// rather than surface FindRunDir's rejection as an inspection error
+		// on every recovery sweep for as long as the entry lives (bounded
+		// by its own TTL either way).
+		return false, nil
+	}
+	runDir, err := instance.NewLayout(root).FindRunDir(runID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil

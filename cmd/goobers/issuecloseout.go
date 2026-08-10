@@ -462,15 +462,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// not this label, is what's actually authoritative for eligibility, so a
 	// failed removal here leaves only a stale human-visible marker, not a
 	// stuck item.
-	// The claim marker's label form diverges by provider: GitHub uses the plain
-	// LabelClaimed ("goobers:claimed"), while ADO writes the status-form
-	// "goobers/status:claimed" (ClaimWorkItem via statusLabel). Removing the
-	// GitHub constant on ADO never matches, leaving the marker stuck — so
-	// translate to the ADO status form when parking an ADO work item.
+	// The claim marker is the plain LabelClaimed on every provider —
+	// ClaimWorkItem defaults req.ClaimLabel to it on ADO too, so removal
+	// uses the same constant everywhere. (A prior status-form translation
+	// here targeted a tag the claim path never writes, wire-confirmed as
+	// the stale-marker leak on ADO work items.)
 	claimMarker := providers.LabelClaimed
-	if repo.Provider == providers.ProviderADO {
-		claimMarker = providers.StatusLabelFor(providers.WorkItemStatusClaimed)
-	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository:   backlogRepo,
 		ID:           claim.ItemID,

@@ -138,9 +138,12 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", 1)
-	next = strings.Replace(next, "name: default-implement", "name: next-implement", 1)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "next-implement.yaml"), []byte(next), 0o644); err != nil {
+	// The starter scaffold pins NextDSLVersion (2.0) since #2698, so the
+	// second workflow drops back to the deprecated-but-loadable
+	// CurrentDSLVersion (1.4) to exercise one row per interpreter version.
+	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
+	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

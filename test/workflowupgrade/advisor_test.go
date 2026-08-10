@@ -711,9 +711,21 @@ func loadFixtureConfig(
 	if allowInvalid && loadErr != nil && !scenarioAllowsInvalidCurrent(scenario) {
 		t.Fatalf("current fixture config is unexpectedly invalid: %v (report: %+v)", loadErr, report)
 	}
-	if report != nil && len(report.Warnings()) != 0 &&
+	// DVL020 (deprecated dslVersion) is expected on fixtures that deliberately
+	// sit on a historical DSL version (#2700 deprecated 1.4): the advisor's
+	// whole subject is configs on old versions, so the deprecation warning is
+	// evidence the lifecycle works, not fixture rot. Every other warning still
+	// fails the load.
+	var unexpected []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningDeprecatedDSLVersion {
+			continue
+		}
+		unexpected = append(unexpected, warning)
+	}
+	if len(unexpected) != 0 &&
 		(!allowInvalid || !scenarioAllowsInvalidCurrent(scenario)) {
-		t.Fatalf("target validation is not clean: %v", report.Warnings())
+		t.Fatalf("target validation is not clean: %v", unexpected)
 	}
 
 	loaded := make(map[string]loadedFixtureWorkflow, len(set.Workflows))

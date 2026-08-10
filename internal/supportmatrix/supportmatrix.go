@@ -74,10 +74,19 @@ type Version struct {
 }
 
 var dslVersions = mustSupportMatrix(SupportMatrix{
+	// DSL 1.4 is deprecated (#2700, epic #2695): every shipped, reference,
+	// and example workflow now pins 2.0, and 2.0 is a verified strict
+	// superset of 1.4. Deprecation takes effect with the first tagged
+	// release; the version stays loadable (with a DVL020 warning naming
+	// `goobers fix --to 2.0`) until at least one minor release later, per
+	// MinimumDeprecatedMinorReleases.
 	CurrentDSLVersion: {
-		Level: LevelSupported,
+		Level:            LevelDeprecated,
+		Replacement:      NextDSLVersion,
+		UnsupportedAfter: "v0.2.0",
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
 		},
 	},
 	NextDSLVersion: {

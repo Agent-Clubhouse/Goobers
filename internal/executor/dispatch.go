@@ -144,7 +144,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		return result, nil
 	}
 	if providers.IsTransientError(err) {
-		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(err)
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(transientPollCode(err), err))
 	}
 	var providerErr *ciPollProviderError
 	if errors.As(err, &providerErr) {
@@ -158,6 +158,18 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		}, nil
 	}
 	return result, err
+}
+
+// transientPollCode names a retryable ci-poll failure so the runner journals
+// its own cause. A rate-limited poll and a flaky 5xx are the same "retry
+// later" decision but different operator problems, and both used to reach the
+// journal as the generic executor_error.
+func transientPollCode(err error) string {
+	var rateLimited *providers.RateLimitError
+	if errors.As(err, &rateLimited) {
+		return providers.ErrorCodeRateLimited
+	}
+	return "poll_provider_error"
 }
 
 func containsString(values []string, want string) bool {
