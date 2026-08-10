@@ -131,6 +131,15 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           rm -f "$CERT_PATH"
 
+          # codesign resolves signing identities through the keychain search
+          # list, not just an explicit --keychain flag on the sign command —
+          # without this, codesign reports "no identity found" even when
+          # --keychain correctly points at the unlocked keychain containing
+          # the imported identity. Existing keychains are preserved, not
+          # replaced.
+          existing_keychains="$(security list-keychains -d user | sed 's/[[:space:]]*"//;s/"$//')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $existing_keychains
+
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Discover signing identity

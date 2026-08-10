@@ -55,6 +55,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           rm -f "$CERT_PATH"
 
+          existing_keychains="$(security list-keychains -d user | sed 's/[[:space:]]*"//;s/"$//')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $existing_keychains
+
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Discover signing identity
