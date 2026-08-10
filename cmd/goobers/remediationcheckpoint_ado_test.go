@@ -207,6 +207,40 @@ func setADOCheckpointStageEnv(t *testing.T, repo providers.RepositoryRef) {
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
 }
 
+func TestRunRemediationCheckpointADOWaitsForSiblingAndClearsStaleLabel(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	setADOCheckpointStageEnv(t, repo)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", string(remediationCauseSiblingOverlap))
+
+	const headSHA, baseSHA = "head-sha-wait", "base-sha-wait"
+	rec := &adoCheckpointRecorder{}
+	mux := adoCheckpointMux(t, repo, 359, headSHA, baseSHA, []string{blockedOnSiblingLabel, needsRemediationLabel}, nil, rec)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	stubADOProviderForCheckpointStage(t, server.URL)
+
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--budget", "2", root)
+	if code != 0 {
+		t.Fatalf("remediation-checkpoint: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "waiting without consuming remediation budget") {
+		t.Fatalf("stdout = %q, want sequencing wait", stdout)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.removedLabels) != 1 || rec.removedLabels[0] != needsRemediationLabel {
+		t.Fatalf("removed labels = %v, want [%s]", rec.removedLabels, needsRemediationLabel)
+	}
+	if rec.threadCreated || rec.threadPatched || rec.workItemTouched {
+		t.Fatalf("sequencing wait performed unrelated mutations: %+v", rec)
+	}
+	if got := readCheckpointResult(t, "checkpoint-result.json")["continueRemediation"]; got != "false" {
+		t.Fatalf("continueRemediation = %q, want false", got)
+	}
+}
+
 // TestRunRemediationCheckpointADOEscalatesUpdatingStickyThread is the headline
 // ADO acceptance for §3.5: a forced escalation on a PR that already carries a
 // sticky remediation-state comment on its PR THREAD (1) reads that prior state

@@ -354,8 +354,8 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const selectedNumber = 2478
-	server.addIssue(selectedNumber, "Selected PR")
-	server.addOpenPR(selectedNumber, "goobers/implementation/run-x", "main", "selected-head", "main-base", false, nil, []fakePRFile{
+	server.addIssue(selectedNumber, "Selected PR", needsRemediationLabel)
+	server.addOpenPR(selectedNumber, "goobers/implementation/run-x", "main", "selected-head", "main-base", false, []string{needsRemediationLabel}, []fakePRFile{
 		{path: "docs/guides/quickstart.md", status: "modified", additions: 2, deletions: 1},
 	})
 	for _, number := range []int{2475, 2476, 2481} {
@@ -394,7 +394,7 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 		t.Fatalf("labels = %v, want %q", issue.labels, blockedOnSiblingLabel)
 	}
 	if hasAllLabels(issue.labels, []string{needsRemediationLabel}) {
-		t.Fatalf("labels = %v, overlap-only verdict entered remediation", issue.labels)
+		t.Fatalf("labels = %v, overlap-only verdict retained stale remediation label", issue.labels)
 	}
 	posted, ok := parseVerdictComment(issue.comments[len(issue.comments)-1])
 	if !ok {

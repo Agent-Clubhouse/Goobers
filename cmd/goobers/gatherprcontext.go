@@ -194,6 +194,9 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// local git query, no provider call) and reused across the candidate loop.
 	heldBranches := worktreeHeldBranches(".")
 
+	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+		return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
+	}
 	nonBlocked, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
@@ -224,9 +227,6 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
 			}
 			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-		}
-		if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
-			return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
 		}
 		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
 		if err != nil {
@@ -668,19 +668,33 @@ func filterRemediationPullRequests(ctx context.Context, provider remediationProv
 		if blocked {
 			continue
 		}
-		liveBlockers, err := liveBlockedOnSiblingBlockers(ctx, provider, repo, pr)
+		blockedState, err := liveBlockedOnSiblingState(ctx, provider, repo, pr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("check blocked-on-sibling state for PR #%d: %w", pr.Number, err)
 		}
+		liveBlockers := blockedState.Blockers
 		for _, blocker := range liveBlockers {
 			blockedDependents[blocker]++
 		}
-		if len(liveBlockers) > 0 {
+		if shouldParkRemediation(pr, blockedState) {
 			continue
 		}
 		eligible = append(eligible, pr)
 	}
 	return eligible, blockedDependents, nil
+}
+
+func shouldParkRemediation(pr providers.PullRequestSummary, blockedState blockedOnSiblingState) bool {
+	if len(blockedState.Blockers) == 0 {
+		return false
+	}
+	if pr.CheckState == providers.CheckStateFailing {
+		return false
+	}
+	if strings.HasPrefix(blockedState.Reason, "foundation-coupled to PR #") {
+		return true
+	}
+	return !hasAnyLabel(pr.Labels, []string{needsRemediationLabel})
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,

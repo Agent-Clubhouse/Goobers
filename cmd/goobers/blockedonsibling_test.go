@@ -232,8 +232,8 @@ func TestRemediationSelectionDrainsOverlapWaveLazily(t *testing.T) {
 		},
 		{
 			prs: []providers.PullRequestSummary{
-				{Number: 101, Labels: []string{blockedOnSiblingLabel, needsRemediationLabel}},
-				{Number: 102, Labels: []string{blockedOnSiblingLabel, needsRemediationLabel}},
+				{Number: 101, Labels: []string{blockedOnSiblingLabel}},
+				{Number: 102, Labels: []string{blockedOnSiblingLabel}},
 			},
 			want: 101,
 		},
@@ -277,8 +277,32 @@ func TestRemediationSelectionDrainsOverlapWaveLazily(t *testing.T) {
 	if got := joinPRNumbers(selected); got != "100,101,102" {
 		t.Fatalf("rebase order = %s, want deterministic predecessor order 100,101,102", got)
 	}
-	if behindProbes != 1 {
-		t.Fatalf("behind-base probes = %d, want only the initially crowned lander probed", behindProbes)
+	if behindProbes != 2 {
+		t.Fatalf("behind-base probes = %d, want initial and newly unblocked crowned landers probed", behindProbes)
+	}
+}
+
+func TestRemediationSelectionDoesNotParkIndependentLiveCause(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	server.addIssue(100, "open blocker")
+	server.addIssue(101, "blocked dependent")
+	server.addComment(101, blockedOnSiblingCommentFor(t, 100))
+	provider := server.newGitHubProvider("token")
+
+	pr := providers.PullRequestSummary{
+		Number:  101,
+		HeadSHA: "head-101",
+		Labels:  []string{blockedOnSiblingLabel, needsRemediationLabel},
+	}
+	eligible, _, err := filterRemediationPullRequests(
+		context.Background(), provider, repo, []providers.PullRequestSummary{pr}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eligible) != 1 || eligible[0].Number != 101 {
+		t.Fatalf("eligible = %+v, want blocked PR #101 with an independent remediation cause", eligible)
 	}
 }
 
