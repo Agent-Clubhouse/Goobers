@@ -750,6 +750,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	case remediationEscalatedLabel:
 		removeLabels = []string{needsRemediationLabel}
+	case blockedOnSiblingLabel:
+		removeLabels = []string{needsRemediationLabel}
 	}
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
