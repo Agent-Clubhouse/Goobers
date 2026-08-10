@@ -68,10 +68,15 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 			t.Errorf("command missing %q: %v", want, command)
 		}
 	}
-	promptFlag := slices.Index(command, "-p")
-	if promptFlag < 0 || promptFlag+1 >= len(command) ||
-		!strings.Contains(command[promptFlag+1], "write your result as JSON") {
+	if len(command) < 2 || command[len(command)-2] != "--" {
+		t.Fatalf("prompt is not the last argv element behind \"--\": %v", command)
+	}
+	prompt := commandPromptValue(command)
+	if prompt == "" || !strings.Contains(prompt, "write your result as JSON") {
 		t.Fatalf("command does not carry the completion-file prompt: %v", command)
+	}
+	if command[len(command)-1] != prompt {
+		t.Fatalf("prompt is not the final argv element: %v", command)
 	}
 	for _, token := range []string{"anthropic-key", "github-token"} {
 		for _, arg := range command {
@@ -101,6 +106,87 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 	}
 	if len(out.Payload) == 0 {
 		t.Fatal("completion payload is empty")
+	}
+}
+
+// TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional pins the fix for
+// #2090: every shipped instructions.md opens with YAML frontmatter ("---"),
+// and claude's CLI parser scans all argv positions for option-shaped tokens,
+// so a naive "-p <prompt> <flags...>" layout misparses the prompt as an
+// unknown flag. The prompt must be the final argv element, behind "--".
+func TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional(t *testing.T) {
+	for _, prompt := range []string{
+		"---\nrole: curator\n---\n\ndo the thing",
+		"-x single dash prefix",
+		"--",
+	} {
+		t.Run(prompt, func(t *testing.T) {
+			argv, promptArg, sessionSelectorArg := buildClaudeArgv(
+				[]string{"claude"},
+				[]string{"--output-format", "stream-json"},
+				"claude-sonnet-4-6",
+				"high",
+				"session-1",
+				prompt,
+			)
+			if got := argv[len(argv)-1]; got != prompt {
+				t.Fatalf("prompt is not the final argv element: %v", argv)
+			}
+			if len(argv) < 2 || argv[len(argv)-2] != "--" {
+				t.Fatalf("prompt is not preceded by \"--\": %v", argv)
+			}
+			if promptArg != len(argv)-1 {
+				t.Fatalf("promptArg = %d, want %d (last index): %v", promptArg, len(argv)-1, argv)
+			}
+			if argv[promptArg] != prompt {
+				t.Fatalf("argv[promptArg] = %q, want %q", argv[promptArg], prompt)
+			}
+			if argv[sessionSelectorArg] != "--session-id" {
+				t.Fatalf("argv[sessionSelectorArg] = %q, want %q", argv[sessionSelectorArg], "--session-id")
+			}
+			for _, want := range []string{"--model", "claude-sonnet-4-6", "--effort", "high", "--session-id", "session-1"} {
+				if !slices.Contains(argv, want) {
+					t.Errorf("argv missing %q: %v", want, argv)
+				}
+			}
+			// Simulate the completion-recovery path, which overwrites both
+			// indices in place: promptArg with a fresh prompt, and the
+			// "--session-id" token itself with "--resume" so the value
+			// that follows it is reinterpreted as the resumed session id.
+			recoveryArgv := append([]string(nil), argv...)
+			recoveryArgv[promptArg] = "recovery prompt"
+			recoveryArgv[sessionSelectorArg] = "--resume"
+			if recoveryArgv[len(recoveryArgv)-1] != "recovery prompt" {
+				t.Fatalf("recovery prompt did not land at the final argv element: %v", recoveryArgv)
+			}
+			if commandOptionValue(recoveryArgv, "--resume") != "session-1" {
+				t.Fatalf("--resume did not carry the original session id: %v", recoveryArgv)
+			}
+		})
+	}
+}
+
+// TestBuildClaudeArgvShiftUnderSandboxWrapping asserts promptArg and
+// sessionSelectorArg remain correct once confineArgv prepends sandbox
+// wrapper arguments ahead of the whole command, in both the sandboxed and
+// non-sandboxed branches of Run.
+func TestBuildClaudeArgvShiftUnderSandboxWrapping(t *testing.T) {
+	prompt := "---\nrole: curator\n---\n\ndo the thing"
+	argv, promptArg, sessionSelectorArg := buildClaudeArgv(
+		[]string{"claude"}, nil, "", "", "session-1", prompt,
+	)
+	sandbox := &stubSandbox{}
+	wrapped, shift, err := confineArgv(sandbox, argv, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("confineArgv: %v", err)
+	}
+	promptArg += shift
+	sessionSelectorArg += shift
+	if wrapped[promptArg] != prompt {
+		t.Fatalf("shifted promptArg = %d does not carry the prompt: %v", promptArg, wrapped)
+	}
+	if wrapped[sessionSelectorArg] != "--session-id" {
+		t.Fatalf("shifted sessionSelectorArg = %d does not carry --session-id: %v", sessionSelectorArg, wrapped)
 	}
 }
 
@@ -254,8 +340,8 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 	if !bytes.Contains(out.Transcript, []byte("recovered terminal output")) {
 		t.Fatalf("transcript lost recovery terminal output:\n%s", out.Transcript)
 	}
-	initialPrompt := runner.reqs[0].Command[slices.Index(runner.reqs[0].Command, "-p")+1]
-	recoveryPrompt := runner.reqs[1].Command[slices.Index(runner.reqs[1].Command, "-p")+1]
+	initialPrompt := commandPromptValue(runner.reqs[0].Command)
+	recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
 	var orderedContent []string
 	for _, line := range bytes.Split(bytes.TrimSpace(out.Transcript), []byte("\n")) {
 		var event transcriptEvent
@@ -329,7 +415,7 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 			if slices.Contains(runner.reqs[1].Command, "--session-id") {
 				t.Fatalf("recovery started a new session: %v", runner.reqs[1].Command)
 			}
-			recoveryPrompt := runner.reqs[1].Command[slices.Index(runner.reqs[1].Command, "-p")+1]
+			recoveryPrompt := commandPromptValue(runner.reqs[1].Command)
 			if !strings.Contains(recoveryPrompt, tc.completionPath) ||
 				!strings.Contains(recoveryPrompt, "previous turn ended without writing") {
 				t.Fatalf("recovery prompt = %q", recoveryPrompt)
@@ -346,6 +432,17 @@ func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 
 func commandOptionValue(command []string, option string) string {
 	index := slices.Index(command, option)
+	if index < 0 || index+1 >= len(command) {
+		return ""
+	}
+	return command[index+1]
+}
+
+// commandPromptValue returns the positional prompt argv carries behind its
+// "--" terminator, so a prompt beginning with "-" is never mistaken for one
+// of the option tokens above.
+func commandPromptValue(command []string) string {
+	index := slices.Index(command, "--")
 	if index < 0 || index+1 >= len(command) {
 		return ""
 	}

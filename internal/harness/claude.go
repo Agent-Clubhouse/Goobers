@@ -113,6 +113,33 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{Version: version}, nil
 }
 
+// buildClaudeArgv assembles the claude CLI invocation with every flag ahead
+// of a "--" terminator and the prompt last. Every shipped instructions.md
+// opens with YAML frontmatter, so the prompt routinely begins with "-"; a
+// CLI parser that scans all argv positions for option-shaped tokens would
+// otherwise misparse it regardless of where in argv it sits. Putting the
+// prompt behind "--" as the final element is the only placement immune to
+// that, since everything after "--" is taken as a literal. It returns the
+// argv plus the indices of the prompt and the "--session-id" flag token,
+// both of which the completion-recovery path rewrites in place.
+func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID, prompt string) (argv []string, promptArg, sessionSelectorArg int) {
+	argv = append(argv, baseCommand...)
+	argv = append(argv, "-p")
+	argv = append(argv, extra...)
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	if effort != "" {
+		argv = append(argv, "--effort", effort)
+	}
+	sessionSelectorArg = len(argv)
+	argv = append(argv, "--session-id", sessionID)
+	argv = append(argv, "--")
+	promptArg = len(argv)
+	argv = append(argv, prompt)
+	return argv, promptArg, sessionSelectorArg
+}
+
 func (c *ClaudeAdapter) runner() ProcessRunner {
 	if c.Runner != nil {
 		return c.Runner
@@ -143,25 +170,15 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	}
 
 	baseCommand := resolveHarnessCommand(c.Command)
-	argv := append(baseCommand, "-p", prompt)
-	promptArg := len(baseCommand) + 1
 	extra := c.ExtraArgs
 	if extra == nil {
 		extra = defaultClaudeExtraArgs
-	}
-	argv = append(argv, extra...)
-	if req.Model != "" {
-		argv = append(argv, "--model", req.Model)
-	}
-	if effort, ok := options["effort"]; ok {
-		argv = append(argv, "--effort", effort)
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: create session id: %w", err)
 	}
-	sessionSelectorArg := len(argv)
-	argv = append(argv, "--session-id", sessionID)
+	argv, promptArg, sessionSelectorArg := buildClaudeArgv(baseCommand, extra, req.Model, options["effort"], sessionID, prompt)
 
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
