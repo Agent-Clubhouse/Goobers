@@ -819,6 +819,15 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 				out = append(out, prDetailJSON(pr))
 			}
 		}
+		if perPage, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && perPage > 0 {
+			page := 1
+			if requestedPage, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && requestedPage > 0 {
+				page = requestedPage
+			}
+			start := min((page-1)*perPage, len(out))
+			end := min(start+perPage, len(out))
+			out = out[start:end]
+		}
 		writeFakeJSON(w, out)
 	case http.MethodPost:
 		var body struct {

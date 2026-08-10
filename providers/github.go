@@ -1544,6 +1544,12 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		values.Set("sort", "updated")
 		values.Set("direction", "desc")
 	}
+	if req.Limit > 0 {
+		values.Set("per_page", strconv.Itoa(min(req.Limit, 100)))
+		if req.Page > 1 {
+			values.Set("page", strconv.Itoa(req.Page))
+		}
+	}
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
@@ -1556,6 +1562,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			return fmt.Errorf("decode pulls page: %w", err)
 		}
 		for _, pr := range pageOut {
+			if req.Limit > 0 && len(prs) >= req.Limit {
+				return errStopPaging
+			}
 			if !updatedSince.IsZero() && pr.UpdatedAt.Before(updatedSince) {
 				return errStopPaging
 			}
@@ -1567,6 +1576,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 				}
 			}
 			prs = append(prs, pr)
+		}
+		if req.Limit > 0 && len(prs) >= req.Limit {
+			return errStopPaging
 		}
 		return nil
 	}); err != nil {
