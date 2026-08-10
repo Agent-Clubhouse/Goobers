@@ -738,7 +738,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	escalationSuppressedRemediation := false
 	addLabels := []string{label}
 	var removeLabels []string
-	if label == needsRemediationLabel {
+	switch label {
+	case needsRemediationLabel:
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
@@ -747,6 +748,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			addLabels = nil
 			removeLabels = []string{needsRemediationLabel}
 		}
+	case remediationEscalatedLabel:
+		removeLabels = []string{needsRemediationLabel}
 	}
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
@@ -825,9 +828,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		ID:           strconv.Itoa(selectedNumber),
 		AddLabels:    addLabels,
 		RemoveLabels: removeLabels,
-	}
-	if oscillated {
-		update.RemoveLabels = []string{needsRemediationLabel}
 	}
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
