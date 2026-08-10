@@ -206,6 +206,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
 	},
 	"run": {
+		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {

@@ -92,7 +92,7 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 		Starter:   starter,
 	}})
 
-	requestID, err := writeTriggerRequest(schedulerDir, "implement")
+	requestID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -109,6 +109,42 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	}
 	if runID == "" {
 		t.Fatal("expected a non-empty run id")
+	}
+}
+
+func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
+	alpha := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "deploy", Starter: alpha},
+		{Gaggle: "beta", Workflow: "deploy", Starter: beta},
+	})
+
+	requestID, err := writeTriggerRequest(schedulerDir, "beta", "deploy")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait); err != nil {
+		t.Fatalf("pollTriggerResponse: %v", err)
+	}
+	sched.Wait()
+	if alpha.count() != 0 || beta.count() != 1 {
+		t.Fatalf("starter calls: alpha=%d beta=%d, want alpha=0 beta=1", alpha.count(), beta.count())
+	}
+
+	requestID, err = writeTriggerRequest(schedulerDir, "gamma", "deploy")
+	if err != nil {
+		t.Fatalf("writeTriggerRequest unknown gaggle: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers unknown gaggle: %v", err)
+	}
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait); err == nil ||
+		!strings.Contains(err.Error(), `unknown workflow "deploy" in gaggle "gamma"`) {
+		t.Fatalf("unknown gaggle error = %v", err)
 	}
 }
 
@@ -170,7 +206,7 @@ func TestSweepConsumesRequestFileOnce(t *testing.T) {
 		Starter:   starter,
 	}})
 
-	if _, err := writeTriggerRequest(schedulerDir, "implement"); err != nil {
+	if _, err := writeTriggerRequest(schedulerDir, "", "implement"); err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
@@ -295,7 +331,7 @@ func TestSweepCollectsExpiredOrphanResponse(t *testing.T) {
 func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 	sched, schedulerDir := newTestDelegateScheduler(t, nil)
 
-	requestID, err := writeTriggerRequest(schedulerDir, "no-such-workflow")
+	requestID, err := writeTriggerRequest(schedulerDir, "", "no-such-workflow")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -318,7 +354,7 @@ func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 // between this process observing up.lock held and writing its request.
 func TestPollTriggerResponseTimesOutWithNoSweeper(t *testing.T) {
 	schedulerDir := t.TempDir()
-	requestID, err := writeTriggerRequest(schedulerDir, "implement")
+	requestID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -715,7 +751,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		Starter:   blocking,
 	}})
 
-	occupyID, err := writeTriggerRequest(schedulerDir, "implement")
+	occupyID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -731,7 +767,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		t.Fatal("occupying run never entered Start; its slot is not held")
 	}
 
-	contendedID, err := writeTriggerRequest(schedulerDir, "implement")
+	contendedID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -859,7 +895,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	}})
 
 	// Spend the hourly budget.
-	firstID, err := writeTriggerRequest(schedulerDir, "implement")
+	firstID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -884,7 +920,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	// spent hourly budget.
 	sched.Wait()
 
-	secondID, err := writeTriggerRequest(schedulerDir, "implement")
+	secondID, err := writeTriggerRequest(schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}

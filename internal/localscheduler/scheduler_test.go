@@ -386,6 +386,7 @@ func TestStalledDemandPollDoesNotIndefinitelyDelayReload(t *testing.T) {
 
 func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	block := make(chan struct{})
+	blockClosed := false
 	alpha := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, dir := newTestScheduler(t, []WorkflowEntry{
@@ -393,7 +394,9 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Starter: beta},
 	})
 	t.Cleanup(func() {
-		close(block)
+		if !blockClosed {
+			close(block)
+		}
 		sched.Wait()
 	})
 
@@ -418,8 +421,30 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		t.Fatalf("trigger.fired gaggle scopes = %v, want alpha and beta", firedGaggles)
 	}
 	if _, err := sched.Trigger(context.Background(), "deploy", time.Now()); err == nil ||
-		!strings.Contains(err.Error(), "ambiguous across gaggles") {
+		!strings.Contains(err.Error(), "candidate gaggles: alpha, beta") ||
+		!strings.Contains(err.Error(), "goobers run alpha/deploy") ||
+		!strings.Contains(err.Error(), "goobers run beta/deploy") {
 		t.Fatalf("ambiguous manual trigger error = %v", err)
+	}
+
+	close(block)
+	blockClosed = true
+	sched.Wait()
+	runID, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}, time.Now())
+	if err != nil {
+		t.Fatalf("TriggerExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerExact returned an empty run ID")
+	}
+	waitForCount(t, beta.count, 2)
+	if alpha.count() != 1 {
+		t.Fatalf("alpha starts = %d, want 1", alpha.count())
+	}
+
+	if _, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "gamma", Workflow: "deploy"}, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), `unknown workflow "deploy" in gaggle "gamma"`) {
+		t.Fatalf("unknown exact manual trigger error = %v", err)
 	}
 }
 
