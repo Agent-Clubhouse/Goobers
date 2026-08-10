@@ -841,6 +841,15 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	}
 	hasObservedCause := len(causes) > 0
 	if !forced && sequencingOnlyCheckpointWait(current.Labels, causes) {
+		if hasAnyLabel(current.Labels, []string{needsRemediationLabel}) {
+			if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository:   repo,
+				ID:           strconv.Itoa(selectedNumber),
+				RemoveLabels: []string{needsRemediationLabel},
+			}); err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from sequencing-only PR #%d", selectedNumber), err, "")
+			}
+		}
 		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
 			return 1
 		}
@@ -1334,6 +1343,11 @@ func runRemediationCheckpointADO(
 	}
 	hasObservedCause := len(causes) > 0
 	if !forced && sequencingOnlyCheckpointWait(current.Labels, causes) {
+		if hasAnyLabel(current.Labels, []string{needsRemediationLabel}) {
+			if err := provider.RemovePullRequestLabel(ctx, repo, pullID, needsRemediationLabel); err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from sequencing-only PR #%d", selectedNumber), err, "")
+			}
+		}
 		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
 			return 1
 		}

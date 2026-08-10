@@ -745,6 +745,9 @@ func TestRemediationCheckpointWaitsForSiblingWithoutConsumingBudget(t *testing.T
 	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
 		t.Fatalf("labels = %v, sequencing-only wait must not escalate", st.labels)
 	}
+	if hasAnyLabel(st.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("labels = %v, sequencing-only wait retained stale needs-remediation label", st.labels)
+	}
 	if len(st.comments) != 1 || st.comments[0] != priorComment {
 		t.Fatalf("comments changed during sequencing-only wait: %v", st.comments)
 	}
