@@ -171,6 +171,23 @@ func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) 
 	if requests := server.pullListRequestCount(); requests != 1 {
 		t.Fatalf("pull-list requests = %d, want one shared bounded scan", requests)
 	}
+
+	code, stdout, stderr = runArgs(t, "reconcile-post-merge", "--max", "1", root)
+	if code != 0 {
+		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	beyondLimitLabels = append([]string(nil), server.issues[beyondLimit].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(beyondLimitLabels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels beyond limit after second cycle = %v, want %s cleared", beyondLimitLabels, remediationEscalatedLabel)
+	}
+	if !strings.Contains(stdout, "un-escalated 1 self-healed pr(s)") {
+		t.Fatalf("second cycle stdout = %q, want rotated reconciliation report", stdout)
+	}
+	if requests := server.pullListRequestCount(); requests != 2 {
+		t.Fatalf("pull-list requests after second cycle = %d, want one bounded page per cycle", requests)
+	}
 }
 
 func TestReconcilePostMergeSkipsAlreadyCompletedPullRequest(t *testing.T) {

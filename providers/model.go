@@ -808,6 +808,9 @@ type ListPullRequestsRequest struct {
 	// Limit caps the raw provider records inspected before client-side filters.
 	// Zero preserves the exhaustive-list behavior.
 	Limit int `json:"limit,omitempty"`
+	// Page starts a bounded raw-provider scan at this one-based page. It is
+	// ignored when Limit is zero.
+	Page int `json:"page,omitempty"`
 	// SkipCheckState leaves each summary's CheckState empty instead of
 	// resolving it per candidate — resolving costs two extra API requests
 	// per PR (combined status + check-runs), which dominates the list's

@@ -1546,6 +1546,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 	}
 	if req.Limit > 0 {
 		values.Set("per_page", strconv.Itoa(min(req.Limit, 100)))
+		if req.Page > 1 {
+			values.Set("page", strconv.Itoa(req.Page))
+		}
 	}
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {

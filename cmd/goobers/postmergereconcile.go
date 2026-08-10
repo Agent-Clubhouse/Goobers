@@ -32,8 +32,9 @@ const (
 )
 
 type postMergeReconcileLedger struct {
-	Version int                                `json:"version"`
-	Entries map[string]postMergeReconcileEntry `json:"entries"`
+	Version        int                                `json:"version"`
+	Entries        map[string]postMergeReconcileEntry `json:"entries"`
+	OpenPRScanPage map[string]int                     `json:"openPRScanPage,omitempty"`
 }
 
 type postMergeReconcileEntry struct {
@@ -140,7 +141,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
+	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
@@ -162,6 +163,7 @@ func reconcileOpenPullRequestParks(
 	ctx context.Context,
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
+	root string,
 	base string,
 	limit int,
 	stdout, stderr io.Writer,
@@ -169,8 +171,34 @@ func reconcileOpenPullRequestParks(
 	if base == "" {
 		return nil
 	}
-	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, Limit: limit, SkipCheckState: true,
+	var others []providers.PullRequestSummary
+	err := withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(repo.Owner + "/" + repo.Name + "#" + base)
+		page := ledger.OpenPRScanPage[key]
+		if page < 1 {
+			page = 1
+		}
+		list := func(page int) error {
+			others, err = provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+				Repository: repo, Base: base, Limit: limit, Page: page, SkipCheckState: true,
+			})
+			return err
+		}
+		if err := list(page); err != nil {
+			return err
+		}
+		if len(others) == 0 && page > 1 {
+			page = 1
+			if err := list(page); err != nil {
+				return err
+			}
+		}
+		ledger.OpenPRScanPage[key] = page + 1
+		return writePostMergeReconcileLedger(ledgerPath, ledger)
 	})
 	if err != nil {
 		return []error{fmt.Errorf("list bounded open pull requests targeting %s for park reconciliation: %w", base, err)}
@@ -505,8 +533,9 @@ func withPostMergeReconcileLock(root string, fn func(string) error) error {
 
 func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error) {
 	ledger := postMergeReconcileLedger{
-		Version: postMergeReconcileVersion,
-		Entries: map[string]postMergeReconcileEntry{},
+		Version:        postMergeReconcileVersion,
+		Entries:        map[string]postMergeReconcileEntry{},
+		OpenPRScanPage: map[string]int{},
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -523,6 +552,9 @@ func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error)
 	}
 	if ledger.Entries == nil {
 		ledger.Entries = map[string]postMergeReconcileEntry{}
+	}
+	if ledger.OpenPRScanPage == nil {
+		ledger.OpenPRScanPage = map[string]int{}
 	}
 	return ledger, nil
 }
