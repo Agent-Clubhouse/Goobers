@@ -140,6 +140,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, providerInput("base", providerBaseBranch()), stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
@@ -151,7 +152,25 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
 		report.Scanned, report.Reconciled, report.Pending, report.Expired)
+	if len(unparkErrs) > 0 {
+		return failProviderStage(stderr, "reconcile open pull request parks", errors.Join(unparkErrs...), "")
+	}
 	return 0
+}
+
+func reconcileOpenPullRequestParks(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	base string,
+	stdout, stderr io.Writer,
+) []error {
+	resolved, resolvedErrs := unparkResolvedSiblings(ctx, provider, repo, 0, base, stderr)
+	escalated, escalationErrs := unparkSelfHealedEscalations(ctx, provider, repo, 0, base, stderr)
+	demoted, demotionErrs := unparkSelfHealedDemotions(ctx, provider, repo, 0, base, stderr)
+	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s)\n",
+		len(resolved), len(escalated), len(demoted))
+	return append(append(resolvedErrs, escalationErrs...), demotionErrs...)
 }
 
 func reconcilePostMerges(

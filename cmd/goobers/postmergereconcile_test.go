@@ -130,6 +130,36 @@ func TestReconcilePostMergeLeavesUnmergedPullRequestPending(t *testing.T) {
 	}
 }
 
+func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) {
+	const pullNumber = 631
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(pullNumber, "self-healed pr", remediationEscalatedLabel)
+	server.addOpenPR(pullNumber, "goobers/implementation/healed", "main", "new-head", "base", false, []string{remediationEscalatedLabel}, nil)
+	comment, err := remediationStateComment(remediationState{
+		Escalated: true, EscalatedHeadSHA: "old-head", EscalatedBaseSHA: "base",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	server.addComment(pullNumber, comment)
+	server.setBranchTip("main", "base")
+
+	root := postMergeReconcileEnv(t, server.server.URL)
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[pullNumber].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, want %s cleared on a cycle with no merge", labels, remediationEscalatedLabel)
+	}
+	if !strings.Contains(stdout, "un-escalated 1 self-healed pr(s)") {
+		t.Fatalf("stdout = %q, want independent unpark report", stdout)
+	}
+}
+
 func TestReconcilePostMergeSkipsAlreadyCompletedPullRequest(t *testing.T) {
 	st := newPostMergeServerState(20, "main", "Fixes #42", nil, nil)
 	server := newPostMergeServer(t, "your-org", "your-repo", st)
