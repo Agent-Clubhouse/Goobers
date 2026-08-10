@@ -194,6 +194,9 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// local git query, no provider call) and reused across the candidate loop.
 	heldBranches := worktreeHeldBranches(".")
 
+	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+		return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
+	}
 	nonBlocked, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
@@ -224,9 +227,6 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
 			}
 			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-		}
-		if err := resolveRemediationCheckStates(ctx, provider, repo, nonBlocked); err != nil {
-			return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
 		}
 		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
 		if err != nil {
@@ -271,12 +271,6 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
 	}
 	verdict := gatherPRVerdict(rawComments, verdictAuthor)
-	if sequencingOnlyRemediationWait(selected, verdict) {
-		return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
-			"PR #%d is blocked only on sibling sequencing — waiting without remediation",
-			selected.Number,
-		))
-	}
 
 	// Digest short-circuit (#716 design item 2): escalationStillBlocks above
 	// only excludes a PR whose LIVE goobers:merge-escalated label matches its
@@ -651,13 +645,6 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 	return legacy
 }
 
-func sequencingOnlyRemediationWait(pr providers.PullRequestSummary, verdict *apiv1.Verdict) bool {
-	return pr.CheckState != providers.CheckStateFailing &&
-		verdict != nil &&
-		verdict.Decision == apiv1.VerdictNeedsChanges &&
-		allCrossPRBlocked(verdict.Findings)
-}
-
 // filterRemediationPullRequests applies the shared exclusion rules before
 // either the API fast lane or the full worktree-backed remediation path selects
 // a candidate. heldBranches is nil for the API-only lane, which can safely
@@ -688,12 +675,18 @@ func filterRemediationPullRequests(ctx context.Context, provider remediationProv
 		for _, blocker := range liveBlockers {
 			blockedDependents[blocker]++
 		}
-		if len(liveBlockers) > 0 {
+		if sequencingOnlyRemediationWait(pr, liveBlockers) {
 			continue
 		}
 		eligible = append(eligible, pr)
 	}
 	return eligible, blockedDependents, nil
+}
+
+func sequencingOnlyRemediationWait(pr providers.PullRequestSummary, liveBlockers []int) bool {
+	return len(liveBlockers) > 0 &&
+		!hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) &&
+		pr.CheckState != providers.CheckStateFailing
 }
 
 // remediationPriorityFor classifies a single PR's remediation urgency,

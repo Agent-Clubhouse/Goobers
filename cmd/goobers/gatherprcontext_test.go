@@ -611,27 +611,26 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	}
 }
 
-func TestSequencingOnlyRemediationWait(t *testing.T) {
-	blockedVerdict := &apiv1.Verdict{
-		Decision: apiv1.VerdictNeedsChanges,
-		Findings: []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked}},
-	}
-	pr := providers.PullRequestSummary{
-		CheckState: providers.CheckStatePassing,
-	}
-	if !sequencingOnlyRemediationWait(pr, blockedVerdict) {
+func TestSequencingOnlyRemediationWaitUsesLiveState(t *testing.T) {
+	pr := providers.PullRequestSummary{CheckState: providers.CheckStatePassing}
+	if !sequencingOnlyRemediationWait(pr, []int{41}) {
 		t.Fatal("sequencing-only blocked PR was not parked")
 	}
 
 	pr.CheckState = providers.CheckStateFailing
-	if sequencingOnlyRemediationWait(pr, blockedVerdict) {
+	if sequencingOnlyRemediationWait(pr, []int{41}) {
 		t.Fatal("failing CI was treated as sequencing-only")
 	}
 
 	pr.CheckState = providers.CheckStatePassing
-	blockedVerdict.Findings = append(blockedVerdict.Findings, apiv1.Finding{Class: apiv1.FindingSubstantive})
-	if sequencingOnlyRemediationWait(pr, blockedVerdict) {
-		t.Fatal("substantive finding was treated as sequencing-only")
+	pr.Labels = []string{needsRemediationLabel}
+	if sequencingOnlyRemediationWait(pr, []int{41}) {
+		t.Fatal("live needs-remediation state was treated as sequencing-only")
+	}
+
+	pr.Labels = nil
+	if sequencingOnlyRemediationWait(pr, nil) {
+		t.Fatal("resolved blocker was treated as live sequencing")
 	}
 }
 
