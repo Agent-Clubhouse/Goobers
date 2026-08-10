@@ -738,7 +738,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	escalationSuppressedRemediation := false
 	addLabels := []string{label}
 	var removeLabels []string
-	if label == needsRemediationLabel {
+	switch label {
+	case needsRemediationLabel:
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
@@ -747,7 +748,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			addLabels = nil
 			removeLabels = []string{needsRemediationLabel}
 		}
-	} else if label == remediationEscalatedLabel {
+	case remediationEscalatedLabel:
 		removeLabels = []string{needsRemediationLabel}
 	}
 	if label == blockedOnSiblingLabel {
