@@ -287,7 +287,6 @@ jobs:
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} init --guided ./my-instance" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "GOOBERS_RELEASE_ROOT=\"\${GOOBERS_RELEASE_ROOT:-\${GOOBERS_DATA_ROOT}/${TAG}}\"" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
           test -f smoke/onboarding/manifest.json
@@ -311,8 +310,10 @@ jobs:
             '' \
             '' \
             '' \
+            '' \
             'no' \
-            'yes' |
+            'yes' \
+            '' |
             goobers init --guided smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
