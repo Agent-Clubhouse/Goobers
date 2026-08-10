@@ -15,7 +15,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/robfig/cron v1.2.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
-	github.com/yuin/goldmark v1.7.13
+	github.com/yuin/goldmark v1.8.5
 	go.opentelemetry.io/collector/pdata v1.63.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
@@ -25,11 +25,11 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0
 	go.opentelemetry.io/proto/otlp v1.11.0
 	go.temporal.io/api v1.63.4
-	go.temporal.io/sdk v1.46.0
+	go.temporal.io/sdk v1.47.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260720211330-0afa2a65878a
-	google.golang.org/grpc v1.82.1
+	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.3
@@ -43,7 +43,7 @@ require (
 )
 
 require (
-	cel.dev/expr v0.25.1 // indirect
+	cel.dev/expr v0.25.2 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 // indirect
