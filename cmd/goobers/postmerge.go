@@ -708,7 +708,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 			errs = append(errs, fmt.Errorf("persist remediation handoff on pr #%d (triage: %s): %w", pr.Number, triage.Reason, err))
 			continue
 		}
-		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel, remediationEscalatedLabel}) {
 			continue
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{

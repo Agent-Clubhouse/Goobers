@@ -747,6 +747,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			addLabels = nil
 			removeLabels = []string{needsRemediationLabel}
 		}
+	} else if label == remediationEscalatedLabel {
+		removeLabels = []string{needsRemediationLabel}
 	}
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
@@ -825,9 +827,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		ID:           strconv.Itoa(selectedNumber),
 		AddLabels:    addLabels,
 		RemoveLabels: removeLabels,
-	}
-	if oscillated {
-		update.RemoveLabels = []string{needsRemediationLabel}
 	}
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
