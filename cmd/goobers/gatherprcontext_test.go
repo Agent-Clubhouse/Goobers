@@ -611,6 +611,30 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	}
 }
 
+func TestSequencingOnlyRemediationWait(t *testing.T) {
+	blockedVerdict := &apiv1.Verdict{
+		Decision: apiv1.VerdictNeedsChanges,
+		Findings: []apiv1.Finding{{Class: apiv1.FindingCrossPRBlocked}},
+	}
+	pr := providers.PullRequestSummary{
+		CheckState: providers.CheckStatePassing,
+	}
+	if !sequencingOnlyRemediationWait(pr, blockedVerdict) {
+		t.Fatal("sequencing-only blocked PR was not parked")
+	}
+
+	pr.CheckState = providers.CheckStateFailing
+	if sequencingOnlyRemediationWait(pr, blockedVerdict) {
+		t.Fatal("failing CI was treated as sequencing-only")
+	}
+
+	pr.CheckState = providers.CheckStatePassing
+	blockedVerdict.Findings = append(blockedVerdict.Findings, apiv1.Finding{Class: apiv1.FindingSubstantive})
+	if sequencingOnlyRemediationWait(pr, blockedVerdict) {
+		t.Fatal("substantive finding was treated as sequencing-only")
+	}
+}
+
 // TestVerdictHasSubstantiveFindingForPRAppliesSeverityFloor is #941/PRR-6's
 // gate-time severity-floor coverage: a finding below the declared minSeverity
 // does not count, one at or above it does, and an unset Severity (verdicts

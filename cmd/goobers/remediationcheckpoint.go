@@ -840,6 +840,13 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	hasObservedCause := len(causes) > 0
+	if !forced && sequencingOnlyCheckpointWait(current.Labels, causes) {
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
+			return 1
+		}
+		pf(stdout, "PR #%d is blocked only on sibling sequencing — waiting without consuming remediation budget\n", selectedNumber)
+		return 0
+	}
 	var (
 		digest               string
 		structuralCollisions []structuralCollision
@@ -1326,6 +1333,13 @@ func runRemediationCheckpointADO(
 		}
 	}
 	hasObservedCause := len(causes) > 0
+	if !forced && sequencingOnlyCheckpointWait(current.Labels, causes) {
+		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
+			return 1
+		}
+		pf(stdout, "PR #%d is blocked only on sibling sequencing — waiting without consuming remediation budget\n", selectedNumber)
+		return 0
+	}
 
 	// This cycle's diff digest against the PR's base — the same-diff stall
 	// signal (§6 D5). Only on the non-forced path, and only after the stage's own
@@ -1601,6 +1615,18 @@ func exhaustedRemediationCause(attempts remediationAttempts, causes []remediatio
 		}
 	}
 	return "", false
+}
+
+func sequencingOnlyCheckpointWait(labels []string, causes []remediationCause) bool {
+	if !hasAnyLabel(labels, []string{blockedOnSiblingLabel}) {
+		return false
+	}
+	for _, cause := range causes {
+		if cause != remediationCauseSiblingOverlap {
+			return false
+		}
+	}
+	return true
 }
 
 func renderRemediationAttempts(attempts remediationAttempts) string {

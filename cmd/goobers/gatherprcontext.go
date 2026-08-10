@@ -271,6 +271,12 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
 	}
 	verdict := gatherPRVerdict(rawComments, verdictAuthor)
+	if sequencingOnlyRemediationWait(selected, verdict) {
+		return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
+			"PR #%d is blocked only on sibling sequencing — waiting without remediation",
+			selected.Number,
+		))
+	}
 
 	// Digest short-circuit (#716 design item 2): escalationStillBlocks above
 	// only excludes a PR whose LIVE goobers:merge-escalated label matches its
@@ -643,6 +649,13 @@ func gatherPRVerdict(comments []providers.Comment, author string) *apiv1.Verdict
 		}
 	}
 	return legacy
+}
+
+func sequencingOnlyRemediationWait(pr providers.PullRequestSummary, verdict *apiv1.Verdict) bool {
+	return pr.CheckState != providers.CheckStateFailing &&
+		verdict != nil &&
+		verdict.Decision == apiv1.VerdictNeedsChanges &&
+		allCrossPRBlocked(verdict.Findings)
 }
 
 // filterRemediationPullRequests applies the shared exclusion rules before

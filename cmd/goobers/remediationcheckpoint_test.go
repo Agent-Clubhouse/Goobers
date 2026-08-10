@@ -705,6 +705,71 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	}
 }
 
+func TestRemediationCheckpointWaitsForSiblingWithoutConsumingBudget(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-sibling-wait")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:            2,
+		AttemptsByCause:   remediationAttempts{SiblingOverlap: 2},
+		LastDiffDigest:    "sha256:prior",
+		HeadSHA:           headSHA,
+		BaseSHA:           baseSHA,
+		LastSeenCommentAt: "2026-08-09T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{blockedOnSiblingLabel, needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", string(remediationCauseSiblingOverlap))
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "waiting without consuming remediation budget") {
+		t.Fatalf("stdout = %q, want sequencing wait", stdout)
+	}
+	if got := readCheckpointResult(t, resultFile)["continueRemediation"]; got != "false" {
+		t.Fatalf("continueRemediation = %q, want false", got)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, sequencing-only wait must not escalate", st.labels)
+	}
+	if len(st.comments) != 1 || st.comments[0] != priorComment {
+		t.Fatalf("comments changed during sequencing-only wait: %v", st.comments)
+	}
+}
+
+func TestSequencingOnlyCheckpointWaitRequiresNoIndependentCause(t *testing.T) {
+	labels := []string{blockedOnSiblingLabel}
+	if !sequencingOnlyCheckpointWait(labels, nil) {
+		t.Fatal("blocked PR with no independent cause was not parked")
+	}
+	if !sequencingOnlyCheckpointWait(labels, []remediationCause{remediationCauseSiblingOverlap}) {
+		t.Fatal("sibling-overlap-only PR was not parked")
+	}
+	for _, cause := range []remediationCause{
+		remediationCauseConflict,
+		remediationCauseSubstantive,
+		remediationCauseFailingCI,
+		remediationCauseHumanComment,
+	} {
+		if sequencingOnlyCheckpointWait(labels, []remediationCause{remediationCauseSiblingOverlap, cause}) {
+			t.Fatalf("independent cause %q was treated as sequencing-only", cause)
+		}
+	}
+}
+
 func TestRemediationCauseBudgetsAreIndependent(t *testing.T) {
 	budgets := remediationBudgets{
 		Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2, HumanComment: 2,
