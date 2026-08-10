@@ -282,14 +282,19 @@ every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
     unsigned binary with a verified checksum is a deliberate, stated
     trade-off, not a silent omission.
   - **Authenticode upgrade path (known gap).** Removing the SmartScreen
-    warning requires signing `goobers.exe` with an Authenticode certificate —
-    ideally an **EV (Extended Validation) code-signing certificate**, which
-    earns SmartScreen reputation immediately. That is an **organizational
-    purchase and secret-custody decision** (the signing key must live in CI
-    secrets or an HSM); no such certificate is provisioned yet, so it remains
-    out of scope here and recorded as a known gap. When adopted, the upgrade
-    is: obtain the cert, add a
-    `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256` step to the
+    warning requires signing `goobers.exe` with an Authenticode-equivalent
+    signature that earns SmartScreen reputation immediately. No signing
+    credential is provisioned for this repo yet (checked directly against
+    repo and org GitHub secrets), so it remains out of scope here and
+    recorded as a known gap. The likely path when this is adopted is **Azure
+    Trusted Signing** (`azure/trusted-signing-action`, OIDC-authenticated via
+    `azure/login`) rather than a purchased EV certificate + local key
+    custody — the sibling Clubhouse desktop app already signs its Windows
+    builds this way against an existing Azure Trusted Signing account, so
+    extending that account to cover Goobers is likely cheaper and faster
+    than provisioning a separate EV certificate. Either way it's an
+    organizational credential/account decision, not a code change: add the
+    signing step to the
     [#432](https://github.com/Agent-Clubhouse/Goobers/issues/432) release
     workflow after the packaging engine emits `goobers.exe`, and update this
     section + the install guide to drop the SmartScreen note.
