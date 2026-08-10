@@ -501,6 +501,10 @@ func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHub
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkSelfHealedEscalationsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkSelfHealedEscalationsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -546,6 +550,10 @@ func unparkSelfHealedDemotions(ctx context.Context, provider *providers.GitHubPr
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkSelfHealedDemotionsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkSelfHealedDemotionsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (healed []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -593,6 +601,10 @@ func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvi
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkResolvedSiblingsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkResolvedSiblingsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue

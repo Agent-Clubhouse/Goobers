@@ -254,31 +254,45 @@ every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 
 ## Signing posture
 
-**Initial posture: documented-unsigned, checksum-verified.** Windows artifacts
-ship **without an Authenticode signature** at first. The integrity guarantee is
-the SHA-256 in `SHA256SUMS`, which users verify before running.
+- **macOS: Developer ID signed and notarized.** The `sign-macos` job in
+  [`release.yml`](../../.github/workflows/release.yml) imports a Developer ID
+  Application certificate, signs each darwin binary
+  (`codesign --options runtime --timestamp`), and submits it to Apple's notary
+  service (`xcrun notarytool submit --wait`) before the archive is published.
+  This is **online-only** notarization: `stapler staple` only applies to
+  `.app`/`.pkg`/`.dmg` bundles, not a bare Mach-O executable, so no
+  notarization ticket is stapled to `goobers` itself. Gatekeeper's online
+  ticket check is gated on the `com.apple.quarantine` extended attribute,
+  which browser downloads set and the documented curl-pipe `install.sh` path
+  does not — so the documented install path never triggers a Gatekeeper
+  block either way, and a user who manually downloads the tar.gz from the
+  Releases page gets the full online-verified benefit of signing. A stapled
+  `.pkg`/`.dmg` installer (for fully offline Gatekeeper coverage) is a
+  distinct-scope follow-up, not built here.
 
-- **SmartScreen expectation.** Running an unsigned executable triggers a Windows
-  SmartScreen warning ("Windows protected your PC") on first launch. This is
-  **expected and documented**, not a defect — the
-  [install guide](quickstart-windows.md#3-extract--place-on-path) tells users to
-  verify the checksum first and then *More info → Run anyway*. An unsigned binary
-  with a verified checksum is a deliberate, stated trade-off, not a silent
-  omission.
-- **Authenticode upgrade path (known gap).** Removing the SmartScreen warning
-  requires signing `goobers.exe` with an Authenticode certificate — ideally an
-  **EV (Extended Validation) code-signing certificate**, which earns SmartScreen
-  reputation immediately. That is an **organizational purchase and secret-custody
-  decision** (the signing key must live in CI secrets or an HSM), so it is out of
-  scope here and recorded as a known gap. When adopted, the upgrade is: obtain the
-  cert, add a `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256` step to
-  the [#432](https://github.com/Agent-Clubhouse/Goobers/issues/432) release
-  workflow after the packaging engine emits `goobers.exe`, and update this section
-  + the install guide to drop the SmartScreen note.
+- **Windows: still unsigned (known gap).** Windows artifacts ship
+  **without an Authenticode signature.** The integrity guarantee is the
+  SHA-256 in `SHA256SUMS`, which users verify before running.
 
-macOS notarization is the analogous gap on that platform; it is tracked with the
-same "documented-unsigned first" posture wherever the macOS release story is
-written.
+  - **SmartScreen expectation.** Running an unsigned executable triggers a
+    Windows SmartScreen warning ("Windows protected your PC") on first
+    launch. This is **expected and documented**, not a defect — the
+    [install guide](quickstart-windows.md#3-extract--place-on-path) tells
+    users to verify the checksum first and then *More info → Run anyway*. An
+    unsigned binary with a verified checksum is a deliberate, stated
+    trade-off, not a silent omission.
+  - **Authenticode upgrade path (known gap).** Removing the SmartScreen
+    warning requires signing `goobers.exe` with an Authenticode certificate —
+    ideally an **EV (Extended Validation) code-signing certificate**, which
+    earns SmartScreen reputation immediately. That is an **organizational
+    purchase and secret-custody decision** (the signing key must live in CI
+    secrets or an HSM); no such certificate is provisioned yet, so it remains
+    out of scope here and recorded as a known gap. When adopted, the upgrade
+    is: obtain the cert, add a
+    `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256` step to the
+    [#432](https://github.com/Agent-Clubhouse/Goobers/issues/432) release
+    workflow after the packaging engine emits `goobers.exe`, and update this
+    section + the install guide to drop the SmartScreen note.
 
 ## Distribution channels (scoop / winget)
 

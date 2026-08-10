@@ -173,13 +173,26 @@ goobers validate C:\goobers\my-instance
 GNU Make is not installed by default on Windows, and Goobers does not require
 or auto-install it (bring-your-own runner). A gaggle's `ciCommand`
 (`GaggleSpec.CICommand`) overrides the `local-ci` stage's default `["make",
-"ci"]`, so point it at a make-free command your project actually has —
+"ci"]`, so point it at a make-free command your project actually has.
+
+`ciCommand` is a field on the Gaggle resource, not a standalone file — edit
+the `spec:` block of the gaggle you generated during guided init, at
+`config\gaggles\<your-gaggle>\gaggle.yaml` under your instance root (e.g.
+`C:\goobers\my-instance\config\gaggles\my-app\gaggle.yaml`). Add `ciCommand`
+as a sibling of the gaggle's other `spec` fields (`project`, `backlog`,
+`isolation`, ...), indented two spaces under `spec:` like the rest of them —
 e.g. for a Go project:
 
 ```yaml
-gaggles:
-  - name: my-app
-    ciCommand: ["go", "test", "./..."]
+spec:
+  # ...project, backlog, isolation, and any other fields already here stay as generated...
+  ciCommand: ["go", "test", "./..."]
+```
+
+Then re-validate:
+
+```powershell
+goobers validate C:\goobers\my-instance
 ```
 
 Before any run executes, Goobers resolves `ciCommand`'s first token through

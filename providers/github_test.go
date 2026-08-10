@@ -1662,6 +1662,41 @@ func TestGitHubProviderListPullRequestsSkipCheckState(t *testing.T) {
 	}
 }
 
+func TestGitHubProviderListPullRequestsLimitsRawCandidateWindow(t *testing.T) {
+	var calls int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("per_page"); got != "1" {
+			t.Fatalf("per_page = %q, want 1", got)
+		}
+		if calls > 1 {
+			t.Fatal("bounded pull request list followed the next-page link")
+		}
+		w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=1>; rel=\"next\"")
+		writeJSON(t, w, []map[string]interface{}{{
+			"number": 10,
+			"head":   map[string]interface{}{"ref": "human/manual-fix"},
+			"base":   map[string]interface{}{"ref": "main"},
+		}})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		HeadPrefix:     "goobers/",
+		Limit:          1,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests: %v", err)
+	}
+	if len(out) != 0 || calls != 1 {
+		t.Fatalf("out = %+v, calls = %d; want one raw candidate inspected", out, calls)
+	}
+}
+
 func TestGitHubProviderListRecentlyClosedPullRequests(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.Add(-31 * 24 * time.Hour)
