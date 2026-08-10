@@ -1,0 +1,99 @@
+name: Scratch — macOS sign/notarize smoketest
+
+# Temporary validation rig for the Apple Developer ID credentials the
+# sign-macos job in release.yml depends on. Manually triggered only. Signs
+# and notarizes a real cmd/goobers binary (not a throwaway stand-in) so it
+# exercises the exact codesign/notarytool path release.yml uses, without
+# needing a full tagged build first. Delete this file once the credentials
+# are confirmed working — it's a one-time diagnostic, not something that
+# ships.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoketest:
+    name: Sign and notarize a real goobers binary
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build a real goobers binary (arm64)
+        run: |
+          set -euo pipefail
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o goobers ./cmd/goobers
+          chmod 755 goobers
+          file goobers
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/apple-cert.p12"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 1800 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Discover signing identity
+        run: |
+          set -euo pipefail
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" \
+            | head -n 1 \
+            | sed -E 's/.*"(.+)"/\1/')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "Found identity: $IDENTITY"
+          echo "IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp \
+            --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" goobers
+          codesign --verify --deep --strict --verbose=2 goobers
+          codesign -dvv goobers
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent goobers goobers-notarize.zip
+          xcrun notarytool submit goobers-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 20m
+
+      - name: Clean up signing keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true

@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,8 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish ${{ github.ref_name }}
+  build:
+    name: Build release artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -84,6 +85,161 @@ jobs:
             -date "$date" \
             -output dist \
             "${baseline[@]}"
+
+      - name: Upload unsigned artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-unsigned
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  sign-macos:
+    name: Sign and notarize macOS binaries
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-unsigned
+          path: dist
+
+      # Bare-file executable bits (install.sh) aren't guaranteed to survive an
+      # upload/download round-trip; the binaries inside the tar/zip archives
+      # carry their own mode as archive metadata and are unaffected.
+      - name: Restore executable bits
+        run: chmod -R a+x dist
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/apple-cert.p12"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 1800 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Discover signing identity
+        run: |
+          set -euo pipefail
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" \
+            | head -n 1 \
+            | sed -E 's/.*"(.+)"/\1/')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Signs the raw binary inside each darwin archive, submits it for
+      # notarization, and re-packages the archive under the same name.
+      # Stapling doesn't apply here: `stapler staple` only works on
+      # .app/.pkg/.dmg bundles, not a bare Mach-O executable, so this is
+      # online-only notarization (see docs/guides/releases.md).
+      - name: Sign and notarize darwin binaries
+        env:
+          TAG: ${{ github.ref_name }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for ARCH in amd64 arm64; do
+            ARCHIVE="dist/goobers_${TAG}_darwin_${ARCH}.tar.gz"
+            WORKDIR="$RUNNER_TEMP/darwin-${ARCH}"
+            mkdir -p "$WORKDIR"
+            tar -xzf "$ARCHIVE" -C "$WORKDIR"
+            chmod 755 "$WORKDIR/goobers"
+
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" \
+              "$WORKDIR/goobers"
+            codesign --verify --deep --strict "$WORKDIR/goobers"
+
+            NOTARIZE_ZIP="$RUNNER_TEMP/goobers-notarize-${ARCH}.zip"
+            ditto -c -k --keepParent "$WORKDIR/goobers" "$NOTARIZE_ZIP"
+            xcrun notarytool submit "$NOTARIZE_ZIP" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 20m
+
+            rm -f "$ARCHIVE"
+            tar -czf "$ARCHIVE" -C "$WORKDIR" $(ls -A "$WORKDIR")
+            rm -rf "$WORKDIR" "$NOTARIZE_ZIP"
+          done
+
+      # sha256sum isn't guaranteed on the macOS runner image (GNU coreutils);
+      # shasum always ships. Same "<hex>  <filename>" format as
+      # release/pack.go's checksumsManifest, so the later `sha256sum --check`
+      # on a Linux runner still verifies.
+      - name: Recompute SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          files="$(awk '{print $2}' SHA256SUMS)"
+          : > SHA256SUMS.new
+          for f in $files; do
+            shasum -a 256 "$f" >> SHA256SUMS.new
+          done
+          sort SHA256SUMS.new -o SHA256SUMS
+          rm SHA256SUMS.new
+
+      - name: Clean up signing keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-signed
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  verify-and-publish:
+    name: Verify and publish ${{ github.ref_name }}
+    needs: sign-macos
+    runs-on: ubuntu-latest
+    steps:
+      # "Generate release notes" below shells out to real git commands for
+      # changelog history, so this job needs its own checkout (the previous
+      # single-job design got this for free; a download-artifact-only
+      # workspace has no .git at all).
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-signed
+          path: dist
+
+      - name: Restore executable bits
+        run: chmod -R a+x dist
 
       - name: Generate release notes
         env:
