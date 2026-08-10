@@ -131,10 +131,15 @@ func TestReconcilePostMergeLeavesUnmergedPullRequestPending(t *testing.T) {
 }
 
 func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) {
-	const pullNumber = 631
+	const (
+		pullNumber  = 631
+		beyondLimit = 632
+	)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(pullNumber, "self-healed pr", remediationEscalatedLabel)
 	server.addOpenPR(pullNumber, "goobers/implementation/healed", "main", "new-head", "base", false, []string{remediationEscalatedLabel}, nil)
+	server.addIssue(beyondLimit, "self-healed pr beyond limit", remediationEscalatedLabel)
+	server.addOpenPR(beyondLimit, "goobers/implementation/healed-later", "main", "newer-head", "base", false, []string{remediationEscalatedLabel}, nil)
 	comment, err := remediationStateComment(remediationState{
 		Escalated: true, EscalatedHeadSHA: "old-head", EscalatedBaseSHA: "base",
 	})
@@ -142,21 +147,29 @@ func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) 
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 	server.addComment(pullNumber, comment)
+	server.addComment(beyondLimit, comment)
 	server.setBranchTip("main", "base")
 
 	root := postMergeReconcileEnv(t, server.server.URL)
-	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", "--max", "1", root)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	server.mu.Lock()
 	labels := append([]string(nil), server.issues[pullNumber].labels...)
+	beyondLimitLabels := append([]string(nil), server.issues[beyondLimit].labels...)
 	server.mu.Unlock()
 	if hasAnyLabel(labels, []string{remediationEscalatedLabel}) {
 		t.Fatalf("labels = %v, want %s cleared on a cycle with no merge", labels, remediationEscalatedLabel)
 	}
+	if !hasAnyLabel(beyondLimitLabels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels beyond limit = %v, want %s preserved", beyondLimitLabels, remediationEscalatedLabel)
+	}
 	if !strings.Contains(stdout, "un-escalated 1 self-healed pr(s)") {
 		t.Fatalf("stdout = %q, want independent unpark report", stdout)
+	}
+	if requests := server.pullListRequestCount(); requests != 1 {
+		t.Fatalf("pull-list requests = %d, want one shared bounded scan", requests)
 	}
 }
 

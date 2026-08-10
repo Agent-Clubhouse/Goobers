@@ -140,7 +140,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, providerInput("base", providerBaseBranch()), stdout, stderr)
+	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
@@ -163,14 +163,43 @@ func reconcileOpenPullRequestParks(
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	base string,
+	limit int,
 	stdout, stderr io.Writer,
 ) []error {
-	resolved, resolvedErrs := unparkResolvedSiblings(ctx, provider, repo, 0, base, stderr)
-	escalated, escalationErrs := unparkSelfHealedEscalations(ctx, provider, repo, 0, base, stderr)
-	demoted, demotionErrs := unparkSelfHealedDemotions(ctx, provider, repo, 0, base, stderr)
+	if base == "" {
+		return nil
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, Limit: limit, SkipCheckState: true,
+	})
+	if err != nil {
+		return []error{fmt.Errorf("list bounded open pull requests targeting %s for park reconciliation: %w", base, err)}
+	}
+	namespace := providerBranchNamespace()
+	namespaced := filterPullRequestsByHeadPrefix(others, namespace)
+	demotedCandidates := filterPullRequestsByHeadPrefix(others, "goobers/")
+	resolved, resolvedErrs := unparkResolvedSiblingsFrom(
+		ctx, provider, repo, 0, namespaced, stderr,
+	)
+	escalated, escalationErrs := unparkSelfHealedEscalationsFrom(
+		ctx, provider, repo, 0, namespaced, stderr,
+	)
+	demoted, demotionErrs := unparkSelfHealedDemotionsFrom(
+		ctx, provider, repo, 0, demotedCandidates, stderr,
+	)
 	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s)\n",
 		len(resolved), len(escalated), len(demoted))
 	return append(append(resolvedErrs, escalationErrs...), demotionErrs...)
+}
+
+func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix string) []providers.PullRequestSummary {
+	filtered := make([]providers.PullRequestSummary, 0, len(prs))
+	for _, pr := range prs {
+		if strings.HasPrefix(pr.Head, prefix) {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
 }
 
 func reconcilePostMerges(

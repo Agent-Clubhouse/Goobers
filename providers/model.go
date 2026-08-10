@@ -805,6 +805,9 @@ type ListPullRequestsRequest struct {
 	Author            string `json:"author,omitempty"`
 	Assignee          string `json:"assignee,omitempty"`
 	RequestedReviewer string `json:"requestedReviewer,omitempty"`
+	// Limit caps the raw provider records inspected before client-side filters.
+	// Zero preserves the exhaustive-list behavior.
+	Limit int `json:"limit,omitempty"`
 	// SkipCheckState leaves each summary's CheckState empty instead of
 	// resolving it per candidate — resolving costs two extra API requests
 	// per PR (combined status + check-runs), which dominates the list's
