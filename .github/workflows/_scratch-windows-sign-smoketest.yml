@@ -1,0 +1,79 @@
+name: Scratch — Windows Azure Trusted Signing smoketest
+
+# Temporary validation rig for the Azure Trusted Signing credentials the
+# sign-windows job in release.yml depends on. Manually triggered only. Builds
+# a real cmd/goobers.exe and signs it via the exact azure/login +
+# azure/trusted-signing-action path release.yml will use, against the
+# existing clubhouse-win-codesign certificate profile (shared with the
+# sibling Clubhouse product — same publisher identity, no new Azure
+# resources). Delete this file once the credentials are confirmed working —
+# it's a one-time diagnostic, not something that ships.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoketest:
+    name: Sign a real goobers.exe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build a real goobers.exe (windows/amd64)
+        run: |
+          set -euo pipefail
+          mkdir winsign
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o winsign/goobers.exe ./cmd/goobers
+          ls -la winsign
+
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign goobers.exe
+        uses: azure/trusted-signing-action@v1
+        with:
+          endpoint: https://wus2.codesigning.azure.net/
+          trusted-signing-account-name: Clubhouse-Win-Signing
+          certificate-profile-name: clubhouse-win-codesign
+          files-folder: winsign
+          files-folder-filter: exe
+          files-folder-depth: 1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Confirm signature was applied
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import struct
+          with open("winsign/goobers.exe", "rb") as f:
+              data = f.read()
+          # A signed PE has an Authenticode certificate table entry
+          # (IMAGE_DIRECTORY_ENTRY_SECURITY, index 4) with non-zero size.
+          pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+          opt_header_offset = pe_offset + 24
+          magic = struct.unpack_from("<H", data, opt_header_offset)[0]
+          is_pe32_plus = magic == 0x20B
+          data_dir_offset = opt_header_offset + (112 if is_pe32_plus else 96)
+          sec_entry_offset = data_dir_offset + 4 * 8
+          sec_size = struct.unpack_from("<I", data, sec_entry_offset + 4)[0]
+          if sec_size == 0:
+              raise SystemExit("no Authenticode signature found in goobers.exe")
+          print(f"Authenticode certificate table present, size={sec_size} bytes")
+          PY
