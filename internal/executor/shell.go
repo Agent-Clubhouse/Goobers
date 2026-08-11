@@ -744,6 +744,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
+	if excerpt := stderrFailureExcerpt(errBytes); excerpt != "" {
+		result.Error.Message += "; stderr: " + excerpt
+	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
 }
@@ -922,6 +925,22 @@ func stderrExcerpt(errBytes []byte) string {
 		s += "…"
 	}
 	return s
+}
+
+// Generic command failures keep both ends: runtimes may print the cause before
+// a long stack dump, while tools conventionally print terminal causes last.
+func stderrFailureExcerpt(errBytes []byte) string {
+	if len(errBytes) == 0 {
+		return ""
+	}
+	if len(errBytes) <= missingResultFileStderrExcerptBytes {
+		return strings.TrimSpace(string(errBytes))
+	}
+	headBytes := missingResultFileStderrExcerptBytes / 2
+	tailBytes := missingResultFileStderrExcerptBytes - headBytes
+	head := strings.TrimSpace(string(errBytes[:headBytes]))
+	tail := strings.TrimSpace(string(errBytes[len(errBytes)-tailBytes:]))
+	return head + "…" + tail
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {

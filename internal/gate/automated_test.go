@@ -53,7 +53,31 @@ func TestFailureClass(t *testing.T) {
 			name: "business failure",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
-				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit"},
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestWidget failed"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "golangci lock contention",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 3; stderr: Parallel golangci-lint is running"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "process resource contention",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "fork/exec test binary: resource temporarily unavailable"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "typed business failure with contention words",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "validation_failed", Message: "resource temporarily unavailable"},
 			},
 			want: OutcomeFail,
 		},
@@ -66,8 +90,9 @@ func TestFailureClass(t *testing.T) {
 			}
 			if tc.result.Error != nil {
 				if inputs[InputKeyErrorCode] != tc.result.Error.Code ||
+					inputs[InputKeyErrorMessage] != tc.result.Error.Message ||
 					inputs[InputKeyErrorRetryable] != tc.result.Error.Retryable {
-					t.Fatalf("error inputs = %v, want code=%q retryable=%t", inputs, tc.result.Error.Code, tc.result.Error.Retryable)
+					t.Fatalf("error inputs = %v, want code=%q message=%q retryable=%t", inputs, tc.result.Error.Code, tc.result.Error.Message, tc.result.Error.Retryable)
 				}
 			}
 		})
