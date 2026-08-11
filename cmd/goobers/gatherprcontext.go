@@ -284,17 +284,74 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// spending a cycle (worktree provision, checkout, potential agentic
 	// work) reproducing the exact escalation remediation-checkpoint already
 	// recorded.
-	if remState, _, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
+	if remState, priorCommentID, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
 		digest, derr := diffDigest(".", selected.BaseSHA)
 		if derr != nil {
 			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)
 			return 1
 		}
 		if digest == remState.LastDiffDigest {
-			return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
-				"PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle",
-				selected.Number, digest,
-			))
+			l := layoutFor(root)
+			signature := remediationNoopSignature{HeadSHA: selected.HeadSHA, DiffDigest: digest}
+			record, operatorReset, err := recordGatherPRContextDigestNoop(
+				l, selected.Number, signature, os.Getenv("GOOBERS_RUN_ID"),
+				hasAnyLabel(selected.Labels, []string{remediationEscalatedLabel}),
+			)
+			if err != nil {
+				pf(stderr, "error: record unchanged remediation digest for PR #%d: %v\n", selected.Number, err)
+				return 1
+			}
+			if operatorReset {
+				pf(stdout, "PR #%d: escalation cleared by an operator — bypassing the unchanged-digest guard for a fresh remediation attempt\n", selected.Number)
+			} else if record.Attempts >= remediationNoopLimit {
+				liveBaseTip, err := provider.BranchTipSHA(ctx, repo, selected.Base)
+				if err != nil {
+					return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", selected.Base, selected.Number), err, remediationBriefResultFile)
+				}
+				reason := fmt.Sprintf(
+					"gather-pr-context observed the unchanged diff digest %s in %d consecutive runs, so remediation cannot make progress",
+					digest, record.Attempts,
+				)
+				generation := nextEscalationGeneration(remState, selected.HeadSHA)
+				remState.Cycles++
+				remState.LastDiffDigest = digest
+				remState.HeadSHA = selected.HeadSHA
+				remState.BaseSHA = selected.BaseSHA
+				remState.Escalated = true
+				remState.EscalatedReason = reason
+				remState.EscalationOutcome = remediationOutcomeDidNotConverge
+				remState.RemediationAttempted = false
+				remState.AttemptedCauses = nil
+				remState.EscalatedHeadSHA = selected.HeadSHA
+				remState.EscalatedBaseSHA = liveBaseTip
+				remState.EscalationCauses = nil
+				remState.EscalationGeneration = generation
+				if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+					Repository:   repo,
+					ID:           strconv.Itoa(selected.Number),
+					AddLabels:    []string{remediationEscalatedLabel},
+					RemoveLabels: []string{needsRemediationLabel},
+				}); err != nil {
+					return failProviderStage(stderr, fmt.Sprintf("park unchanged-digest PR #%d", selected.Number), err, remediationBriefResultFile)
+				}
+				if err := postOrRecreateRemediationComment(ctx, provider, repo, selected.Number, priorCommentID, renderRemediationComment(remState)); err != nil {
+					return failProviderStage(stderr, fmt.Sprintf("record unchanged-digest escalation on PR #%d", selected.Number), err, remediationBriefResultFile)
+				}
+				gaggle := l.Gaggle()
+				if gaggle == "" {
+					gaggle = providerGaggle()
+				}
+				if err := markRemediationNoopParked(l, remediationNoopKey(gaggle, selected.Number)); err != nil {
+					pf(stderr, "error: mark unchanged-digest PR #%d parked: %v\n", selected.Number, err)
+					return 1
+				}
+				return writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", selected.Number, record.Attempts))
+			} else {
+				return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
+					"PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle",
+					selected.Number, digest,
+				))
+			}
 		}
 	}
 
