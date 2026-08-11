@@ -82,6 +82,13 @@ type RunRequest struct {
 	MCPServers []apiv1.MCPServer
 	// Tools is the goober's default-deny tool allowlist.
 	Tools []string
+	// GoobersIORegistered reports that this adapter has actually wired the
+	// goobers-io MCP server for this run (set by the adapter's own
+	// withAutoGoobersIO*-equivalent before the prompt is rendered). The
+	// prompt's "## goobers-io tools" section is gated on this, not on
+	// eligibility alone (#2774) — an adapter that never registers the server
+	// must never instruct the model to call tools that don't exist there.
+	GoobersIORegistered bool
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.

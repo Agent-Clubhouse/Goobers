@@ -1,15 +1,18 @@
 // Package mcpio implements the "goobers-io" MCP server: a generic,
 // workflow-agnostic replacement for the file-write step of an agentic
 // stage's completion contract. A goober calls publish_output instead of
-// writing a file with a generic editing tool — see #2406. The harness
-// (internal/harness's copilot_mcp_io.go) writes this server's Config to a
-// workspace-relative path before invocation, then registers it via
-// Copilot's --additional-mcp-config with that path passed to the spawned
-// process as --config — deliberately not $COPILOT_HOME-relative, so this
-// works whether or not the invocation has Copilot's stored-login auth or
-// any other MCP server configured (a prior COPILOT_HOME-relative design
-// broke both). This package only ever reads the config file it's told
-// about; it never talks to the journal or the runner directly.
+// writing a file with a generic editing tool — see #2406. Each harness
+// adapter (internal/harness's copilot_mcp_io.go for Copilot,
+// claude_mcp_io.go for claude-code — #2774) writes this server's Config to a
+// workspace-relative path before invocation, then registers it with its own
+// CLI's MCP flag (Copilot's --additional-mcp-config, claude-code's
+// --mcp-config) with that path passed to the spawned process as --config —
+// deliberately not tied to any adapter-specific config-home directory, so
+// this works whether or not the invocation has stored-login auth or any
+// other MCP server configured (a prior COPILOT_HOME-relative design broke
+// both, for Copilot). This package only ever reads the config file it's
+// told about; it never talks to the journal or the runner directly, and has
+// no awareness of which adapter is driving it.
 package mcpio
 
 import (
