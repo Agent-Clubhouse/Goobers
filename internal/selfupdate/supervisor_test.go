@@ -64,29 +64,24 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := &fakeLauncher{started: make(chan *fakeProcess, 3)}
+	launcher.hook = func(call int) error {
+		if call == 2 {
+			return os.Chtimes(lockPath, now.Add(time.Second), now.Add(time.Second))
+		}
+		return nil
+	}
 	cancel, done := startSupervisor(root, launcher, fakeEscalator{make(chan Request, 1)})
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
-	stopped := false
-	t.Cleanup(func() {
-		if !stopped {
-			stopSupervisor(t, root, cancel, candidate, done)
-		}
-	})
-	heartbeat := now
-	var heartbeatErr error
+	time.Sleep(30 * time.Millisecond) // Intentional age gap distinguishes stale and current lock timestamps.
+	if err := os.Chtimes(lockPath, now.Add(2*time.Second), now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, func() bool {
-		heartbeat = heartbeat.Add(time.Second)
-		if heartbeatErr = os.Chtimes(lockPath, heartbeat, heartbeat); heartbeatErr != nil {
-			return true
-		}
 		_, err := os.Stat(requestPath(root))
 		return errors.Is(err, os.ErrNotExist)
 	})
-	if heartbeatErr != nil {
-		t.Fatal(heartbeatErr)
-	}
 	if got, _ := os.ReadFile(currentBinary(root, "linux")); string(got) != "candidate" {
 		t.Fatalf("current binary = %q", got)
 	}
@@ -94,7 +89,6 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 		t.Fatalf("previous binary = %q", got)
 	}
 	stopSupervisor(t, root, cancel, candidate, done)
-	stopped = true
 }
 
 func TestSupervisorRollsBackAndEscalatesBrokenCandidate(t *testing.T) {
