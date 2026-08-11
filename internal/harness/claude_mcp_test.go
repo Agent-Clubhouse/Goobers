@@ -204,6 +204,7 @@ func TestPrepareClaudeMCPRefusesToTraverseAWorkspaceSymlink(t *testing.T) {
 // --mcp-config values), --strict-mcp-config appears exactly once, and the
 // resolved credential lands in the subprocess environment.
 func TestClaudeAdapterRunCombinesDeclaredMCPServersWithGoobersIO(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0},
