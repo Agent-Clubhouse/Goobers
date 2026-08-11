@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/version"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
@@ -452,6 +453,19 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 	}
 
 	pln(stdout, "")
+	pln(stdout, "Agent harness: every generated agentic goober uses the same one.")
+	pln(stdout, "  1) copilot      GitHub Copilot CLI")
+	pln(stdout, "  2) claude-code  Anthropic Claude Code CLI")
+	harnessText, err := p.ask("Select harness (name or number)", "copilot", validHarnessSelection)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+	harness, err := parseHarnessSelection(harnessText)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+
+	pln(stdout, "")
 	pln(stdout, "Create separate fine-grained, least-privilege PATs; never paste their values here.")
 	pln(stdout, "  Create: https://github.com/settings/personal-access-tokens/new")
 	pf(stdout, "  Scopes: %s\n", documentationURL("docs/guides/github-token-scopes.md"))
@@ -492,13 +506,26 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		}
 	}
 
-	pln(stdout, "Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.")
-	pln(stdout, "For a headless service/CI account, enter an environment variable holding a Copilot Requests: Read-only PAT.")
-	copilotTokenEnv, err := p.ask("Optional Copilot Requests PAT environment variable", "", func(value string) bool {
-		return value == "" || instance.ValidGuidedTokenEnvName(value)
-	})
-	if err != nil {
-		return instance.GuidedOptions{}, err
+	var copilotTokenEnv, claudeTokenEnv string
+	switch apiv1.Harness(harness) {
+	case apiv1.HarnessClaudeCode:
+		pln(stdout, "Claude Code model auth: press Enter to use the current user's stored `claude auth login` sign-in.")
+		pln(stdout, "For a headless service/CI account, enter an environment variable holding an Anthropic API key or OAuth token.")
+		claudeTokenEnv, err = p.ask("Optional Claude Code token environment variable", "", func(value string) bool {
+			return value == "" || instance.ValidGuidedTokenEnvName(value)
+		})
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
+	default:
+		pln(stdout, "Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.")
+		pln(stdout, "For a headless service/CI account, enter an environment variable holding a Copilot Requests: Read-only PAT.")
+		copilotTokenEnv, err = p.ask("Optional Copilot Requests PAT environment variable", "", func(value string) bool {
+			return value == "" || instance.ValidGuidedTokenEnvName(value)
+		})
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
 	}
 
 	return instance.GuidedOptions{
@@ -511,7 +538,9 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		WorkTrackingTokenEnv: workTrackingTokenEnv,
 		PullRequestTokenEnv:  pullRequestTokenEnv,
 		RepoPushTokenEnv:     repoPushTokenEnv,
+		Harness:              harness,
 		CopilotTokenEnv:      copilotTokenEnv,
+		ClaudeTokenEnv:       claudeTokenEnv,
 		Workflows:            workflows,
 		CICommand:            ciCommand,
 		RequiredCapabilities: requiredCapabilities,
@@ -586,6 +615,22 @@ func validBranch(value string) bool {
 		}
 	}
 	return true
+}
+
+func validHarnessSelection(value string) bool {
+	_, err := parseHarnessSelection(value)
+	return err == nil
+}
+
+func parseHarnessSelection(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "copilot":
+		return string(apiv1.HarnessCopilot), nil
+	case "2", "claude-code", "claude":
+		return string(apiv1.HarnessClaudeCode), nil
+	default:
+		return "", fmt.Errorf("invalid harness selection %q", value)
+	}
 }
 
 func validWorkflowSelection(value string) bool {
