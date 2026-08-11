@@ -6,7 +6,9 @@ name: Scratch — Windows Azure Trusted Signing smoketest
 # azure/trusted-signing-action path release.yml will use, against the
 # existing clubhouse-win-codesign certificate profile (shared with the
 # sibling Clubhouse product — same publisher identity, no new Azure
-# resources). Delete this file once the credentials are confirmed working —
+# resources). azure/trusted-signing-action requires a Windows runner (it
+# invokes the Windows SDK signing client locally; only the private key stays
+# in Azure). Delete this file once the credentials are confirmed working —
 # it's a one-time diagnostic, not something that ships.
 
 on:
@@ -19,7 +21,7 @@ permissions:
 jobs:
   smoketest:
     name: Sign a real goobers.exe
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -30,7 +32,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Explicit bash: the Windows runner defaults to PowerShell.
       - name: Build a real goobers.exe (windows/amd64)
+        shell: bash
         run: |
           set -euo pipefail
           mkdir winsign
@@ -59,21 +63,10 @@ jobs:
 
       - name: Confirm signature was applied
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import struct
-          with open("winsign/goobers.exe", "rb") as f:
-              data = f.read()
-          # A signed PE has an Authenticode certificate table entry
-          # (IMAGE_DIRECTORY_ENTRY_SECURITY, index 4) with non-zero size.
-          pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
-          opt_header_offset = pe_offset + 24
-          magic = struct.unpack_from("<H", data, opt_header_offset)[0]
-          is_pe32_plus = magic == 0x20B
-          data_dir_offset = opt_header_offset + (112 if is_pe32_plus else 96)
-          sec_entry_offset = data_dir_offset + 4 * 8
-          sec_size = struct.unpack_from("<I", data, sec_entry_offset + 4)[0]
-          if sec_size == 0:
-              raise SystemExit("no Authenticode signature found in goobers.exe")
-          print(f"Authenticode certificate table present, size={sec_size} bytes")
-          PY
+          $sig = Get-AuthenticodeSignature -FilePath winsign\goobers.exe
+          Write-Host "Status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Error "Authenticode signature status is not Valid: $($sig.Status) ($($sig.StatusMessage))"
+            exit 1
+          }
