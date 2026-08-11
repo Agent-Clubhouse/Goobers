@@ -361,6 +361,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "gate-noise"}, desc: "Aggregate to detect"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
 		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},
 	"docs-churn": {
