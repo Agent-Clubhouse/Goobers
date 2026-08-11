@@ -225,8 +225,28 @@ func (r *claudeSequenceRunner) Run(_ context.Context, req ProcessRequest) (Proce
 	return result, nil
 }
 
+// stubClaudeCredentialsHome points HOME at a fresh directory seeded with a
+// stored credential, so an unsandboxed Run's unconditional credential-seeding
+// finds a file to copy instead of falling through to the real macOS
+// Keychain — the fallback that TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing
+// exercises deliberately, but that other tests must not hit incidentally.
+func stubClaudeCredentialsHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	credentialDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialDir, ".credentials.json"), []byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
 	const limit = 512
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	raw := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -267,6 +287,7 @@ func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T)
 }
 
 func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	raw := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -305,6 +326,7 @@ func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing
 
 func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
 	const limit = 4096
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	recovery := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -361,6 +383,7 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 }
 
 func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	for _, tc := range []struct {
 		name           string
 		mode           Mode
@@ -451,6 +474,7 @@ func commandPromptValue(command []string) string {
 }
 
 func TestClaudeAdapterFailsClosedWhenRecoveryOmitsCompletion(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &claudeSequenceRunner{
 		results: []ProcessResult{
