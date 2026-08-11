@@ -535,6 +535,28 @@ jobs:
   # than quarantined — #664's quarantine machinery doesn't exist in this repo
   # yet, and per its own scope note explicitly excludes required-gate jobs
   # like this one regardless. The contract stands restored, not weakened.
+  #
+  # COVERAGE BOUNDARY (#2031) — this job runs a curated selection, NOT
+  # `go test ./...`, and that is a deliberate, measured choice rather than an
+  # accident of history. #2031 offered two ways to close the "what isn't
+  # tested on Windows?" gap: widen to the full default-tag suite accepting the
+  # runtime cost, or enumerate the excluded set as a reviewed artifact. The
+  # widening was built and measured first (PR #2364) and rejected on cost:
+  # the full suite could not finish inside 30min-per-package, with
+  # ./cmd/goobers and ./internal/runner both dying on `panic: test timed out
+  # after 30m0s` and the job still red at 43min — against a historic median of
+  # ~10min for this gate. Cost is concentrated in four packages (cmd/goobers
+  # >30min, internal/runner >30min, test/shippedworkflows ~22min, test/scale
+  # ~22min); nearly everything else is seconds. Sharding does not rescue it,
+  # because the critical path is a single package that alone exceeds the
+  # budget. So: packages that are cheap on Windows run WHOLE, and the four
+  # expensive ones are entered by named test only, each name justified inline
+  # below by the platform seam it covers. The widening run was not wasted —
+  # every Windows fault it surfaced is fixed, and the tests covering those
+  # fixes are what the selection below was extended to include. The remaining
+  # obligation from #2031 — a build-tag-policed inventory of what Windows
+  # still does not run, so the gap stays a reviewed artifact instead of an
+  # accident — is tracked separately in #2791.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
     if: ${{ github.event_name != 'push' }}
@@ -596,11 +618,29 @@ jobs:
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
+      # Both packages run whole rather than by named test: each costs well
+      # under a second on Windows, so a name allowlist here buys no runtime
+      # and only creates a way for a new test to silently miss the platform.
+      # #2031 widened these from single -run selections after the executor's
+      # cmd.exe batch-file routing (script_windows.go) turned out to be
+      # exercised by no gated test at all.
       - name: Windows inline script runtime
-        run: go test ./internal/executor -run '^TestShellExecutor_RunScript$'
+        run: go test ./internal/executor
 
       - name: Windows credential files
-        run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
+        run: go test ./internal/credentials
+
+      # Each of these is a real Windows fault fixed under #2031 whose only
+      # coverage lives in an existing test that no gated selection ran:
+      # harness/claude.go let an ambient USERPROFILE override an explicitly
+      # set HOME; agentkit/bundle.go trusted the OS's reported executable bit,
+      # which neither embed.FS nor NTFS can express, so the embedded and
+      # from-disk toolkit builders diverged; selfupdate/update.go read a
+      # staging-path collision as "already gone" because Windows answers
+      # ERROR_PATH_NOT_FOUND where POSIX answers ENOTDIR. All three are cheap
+      # (~27s combined), so they run whole.
+      - name: Windows harness, toolkit and self-update
+        run: go test ./internal/harness ./internal/agentkit ./internal/selfupdate
 
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
@@ -630,10 +670,31 @@ jobs:
           GIT_CONFIG_VALUE_0: "false"
           GIT_CONFIG_KEY_1: core.safecrlf
           GIT_CONFIG_VALUE_1: "false"
-        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit'
+        # The pinned path-length tests are named rather than running
+        # ./internal/worktree whole: the full package is ~4.5min on Windows,
+        # nearly half this job's historic budget, and these four are the ones
+        # that cover the platform seam. `git clone` does not inherit the
+        # source repo's config, so a fresh pin started without core.longpaths
+        # and the very next ref-rewriting operation could fail with
+        # ERROR_FILENAME_EXCED_RANGE (#2031). The preflight tests alongside
+        # them guard the budget arithmetic that is supposed to catch it first.
+        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit|TestAcquirePinnedAppliesPathLengthPreflightBeforeCheckout|TestManagerCreatePathLengthPreflightRefusesBeforeCheckout|TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef|TestPinnedWorkspaceIsOutsideRetentionInventory'
 
+      # Named, not the whole package: ./release is ~2.75min on Windows. These
+      # cover agent_toolkit.go's half of the SourceMode parity fix above (the
+      # from-disk builder, whose manifest has to match the embedded one byte
+      # for byte) and the install-script writer's file-mode fixture.
+      - name: Windows release packaging
+        run: go test ./release -run 'TestAgentToolkit|TestWriteInstallScript'
+
+      # ./cmd/goobers whole exceeds 30min on Windows, so this stays named.
+      # TestBuildSchedulerSetupRejectsConfigChangedDuringStartup is the only
+      # test that drives buildSchedulerSetup's failure path, where the read
+      # model and intake store handles used to leak: harmless on POSIX, but
+      # on Windows the open handles keep the temp dir's *.db files locked and
+      # the test's own cleanup then fails (#2031).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers

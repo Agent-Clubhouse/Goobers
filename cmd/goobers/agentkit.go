@@ -305,9 +305,14 @@ func writeAgentKitDiff(w io.Writer, changes []agentkit.Change) error {
 func writeAgentKitNextSteps(w io.Writer, target, instanceRoot string) {
 	prompts := agentKitStarterPrompts(instanceRoot)
 	pf(w, "\nStarter prompts:\n")
-	pf(w, "  Authoring: %q\n", prompts[0])
-	pf(w, "  Run Q&A: %q\n", prompts[1])
-	pf(w, "  Upgrade: %q\n", prompts[2])
+	// Wrapped in literal quotes via %s, not %q: %q also backslash-escapes the
+	// string, and prompts[1] embeds a filesystem path. On POSIX that's a no-op
+	// (no backslashes to escape), but on Windows it doubled every path
+	// separator (C:\Users\... became C:\\Users\\...) — a starter prompt meant
+	// to be copy-pasted verbatim then showed the wrong path.
+	pf(w, "  Authoring: \"%s\"\n", prompts[0])
+	pf(w, "  Run Q&A: \"%s\"\n", prompts[1])
+	pf(w, "  Upgrade: \"%s\"\n", prompts[2])
 	pf(w, "\nToolkit maintenance:\n")
 	commands := agentKitMaintenanceCommands(target, runtime.GOOS)
 	pf(w, "  Check:  %s\n", commands[0])
