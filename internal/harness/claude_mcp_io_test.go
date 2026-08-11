@@ -211,7 +211,6 @@ func TestGoobersIOClaudeMCPConfigArgRefusesToTraverseAWorkspaceSymlink(t *testin
 // appear, matching TestClaudeAdapterEmptyToolAllowlistPreservesCommand's
 // no-Spec.Tools baseline plus goobers-io layered on top.
 func TestClaudeAdapterRunWiresGoobersIO(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0},
