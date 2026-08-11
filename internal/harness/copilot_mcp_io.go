@@ -66,12 +66,17 @@ func autoGoobersIOEligible(req RunRequest) bool {
 // no longer touches req.MCPServers at all — see goobersIORuntimeSubdir's
 // doc comment for why. req is passed and returned by value (RunRequest has
 // no pointer receiver callers rely on), so this never mutates a caller's
-// copy.
+// copy. Sets GoobersIORegistered so the shared prompt renderer knows this
+// adapter actually wired the server (#2774) — Copilot needs the
+// server-prefixed names threaded into --available-tools for its own tools to
+// be reachable; see claude_mcp_io.go's withAutoGoobersIOClaude for why the
+// claude-code adapter doesn't need the equivalent req.Tools mutation.
 func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 	if selfBin == "" || !autoGoobersIOEligible(req) {
 		return req
 	}
 	req.Tools = appendMissing(req.Tools, goobersIOAvailableToolNames()...)
+	req.GoobersIORegistered = true
 	return req
 }
 
