@@ -27,7 +27,7 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]
+  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
@@ -77,7 +77,7 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]
+  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
@@ -129,7 +129,7 @@ Core commands:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--limit=N] [--watch [--interval=2s]] [path]
+  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
@@ -167,7 +167,7 @@ Advanced operator commands:
   goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  approve a paused or escalated gate
   goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  override a nondeterministic gate
   goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]  rerun a stage with an instruction addendum
-  goobers runs list [--json] [--phase=...] [--workflow=...] [--limit=N] [path]
+  goobers runs list [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [path]
                                 alias for the status run table (same flags, no --watch)
   goobers runs du [--json] [path]       report per-run journal and artifact bytes
   goobers features [--json] [--dsl-version <version>] [--used] [path]
@@ -1497,7 +1497,7 @@ and artifacts, largest first (default path ".").
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### runs list
-Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]
+Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
 
 Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
 Validate active config, show warnings, and list runs under an instance's
@@ -1750,7 +1750,7 @@ and agentic-stage durations (default path "."). Exit codes: 0 = OK,
 2 = usage/IO error.
 
 ### status
-Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").

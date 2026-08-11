@@ -229,6 +229,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
 		{name: "limit", takesArg: true, desc: "Maximum runs"},
 	},
 	"runs du": {
@@ -239,6 +240,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
 		{name: "limit", takesArg: true, desc: "Maximum runs"},
 		{name: "watch", desc: "Refresh the status board until interrupted"},
 		{name: "interval", takesArg: true, desc: "Watch refresh interval"},

@@ -443,6 +443,7 @@ func formatSummaryAge(now, activity time.Time) string {
 type statusOptions struct {
 	phases   map[journal.RunPhase]struct{}
 	workflow string
+	gaggle   string
 	limit    int
 }
 
@@ -473,14 +474,14 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"With --daemon, report daemon health instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
-const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]\n\n" +
+const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
 	"Alias for the goobers status run table, with the same flags (minus --daemon/--watch).\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
@@ -492,6 +493,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	jsonOutput := fs.Bool("json", false, "emit config warnings, workflow summary, and runs as JSON")
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
+	gaggleFilter := fs.String("gaggle", "", "filter by gaggle name")
 	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
 	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
 	// line — all daemon/process runtime state, not part of `runs list`'s
@@ -521,7 +523,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *limit != 0 || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || *limit != 0 || *watch) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -630,6 +632,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	options := statusOptions{
 		phases:   phases,
 		workflow: *workflowFilter,
+		gaggle:   *gaggleFilter,
 		limit:    *limit,
 	}
 
@@ -751,6 +754,9 @@ func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
 	filtered := make([]runSummary, 0, len(runs))
 	for _, run := range runs {
 		if options.workflow != "" && run.Workflow != options.workflow {
+			continue
+		}
+		if options.gaggle != "" && run.Gaggle != options.gaggle {
 			continue
 		}
 		if len(options.phases) > 0 {
