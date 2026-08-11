@@ -29,9 +29,7 @@ metadata:
 spec:
   gaggle: example
   triggers:
-    - type: backlog-item
-      selector:
-        goobers: "true"
+    - type: manual
   readiness:
     maxConcurrentRuns: 1
   start: implement
