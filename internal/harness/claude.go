@@ -207,6 +207,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if req.Workspace == "" {
 		return Outcome{}, fmt.Errorf("harness: claude-code: RunRequest.Workspace is empty")
 	}
+	req = withAutoGoobersIOClaude(req, c.SelfBin)
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: invalid configuration: %w", err)
@@ -228,6 +229,13 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	extra := c.ExtraArgs
 	if extra == nil {
 		extra = claudeExtraArgs(req.Tools)
+	}
+	mcpArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: %w", err)
+	}
+	if mcpArg != "" {
+		extra = append(append([]string(nil), extra...), "--mcp-config", mcpArg, "--strict-mcp-config")
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
