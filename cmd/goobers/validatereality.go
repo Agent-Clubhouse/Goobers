@@ -15,7 +15,8 @@ package main
 //     against every selector and stage-applied label (SELECTOR001..003 —
 //     python #1/#7, swift #10), the combined positive selector's live
 //     open-item match count (SELECTOR002), and a ci-poll workflow pointed
-//     at a repository with no CI workflows (CIPOLL001 — swift #9 + probe).
+//     at a repository whose routed credential cannot read CI workflows or
+//     which has no CI workflows (CIPOLL001 — swift #9 + probe).
 //
 // Everything here is advisory: static findings are ordinary config warnings
 // (they count under --strict like any other config warning), network
@@ -518,8 +519,9 @@ func gitHubRepositoryLabels(ctx context.Context, repo instance.RepoRef, token st
 }
 
 // gitHubActionsWorkflowCount reads the repository's GitHub Actions workflow
-// count — the cheap "does anything here produce checks" signal the ci-poll
-// reality warning keys on — through the same provider client.
+// count through the same provider client. A successful request proves the
+// routed credential can read Actions metadata; its count separately detects
+// repositories with no workflows.
 func gitHubActionsWorkflowCount(ctx context.Context, repo instance.RepoRef, token string) (int, error) {
 	return providers.NewGitHubProvider(token).ActionsWorkflowCount(ctx, providers.RepositoryRef{
 		Provider: providers.ProviderGitHub,
@@ -533,9 +535,7 @@ func gitHubActionsWorkflowCount(ctx context.Context, repo instance.RepoRef, toke
 // runs after checkTargetRepositoriesAtFile has already verified each repo
 // reachable, and resolves each repo's token through the same
 // resolveRepoToken path. Always advisory: warnings print and land in the
-// diagnostics envelope, fetch failures degrade to an informational line
-// (mirroring warnOnOversizedRepository), and the return is always
-// exit-neutral.
+// diagnostics envelope, and the return is always exit-neutral.
 func checkRepositoryReality(
 	root, configDir string,
 	cfg *instance.Config,
@@ -611,7 +611,17 @@ func checkGitHubRepositoryReality(
 		cancel()
 		switch {
 		case err != nil:
-			pf(stdout, "REPOSITORY %s: could not check CI workflows: %s\n", label, scrubRepositoryError(err, token))
+			cause := scrubRepositoryError(err, token)
+			for _, use := range demand.ciPoll {
+				message := fmt.Sprintf(
+					"workflow %q stage %q polls the pull request's CI checks, but the routed credential could not read "+
+						"the repository's GitHub Actions workflows (%s), so CI visibility would fail at runtime; "+
+						"grant Actions: Read to the credential routed to this repository or correct its credential route",
+					use.workflow, use.stage, cause)
+				pf(stdout, "REPOSITORY %s: WARNING: %s\n", label, message)
+				addDiagnostic(collectors, use.file, use.path, "CIPOLL001", string(validate.Warning),
+					fmt.Sprintf("%s: %s", label, message))
+			}
 		case count == 0:
 			for _, use := range demand.ciPoll {
 				message := fmt.Sprintf(
