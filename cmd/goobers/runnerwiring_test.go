@@ -622,17 +622,6 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			},
 			want: `capability "contents:read" is not declared`,
 		},
-		{
-			name: "unsupported MCP harness",
-			spec: apiv1.GooberSpec{
-				Harness: apiv1.HarnessClaudeCode,
-				MCPServers: []apiv1.MCPServer{{
-					Name:    "context",
-					Command: "context-server",
-				}},
-			},
-			want: `mcpServers are only supported by harness "copilot"`,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := compiledMachinesWithWarnings(
@@ -763,7 +752,10 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 }
 
-func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+// TestBuildRunnerConfigAcceptsMCPServersForClaudeCode pins #1492: mcpServers
+// is adapter-neutral — declaring it for claude-code is no longer rejected at
+// admission or run-construction time, matching Copilot.
+func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 	const gooberName = "coder"
 	spec := apiv1.GooberSpec{
 		Harness: apiv1.HarnessClaudeCode,
@@ -772,13 +764,14 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 			Command: "context-server",
 		}},
 	}
+	scrubber := journal.NewRegistryScrubber()
 	cfg, _, err := buildRunnerConfig(
 		instance.NewLayout(t.TempDir()),
 		&instance.Config{},
 		map[string]apiv1.GooberSpec{gooberName: spec},
 		map[string]string{gooberName: "instructions"},
 		nil,
-		journal.NewRegistryScrubber(),
+		scrubber,
 		nil,
 		nil,
 		apiv1.RepoRef{},
@@ -792,9 +785,12 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
 
-	_, err = cfg.NewAgentic(gooberName, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
-		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
+	goober, err := cfg.NewAgentic(gooberName, runnerWiringHarnessRecorder{dir: t.TempDir()}, scrubber)
+	if err != nil {
+		t.Fatalf("NewAgentic: %v", err)
+	}
+	if goober == nil {
+		t.Fatal("NewAgentic returned a nil goober for a valid claude-code mcpServers declaration")
 	}
 }
 

@@ -266,12 +266,29 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if extra == nil {
 		extra = claudeExtraArgs(req.Tools)
 	}
-	mcpArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
+	var mcpConfigArgs []string
+	goobersIOArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: %w", err)
 	}
-	if mcpArg != "" {
-		extra = append(append([]string(nil), extra...), "--mcp-config", mcpArg, "--strict-mcp-config")
+	if goobersIOArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, goobersIOArg)
+	}
+	declaredMCPArg, mcpEnvAdditions, err := prepareClaudeMCP(ctx, req)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if declaredMCPArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, declaredMCPArg)
+	}
+	// A single --mcp-config flag takes multiple space-separated values
+	// (confirmed live: repeated servers from separate values merge cleanly),
+	// so goobers-io's registration and a goober's declared mcpServers coexist
+	// under one flag invocation without conflicting.
+	if len(mcpConfigArgs) > 0 {
+		extra = append(append([]string(nil), extra...), "--mcp-config")
+		extra = append(extra, mcpConfigArgs...)
+		extra = append(extra, "--strict-mcp-config")
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
@@ -290,6 +307,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if err != nil {
 		return Outcome{}, err
 	}
+	env = append(env, mcpEnvAdditions...)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,
