@@ -149,6 +149,20 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 			},
 		},
 		{
+			name:    "empty project names first repository fallback",
+			project: apiv1.RepoRef{},
+			repos: []instance.RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web"},
+				{Provider: "github", Owner: "other", Name: "site"},
+			},
+			maxOpenPRs:  3,
+			wantWarning: true,
+			wantText: []string{
+				"has no project repository binding",
+				`binds to instance repos[0] repository "acme/web"`,
+			},
+		},
+		{
 			name:       "configured GitHub project is enforceable",
 			project:    apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 			repos:      []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web"}},
