@@ -249,8 +249,11 @@ toolkit, onboarding payload, and authoritative `feature-registry.json` and
 remains editable for curation and is not checksummed. The same file verifies on
 every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
-[Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
-**primary integrity mechanism** for the initially-unsigned Windows artifacts.
+[Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
+integrity check is in addition to, not instead of, the Authenticode
+signature below — both `sign-macos` and `sign-windows` recompute this
+manifest after signing, so it always reflects the signed bytes actually
+published.
 
 ## Signing posture
 
@@ -270,34 +273,23 @@ every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
   `.pkg`/`.dmg` installer (for fully offline Gatekeeper coverage) is a
   distinct-scope follow-up, not built here.
 
-- **Windows: still unsigned (known gap).** Windows artifacts ship
-  **without an Authenticode signature.** The integrity guarantee is the
-  SHA-256 in `SHA256SUMS`, which users verify before running.
-
-  - **SmartScreen expectation.** Running an unsigned executable triggers a
-    Windows SmartScreen warning ("Windows protected your PC") on first
-    launch. This is **expected and documented**, not a defect — the
-    [install guide](quickstart-windows.md#3-extract--place-on-path) tells
-    users to verify the checksum first and then *More info → Run anyway*. An
-    unsigned binary with a verified checksum is a deliberate, stated
-    trade-off, not a silent omission.
-  - **Authenticode upgrade path (known gap).** Removing the SmartScreen
-    warning requires signing `goobers.exe` with an Authenticode-equivalent
-    signature that earns SmartScreen reputation immediately. No signing
-    credential is provisioned for this repo yet (checked directly against
-    repo and org GitHub secrets), so it remains out of scope here and
-    recorded as a known gap. The likely path when this is adopted is **Azure
-    Trusted Signing** (`azure/trusted-signing-action`, OIDC-authenticated via
-    `azure/login`) rather than a purchased EV certificate + local key
-    custody — the sibling Clubhouse desktop app already signs its Windows
-    builds this way against an existing Azure Trusted Signing account, so
-    extending that account to cover Goobers is likely cheaper and faster
-    than provisioning a separate EV certificate. Either way it's an
-    organizational credential/account decision, not a code change: add the
-    signing step to the
-    [#432](https://github.com/Agent-Clubhouse/Goobers/issues/432) release
-    workflow after the packaging engine emits `goobers.exe`, and update this
-    section + the install guide to drop the SmartScreen note.
+- **Windows: Authenticode signed via Azure Trusted Signing.** The
+  `sign-windows` job in
+  [`release.yml`](../../.github/workflows/release.yml) authenticates to
+  Azure via OIDC (`azure/login`, no stored client secret) and signs
+  `goobers.exe` (`azure/trusted-signing-action`, SHA-256 file digest and
+  RFC 3161 timestamp) before the archive is published. This reuses the
+  sibling Clubhouse product's certificate profile
+  (`clubhouse-win-codesign`) rather than a Goobers-specific one — a
+  code-signing certificate identifies the *publisher* (Mason Allen), not a
+  specific product, matching how macOS signing above already reuses one
+  Apple Developer ID for both. No separate Windows identity or additional
+  Azure resource is needed; the account's Basic SKU only supports one
+  certificate profile, and there's no technical reason a single validated
+  identity can't sign multiple products.
+  `azure/trusted-signing-action` requires a Windows runner (it invokes the
+  Windows SDK signing client locally; only the private-key operation
+  happens in Azure).
 
 ## Distribution channels (scoop / winget)
 

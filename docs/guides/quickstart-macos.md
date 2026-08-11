@@ -65,8 +65,9 @@ test "$ACTUAL" = "$EXPECTED" || {
 echo "OK: checksum matches"
 ```
 
-Release artifacts are initially unsigned, so do not skip checksum
-verification. Extract and install the verified binary:
+The binary is Developer ID signed and notarized, but verify the checksum
+too — it's recomputed after signing, so it always covers the exact
+published bytes. Extract and install the verified binary:
 
 ```sh
 tar -xzf "$ARCHIVE"

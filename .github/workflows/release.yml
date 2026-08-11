@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -221,9 +222,94 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  sign-windows:
+    name: Sign Windows binary
+    needs: sign-macos
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-signed
+          path: dist
+
+      # Explicit bash: the Windows runner defaults to PowerShell.
+      - name: Extract goobers.exe
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir winsign
+          unzip -q "dist/goobers_${TAG}_windows_amd64.zip" -d winsign
+
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Reuses the sibling Clubhouse product's certificate profile — a
+      # code-signing certificate identifies the publisher (Mason Allen), not
+      # a specific product, matching how macOS signing above already reuses
+      # one Apple Developer ID for both. No separate Windows identity or
+      # Azure resource is needed.
+      - name: Sign goobers.exe
+        uses: azure/trusted-signing-action@v1
+        with:
+          endpoint: https://wus2.codesigning.azure.net/
+          trusted-signing-account-name: Clubhouse-Win-Signing
+          certificate-profile-name: clubhouse-win-codesign
+          files-folder: winsign
+          files-folder-filter: exe
+          files-folder-depth: 1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Repackage signed archive
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="dist/goobers_${TAG}_windows_amd64.zip"
+          rm -f "$ARCHIVE"
+          (cd winsign && zip -qr "../$ARCHIVE" .)
+          rm -rf winsign
+
+      - name: Recompute SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            cksum() { sha256sum "$1"; }
+          else
+            cksum() { shasum -a 256 "$1"; }
+          fi
+          cd dist
+          files="$(awk '{print $2}' SHA256SUMS)"
+          : > SHA256SUMS.new
+          for f in $files; do
+            cksum "$f" >> SHA256SUMS.new
+          done
+          sort SHA256SUMS.new -o SHA256SUMS
+          rm SHA256SUMS.new
+
+      - name: Upload fully-signed artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-signed
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
   verify-and-publish:
     name: Verify and publish ${{ github.ref_name }}
-    needs: sign-macos
+    needs: sign-windows
     runs-on: ubuntu-latest
     steps:
       # "Generate release notes" below shells out to real git commands for
