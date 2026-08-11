@@ -698,3 +698,129 @@ func TestClaudeAdapterRejectsSymlinkedSandboxRuntime(t *testing.T) {
 		t.Fatalf("credential material escaped through symlink: %v", err)
 	}
 }
+
+func runClaudeAdapterForCommand(t *testing.T, tools []string) []string {
+	t.Helper()
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          tools,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return runner.lastReq.Command
+}
+
+// TestClaudeAdapterEmptyToolAllowlistPreservesCommand pins #1471 acceptance
+// criterion 4: an absent or empty tools declaration must produce byte-for-byte
+// the same command as before tool enforcement existed.
+func TestClaudeAdapterEmptyToolAllowlistPreservesCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tools []string
+	}{
+		{name: "nil tools", tools: nil},
+		{name: "explicit empty tools", tools: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := runClaudeAdapterForCommand(t, tc.tools)
+			for _, want := range []string{"--permission-mode", "bypassPermissions"} {
+				if !slices.Contains(command, want) {
+					t.Errorf("command missing %q: %v", want, command)
+				}
+			}
+			for _, unwanted := range []string{"--tools", "--allowedTools"} {
+				if slices.Contains(command, unwanted) {
+					t.Errorf("command unexpectedly carries %q: %v", unwanted, command)
+				}
+			}
+		})
+	}
+}
+
+// TestClaudeAdapterToolAllowlist pins #1471 acceptance criteria 1-3: a
+// non-empty tools declaration constrains claude-code via --tools/
+// --allowedTools instead of the unconditional bypassPermissions escape hatch,
+// and a tool omitted from the declared list is unreachable (negative
+// control).
+func TestClaudeAdapterToolAllowlist(t *testing.T) {
+	tests := []struct {
+		name         string
+		tools        []string
+		wantIncluded []string
+		wantOmitted  []string
+	}{
+		{
+			name:         "concrete tools",
+			tools:        []string{"Read", "Grep"},
+			wantIncluded: []string{"Read", "Grep"},
+			wantOmitted:  []string{"Bash", "Write", "Edit"},
+		},
+		{
+			name:         "shell group expands",
+			tools:        []string{"shell"},
+			wantIncluded: []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep"},
+			wantOmitted:  []string{"WebFetch", "WebSearch"},
+		},
+		{
+			name:         "telemetry group expands and excludes shell-only tools",
+			tools:        []string{"telemetry"},
+			wantIncluded: []string{"Read", "Glob", "Grep"},
+			wantOmitted:  []string{"Bash", "Write", "Edit"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			command := runClaudeAdapterForCommand(t, tc.tools)
+			if slices.Contains(command, "bypassPermissions") {
+				t.Errorf("tool-constrained command still carries bypassPermissions: %v", command)
+			}
+			for _, flag := range []string{"--tools", "--allowedTools"} {
+				idx := slices.Index(command, flag)
+				if idx == -1 || idx+1 >= len(command) {
+					t.Fatalf("command missing %q value: %v", flag, command)
+				}
+				value := command[idx+1]
+				got := strings.Split(value, ",")
+				for _, want := range tc.wantIncluded {
+					if !slices.Contains(got, want) {
+						t.Errorf("%s=%q missing %q", flag, value, want)
+					}
+				}
+				for _, unwanted := range tc.wantOmitted {
+					if slices.Contains(got, unwanted) {
+						t.Errorf("%s=%q unexpectedly includes %q", flag, value, unwanted)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeAdapterToolAllowlistRejectsCommaDelimitedEntry(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &ClaudeAdapter{
+		Command: []string{"claude"},
+		Runner:  &fakeProcessRunner{result: ProcessResult{ExitCode: 0}},
+	}
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Tools:          []string{"Read,Write"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not contain a comma") {
+		t.Fatalf("Run error = %v, want comma rejection", err)
+	}
+}

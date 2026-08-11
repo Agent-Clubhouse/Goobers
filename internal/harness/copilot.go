@@ -505,11 +505,7 @@ func copilotAvailableTools(req RunRequest) []string {
 		for _, server := range req.MCPServers {
 			appendTool(server.Name + "-" + declaredTool)
 		}
-		expanded := []string{declaredTool}
-		if group, ok := copilotToolGroups[strings.ToLower(declaredTool)]; ok {
-			expanded = group
-		}
-		for _, tool := range expanded {
+		for _, tool := range expandToolGroup(declaredTool, copilotToolGroups) {
 			appendTool(tool)
 		}
 	}
@@ -517,12 +513,7 @@ func copilotAvailableTools(req RunRequest) []string {
 }
 
 func validateCopilotTools(tools []string) error {
-	for i, tool := range tools {
-		if strings.Contains(tool, ",") {
-			return fmt.Errorf("harness: copilot-cli: tool allowlist entry %d %q must not contain a comma", i, tool)
-		}
-	}
-	return nil
+	return validateToolAllowlist("copilot-cli", tools)
 }
 
 func copilotDeclaresTool(declared []string, target string) bool {
