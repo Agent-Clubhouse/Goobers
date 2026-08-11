@@ -84,7 +84,8 @@ CRLF policy, and the full path-length calculation.
 
 Download `goobers_<version>_windows_amd64.zip` and `SHA256SUMS` from the same
 tagged release. Only `windows/amd64` is published; Windows ARM64 is deferred.
-Release artifacts are initially unsigned, so checksum verification is required:
+`goobers.exe` is Authenticode-signed, but verify the checksum too — it's
+recomputed after signing, so it always covers the exact published bytes:
 
 ```powershell
 $archive = Get-ChildItem .\goobers_*_windows_amd64.zip
@@ -116,10 +117,8 @@ goobers --version
 ```
 
 For a machine-wide install, extract to `C:\Program Files\goobers` from an
-elevated prompt and update the machine `PATH`. Because the binary is unsigned,
-SmartScreen may warn on first launch. After verifying the checksum, choose
-**More info → Run anyway**. See [Releases & packaging](releases.md) for the
-artifact and signing posture.
+elevated prompt and update the machine `PATH`. See
+[Releases & packaging](releases.md) for the artifact and signing posture.
 
 ## 4. Build from source instead
 
