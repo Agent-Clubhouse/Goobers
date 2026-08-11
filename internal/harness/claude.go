@@ -25,6 +25,58 @@ var defaultClaudeExtraArgs = []string{
 	"--permission-mode", "bypassPermissions",
 }
 
+// claudeToolGroups expands the shared harness-neutral tool-group vocabulary
+// (see copilotToolGroups) into Claude Code's own built-in tool names. There is
+// no Claude equivalent of the "github" group (Copilot resolves it to
+// github-mcp-server-* tools) — a goober declaring tools: [github] on
+// claude-code falls through expandToolGroup unexpanded, which is a known,
+// separately-tracked gap (#1471 scope is tools, not that mapping).
+var claudeToolGroups = map[string][]string{
+	"shell": {
+		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
+	},
+	"telemetry": {
+		"Read", "Glob", "Grep",
+	},
+}
+
+// claudeAvailableTools expands a goober's declared tool allowlist into the
+// deduplicated set of concrete Claude Code built-in tool names.
+func claudeAvailableTools(tools []string) []string {
+	var expanded []string
+	seen := make(map[string]struct{})
+	for _, declared := range tools {
+		for _, tool := range expandToolGroup(declared, claudeToolGroups) {
+			if _, ok := seen[tool]; ok {
+				continue
+			}
+			seen[tool] = struct{}{}
+			expanded = append(expanded, tool)
+		}
+	}
+	return expanded
+}
+
+// claudeExtraArgs builds the CLI flags controlling tool availability. With no
+// declared tools it returns defaultClaudeExtraArgs unchanged, preserving
+// today's unrestricted-bypass behavior byte-for-byte. With a non-empty
+// allowlist it uses --tools to define which built-in tools exist at all (the
+// analog of Copilot's --available-tools) plus --allowedTools to pre-approve
+// exactly that same set, so the session runs non-interactively without
+// needing the blanket --permission-mode bypassPermissions escape hatch.
+func claudeExtraArgs(tools []string) []string {
+	if len(tools) == 0 {
+		return append([]string(nil), defaultClaudeExtraArgs...)
+	}
+	allowlist := strings.Join(claudeAvailableTools(tools), ",")
+	return []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--tools", allowlist,
+		"--allowedTools", allowlist,
+	}
+}
+
 // ClaudeAdapter drives Claude Code in non-interactive print mode.
 type ClaudeAdapter struct {
 	Command                        []string
@@ -159,6 +211,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: invalid configuration: %w", err)
 	}
+	if err := validateToolAllowlist(c.Name(), req.Tools); err != nil {
+		return Outcome{}, err
+	}
 
 	prompt := renderPrompt(req)
 	debugPath := filepath.Join(req.Workspace, ".goobers", "prompt.md")
@@ -172,7 +227,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	baseCommand := resolveHarnessCommand(c.Command)
 	extra := c.ExtraArgs
 	if extra == nil {
-		extra = defaultClaudeExtraArgs
+		extra = claudeExtraArgs(req.Tools)
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
