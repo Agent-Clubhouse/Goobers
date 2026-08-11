@@ -825,6 +825,7 @@ func TestClaudeAdapterRejectsSymlinkedSandboxRuntime(t *testing.T) {
 
 func runClaudeAdapterForCommand(t *testing.T, tools []string) []string {
 	t.Helper()
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0},
