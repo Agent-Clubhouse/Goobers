@@ -127,6 +127,68 @@ func TestTelemetryQueryScopesFindingsToRunGaggle(t *testing.T) {
 	}
 }
 
+func TestTelemetryQueryGaggleFlagOverridesEnvironment(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	writeFixtureRunWithErrorForGaggle(t, l.ForGaggle("alpha"), "alpha-run", "alpha")
+	writeFixtureRunWithErrorForGaggle(t, l.ForGaggle("bravo"), "bravo-run", "bravo")
+	rebuildTelemetryQueryRollup(t, root)
+	t.Setenv("GOOBERS_GAGGLE", "bravo")
+
+	code, stdout, stderr := runArgs(t,
+		"telemetry-query",
+		"--gaggle", "alpha",
+		"--workflow", "default-implement",
+		"--aggregate", "error-signature",
+		"--threshold", "min-error-signature-count=1",
+		root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "alpha-run") || strings.Contains(stdout, "bravo-run") {
+		t.Fatalf("explicit gaggle output = %s, want only alpha-run", stdout)
+	}
+}
+
+func TestTelemetryQueryRejectsAmbiguousWorkflowForEveryFormat(t *testing.T) {
+	root := initDemo(t)
+	installSecondDaemonGaggle(t, root)
+	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
+	goober, err := os.ReadFile(gooberPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goober = []byte(strings.ReplaceAll(string(goober), "default-implement", "deploy"))
+	if err := os.WriteFile(gooberPath, goober, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOBERS_GAGGLE", "")
+
+	for _, format := range []string{
+		telemetryQueryCandidateFormat,
+		telemetryQueryEffectiveVersionEfficacyFormat,
+		telemetryQueryTutorHoldoutsFormat,
+	} {
+		t.Run(format, func(t *testing.T) {
+			code, _, stderr := runArgs(t,
+				"telemetry-query",
+				"--format", format,
+				"--workflow", "deploy",
+				root,
+			)
+			if code != 1 {
+				t.Fatalf("code = %d, want 1; stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stderr, `workflow "deploy" is ambiguous`) ||
+				!strings.Contains(stderr, "candidate gaggles: beta, example") ||
+				!strings.Contains(stderr, "--gaggle") {
+				t.Fatalf("stderr = %q, want both candidate gaggles and disambiguation guidance", stderr)
+			}
+		})
+	}
+}
+
 func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
