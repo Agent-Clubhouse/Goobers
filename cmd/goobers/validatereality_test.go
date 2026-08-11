@@ -137,6 +137,18 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 			},
 		},
 		{
+			name:        "empty project with sole ADO repository cannot enforce cap",
+			project:     apiv1.RepoRef{},
+			repos:       []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
+			maxOpenPRs:  2,
+			wantWarning: true,
+			wantText: []string{
+				"cannot be enforced for ADO project repository",
+				`"acme/store/web"`,
+				"cap counts GitHub pull requests",
+			},
+		},
+		{
 			name:        "unconfigured GitHub project names actual binding",
 			project:     apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "site"},
 			repos:       []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web"}},

@@ -197,6 +197,11 @@ func appendMaxOpenPRWarnings(
 		}
 		var message string
 		switch {
+		case project.Owner == "" && project.Name == "" && len(cfg.Repos) > 0 && cfg.Repos[0].Provider == string(apiv1.ProviderADO):
+			message = fmt.Sprintf(
+				"readiness.maxOpenPRs cannot be enforced for ADO project repository %q: "+
+					"the cap counts GitHub pull requests, so no open-PR count is available and admission fails open",
+				instanceRepoName(cfg.Repos[0]))
 		case project.Owner == "" && project.Name == "" && len(cfg.Repos) > 0:
 			message = fmt.Sprintf(
 				"readiness.maxOpenPRs has no project repository binding, so the cap binds to instance repos[0] repository %q",
