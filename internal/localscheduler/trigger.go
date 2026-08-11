@@ -53,7 +53,8 @@ const maxMissedTickCount = 10_000
 func Tick(t TriggerState, now time.Time) TickResult {
 	due := false
 	for _, sched := range t.Schedules {
-		if !sched.Next(t.LastEval).After(now) {
+		next := sched.Next(t.LastEval)
+		if !next.IsZero() && !next.After(now) {
 			due = true
 			break
 		}
@@ -71,7 +72,7 @@ func Tick(t TriggerState, now time.Time) TickResult {
 		cursor := t.LastEval
 		for i := 0; i < maxMissedTickCount; i++ {
 			n := sched.Next(cursor)
-			if n.After(now) {
+			if n.IsZero() || n.After(now) {
 				break
 			}
 			cursor = n

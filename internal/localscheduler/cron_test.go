@@ -37,6 +37,12 @@ func TestParseScheduleRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestParseScheduleRejectsExpressionThatNeverFires(t *testing.T) {
+	if _, err := ParseSchedule("0 0 30 2 *"); err == nil {
+		t.Fatal("expected an error for an unsatisfiable expression")
+	}
+}
+
 func TestNextScheduledFire(t *testing.T) {
 	hourly, err := ParseSchedule("@hourly")
 	if err != nil {
@@ -54,6 +60,28 @@ func TestNextScheduledFire(t *testing.T) {
 	}
 	if got, ok := NextScheduledFire(nil, after); ok || !got.IsZero() {
 		t.Fatalf("NextScheduledFire(nil) = %v, %t, want zero, false", got, ok)
+	}
+}
+
+func TestNextScheduledFireIgnoresSchedulesThatNeverFire(t *testing.T) {
+	hourly, err := ParseSchedule("@hourly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2026, time.July, 20, 6, 30, 0, 0, time.UTC)
+	want := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)
+
+	for _, schedules := range [][]Schedule{
+		{hourly, neverSchedule{}},
+		{neverSchedule{}, hourly},
+	} {
+		got, ok := NextScheduledFire(schedules, after)
+		if !ok || !got.Equal(want) {
+			t.Fatalf("NextScheduledFire() = %v, %t, want %v, true", got, ok, want)
+		}
+	}
+	if got, ok := NextScheduledFire([]Schedule{neverSchedule{}}, after); ok || !got.IsZero() {
+		t.Fatalf("NextScheduledFire(never) = %v, %t, want zero, false", got, ok)
 	}
 }
 

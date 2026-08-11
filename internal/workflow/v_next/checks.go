@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/robfig/cron"
 )
 
 // These exported checks let the config validator (api/validate) reuse the
@@ -369,10 +370,9 @@ var descriptors = map[string]bool{
 	"@daily": true, "@midnight": true, "@hourly": true,
 }
 
-// validateSchedule structurally validates a cron/interval expression. It accepts
-// the named descriptors, "@every <duration>", and 5- or 6-field cron
-// expressions. It is intentionally a structural gate (not a full cron engine):
-// it catches malformed expressions at compile time; the scheduler owns firing.
+// validateSchedule validates cron/interval expressions accepted by workflow
+// definitions, including 6-field cron expressions that the V0 scheduler rejects
+// later with its version-specific diagnostic.
 func validateSchedule(expr string) error {
 	expr = strings.TrimSpace(expr)
 	if strings.HasPrefix(expr, "@every ") {
@@ -402,6 +402,19 @@ func validateSchedule(expr string) error {
 				return fmt.Errorf("field %d %q has illegal character %q", i, f, r)
 			}
 		}
+	}
+	var schedule cron.Schedule
+	var err error
+	if len(fields) == 5 {
+		schedule, err = cron.ParseStandard(expr)
+	} else {
+		schedule, err = cron.Parse(expr)
+	}
+	if err != nil {
+		return err
+	}
+	if schedule.Next(time.Unix(0, 0)).IsZero() {
+		return fmt.Errorf("expression can never fire")
 	}
 	return nil
 }

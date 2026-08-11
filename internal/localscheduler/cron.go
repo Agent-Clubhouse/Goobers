@@ -33,6 +33,9 @@ func ParseSchedule(expr string) (Schedule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("localscheduler: invalid schedule %q: %w", expr, err)
 	}
+	if sched.Next(time.Unix(0, 0)).IsZero() {
+		return nil, fmt.Errorf("localscheduler: invalid schedule %q: expression can never fire", expr)
+	}
 	return sched, nil
 }
 
@@ -58,7 +61,7 @@ func NextScheduledFire(schedules []Schedule, after time.Time) (time.Time, bool) 
 	var earliest time.Time
 	for _, schedule := range schedules {
 		next := schedule.Next(after)
-		if earliest.IsZero() || next.Before(earliest) {
+		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
 		}
 	}
