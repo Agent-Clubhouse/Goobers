@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/robfig/cron"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // These exported checks let the config validator (api/validate) reuse the
