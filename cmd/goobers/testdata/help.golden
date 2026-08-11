@@ -22,7 +22,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -72,7 +72,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -124,7 +124,7 @@ Core commands:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -1434,14 +1434,17 @@ without claiming those local changes landed.
 processed, 1 = business error, 2 = usage/IO error.
 
 ### run
-Usage: goobers run <workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses, then wait for it to reach a terminal state unless
---no-wait is set (default path "."). If a live `goobers up` daemon already
+--no-wait is set (default path "."). Use --gaggle or the qualified
+<gaggle>/<workflow> form when multiple gaggles share a workflow name.
+If a live `goobers up` daemon already
 holds the instance lock,
 delegates the trigger to it instead of failing (#343) — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =

@@ -93,7 +93,7 @@ _goobers_completion()
             flags+=" --port --no-open --workdir"
             ;;
         run)
-            flags+=" --no-wait"
+            flags+=" --gaggle --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"

@@ -122,6 +122,30 @@ func installSecondDaemonGaggle(t *testing.T, root string) {
 	}
 }
 
+func TestRunSelectsGaggleForDuplicateWorkflow(t *testing.T) {
+	root := initDeterministicDemo(t)
+	installSecondDaemonGaggle(t, root)
+
+	code, stdout, stderr := runArgs(t, "run", "--gaggle", "beta", "deploy", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "workflow=deploy gaggle=beta") {
+		t.Fatalf("stdout = %q, want beta gaggle", stdout)
+	}
+	betaRuns, err := os.ReadDir(instance.NewLayout(root).ForGaggle("beta").RunsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exampleRuns, err := os.ReadDir(instance.NewLayout(root).ForGaggle("example").RunsDir())
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(betaRuns) != 1 || len(exampleRuns) != 0 {
+		t.Fatalf("run counts: beta=%d example=%d, want beta=1 example=0", len(betaRuns), len(exampleRuns))
+	}
+}
+
 func TestDaemonDispatchesAndDrainsAllManifestGaggles(t *testing.T) {
 	root := initDeterministicDemo(t)
 	installSecondDaemonGaggle(t, root)

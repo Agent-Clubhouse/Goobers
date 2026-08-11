@@ -1396,19 +1396,40 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	var entry WorkflowEntry
-	matches := 0
+	var gaggles []string
 	for identity, candidate := range s.workflows {
 		if identity.Workflow == workflow {
 			entry = candidate
-			matches++
+			gaggles = append(gaggles, identity.Gaggle)
 		}
 	}
 	s.mu.Unlock()
-	if matches == 0 {
+	if len(gaggles) == 0 {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
-	if matches > 1 {
-		return "", fmt.Errorf("localscheduler: workflow %q is ambiguous across gaggles", workflow)
+	if len(gaggles) > 1 {
+		sort.Strings(gaggles)
+		commands := make([]string, 0, len(gaggles))
+		for _, gaggle := range gaggles {
+			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
+		}
+		return "", fmt.Errorf(
+			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
+			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
+		)
+	}
+	return s.triggerWorkflow(ctx, entry, now,
+		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
+		"manual")
+}
+
+// TriggerExact manually fires one workflow identified by its gaggle and name.
+func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
 	}
 	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},

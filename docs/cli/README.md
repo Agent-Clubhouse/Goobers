@@ -2170,14 +2170,17 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run <workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
 daemon uses, then wait for it to reach a terminal state unless
---no-wait is set (default path "."). If a live `goobers up` daemon already
+--no-wait is set (default path "."). Use --gaggle or the qualified
+<gaggle>/<workflow> form when multiple gaggles share a workflow name.
+If a live `goobers up` daemon already
 holds the instance lock,
 delegates the trigger to it instead of failing (#343) — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
@@ -2200,7 +2203,8 @@ repair.
 
 ~~~console
 $ goobers run default-implement
-$ goobers run default-implement --no-wait
+$ goobers run --gaggle example default-implement
+$ goobers run example/default-implement --no-wait
 ~~~
 
 ## `goobers run abort`
