@@ -104,6 +104,10 @@ const (
 	// in the same pass (2026-08-08 cold-start audit, dotnet #7 / swift
 	// probes).
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
+	// WarningMaxOpenPRsUnenforceable identifies a workflow whose maxOpenPRs
+	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
+	// project repository.
+	WarningMaxOpenPRsUnenforceable WarningCode = "PRCAP001"
 	// WarningGateCompletionHidesFailure identifies an automated gate branch
 	// that is keyed on a failure-implying outcome (status-equals'
 	// default/success "fail", failure-class "fail"/"infra") and routes to

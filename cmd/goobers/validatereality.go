@@ -5,6 +5,7 @@ package main
 //
 //   - static (every validate run): a gaggle/stage requiredCapabilities token
 //     no instance runner claims (CAP003 — dotnet #7, swift probes), and an
+//     unenforceable workflow maxOpenPRs cap (PRCAP001), and an
 //     automated gate's failure-keyed branch that declares completion a
 //     failed-without-continueOnError stage can never reach as a completed
 //     run (WF018 — swift #3's shape, corrected against the runner's actual
@@ -42,7 +43,7 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Static checks (no network): capability cross-check + gate completion branch.
+// Static checks (no network): capability, readiness, and gate cross-checks.
 // -----------------------------------------------------------------------------
 
 // proberFamilies mirrors internal/toolchain.DefaultVerifier's registered probe
@@ -125,6 +126,7 @@ func appendStaticRealityWarnings(
 		})
 	}
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
+	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
 	return warnings
 }
@@ -169,6 +171,60 @@ func appendUnclaimedCapabilityWarnings(
 				"/spec/requiredCapabilities", message)
 		}
 	}
+}
+
+func appendMaxOpenPRWarnings(
+	root, configDir string,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil {
+		return
+	}
+	projects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
+	for i := range set.Gaggles {
+		projects[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project
+	}
+	for i := range set.Workflows {
+		workflow := &set.Workflows[i]
+		if workflow.Spec.Readiness.MaxOpenPRs <= 0 {
+			continue
+		}
+		project, ok := projects[workflow.Spec.Gaggle]
+		if !ok {
+			continue
+		}
+		var message string
+		switch {
+		case project.Provider == apiv1.ProviderADO:
+			message = fmt.Sprintf(
+				"readiness.maxOpenPRs cannot be enforced for ADO project repository %q: "+
+					"the cap counts GitHub pull requests, so no open-PR count is available and admission fails open",
+				projectRepoName(project))
+		case project.Provider == apiv1.ProviderGitHub:
+			if _, configured := configuredRepoForProject(cfg, project); configured {
+				continue
+			}
+			message = fmt.Sprintf(
+				"readiness.maxOpenPRs binds to project repository %q, but instance.yaml has no configured binding for that repository; "+
+					"its polling credential cannot be resolved, so the open-PR count remains unknown and admission fails open",
+				projectRepoName(project))
+		default:
+			continue
+		}
+		source, _ := set.WorkflowSource(workflow.Spec.Gaggle, workflow.Name)
+		add(validate.WarningMaxOpenPRsUnenforceable, "Workflow", workflow.Name,
+			configSourceDiagnosticFile(root, configDir, source),
+			"/spec/readiness/maxOpenPRs", message)
+	}
+}
+
+func projectRepoName(project apiv1.RepoRef) string {
+	if project.Provider == apiv1.ProviderADO {
+		return strings.Join([]string{string(project.Provider), project.Owner, project.Project, project.Name}, "/")
+	}
+	return strings.Join([]string{string(project.Provider), project.Owner, project.Name}, "/")
 }
 
 // gateFailureKeyedOutcomes returns the outcomes of an automated gate that
