@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -186,9 +187,22 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 		t.Fatal("supervisor did not stop")
 	}
 }
+
+// waitForBudget is 1s on POSIX; Windows CI runners are measurably slower at
+// the file-mtime polling and process spawning this package's supervisor loop
+// does (ci.yml's windows-smoke job documents the same finding for the
+// package-level `go test` timeout), so give the loop more real time to catch
+// up there rather than tightening the flake margin.
+func waitForBudget() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 5 * time.Second
+	}
+	return time.Second
+}
+
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(waitForBudget())
 	for time.Now().Before(deadline) {
 		if condition() {
 			return

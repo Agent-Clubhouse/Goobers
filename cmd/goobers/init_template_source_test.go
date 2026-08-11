@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -183,7 +184,19 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 		t.Fatalf("decode result: %v\n%s", err, stdout)
 	}
 	abs := absolutePath(root)
+	// nextCommand's quoting matches the host shell: quoteShellArg branches on
+	// runtime.GOOS, using PowerShell ''-doubling on Windows (that command is
+	// meant to be pasted into the user's actual shell — PowerShell on
+	// Windows, POSIX sh/bash elsewhere) and POSIX '"'"'-escaping everywhere
+	// else. This test runs with the real host GOOS via runArgs/runInit (no
+	// forced OS), so its expectation must follow the same branch;
+	// TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath covers the
+	// Windows-quoting behavior explicitly (forced goos="windows") regardless
+	// of host.
 	quotedAbs := "'" + strings.ReplaceAll(abs, "'", `'"'"'`) + "'"
+	if runtime.GOOS == "windows" {
+		quotedAbs = "'" + strings.ReplaceAll(abs, "'", "''") + "'"
+	}
 	want := "goobers validate --source-tree --json " + quotedAbs
 	if envelope.NextCommand != want {
 		t.Fatalf("nextCommand = %q, want %q", envelope.NextCommand, want)

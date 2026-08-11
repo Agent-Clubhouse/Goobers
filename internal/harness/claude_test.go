@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -597,12 +598,28 @@ func TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing(t *testing.T) {
 	if want := `{"claudeAiOauth":"keychain-login"}`; string(got) != want {
 		t.Fatalf("seeded credentials = %q, want %q", got, want)
 	}
-	info, err := os.Stat(target)
-	if err != nil {
-		t.Fatalf("stat seeded credentials: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("seeded credential mode = %o, want 600", got)
+	// Unix mode bits do not port to NTFS: os.WriteFile's mode argument and
+	// os.Chmod only toggle the read-only attribute there, so the 0600 this
+	// seeding requests surfaces back as 0666 (see internal/platform/secfile's
+	// doc comment, which is why that package verifies privacy via the DACL
+	// rather than Perm()). Asserting 0600 on Windows therefore just asserts a
+	// fiction, so it is skipped here.
+	//
+	// Unlike the copilot MCP config file — which skips the same assertion
+	// because it holds no credential worth protecting — this file DOES hold
+	// one, and os.Chmod genuinely fails to protect it on Windows: the
+	// credential ends up with whatever DACL it inherits from its parent
+	// directory. Skipping the assertion keeps the gate honest about what the
+	// platform can express; it does not make the file private. That real gap
+	// is tracked in #2795.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatalf("stat seeded credentials: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("seeded credential mode = %o, want 600", got)
+		}
 	}
 }
 

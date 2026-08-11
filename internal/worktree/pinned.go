@@ -416,6 +416,18 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		if err := runGit(ctx, root, "clone", "--no-checkout", repoDir, pinDir); err != nil {
 			return nil, fmt.Errorf("worktree: materialize pinned workspace: %w", err)
 		}
+		// Unlike a linked `git worktree add` tree, `git clone` does not inherit
+		// the source's custom config — pinDir starts with git's defaults, not
+		// repoDir's managedGitConfig. In particular core.longpaths is unset
+		// again here, so the very next operation (renaming the freshly cloned
+		// "origin" remote, which rewrites every refs/remotes/origin/* ref) can
+		// fail on Windows with ERROR_FILENAME_EXCED_RANGE for any ref whose
+		// full on-disk path exceeds MAX_PATH — a real risk given the nested
+		// pin/.git/refs/remotes/<remote>/<branch-namespace>/<runID> layout.
+		// Apply the managed config before doing anything else in this tree.
+		if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
+			return nil, err
+		}
 		if err := runGit(ctx, pinDir, "remote", "rename", "origin", "mirror"); err != nil {
 			return nil, fmt.Errorf("worktree: name pinned mirror remote: %w", err)
 		}
@@ -425,6 +437,10 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		createdPin = true
 	} else if err != nil {
 		return nil, fmt.Errorf("worktree: stat pinned workspace: %w", err)
+	} else if err := ensureManagedGitConfig(ctx, pinDir); err != nil {
+		// Self-heal a pin created before this policy existed, same rationale as
+		// the mirror's own ensureManagedGitConfig call on every WorkingCopy.
+		return nil, err
 	}
 	if !createdPin {
 		if err := fetchPinnedWorkspaceRefs(ctx, pinDir); err != nil {

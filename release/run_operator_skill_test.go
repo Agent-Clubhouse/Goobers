@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -671,7 +672,17 @@ type executableRunOperatorFixture struct {
 
 func buildRunOperatorCLI(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "goobers")
+	name := "goobers"
+	if runtime.GOOS == "windows" {
+		// `go build -o <path>` writes exactly the given file name — unlike a
+		// bare `go build`/`go install`, it never appends the platform's exe
+		// suffix on its own. Without ".exe" here, exec.Command below fails on
+		// Windows with "executable file not found in %PATH%": since Go 1.19,
+		// os/exec's LookPath refuses to resolve an extensionless absolute
+		// path via the implicit PATHEXT search it used to perform.
+		name += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", binary, "./cmd/goobers")
 	cmd.Dir = agentToolkitRepoRoot(t)
 	if output, err := cmd.CombinedOutput(); err != nil {

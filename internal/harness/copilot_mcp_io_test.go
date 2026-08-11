@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -192,7 +193,17 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 		t.Errorf("run identity = run %q, workflow %q, task %q, gaggle %q", cfg.RunID, cfg.WorkflowID, cfg.TaskID, cfg.Gaggle)
 	}
 
-	// The file must be private (0600).
+	// The file must be private (0600). Unix mode bits are meaningless on
+	// NTFS — os.WriteFile's mode argument only toggles the read-only
+	// attribute there, so a 0600 request surfaces back as 0666 (see
+	// internal/platform/secfile's doc comment, which is why that package
+	// verifies privacy via the ACL/DACL instead of Perm() on Windows). This
+	// config file isn't routed through secfile (no ambient credential to
+	// protect, per goobersIOAdditionalMCPConfigArg's doc comment), so there's
+	// nothing meaningful to assert here on Windows.
+	if runtime.GOOS == "windows" {
+		return
+	}
 	info, err := os.Stat(configPath)
 	if err != nil {
 		t.Fatal(err)

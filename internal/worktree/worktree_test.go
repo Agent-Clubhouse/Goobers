@@ -520,7 +520,14 @@ func newTestManager(t *testing.T) *Manager {
 func TestManagerCreatePathLengthPreflightRefusesBeforeCheckout(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
+	// deepest is the on-disk path used to create the fixture file; trackedPath
+	// is the same path in git's own tracked-path form. `git ls-tree` (which the
+	// preflight shells out to) always reports paths with forward slashes,
+	// regardless of OS, so the preflight's error names trackedPath -- not
+	// deepest, which is OS-native (backslashes on Windows) and only happens to
+	// equal trackedPath on POSIX.
 	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	trackedPath := strings.Join([]string{"generated", strings.Repeat("x", 40), "header.hpp"}, "/")
 	mustWriteFile(t, filepath.Join(repo, deepest), "content")
 	runTestGit(t, repo, "add", ".")
 	runTestGit(t, repo, "commit", "-m", "add deep path")
@@ -528,7 +535,7 @@ func TestManagerCreatePathLengthPreflightRefusesBeforeCheckout(t *testing.T) {
 	root := t.TempDir()
 	runID := "path-budget"
 	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
-	available := len(filepath.FromSlash(deepest)) - 1
+	available := len(trackedPath) - 1
 	maximum := len(checkoutPath) + 1 + available + 12
 	m, err := NewManager(root, WithPathLengthLimit(repo, PathLengthLimit{
 		MaxPathLength:        maximum,
@@ -542,7 +549,7 @@ func TestManagerCreatePathLengthPreflightRefusesBeforeCheckout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create succeeded despite exhausted path budget")
 	}
-	for _, fragment := range []string{deepest, fmt.Sprintf("only %d are available", available), "pathLength.disabled: true"} {
+	for _, fragment := range []string{trackedPath, fmt.Sprintf("only %d are available", available), "pathLength.disabled: true"} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Errorf("Create error %q does not contain %q", err, fragment)
 		}
@@ -593,14 +600,21 @@ func TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef(t *testing.T) {
 		t.Fatalf("remove first worktree: %v", err)
 	}
 
+	// deepest is the on-disk path used to create the fixture file; trackedPath
+	// is the same path in git's own tracked-path form. `git ls-tree` (which the
+	// preflight shells out to) always reports paths with forward slashes,
+	// regardless of OS, so the preflight's error names trackedPath -- not
+	// deepest, which is OS-native (backslashes on Windows) and only happens to
+	// equal trackedPath on POSIX.
 	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	trackedPath := strings.Join([]string{"generated", strings.Repeat("x", 40), "header.hpp"}, "/")
 	mustWriteFile(t, filepath.Join(repo, deepest), "content")
 	runTestGit(t, repo, "add", ".")
 	runTestGit(t, repo, "commit", "-m", "add deep base path")
 
 	runID := "path-budget-local-ci"
 	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
-	available := len(filepath.FromSlash(deepest)) - 1
+	available := len(trackedPath) - 1
 	m.SetPathLengthLimits(map[string]PathLengthLimit{
 		repo: {MaxPathLength: len(checkoutPath) + 1 + available},
 	})
@@ -611,8 +625,8 @@ func TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef(t *testing.T) {
 	if err == nil {
 		t.Fatal("SyncBase Create succeeded despite base ref exhausting path budget")
 	}
-	if !strings.Contains(err.Error(), deepest) {
-		t.Fatalf("Create error %q does not name base ref path %q", err, deepest)
+	if !strings.Contains(err.Error(), trackedPath) {
+		t.Fatalf("Create error %q does not name base ref path %q", err, trackedPath)
 	}
 	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
 		t.Fatalf("checkout path exists after preflight failure: %v", statErr)
