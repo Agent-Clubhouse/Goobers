@@ -935,7 +935,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 			if !s.runMatches(summary, options) {
 				continue
 			}
-			matchesUsage, err := s.matchesTelemetryPopulation(ref.RunID, options)
+			matchesUsage, err := s.matchesTelemetryPopulation(ctx, ref.RunID, options)
 			if err != nil {
 				return RunList{}, err
 			}
@@ -1156,7 +1156,7 @@ func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage strin
 	}
 
 	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
-	if telemetryAttempts, err := s.telemetryStageAttempts(run.identity.RunID); err == nil {
+	if telemetryAttempts, err := s.telemetryStageAttempts(ctx, run.identity.RunID); err == nil {
 		attachStageAttemptModels(attempts, stage, telemetryAttempts)
 	}
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
@@ -1181,7 +1181,7 @@ func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAt
 // carrying its indexed requested model, when present) for runID. A missing
 // telemetry database is a valid empty result, matching RunSpans' contract:
 // model provenance is informational and must never make StageAttempts fail.
-func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, error) {
+func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
 	empty := []rollup.StageAttempt{}
 	db := s.sources.Telemetry
 	if db == nil {
@@ -1198,7 +1198,7 @@ func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, err
 		}
 		defer func() { _ = db.Close() }()
 	}
-	return db.StageAttempts(context.Background(), runID)
+	return db.StageAttempts(ctx, runID)
 }
 
 // RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
@@ -1212,7 +1212,7 @@ func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]
 	if _, err := s.openRun(runID); err != nil {
 		return nil, err
 	}
-	attempts, err := s.telemetryStageAttempts(runID)
+	attempts, err := s.telemetryStageAttempts(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1733,11 +1733,11 @@ func telemetryStagePopulation(population StagePopulation) bool {
 	}
 }
 
-func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions) (bool, error) {
+func (s *Local) matchesTelemetryPopulation(ctx context.Context, runID string, options RunListOptions) (bool, error) {
 	if !telemetryStagePopulation(options.StagePopulation) {
 		return true, nil
 	}
-	attempts, err := s.sources.Telemetry.StageAttempts(context.Background(), runID)
+	attempts, err := s.sources.Telemetry.StageAttempts(ctx, runID)
 	if err != nil {
 		return false, err
 	}

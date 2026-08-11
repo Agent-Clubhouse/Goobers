@@ -678,6 +678,26 @@ func TestUsageStagePopulationsSelectOnlyContributingAttempts(t *testing.T) {
 	}
 }
 
+func TestTelemetryStageAttemptQueriesHonorCancellation(t *testing.T) {
+	db, err := rollup.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service := &Local{sources: LocalSources{Telemetry: db}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := service.telemetryStageAttempts(ctx, "run-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("telemetryStageAttempts error = %v, want context.Canceled", err)
+	}
+	if _, err := service.matchesTelemetryPopulation(ctx, "run-1", RunListOptions{
+		StagePopulation: StagePopulationTokenMeasured,
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("matchesTelemetryPopulation error = %v, want context.Canceled", err)
+	}
+}
+
 func TestRetryWastePopulationSeparatesParallelBranches(t *testing.T) {
 	attempts := []rollup.StageAttempt{
 		{Stage: "research", Branch: 1, BranchKnown: true, Traversal: 1},
