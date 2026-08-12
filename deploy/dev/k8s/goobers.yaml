@@ -191,6 +191,19 @@ spec:
             - name: APPLICATIONINSIGHTS_CONNECTION_STRING
               valueFrom:
                 secretKeyRef: {name: otel-sink, key: connection-string}
+            # Downward API: deployment context the product cannot know about
+            # itself. The collector stamps these onto every span so "which node
+            # / which pod / which build" is a KQL filter rather than a guess.
+            - name: K8S_NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: K8S_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: K8S_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: GOOBERS_IMAGE
+              value: "${IMAGE}"
+            - name: GOOBERS_COMMIT
+              value: "${GOOBERS_COMMIT}"
           volumeMounts:
             - {name: otel-config, mountPath: /etc/otel}
           resources:

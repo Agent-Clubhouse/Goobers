@@ -43,16 +43,40 @@ data:
       batch:
         timeout: 5s
         send_batch_size: 512
-      # Tag everything with where it came from, so a future multi-cluster or
-      # multi-instance setup stays separable in KQL.
+      # Deployment context the PRODUCT cannot know and therefore never emits:
+      # which node, which pod, which namespace, which image. Sourced from the
+      # downward API (see the Deployment's env block) rather than from the
+      # k8sattributes processor, which would work but needs a ServiceAccount and
+      # a ClusterRole over pods/nodes/namespaces — real RBAC for information the
+      # kubelet will hand us for free.
+      #
+      # Names follow OTel resource semantic conventions so they mean the same
+      # thing to any backend, not just Application Insights.
       resource:
         attributes:
-          - key: goobers.cluster
-            value: aks-goobernetes
-            action: upsert
-          - key: goobers.instance
-            value: goobernetes-spike
-            action: upsert
+          - {key: goobers.cluster,     value: aks-goobernetes,   action: upsert}
+          - {key: goobers.instance,    value: goobernetes-spike, action: upsert}
+          - {key: k8s.node.name,       value: "${env:K8S_NODE_NAME}",  action: upsert}
+          - {key: k8s.pod.name,        value: "${env:K8S_POD_NAME}",   action: upsert}
+          - {key: k8s.namespace.name,  value: "${env:K8S_NAMESPACE}",  action: upsert}
+          - {key: k8s.container.name,  value: daemon,                  action: upsert}
+          - {key: container.image.name, value: "${env:GOOBERS_IMAGE}", action: upsert}
+          # service.version from the product is the VERSION build-arg ("spike"),
+          # which is constant across every build and therefore useless for telling
+          # two binaries apart. Carry the commit explicitly until the product emits
+          # it — this is exactly the blind spot that hid a phantom rebuild.
+          - {key: service.version,     value: "${env:GOOBERS_COMMIT}", action: upsert}
+          - {key: goobers.build.commit, value: "${env:GOOBERS_COMMIT}", action: upsert}
+
+      # Host and OS facts, detected rather than declared. `env` honours
+      # OTEL_RESOURCE_ATTRIBUTES; `system` supplies host.name/os.type; `aks`
+      # supplies cloud.* for the managed cluster.
+      resourcedetection:
+        detectors: [env, system, aks]
+        timeout: 5s
+        override: false
+        system:
+          hostname_sources: [os]
 
     exporters:
       azuremonitor:
@@ -67,11 +91,11 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [resource, batch]
+          processors: [resourcedetection, resource, batch]
           exporters: [azuremonitor, debug]
         logs:
           receivers: [otlp]
-          processors: [resource, batch]
+          processors: [resourcedetection, resource, batch]
           exporters: [azuremonitor, debug]
       telemetry:
         logs:
