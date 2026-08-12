@@ -60,4 +60,23 @@ runConditions:
   claimsLockTimeout: 30s
 telemetry:
   enabled: true
+  # Push the same spans the daemon already journals to an in-cluster OTel
+  # collector, which forwards them to Application Insights / Log Analytics for
+  # KQL. Nothing in the product changed to make this work — OTLP/gRPC push is
+  # already a shipped config surface, and the per-run spans/otlp.jsonl files are
+  # real OTLP JSON. This is infrastructure only.
+  #
+  # The collector runs as a SIDECAR, not a Service, and that is forced rather
+  # than chosen: `goobers validate` rejects plaintext OTLP to anything but
+  # loopback —
+  #   telemetry.otlp: endpoint "otel-collector.goobers.svc...:4317":
+  #   insecure mode is allowed only for localhost or a loopback IP
+  # A sound control, but it rules out the usual collector-Deployment pattern
+  # unless you terminate TLS at the collector. Containers in a pod share a
+  # network namespace, so a sidecar IS genuinely loopback and the control is
+  # satisfied honestly rather than worked around. The sink credential never
+  # travels this hop — the collector holds the App Insights connection string.
+  otlp:
+    endpoint: 127.0.0.1:4317
+    insecure: true
 timezone: America/Los_Angeles

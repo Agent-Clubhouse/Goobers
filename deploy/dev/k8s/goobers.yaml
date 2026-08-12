@@ -177,6 +177,21 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {memory: 1Gi}
+        # OTel collector SIDECAR, not a Deployment: see instance.yaml's telemetry
+        # block. Shares this pod's network namespace, so 127.0.0.1:4317
+        # satisfies the loopback-only rule for insecure OTLP honestly.
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.139.0
+          args: ["--config=/etc/otel/config.yaml"]
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef: {name: otel-sink, key: connection-string}
+          volumeMounts:
+            - {name: otel-config, mountPath: /etc/otel}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
       volumes:
         - name: instance
           persistentVolumeClaim: {claimName: goobers-instance}
@@ -184,6 +199,8 @@ spec:
           configMap: {name: goobers-instance-config}
         - name: home
           emptyDir: {}
+        - name: otel-config
+          configMap: {name: otel-collector-config}
         # Where the initContainer re-stages the CSI secrets at 0600. Memory-backed
         # so tokens never touch the node's disk.
         - name: secrets

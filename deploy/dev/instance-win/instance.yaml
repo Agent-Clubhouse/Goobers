@@ -43,4 +43,8 @@ runConditions:
   claimsLockTimeout: 30s
 telemetry:
   enabled: true
-timezone: America/Los_Angeles
+# UTC, not America/Los_Angeles: Windows containers ship no IANA tzdata, and
+# goobers.exe is not built with Go's embedded copy, so any IANA zone name fails
+# daemon startup with `unknown time zone America/Los_Angeles`. UTC resolves
+# because Go special-cases it without consulting the database.
+timezone: UTC

@@ -53,19 +53,61 @@ spec:
       initContainers:
         - name: seed
           image: ${IMAGE_WIN}
+          # ContainerUser cannot create a FILE at the root of the Azure Disk
+          # mount — it can create directories (tar's config\ tree succeeded),
+          # but writing instance.yaml there fails, as tar's
+          # "Can't create '\\?\C:\instance\instance.yaml'" and PowerShell's
+          # "Access to the path ... is denied". Seed as ContainerAdministrator,
+          # then hand the volume to ContainerUser so the daemon still runs
+          # unprivileged. There is no Windows equivalent of fsGroup to do this
+          # declaratively.
+          securityContext:
+            windowsOptions:
+              runAsUserName: "ContainerAdministrator"
           command: ["powershell", "-Command"]
           args:
             - |
               $ErrorActionPreference='Stop';
               Write-Host 'seeding instance config -> C:\instance';
+              # Windows Server 2022 ships bsdtar as tar.exe, and it reads the
+              # same tarball the Linux instance seeds from — but it CANNOT write
+              # a file directly into a volume-mount root. Extracting straight to
+              # C:\instance creates config\ fine and then fails on the one
+              # top-level file:
+              #   instance.yaml: Can't create '\\?\C:\instance\instance.yaml':
+              #   No such file or directory
+              # Directories tar creates itself are fine; a file at the mount root
+              # is not, via tar's extended-length (\\?\) path handling. Note the
+              # exit code is "delayed", so PowerShell's $ErrorActionPreference
+              # does not trip on it — the pod would look seeded and then fail at
+              # startup with "not an instance root". Extract to ordinary
+              # container-layer storage, then copy across.
+              if (Test-Path C:\seedtmp) { Remove-Item -Recurse -Force C:\seedtmp }
+              New-Item -ItemType Directory -Force -Path C:\seedtmp | Out-Null;
+              tar.exe xzf C:\seed\config.tgz -C C:\seedtmp;
+              if ($LASTEXITCODE -ne 0) { throw "tar failed with exit $LASTEXITCODE" }
               if (Test-Path C:\instance\config) { Remove-Item -Recurse -Force C:\instance\config }
-              # Windows Server 2022 ships bsdtar as tar.exe, so the same tarball
-              # the Linux instance uses works here unchanged.
-              tar.exe xzf C:\seed\config.tgz -C C:\instance;
-              Get-ChildItem -Recurse C:\instance\config | Select-Object -ExpandProperty FullName;
+              Copy-Item C:\seedtmp\instance.yaml C:\instance\instance.yaml -Force;
+              Copy-Item C:\seedtmp\config C:\instance\config -Recurse -Force;
+              if (-not (Test-Path C:\instance\instance.yaml)) { throw 'seed failed: instance.yaml missing' }
+              Write-Host '--- granting ContainerUser full control of the instance volume ---';
+              icacls C:\instance /grant 'ContainerUser:(OI)(CI)F' /T | Select-Object -Last 2;
+              Get-ChildItem -Recurse C:\instance | Select-Object -ExpandProperty FullName;
               Write-Host '--- staging secrets ---';
               New-Item -ItemType Directory -Force -Path C:\secrets | Out-Null;
-              Copy-Item C:\secrets-src\* C:\secrets\ -Force;
+              Get-ChildItem C:\secrets-src -File | ForEach-Object { Copy-Item $_.FullName (Join-Path C:\secrets $_.Name) -Force };
+              # The Windows twin of the Linux 0600 problem. internal/platform/secfile
+              # fail-closes on Windows via ACLs rather than mode bits, and a copied
+              # file inherits a grant to S-1-5-11 (Authenticated Users):
+              #   secret file is not private to its owner: C:\secrets\... grants
+              #   access to S-1-5-11 beyond its owner
+              # Break inheritance and grant only the running principal. This is the
+              # same finding as the CSI 0644 one, on the other OS — which means the
+              # gap is cross-platform, not a Linux packaging quirk.
+              Write-Host '--- locking down secret ACLs ---';
+              Get-ChildItem C:\secrets -File | ForEach-Object {
+                icacls $_.FullName /inheritance:r /grant:r 'ContainerAdministrator:F' | Out-Null
+              };
               Get-ChildItem C:\secrets
           volumeMounts:
             - {name: instance, mountPath: "C:\\instance"}
@@ -75,6 +117,18 @@ spec:
       containers:
         - name: daemon
           image: ${IMAGE_WIN}
+          # ContainerAdministrator, reluctantly. On startup goobers creates a
+          # "legacy runtime alias" symlink C:\instance\runs -> gaggles\<g>\runs.
+          # Creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege,
+          # which ContainerUser does not hold, so the daemon crash-loops with
+          #   create legacy runtime alias C:\instance\runs: symlink ...:
+          #   A required privilege is not held by the client.
+          # A directory JUNCTION would need no privilege, so this is fixable in
+          # the product; until then Windows cannot run the daemon unprivileged.
+          # Filed upstream — see the operator journal.
+          securityContext:
+            windowsOptions:
+              runAsUserName: "ContainerAdministrator"
           args: ["up", "--diagnostics", "C:\\instance"]
           env:
             - name: COPILOT_GITHUB_TOKEN

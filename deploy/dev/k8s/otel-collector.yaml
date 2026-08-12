@@ -1,0 +1,78 @@
+# OpenTelemetry Collector — the bridge between Goobers' OTLP push and a
+# KQL-queryable sink. SPIKE ARTIFACT.
+#
+# THIS FILE IS NOW ONLY THE CONFIGMAP. The collector runs as a SIDECAR in the
+# goobers pod (see goobers.yaml), because `goobers validate` refuses plaintext
+# OTLP to anything but loopback. A collector Deployment behind a Service would
+# need TLS; a sidecar shares the pod network namespace and is genuinely
+# loopback, so the control is satisfied rather than bypassed.
+#
+# Goobers already speaks OTLP/gRPC (`telemetry.otlp` in instance.yaml) and
+# writes real OTLP JSON per run, so NOTHING in the product changes to make this
+# work — this is pure infrastructure. Point telemetry.otlp.endpoint at the
+# Service below and spans start flowing.
+#
+# SINK CHOICE. The exporter is the only part that is sink-specific, and swapping
+# it is a few lines:
+#   - azuremonitor        -> Application Insights / Log Analytics. KQL, workbooks,
+#                            and ~$0 at this volume (inside the 5 GB/mo free tier).
+#                            This is what is enabled below.
+#   - azuredataexplorer   -> ADX. The reference substrate named in
+#                            docs/design/k8s-infra-shape.md §4, with native
+#                            OTELTraces/OTELLogs/OTELMetrics tables. Better at
+#                            scale, but the cheapest Dev cluster is ~$0.26/hr,
+#                            so run it for demo windows and `az kusto cluster stop`
+#                            when idle. Commented block at the bottom.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: goobers
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+      # Tag everything with where it came from, so a future multi-cluster or
+      # multi-instance setup stays separable in KQL.
+      resource:
+        attributes:
+          - key: goobers.cluster
+            value: aks-goobernetes
+            action: upsert
+          - key: goobers.instance
+            value: goobernetes-spike
+            action: upsert
+
+    exporters:
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+        # Spans carry goobers.run.id / goobers.gaggle / goobers.workflow as
+        # attributes; those land in customDimensions and are queryable in KQL.
+        spaneventsenabled: true
+      debug:
+        verbosity: basic
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [azuremonitor, debug]
+        logs:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [azuremonitor, debug]
+      telemetry:
+        logs:
+          level: info
