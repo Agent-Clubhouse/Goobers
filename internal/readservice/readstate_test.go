@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 )
 
@@ -104,6 +106,52 @@ func TestEnvelopeFailureDoesNotFailTheRequest(t *testing.T) {
 	}
 }
 
+func TestRunningRunListDoesNotWaitForFreshnessAnnotation(t *testing.T) {
+	model := blockingFreshnessReader{}
+	service := &Local{
+		sources:        LocalSources{ReadModel: model},
+		now:            time.Now,
+		readModelReads: true,
+	}
+
+	started := time.Now()
+	list, err := service.ListRuns(context.Background(), RunListOptions{
+		Phase: journal.PhaseRunning,
+		Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("running run list waited %s for optional freshness metadata", elapsed)
+	}
+	if len(list.Runs) != 1 || list.Runs[0].Phase != journal.PhaseRunning {
+		t.Fatalf("running run list = %+v", list.Runs)
+	}
+	if list.ReadState != nil {
+		t.Fatalf("timed-out freshness metadata = %+v, want omitted", list.ReadState)
+	}
+}
+
 // brokenReader implements just enough of readmodel.Reader to be attachable, and
 // deliberately does NOT implement FreshnessReporter.
 type brokenReader struct{ readmodel.Reader }
+
+type blockingFreshnessReader struct{ readmodel.Reader }
+
+func (blockingFreshnessReader) ListRuns(context.Context, readmodel.ListOptions) (readmodel.ListPage, error) {
+	return readmodel.ListPage{Runs: []readmodel.RunRow{{Phase: journal.PhaseRunning}}}, nil
+}
+
+func (blockingFreshnessReader) ReadState(ctx context.Context, _ readmodel.ReadStateInput) (readmodel.ReadState, error) {
+	<-ctx.Done()
+	return readmodel.ReadState{}, ctx.Err()
+}
+
+func (blockingFreshnessReader) SourceApplied(context.Context, string) (readmodel.SourcePosition, bool, error) {
+	return readmodel.SourcePosition{}, false, nil
+}
+
+func (blockingFreshnessReader) SatisfiesSourceApplied(context.Context, readmodel.SourcePosition) (bool, error) {
+	return false, nil
+}
