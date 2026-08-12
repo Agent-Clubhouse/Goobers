@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -44,6 +45,12 @@ type workerSeams struct {
 type gaggleSeams struct {
 	cfg     runner.Config
 	runsDir string
+	// manager is buildRunnerConfig's own worktree manager — the CREDENTIALED
+	// one. workerEngineDeps builds a bare manager with no git auth, which
+	// clones fine for a public repo and fails on a private one with
+	// "could not read Username for 'https://github.com'". Workspace
+	// provisioning has to use this one instead.
+	manager *worktree.Manager
 }
 
 // newWorkerSeams loads an instance from root and prepares per-gaggle executor
@@ -110,7 +117,7 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	}
 
 	project := gaggleProjectRef(set, gaggle)
-	runnerCfg, _, err := buildRunnerConfig(
+	runnerCfg, credentialedMgr, err := buildRunnerConfig(
 		scoped, cfg, goobers, instructions,
 		nil, // telemetry: the worker's spans come from the engine, not this client
 		w.shared, wtMgr, branchNamespacesByGaggle(set), project, nil,
@@ -122,7 +129,10 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 		return nil, fmt.Errorf("worker: build runner config for gaggle %q: %w", gaggle, err)
 	}
 
-	g := &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir()}
+	if credentialedMgr == nil {
+		credentialedMgr = wtMgr
+	}
+	g := &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr}
 	w.byGaggle[gaggle] = g
 	return g, nil
 }
@@ -142,6 +152,37 @@ func (w *workerSeams) Deterministic() invoke.Deterministic { return workerDet{se
 
 // Agentic returns the engine's agentic seam.
 func (w *workerSeams) Agentic() invoke.Goober { return workerGoober{seams: w} }
+
+// Workspaces returns the engine's workspace provisioner, dispatching per
+// gaggle to that gaggle's CREDENTIALED worktree manager.
+//
+// This matters more than it looks. workerEngineDeps builds a worktree manager
+// with no git environment at all — no GIT_ASKPASS, no per-repo token — because
+// at that point the worker has no instance and therefore no credentials. It
+// clones a public repo happily and fails a private one with
+//
+//	could not read Username for 'https://github.com': No such device or address
+//
+// which reads like a missing tty and is actually a missing token. Observed on
+// the first real engine dispatch (run 018119aa…), where the activity reached
+// the worker correctly and died provisioning its workspace.
+func (w *workerSeams) Workspaces(scratchRoot string) engine.WorkspaceProvisioner {
+	return &workerWorkspaces{seams: w, scratchRoot: scratchRoot}
+}
+
+type workerWorkspaces struct {
+	seams       *workerSeams
+	scratchRoot string
+}
+
+func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRequest) (engine.Workspace, error) {
+	g, err := p.seams.forGaggle(req.Gaggle)
+	if err != nil {
+		return nil, err
+	}
+	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot}
+	return delegate.Provision(ctx, req)
+}
 
 type workerDet struct{ seams *workerSeams }
 

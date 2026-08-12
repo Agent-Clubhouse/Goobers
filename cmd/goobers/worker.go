@@ -107,6 +107,10 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		deps.Goober = seams.Agentic()
 		deps.Det = seams.Deterministic()
+		// Replace the uncredentialed provisioner too: workerEngineDeps builds
+		// its worktree manager before any instance is known, so it has no git
+		// auth and cannot clone a private repo.
+		deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
 	}
 	host, err := workerhost.New(workerhost.Config{
