@@ -123,6 +123,13 @@ spec:
             - "temporal-frontend.temporal.svc.cluster.local:7233"
             - "--work-root"
             - "C:\\work"
+            # THE SAME SHARE THE LINUX WORKER WRITES. This is the fleet's
+            # content-addressed artifact store, and the only volume in the spike
+            # two nodes — two operating systems — touch at once. Without it this
+            # worker can be SENT a stage and still cannot read what the previous
+            # stage produced.
+            - "--blob-store"
+            - "C:\\blobs"
           env:
             - name: COPILOT_GITHUB_TOKEN
               valueFrom:
@@ -131,6 +138,7 @@ spec:
             - {name: instance, mountPath: "C:\\instance"}
             - {name: secrets, mountPath: "C:\\mnt\\secrets"}
             - {name: work, mountPath: "C:\\work"}
+            - {name: blobs, mountPath: "C:\\blobs"}
           resources:
             requests: {cpu: 500m, memory: 2Gi}
             limits: {memory: 6Gi}
@@ -145,3 +153,5 @@ spec:
           emptyDir: {}
         - name: work
           emptyDir: {}
+        - name: blobs
+          persistentVolumeClaim: {claimName: goobers-blobs}

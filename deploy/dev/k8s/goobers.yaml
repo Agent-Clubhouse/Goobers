@@ -70,6 +70,21 @@ spec:
     requests:
       storage: 20Gi
 ---
+# The fleet artifact store. Azure Files rather than a managed disk because it is
+# the one thing here that must be ReadWriteMany: a Linux node and a Windows node
+# read and write it concurrently.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-blobs
+  namespace: goobers
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: 10Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -195,6 +210,20 @@ spec:
             - "--temporal-hostport=temporal-frontend.temporal.svc.cluster.local:7233"
             - "--task-queue=goobers-spike"
             - "--work-root=/instance/workercache"
+            # The fleet's content-addressed artifact store, on an RWX Azure
+            # Files share the Windows worker mounts too. Without it a run is
+            # only safely served by ONE worker: stage artifacts stay on the node
+            # that produced them and the first cross-node ContextPointer fails
+            # closed.
+            #
+            # Worth noting WHICH weakness of this storage class does not matter
+            # here. Azure Files has no dependable POSIX locking, which is why
+            # `doctor --k8s` blessing it as rwx-capable is a false green for the
+            # journal and the claim ledger. A content-addressed store never
+            # locks: a digest is written once, by rename, and two writers racing
+            # on one digest are writing identical bytes. The store is safe on
+            # exactly the filesystem the journal is not.
+            - "--blob-store=/blobs"
           env:
             - name: COPILOT_GITHUB_TOKEN
               valueFrom:
@@ -206,6 +235,7 @@ spec:
             - {name: secrets, mountPath: /mnt/secrets, readOnly: true}
             - {name: secrets-csi, mountPath: /mnt/secrets-store, readOnly: true}
             - {name: home, mountPath: /home/nonroot}
+            - {name: blobs, mountPath: /blobs}
           resources:
             requests: {cpu: 200m, memory: 512Mi}
             limits: {memory: 4Gi}
@@ -255,3 +285,7 @@ spec:
             driver: secrets-store.csi.k8s.io
             readOnly: true
             volumeAttributes: {secretProviderClass: goobers-kv}
+        # ReadWriteMany, and mounted by the Windows worker as well. This is the
+        # only volume in the whole spike that two nodes touch at once.
+        - name: blobs
+          persistentVolumeClaim: {claimName: goobers-blobs}
