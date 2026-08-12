@@ -65,6 +65,25 @@ func StagingArtifactsDir(runsDir, runID string) string {
 	return filepath.Join(runsDir, ".staging-artifacts", runID)
 }
 
+// RecordSpanWithSchema records a within-stage trace span — in practice the
+// AGENT TRANSCRIPT (goobers.dev/telemetry/genai-event/v1 blobs). Stored under
+// spans/ rather than artifacts/, matching journal.Run's layout so a projection
+// can adopt these by digest.
+//
+// Required for the same reason the bounded recorder is: the harness executor
+// type-asserts its recorder to harness.SpanRecorder and refuses to construct
+// without it — "runner artifact recorder does not implement
+// harness.SpanRecorder" — so an agentic stage fails at construction.
+//
+// Note what this makes concrete: transcripts DO have a durable home on the
+// engine path now. What they still lack is a way into the projected journal —
+// the projection whitelist has no span kind at all, so these blobs are on disk
+// and digest-addressed but unreferenced. That is the remaining half of the
+// artifact/transcript projection gap.
+func (s *StagingArtifacts) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
+	return s.recordUnder("spans", name, data, apiv1.IntegrityDerived, true)
+}
+
 // RecordArtifactBounded is RecordArtifact with a byte limit applied AFTER
 // scrubbing, at the same boundary that writes and digests the blob — matching
 // journal.Run so a truncated artifact still has a digest that commits to the
@@ -109,6 +128,10 @@ func (s *StagingArtifacts) RecordArtifact(name string, data []byte) (journal.Ref
 }
 
 func (s *StagingArtifacts) record(name string, data []byte, integrity apiv1.Integrity, scrub bool) (journal.Ref, error) {
+	return s.recordUnder("artifacts", name, data, integrity, scrub)
+}
+
+func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity apiv1.Integrity, scrub bool) (journal.Ref, error) {
 	if s == nil || s.Dir == "" {
 		return journal.Ref{}, fmt.Errorf("workerhost: staging artifacts not configured")
 	}
@@ -117,7 +140,7 @@ func (s *StagingArtifacts) record(name string, data []byte, integrity apiv1.Inte
 	}
 	sum := sha256.Sum256(data)
 	digest := hex.EncodeToString(sum[:])
-	rel := filepath.Join("artifacts", "sha256", digest[:2], digest[2:])
+	rel := filepath.Join(kind, "sha256", digest[:2], digest[2:])
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
