@@ -1834,6 +1834,40 @@ func TestManager_FinalizeRunRemovesOwnedWorktreesAndPreservesOthers(t *testing.T
 	}
 }
 
+func TestManager_FinalizeRunRemovesBranchAcquisitionMarker(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	const (
+		runID  = "terminal-run"
+		branch = "goobers/implementation/selected"
+	)
+	runTestGit(t, repo, "branch", branch)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID + "-verify", OwnerRunID: runID,
+		BaseRef: "main", Branch: branch, RequireExistingBranch: true, AcquireRemoteBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	acquisitionPath := m.branchAcquisitionPath(wt.key, runID, branch)
+	if _, err := os.Stat(acquisitionPath); err != nil {
+		t.Fatalf("branch acquisition marker: %v", err)
+	}
+	repoDir := m.repoDirForKey(wt.key)
+	if refs := strings.TrimSpace(runTestGit(t, repoDir, "for-each-ref", "--format=%(refname)", "refs/goobers/acquired")); refs != "" {
+		t.Fatalf("branch acquisition retained git refs: %s", refs)
+	}
+
+	if _, err := m.FinalizeRun(ctx, runID); err != nil {
+		t.Fatalf("FinalizeRun: %v", err)
+	}
+	if _, err := os.Stat(acquisitionPath); !os.IsNotExist(err) {
+		t.Fatalf("branch acquisition marker survived finalization: %v", err)
+	}
+}
+
 func TestManager_FinalizeRunPreservesKeptWorktree(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

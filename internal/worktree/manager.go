@@ -380,6 +380,16 @@ func (m *Manager) markerPath(key, runID string) string {
 	return filepath.Join(m.markersDirForKey(key), runID+".json")
 }
 
+func (m *Manager) branchAcquisitionRunDir(key, ownerRunID string) string {
+	sum := sha256.Sum256([]byte(ownerRunID))
+	return filepath.Join(m.Root, key, "acquisitions", hex.EncodeToString(sum[:]))
+}
+
+func (m *Manager) branchAcquisitionPath(key, ownerRunID, branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	return filepath.Join(m.branchAcquisitionRunDir(key, ownerRunID), hex.EncodeToString(sum[:])+".json")
+}
+
 // lockFor returns the per-repo mutex used to serialize clone/fetch and
 // worktree-add for a given repo, creating it on first use.
 func (m *Manager) lockFor(key string) *sync.Mutex {
