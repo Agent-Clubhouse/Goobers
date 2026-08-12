@@ -1,0 +1,147 @@
+# Goobernetes Spike 2 — the Windows half of an OS-spanning run.
+# SPIKE ARTIFACT. Substituted by deploy-worker-win.sh.
+#
+# This is NOT the Spike 0-W instance. 0-W was a second, fully isolated Goobers
+# (own namespace, own daemon, own backlog) that happened to run on Windows. This
+# is one *worker* for the SAME run as the Linux instance: same gaggle, same
+# workflow definitions, same Temporal namespace, different task queue and
+# different operating system.
+#
+# It lives in the goobers namespace with the Linux pod on purpose. A worker is
+# not an instance — it owns no claim ledger, mints no runs, serves no API. It
+# polls a queue, provisions a workspace, executes one stage, and returns a
+# result envelope. That is the whole contract, and it is why one run can be
+# split across two of these on two operating systems.
+#
+# The instance config it is seeded with is the LINUX instance's, byte for byte
+# (deploy/dev/instance), because workerSeams.forGaggle resolves the gaggle,
+# goobers, and workflow definitions from that config. Two workers disagreeing
+# about what "testbed-minimal" means would be a much worse failure than not
+# having a second worker at all.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-worker-win
+  namespace: goobers
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: managed-csi-premium
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker-win
+  namespace: goobers
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: goobers-worker-win}
+  template:
+    metadata:
+      labels: {app: goobers-worker-win}
+    spec:
+      serviceAccountName: goobers-sa
+      nodeSelector:
+        kubernetes.io/os: windows
+      initContainers:
+        - name: seed
+          image: ${IMAGE_WIN}
+          imagePullPolicy: Always
+          # Every workaround below is one already learned on Spike 0-W and kept
+          # verbatim, because none of them are fixed yet: tar cannot write a
+          # file into a volume-mount root, ContainerUser cannot create one
+          # there, and a copied secret inherits a grant to Authenticated Users
+          # that secfile fail-closes on.
+          securityContext:
+            windowsOptions:
+              runAsUserName: "ContainerAdministrator"
+          command: ["powershell", "-Command"]
+          args:
+            - |
+              $ErrorActionPreference='Stop';
+              Write-Host 'seeding LINUX instance config -> C:\instance';
+              if (Test-Path C:\seedtmp) { Remove-Item -Recurse -Force C:\seedtmp }
+              New-Item -ItemType Directory -Force -Path C:\seedtmp | Out-Null;
+              tar.exe xzf C:\seed\config.tgz -C C:\seedtmp;
+              if ($LASTEXITCODE -ne 0) { throw "tar failed with exit $LASTEXITCODE" }
+              if (Test-Path C:\instance\config) { Remove-Item -Recurse -Force C:\instance\config }
+              Copy-Item C:\seedtmp\instance.yaml C:\instance\instance.yaml -Force;
+              Copy-Item C:\seedtmp\config C:\instance\config -Recurse -Force;
+              if (-not (Test-Path C:\instance\instance.yaml)) { throw 'seed failed: instance.yaml missing' }
+              icacls C:\instance /grant 'ContainerUser:(OI)(CI)F' /T | Select-Object -Last 1;
+              # Staged at C:\mnt\secrets, not C:\secrets, and that is the whole
+              # trick that lets ONE instance.yaml serve both operating systems.
+              # Its token refs are absolute POSIX paths (/mnt/secrets/...),
+              # because a file ref is a literal path with no OS abstraction over
+              # it. Windows resolves a leading "/" against the CURRENT DRIVE, so
+              # /mnt/secrets/goobers-testbed-token opens C:\mnt\secrets\...
+              # and the same config is honest on both.
+              #
+              # It works, and it is a coincidence, not a design. Any ref naming a
+              # real Linux location (/etc/..., /var/...) has no such twin, so
+              # instance config is portable across a mixed fleet only by
+              # accident. → file token refs are not OS-portable.
+              Write-Host '--- staging secrets -> C:\mnt\secrets ---';
+              New-Item -ItemType Directory -Force -Path C:\mnt\secrets | Out-Null;
+              Get-ChildItem C:\secrets-src -File | ForEach-Object { Copy-Item $_.FullName (Join-Path C:\mnt\secrets $_.Name) -Force };
+              Get-ChildItem C:\mnt\secrets -File | ForEach-Object {
+                icacls $_.FullName /inheritance:r /grant:r 'ContainerAdministrator:F' | Out-Null
+              };
+              Get-ChildItem C:\mnt\secrets | Select-Object Name
+          volumeMounts:
+            - {name: instance, mountPath: "C:\\instance"}
+            - {name: seed, mountPath: "C:\\seed"}
+            - {name: secrets-src, mountPath: "C:\\secrets-src", readOnly: true}
+            - {name: secrets, mountPath: "C:\\mnt\\secrets"}
+      containers:
+        - name: worker
+          image: ${IMAGE_WIN}
+          imagePullPolicy: Always
+          # ContainerAdministrator for the same reason the 0-W daemon needs it
+          # (symlink privilege on the legacy runtime alias) plus the secret ACLs
+          # staged above, which grant only this principal.
+          securityContext:
+            windowsOptions:
+              runAsUserName: "ContainerAdministrator"
+          # THE ONE LINE THAT MAKES THIS THE WINDOWS HALF: the queue suffix.
+          # engine.stageTaskQueue sends a stage declaring os=windows to
+          # "<workflow queue>-windows"; nothing else routes here, so this worker
+          # is unreachable except by a stage that asked for it.
+          args:
+            - "worker"
+            - "--instance"
+            - "C:\\instance"
+            - "--task-queue"
+            - "goobers-spike-windows"
+            - "--temporal-hostport"
+            - "temporal-frontend.temporal.svc.cluster.local:7233"
+            - "--work-root"
+            - "C:\\work"
+          env:
+            - name: COPILOT_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: goobers-secrets-win, key: copilot-token}
+          volumeMounts:
+            - {name: instance, mountPath: "C:\\instance"}
+            - {name: secrets, mountPath: "C:\\mnt\\secrets"}
+            - {name: work, mountPath: "C:\\work"}
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits: {memory: 6Gi}
+      volumes:
+        - name: instance
+          persistentVolumeClaim: {claimName: goobers-worker-win}
+        - name: seed
+          configMap: {name: goobers-worker-win-config}
+        - name: secrets-src
+          secret: {secretName: goobers-secrets-win}
+        - name: secrets
+          emptyDir: {}
+        - name: work
+          emptyDir: {}

@@ -25,9 +25,16 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"The tier-3 engine is not on the local (V0) execution path; this command is\n" +
 	"the deployable worker shape for the cloud ladder. Automated gate checks and\n" +
 	"workspace provisioning (git worktrees + scratch dirs under --work-root) are\n" +
-	"wired; agentic and deterministic executor seams arrive with the runtime\n" +
-	"wiring slice, and stages needing them fail closed with a clear error.\n\n" +
+	"always wired. Pass --instance to also wire the real agentic and\n" +
+	"deterministic executors, built from that instance's config through the same\n" +
+	"path the local runner uses; without it, stages needing them fail closed.\n\n" +
+	"A stage may be polled from a queue other than the workflow's: one declaring\n" +
+	"requiredCapabilities [os=windows] is dispatched to \"<queue>-windows\". Serve\n" +
+	"that queue from a Windows worker and one run spans both operating systems.\n\n" +
 	"Flags:\n" +
+	"  --instance <dir>           instance root; wires the real agentic and\n" +
+	"                             deterministic executors (default\n" +
+	"                             $GOOBERS_INSTANCE_ROOT)\n" +
 	"  --task-queue <queue>       task queue to serve; repeatable for multiple\n" +
 	"                             queues (default $GOOBERS_TASK_QUEUE, else\n" +
 	"                             \"goobers-engine\")\n" +

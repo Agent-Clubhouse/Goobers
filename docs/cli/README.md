@@ -3203,10 +3203,18 @@ polling and let in-flight activities finish within --drain-timeout.
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
 workspace provisioning (git worktrees + scratch dirs under --work-root) are
-wired; agentic and deterministic executor seams arrive with the runtime
-wiring slice, and stages needing them fail closed with a clear error.
+always wired. Pass --instance to also wire the real agentic and
+deterministic executors, built from that instance's config through the same
+path the local runner uses; without it, stages needing them fail closed.
+
+A stage may be polled from a queue other than the workflow's: one declaring
+requiredCapabilities [os=windows] is dispatched to "<queue>-windows". Serve
+that queue from a Windows worker and one run spans both operating systems.
 
 Flags:
+  --instance <dir>           instance root; wires the real agentic and
+                             deterministic executors (default
+                             $GOOBERS_INSTANCE_ROOT)
   --task-queue <queue>       task queue to serve; repeatable for multiple
                              queues (default $GOOBERS_TASK_QUEUE, else
                              "goobers-engine")
