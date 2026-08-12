@@ -80,24 +80,16 @@ values in YAML:
 ```sh
 export GOOBERS_GITHUB_TOKEN=github_pat_...
 export GOOBERS_COPILOT_TOKEN=github_pat_...
+export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
 `GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`. Goobers injects
 it as `COPILOT_GITHUB_TOKEN` only into agentic subprocesses that declare
-`agent:model`.
-
-The harness preflight intentionally runs with a default-deny base environment,
-so it does not inherit an ambient `COPILOT_GITHUB_TOKEN`. Before validation,
-sign in once with the same OS account that will run the daemon:
-
-```sh
-copilot login
-```
-
-Complete the device flow and keep that account's credential store (or
-`~/.copilot/` fallback) persistent. `validate --check-harness` and daemon
-startup use this stored sign-in; live agentic stages use the capability-scoped
-token from `instance.yaml`.
+`agent:model`. The separate `COPILOT_GITHUB_TOKEN` export lets the harness
+preflight authenticate before that capability credential is resolved. The
+preflight copies the ambient value only into its tool-disabled sign-in probe;
+it does not expose the token to unrelated stages. Alternatively, run `copilot
+login` as the daemon's OS account and persist that account's credential store.
 
 The reviewer in this guide is an agentic gate that returns a journaled verdict;
 it does not submit a native GitHub review. A separate
