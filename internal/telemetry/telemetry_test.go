@@ -59,6 +59,7 @@ func TestResourceIncludesEnvironmentAndBuildIdentity(t *testing.T) {
 	registry.Register([]byte(secret))
 	exporter := NewMemoryExporter()
 	client, err := New(context.Background(), Config{
+		ServiceName:    "configured-service",
 		ServiceVersion: "v1.2.3",
 		BuildCommit:    "abc1234",
 		Environment:    "production",

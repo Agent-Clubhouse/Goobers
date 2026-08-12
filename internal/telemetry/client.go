@@ -82,8 +82,8 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			attribute.String("service.name", "goobers"),
 			attribute.String("service.instance.id", instanceID),
 		),
-		resource.WithFromEnv(),
 		resource.WithAttributes(resourceAttrs(cfg)...),
+		resource.WithFromEnv(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
