@@ -93,14 +93,16 @@ telemetry:
   otlp:
     endpoint: 127.0.0.1:4317
     insecure: true
-# UTC, temporarily, and the reason is the finding rather than a preference.
+# A LOCATION NAME ON PURPOSE — this line is the regression test for #2863.
 #
-# Windows containers ship no IANA database, so a Windows worker cannot load ANY
-# location name — it refused this exact file with
+# Windows containers ship no IANA database, so before the fix a Windows worker
+# could not load ANY location name. It refused this exact file with
 #   timezone "America/Los_Angeles": unknown time zone America/Los_Angeles
-# while the Linux daemon read it happily. One instance.yaml has to serve both
-# halves of a mixed fleet, so that does not degrade the fleet, it makes it
-# unrunnable. Filed #2863; fixed in-branch by embedding Go's tzdata on Windows.
-# Restore a location name once a Windows image carrying that fix is deployed —
-# it is the proof the fix works.
-timezone: UTC
+# while the Linux daemon read it happily — which is what turned an adopter
+# annoyance into a fleet-stopper, since one instance.yaml has to serve both
+# halves of a mixed fleet.
+#
+# Fixed by embedding Go's tzdata on Windows (cmd/goobers/tzdata_windows.go).
+# If a Windows worker starts against this file, the fix works; if this ever
+# reverts to UTC, something regressed and the note above says what.
+timezone: America/Los_Angeles
