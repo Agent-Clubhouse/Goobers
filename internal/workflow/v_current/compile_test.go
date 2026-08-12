@@ -475,6 +475,15 @@ func TestCompileRejectsBadSchedule(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsScheduleThatNeverFires(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "0 0 30 2 *"}}
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "can never fire") {
+		t.Fatalf("expected unsatisfiable-schedule error, got %v", err)
+	}
+}
+
 func TestValidSchedulesAccepted(t *testing.T) {
 	for _, ok := range []string{"0 * * * *", "*/5 0 * * * *", "@daily", "@hourly", "@every 1h30m", "0 0 1 * *"} {
 		spec := linearSpec()
