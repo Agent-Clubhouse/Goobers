@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -57,5 +58,36 @@ func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 	}
 	if tag := binary.LittleEndian.Uint32(data[:4]); tag != ioReparseTagMountPoint {
 		t.Fatalf("reparse tag = %#x, want mount point %#x", tag, ioReparseTagMountPoint)
+	}
+}
+
+func TestRuntimeDirsSkipJunctionAliases(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	if err := layout.EnsureGaggleRuntime("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	scoped := layout.ForGaggle("alpha")
+	for _, pair := range [][2]string{
+		{layout.RunsDir(), scoped.RunsDir()},
+		{layout.WorkcopiesDir(), scoped.WorkcopiesDir()},
+	} {
+		if err := createLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runs, err := layout.RunDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{scoped.RunsDir()}; !reflect.DeepEqual(runs, want) {
+		t.Fatalf("RunDirs = %v, want %v", runs, want)
+	}
+	workcopies, err := layout.WorkcopiesDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{scoped.WorkcopiesDir()}; !reflect.DeepEqual(workcopies, want) {
+		t.Fatalf("WorkcopiesDirs = %v, want %v", workcopies, want)
 	}
 }
