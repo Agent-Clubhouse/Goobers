@@ -59,17 +59,24 @@ func LoadConfig(path string) (Config, error) {
 
 // WriteConfig writes cfg to path, creating parent directories as needed.
 // Called from the harness side (internal/harness), not by this server
-// itself.
-// WriteConfig resolves rel against root (a task's own worktree, which may
-// contain repository-controlled content) and writes cfg there, returning
-// the resolved absolute path. This runs in the harness's own process,
-// before the spawned copilot subprocess is sandboxed — so, unlike a normal
+// itself. See WriteJSON for the symlink-safety rationale.
+func WriteConfig(root, rel string, cfg Config) (string, error) {
+	return WriteJSON(root, rel, cfg)
+}
+
+// WriteJSON marshals v and writes it to rel resolved against root (a task's
+// own worktree, which may contain repository-controlled content), returning
+// the resolved absolute path. This is the generic form of WriteConfig, also
+// used by harness adapters writing other pre-invocation MCP config shapes
+// (e.g. a goober's declared mcpServers materialization — #1492) that aren't
+// this package's own Config type. It runs in the harness's own process,
+// before the spawned harness subprocess is sandboxed — so, unlike a normal
 // os.MkdirAll+os.WriteFile, it must not follow a symlink planted at rel or
 // any not-yet-existing intermediate component of it (see resolveRooted's
 // doc comment and #2413, which tracks the same gap at other pre-sandbox
 // harness writes into a workspace).
-func WriteConfig(root, rel string, cfg Config) (string, error) {
-	data, err := json.Marshal(cfg)
+func WriteJSON(root, rel string, v any) (string, error) {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return "", fmt.Errorf("mcpio: encode config: %w", err)
 	}

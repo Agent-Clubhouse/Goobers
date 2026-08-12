@@ -45,9 +45,12 @@ reference assumes:
   repository, and schedule/webhook support for workflows that use those
   triggers.
 - A configured Copilot or Claude Code agent harness, including its model
-  authentication, for every agentic goober. The `acme-web` implementer demonstrates
-  `claude-code`; the other examples use `copilot`. Deterministic-only policy
-  workflows do not need a model.
+  authentication, for every agentic goober. `acme-web`'s implementer
+  demonstrates `claude-code`, its other goobers and the polyglot examples use
+  `copilot`; `acme-web-claude` is the same gaggle run entirely on
+  `claude-code` instead (#2777's additive fleet posture — a parallel
+  demonstration alongside `acme-web`, not a replacement for it). Deterministic-only
+  policy workflows do not need a model.
 - GitHub project and backlog connections named `github-main` and
   `github-backlog`. The example resolves `github-pat` from the `acme-kv` key
   vault; an adapted credential must grant only the capabilities listed below.
@@ -64,6 +67,7 @@ reference assumes:
 | Gaggle | Contents | Runner and tools | Credentials |
 |---|---|---|---|
 | `acme-web` | Six goobers and nine workflow examples spanning implementation, backlog operations, docs, merge, and policy | `node@20`, npm, POSIX `sh`, git, Goobers; Copilot or Claude Code for agentic stages | GitHub repo and backlog connections; grants vary by family below |
+| `acme-web-claude` | The same six-goober, nine-workflow shape as `acme-web`, entirely on `claude-code` (#2777's additive parallel gaggle — proves the fleet doesn't lose Copilot coverage by dogfooding Claude Code, or vice versa) | `node@20`, npm, POSIX `sh`, git, Goobers, Claude Code for agentic stages | GitHub repo and backlog connections; grants vary by family below |
 | `dotnet-service` | Implementer + reviewer and `dotnet-implementation` | `dotnet@9`, .NET 9 SDK, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |
 | `java-service` | Implementer + reviewer and `java-implementation` | `java@21`, Maven, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |
 | `python-service` | Implementer + reviewer and `python-implementation` | `python@3.12`, pytest, git, Goobers, Copilot | Repository push for the implementer; no provider mutation in this focused workflow |

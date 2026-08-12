@@ -54,6 +54,13 @@ spec:
   # object under gaggles/<name>/.
   gaggles:
     - acme-web
+    # Fleet posture (#2777): claude-code adoption alongside Copilot, not a
+    # conversion — acme-web's Copilot config above is untouched. Additive
+    # parallel gaggle working the same reference repo under claude-code, so
+    # the shipped fleet exercises both harnesses rather than leaving one
+    # undogfooded. In a real instance manifest, running both is optional —
+    # this listing just proves neither one costs the other.
+    - acme-web-claude
     # Polyglot reference (PLY-4 / #1093): a C#/.NET gaggle sharing the same
     # connections + workflow machinery, differing only in its declared .NET CI
     # command and `dotnet@9` runtime requirement.

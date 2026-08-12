@@ -106,6 +106,7 @@ func TestGuidedInitInstallsAgentToolkitForEachHarness(t *testing.T) {
 				"app-org/widget-service",
 				"",
 				"work-nomination",
+				"", // accept the default harness (copilot)
 				"",
 				"",
 				"",
@@ -488,6 +489,7 @@ func TestGuidedInitDeclinedRemoteCreateKeepsLocalSource(t *testing.T) {
 		"app-org/widget-service",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -541,6 +543,7 @@ func TestGuidedInitCreatesConfirmedEmptyGitHubRepository(t *testing.T) {
 		"app-org/widget-service",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -597,6 +600,7 @@ func TestGuidedInitRequiresConfiguredTokenBeforeRemoteCreate(t *testing.T) {
 		"app-org/widget-service",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
