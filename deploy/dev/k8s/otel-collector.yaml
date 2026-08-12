@@ -71,12 +71,16 @@ data:
       # Host and OS facts, detected rather than declared. `env` honours
       # OTEL_RESOURCE_ATTRIBUTES; `system` supplies host.name/os.type; `aks`
       # supplies cloud.* for the managed cluster.
+      # `system` is deliberately OMITTED. In a pod network namespace the hostname
+      # IS the pod name, so system's host.name duplicates k8s.pod.name under a key
+      # that implies "node" — actively misleading. Verified live: it produced
+      # host.name=goobers-59dcdf6796-bk8b7, which is the pod, not the node.
+      # `env` reads OTEL_RESOURCE_ATTRIBUTES (the collector honours it even though
+      # the product's SDK does not — see the filed issue); `aks` supplies cloud.*.
       resourcedetection:
-        detectors: [env, system, aks]
+        detectors: [env, aks]
         timeout: 5s
         override: false
-        system:
-          hostname_sources: [os]
 
     exporters:
       azuremonitor:
