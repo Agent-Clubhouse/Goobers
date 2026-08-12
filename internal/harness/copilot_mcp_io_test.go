@@ -362,20 +362,31 @@ func TestGoobersIOPromptSection(t *testing.T) {
 	}
 }
 
-func TestRenderPromptIncludesGoobersIOSectionOnlyWhenEligible(t *testing.T) {
+// TestRenderPromptIncludesGoobersIOSectionOnlyWhenRegistered pins #2774's
+// gating fix: the prompt section is keyed off req.GoobersIORegistered (set
+// by an adapter only once it has actually wired the MCP server), not off
+// eligibility alone (req.Envelope.RunID != ""). Before #2774, a valid
+// invocation on any adapter that hadn't wired goobers-io — claude-code, at
+// the time — still got instructed to call tools that didn't exist there.
+func TestRenderPromptIncludesGoobersIOSectionOnlyWhenRegistered(t *testing.T) {
 	workspace := t.TempDir()
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
 		CompletionPath: "result.json",
 	}
+	if strings.Contains(renderPrompt(req), "## goobers-io tools") {
+		t.Fatal("must not include the goobers-io section when the adapter never registered the server")
+	}
+
+	req.GoobersIORegistered = true
 	if !strings.Contains(renderPrompt(req), "## goobers-io tools") {
-		t.Fatal("must include the goobers-io section for every valid invocation")
+		t.Fatal("must include the goobers-io section once the adapter registered the server")
 	}
 
 	req.Envelope.Inputs = map[string]interface{}{InputArtifactFile: "out.md"}
 	rendered := renderPrompt(req)
 	if !strings.Contains(rendered, "## goobers-io tools") || !strings.Contains(rendered, "publish_output") {
-		t.Fatalf("expected the goobers-io section once eligible, got:\n%s", rendered)
+		t.Fatalf("expected the goobers-io section once eligible and registered, got:\n%s", rendered)
 	}
 }

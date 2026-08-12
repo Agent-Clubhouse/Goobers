@@ -70,7 +70,13 @@ type GuidedOptions struct {
 	WorkTrackingTokenEnv string
 	PullRequestTokenEnv  string
 	RepoPushTokenEnv     string
+	// Harness selects the agent harness every generated agentic goober uses
+	// (apiv1.HarnessCopilot or apiv1.HarnessClaudeCode). Empty defaults to
+	// copilot (normalizeGuidedOptions), preserving prior guided-init
+	// behavior byte-for-byte for callers that don't set it (#2777).
+	Harness              string
 	CopilotTokenEnv      string
+	ClaudeTokenEnv       string
 	Workflows            []string
 	CICommand            []string
 	RequiredCapabilities []string
@@ -438,6 +444,11 @@ func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {
 	opts.PullRequestTokenEnv = strings.TrimSpace(opts.PullRequestTokenEnv)
 	opts.RepoPushTokenEnv = strings.TrimSpace(opts.RepoPushTokenEnv)
 	opts.CopilotTokenEnv = strings.TrimSpace(opts.CopilotTokenEnv)
+	opts.ClaudeTokenEnv = strings.TrimSpace(opts.ClaudeTokenEnv)
+	opts.Harness = strings.TrimSpace(opts.Harness)
+	if opts.Harness == "" {
+		opts.Harness = string(apiv1.HarnessCopilot)
+	}
 	if opts.DisplayName == "" {
 		opts.DisplayName = opts.RepoOwner + "/" + opts.RepoName
 	}
@@ -460,6 +471,11 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	}
 	if !guidedObjectName(opts.GaggleName) {
 		return fmt.Errorf("gaggle name %q must contain lowercase letters, numbers, or hyphens and start and end with a letter or number", opts.GaggleName)
+	}
+	switch apiv1.Harness(opts.Harness) {
+	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+	default:
+		return fmt.Errorf("harness must be %q or %q", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode)
 	}
 	if len(opts.Workflows) == 0 {
 		return fmt.Errorf("select at least one workflow")
@@ -520,6 +536,12 @@ func validateGuidedOptions(opts GuidedOptions) error {
 			value: opts.CopilotTokenEnv,
 		})
 	}
+	if opts.ClaudeTokenEnv != "" {
+		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+			label: "Claude Code token environment variable",
+			value: opts.ClaudeTokenEnv,
+		})
+	}
 	for _, tokenEnv := range tokenEnvs {
 		if !ValidGuidedTokenEnvName(tokenEnv.value) {
 			return fmt.Errorf("%s must name a valid environment variable; do not provide a token value", tokenEnv.label)
@@ -576,6 +598,12 @@ func guidedConfig(opts GuidedOptions) *Config {
 		credentials = append(credentials, CredentialGrant{
 			Capability: string(capability.AgentModel),
 			Token:      TokenRef{Env: opts.CopilotTokenEnv},
+		})
+	}
+	if opts.ClaudeTokenEnv != "" {
+		credentials = append(credentials, CredentialGrant{
+			Capability: string(capability.AgentModel),
+			Token:      TokenRef{Env: opts.ClaudeTokenEnv},
 		})
 	}
 	cfg := &Config{
@@ -714,6 +742,12 @@ func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions
 		return nil, fmt.Errorf("decode canonical goober %s: %w", name, err)
 	}
 	goober.Spec.Gaggle = opts.GaggleName
+	// The canonical acme-web template mixes harnesses goober-by-goober
+	// (implementer ships claude-code, the rest copilot — #2548); guided init
+	// offers one harness choice for the whole generated fleet (#2777), so
+	// every selected goober is normalized to it here regardless of what the
+	// template itself declares.
+	goober.Spec.Harness = apiv1.Harness(opts.Harness)
 	goober.Spec.Capabilities = prependCapability(goober.Spec.Capabilities, string(capability.AgentModel))
 	workflows := goober.Spec.Workflows[:0]
 	for _, workflow := range goober.Spec.Workflows {
