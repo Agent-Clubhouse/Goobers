@@ -111,12 +111,12 @@ _goobers_completion()
             ;;
         runs)
             case "${COMP_WORDS[2]:-}" in
-                list) flags+=" --json --phase --workflow --limit" ;;
+                list) flags+=" --json --phase --workflow --gaggle --limit" ;;
                 du) flags+=" --json" ;;
             esac
             ;;
         status)
-            flags+=" --daemon --json --phase --workflow --limit --watch --interval"
+            flags+=" --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"

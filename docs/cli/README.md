@@ -2285,7 +2285,7 @@ $ goobers runs du --json
 alias for the status run table (same flags, no --watch)
 
 ~~~text
-Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [path]
+Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
 
 Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
 Validate active config, show warnings, and list runs under an instance's
@@ -2755,7 +2755,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, or report daemon health
 
 ~~~text
-Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
