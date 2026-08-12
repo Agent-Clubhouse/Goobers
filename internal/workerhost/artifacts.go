@@ -65,19 +65,59 @@ func StagingArtifactsDir(runsDir, runID string) string {
 	return filepath.Join(runsDir, ".staging-artifacts", runID)
 }
 
+// RecordArtifactBounded is RecordArtifact with a byte limit applied AFTER
+// scrubbing, at the same boundary that writes and digests the blob — matching
+// journal.Run so a truncated artifact still has a digest that commits to the
+// bytes actually stored.
+//
+// Required, not optional: internal/executor's external-telemetry path type-
+// asserts its recorder to BoundedArtifactRecorder and refuses to construct
+// without it ("external telemetry journal must support bounded artifacts"). A
+// recorder that implements only RecordArtifact fails at executor construction,
+// not at first use.
+func (s *StagingArtifacts) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	return s.RecordArtifactBoundedWithIntegrity(name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+// RecordArtifactBoundedWithIntegrity records a size-bounded artifact with
+// explicit provenance.
+func (s *StagingArtifacts) RecordArtifactBoundedWithIntegrity(name string, data []byte, integrity apiv1.Integrity, maxBytes int) (journal.Ref, error) {
+	if maxBytes <= 0 {
+		return journal.Ref{}, fmt.Errorf("workerhost: artifact %q byte limit must be positive", name)
+	}
+	if s != nil && s.Scrubber != nil {
+		data = s.Scrubber.Scrub(data)
+	}
+	if len(data) > maxBytes {
+		data = data[:maxBytes]
+	}
+	// Already scrubbed above; record with a nil-scrub path so the digest
+	// commits to exactly these bytes.
+	return s.record(name, data, integrity, false)
+}
+
+// RecordArtifactWithIntegrity records an artifact with explicit provenance.
+func (s *StagingArtifacts) RecordArtifactWithIntegrity(name string, data []byte, integrity apiv1.Integrity) (journal.Ref, error) {
+	return s.record(name, data, integrity, true)
+}
+
 // RecordArtifact scrubs data, stores it by content digest, and returns a Ref.
 // The digest commits to the SCRUBBED bytes, matching journal.Run.RecordArtifact
 // so a Ref produced here is indistinguishable from one produced by the journal.
 func (s *StagingArtifacts) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return s.record(name, data, apiv1.IntegrityDerived, true)
+}
+
+func (s *StagingArtifacts) record(name string, data []byte, integrity apiv1.Integrity, scrub bool) (journal.Ref, error) {
 	if s == nil || s.Dir == "" {
 		return journal.Ref{}, fmt.Errorf("workerhost: staging artifacts not configured")
 	}
-	if s.Scrubber != nil {
+	if scrub && s.Scrubber != nil {
 		data = s.Scrubber.Scrub(data)
 	}
 	sum := sha256.Sum256(data)
-	hex := hex.EncodeToString(sum[:])
-	rel := filepath.Join("artifacts", "sha256", hex[:2], hex[2:])
+	digest := hex.EncodeToString(sum[:])
+	rel := filepath.Join("artifacts", "sha256", digest[:2], digest[2:])
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -86,7 +126,7 @@ func (s *StagingArtifacts) RecordArtifact(name string, data []byte) (journal.Ref
 		return journal.Ref{}, fmt.Errorf("workerhost: create artifact dir: %w", err)
 	}
 	// Identical content deduplicates to one blob, as the journal's store does —
-	// so a re-run or a retry does not rewrite bytes that are already correct.
+	// so a retry does not rewrite bytes that are already correct.
 	if _, err := os.Stat(abs); err != nil {
 		if !os.IsNotExist(err) {
 			return journal.Ref{}, fmt.Errorf("workerhost: stat artifact: %w", err)
@@ -97,8 +137,8 @@ func (s *StagingArtifacts) RecordArtifact(name string, data []byte) (journal.Ref
 	}
 	return journal.Ref{
 		Path:      filepath.ToSlash(rel),
-		Digest:    "sha256:" + hex,
+		Digest:    "sha256:" + digest,
 		Size:      int64(len(data)),
-		Integrity: apiv1.IntegrityDerived,
+		Integrity: integrity,
 	}, nil
 }
