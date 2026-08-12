@@ -542,11 +542,7 @@ func ensureLegacyRuntimeAlias(legacy, scoped string) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 	}
-	target, err := filepath.Rel(filepath.Dir(legacy), scoped)
-	if err != nil {
-		return fmt.Errorf("resolve legacy runtime alias target: %w", err)
-	}
-	if err := os.Symlink(target, legacy); err != nil {
+	if err := createLegacyRuntimeAlias(legacy, scoped); err != nil {
 		return fmt.Errorf("create legacy runtime alias %s: %w", legacy, err)
 	}
 	return nil
