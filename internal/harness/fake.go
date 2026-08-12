@@ -36,6 +36,8 @@ type FakeAdapter struct {
 	// TranscriptDroppedBytes is returned verbatim on Outcome alongside
 	// TranscriptTruncated.
 	TranscriptDroppedBytes int64
+	// Stderr simulates separately captured subprocess stderr.
+	Stderr []byte
 	// PreflightErr, if set, is returned by Preflight — lets tests simulate a
 	// harness that isn't installed/signed in.
 	PreflightErr error
@@ -66,7 +68,12 @@ func (f *FakeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 // Run simulates one harness session: invoke Act (if set) against the
 // workspace, then read back whatever completion file resulted.
 func (f *FakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
-	out := Outcome{Transcript: f.Transcript, TranscriptTruncated: f.TranscriptTruncated, TranscriptDroppedBytes: f.TranscriptDroppedBytes}
+	out := Outcome{
+		Transcript:             f.Transcript,
+		TranscriptTruncated:    f.TranscriptTruncated,
+		TranscriptDroppedBytes: f.TranscriptDroppedBytes,
+		Stderr:                 f.Stderr,
+	}
 	if f.Act != nil {
 		if err := f.Act(ctx, req); err != nil {
 			return out, err

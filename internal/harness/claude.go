@@ -400,6 +400,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+		Stderr:                 result.Stderr,
 	}
 	if native, ok := convertClaudeStreams(claudeInvocationStreams(invocationResults, captures, req.MaxTranscriptBytes), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
 		out.Metrics = native.metrics
