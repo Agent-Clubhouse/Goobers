@@ -105,6 +105,7 @@ spec:
         # nested config tree cannot be represented as individual keys.
         - name: seed
           image: ${IMAGE}
+          imagePullPolicy: Always
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -125,6 +126,7 @@ spec:
         # owned by root, so 0600 hides them from uid 65532. Copy + chmod does.
         - name: stage-secrets
           image: ${IMAGE}
+          imagePullPolicy: Always
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -139,6 +141,7 @@ spec:
       containers:
         - name: daemon
           image: ${IMAGE}
+          imagePullPolicy: Always
           # --diagnostics keeps stage stdout/stderr as run artifacts. On by
           # default for the spike: when a stage fails in-cluster there is no
           # terminal to re-run it in, and the harness error alone reports only
@@ -167,6 +170,7 @@ spec:
         # 127.0.0.1:8081 itself, which kubectl port-forward can reach.
         - name: dashboard
           image: ${IMAGE}
+          imagePullPolicy: Always
           args: ["dashboard", "--port=8081", "--no-open", "/instance"]
           env:
             - name: HOME

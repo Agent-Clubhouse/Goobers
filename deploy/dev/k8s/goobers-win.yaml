@@ -53,6 +53,7 @@ spec:
       initContainers:
         - name: seed
           image: ${IMAGE_WIN}
+          imagePullPolicy: Always
           # ContainerUser cannot create a FILE at the root of the Azure Disk
           # mount — it can create directories (tar's config\ tree succeeded),
           # but writing instance.yaml there fails, as tar's
@@ -117,6 +118,7 @@ spec:
       containers:
         - name: daemon
           image: ${IMAGE_WIN}
+          imagePullPolicy: Always
           # ContainerAdministrator, reluctantly. On startup goobers creates a
           # "legacy runtime alias" symlink C:\instance\runs -> gaggles\<g>\runs.
           # Creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege,
