@@ -41,10 +41,6 @@ spec:
 // part that was missing entirely before this fix (InLocation had zero
 // production callers).
 func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
-	if _, err := time.LoadLocation("America/New_York"); err != nil {
-		t.Skipf("tzdata unavailable: %v", err)
-	}
-
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
