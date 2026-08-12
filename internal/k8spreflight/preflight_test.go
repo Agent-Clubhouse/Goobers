@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -246,6 +249,122 @@ func TestStorageInferredRWXWarnsAboutCoordinationSafety(t *testing.T) {
 	}
 	if !report.Conformant {
 		t.Fatal("inferred RWX capability must warn, not break conformance")
+	}
+}
+
+func TestMixedOSPlacementRejectsUntaintedWindowsNode(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "windows-1") || !strings.Contains(result.Detail, "NoSchedule") {
+		t.Fatalf("detail %q does not identify the unsafe Windows node", result.Detail)
+	}
+	if report.Conformant {
+		t.Fatal("an untainted Windows node must make the cluster non-conformant")
+	}
+}
+
+func TestMixedOSPlacementRejectsUnpinnedControlPlaneWorkload(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.AppsV1().Deployments(controlPlaneNamespace).Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers-api", Namespace: controlPlaneNamespace},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "Deployment/goobers-api") {
+		t.Fatalf("detail %q does not identify the unpinned workload", result.Detail)
+	}
+}
+
+func TestMixedOSPlacementRejectsUnpinnedTemporalJob(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.BatchV1().Jobs(temporalNamespace).Create(context.Background(), &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "temporal-schema-setup", Namespace: temporalNamespace},
+		Spec:       batchv1.JobSpec{Template: corev1.PodTemplateSpec{}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "goobers-temporal/Job/temporal-schema-setup") {
+		t.Fatalf("detail %q does not identify the unpinned Temporal job", result.Detail)
+	}
+}
+
+func TestMixedOSPlacementAcceptsTaintedNodesAndPinnedWorkloads(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.AppsV1().Deployments(controlPlaneNamespace).Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers-api", Namespace: controlPlaneNamespace},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{NodeSelector: map[string]string{corev1.LabelOSStable: "linux"}},
+		}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusPass {
+		t.Fatalf("mixed-os-placement = %s (%s), want pass", result.Status, result.Detail)
+	}
+	if !report.Conformant {
+		t.Fatal("tainted Windows nodes and pinned Linux workloads must be conformant")
 	}
 }
 

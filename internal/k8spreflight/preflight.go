@@ -118,6 +118,7 @@ func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report 
 		checkInstallRBAC,
 		checkGaggleRBAC,
 		checkStorage,
+		checkMixedOSPlacement,
 		checkOIDCIssuer,
 		checkRegistry,
 		checkEgress,

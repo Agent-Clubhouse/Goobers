@@ -28,6 +28,35 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
   pull from (§1) — Goobers does not publish images yet (CI publishing is a follow-up).
+- **Mixed-OS safety**: the Linux control-plane workloads are pinned with
+  `kubernetes.io/os: linux`. In a cluster with Windows nodes, also taint every Windows
+  node so an unpinned Linux workload cannot attach and initialize a Linux volume there:
+
+  ```sh
+  kubectl taint node <win-node> kubernetes.io/os=windows:NoSchedule
+  ```
+
+  `NoSchedule` does not evict existing pods, so this is safe on a live cluster. Windows
+  workloads must select `kubernetes.io/os: windows` and carry the matching toleration:
+
+  ```yaml
+  tolerations:
+    - key: kubernetes.io/os
+      operator: Equal
+      value: windows
+      effect: NoSchedule
+  ```
+
+  If you choose an in-cluster CloudNativePG database instead of the recommended managed
+  PostgreSQL service, pin its Linux pods through the `Cluster` scheduling field (not a pod
+  template):
+
+  ```yaml
+  spec:
+    affinity:
+      nodeSelector:
+        kubernetes.io/os: linux
+  ```
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
   you deploy — regenerate from `api/v1alpha1` (`make manifests`) rather than trusting a
   stale checkout; the committed `config/crd/bases` are not CI-gated.

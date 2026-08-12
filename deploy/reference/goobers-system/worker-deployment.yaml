@@ -23,6 +23,8 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

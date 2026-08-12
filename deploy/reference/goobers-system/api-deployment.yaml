@@ -20,6 +20,8 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: goobers-api
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
