@@ -43,10 +43,24 @@ runner:
   # are matched by exact string equality against requiredCapabilities declared
   # by gaggles/stages, and a mismatch is a FATAL daemon-startup failure
   # (internal/instance/gagglecapability.go:128 -> cmd/goobers/daemon.go:184).
-  # Neither testbed-minimal's gaggle nor default-implement declares any, so
-  # os=linux is a truthful superset rather than a requirement.
+  # os=windows IS A DELIBERATE LIE AT THE PROCESS LEVEL, and the point.
+  #
+  # This container is Linux. It cannot run a Windows stage and never will. But
+  # cross-platform-probe declares requiredCapabilities: [os=windows] on one
+  # stage, and admission asks "does THE RUNNER claim it" — one flat set, one
+  # process, checked once at daemon startup. There is no answer a heterogeneous
+  # fleet can give that is both truthful and admissible: the honest claim
+  # (os=linux only) refuses the run before it starts, and `goobers up` exits.
+  #
+  # So the claim set here is the FLEET's, not this process's — Linux workers on
+  # the default queue, a Windows worker on "<queue>-windows". That reading makes
+  # it truthful again, and it is the reading the engine already implements:
+  # placement is per-STAGE (engine.stageTaskQueue) while admission is
+  # per-INSTANCE. The two disagree, and this line is where the disagreement is
+  # papered over. → capability admission is single-runner by construction.
   capabilities:
     - os=linux
+    - os=windows
 # Loopback only. kubectl port-forward connects to the pod's own localhost, so a
 # 127.0.0.1 bind is reachable through it and #640's fail-closed off-loopback
 # rule is respected rather than worked around. NOTE: `goobers up` serves the

@@ -1,0 +1,50 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: cross-platform-probe
+spec:
+  gaggle: testbed-minimal
+  displayName: Cross-platform probe (linux -> windows -> linux, one run)
+  # THE OS-SPANNING PROOF, and deliberately the smallest thing that can be one.
+  #
+  # Every stage runs the same command — `goobers --version`, which prints its
+  # own GOOS/GOARCH — so the only variable is WHERE the stage was polled from.
+  # Stage 2 declares `os=windows`; the engine routes it to
+  # "<workflow queue>-windows", where a Windows worker is polling. Stages 1 and
+  # 3 declare nothing and inherit the workflow's queue, which a Linux worker
+  # serves.
+  #
+  # Stage 3 exists so the run has to come BACK. A workflow that ends on the
+  # foreign platform proves dispatch; one that returns proves the run is not
+  # pinned to wherever it last executed.
+  #
+  # Nothing is shared between the three but the branch and the result
+  # envelopes: engine activities provision a workspace per attempt and tear it
+  # down after, so there is no filesystem to carry across a node boundary. That
+  # is what makes this legal at all.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: probe-linux
+  tasks:
+    - name: probe-linux
+      type: deterministic
+      goal: Report the platform of the worker that polled this stage.
+      run:
+        command: ["goobers", "--version"]
+      next: probe-windows
+    - name: probe-windows
+      type: deterministic
+      goal: Report the platform of the worker that polled this stage, which must be Windows.
+      run:
+        command: ["goobers", "--version"]
+      requiredCapabilities:
+        - os=windows
+      next: probe-linux-again
+    - name: probe-linux-again
+      type: deterministic
+      goal: Report the platform again, proving the run returns to its home queue.
+      run:
+        command: ["goobers", "--version"]

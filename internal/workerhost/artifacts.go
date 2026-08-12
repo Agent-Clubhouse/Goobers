@@ -43,8 +43,8 @@ import (
 // but do not appear in the projected journal. That is the artifact/transcript
 // projection gap, not something this type can close on its own.
 type StagingArtifacts struct {
-	// Dir is the per-run staging root, e.g. <runs>/.staging-artifacts/<runID>.
-	Dir string
+	// root is the per-run staging root, e.g. <runs>/.staging-artifacts/<runID>.
+	root string
 	// Scrubber redacts secrets before bytes are written, matching the journal's
 	// own guarantee that a recorded artifact is scrubbed at rest.
 	Scrubber journal.Scrubber
@@ -54,7 +54,7 @@ type StagingArtifacts struct {
 
 // NewStagingArtifacts returns a recorder rooted at dir.
 func NewStagingArtifacts(dir string, scrubber journal.Scrubber) *StagingArtifacts {
-	return &StagingArtifacts{Dir: dir, Scrubber: scrubber}
+	return &StagingArtifacts{root: dir, Scrubber: scrubber}
 }
 
 // StagingArtifactsDir is the staging root for runID beneath a runs directory.
@@ -63,6 +63,42 @@ func NewStagingArtifacts(dir string, scrubber journal.Scrubber) *StagingArtifact
 // enumerates runs.
 func StagingArtifactsDir(runsDir, runID string) string {
 	return filepath.Join(runsDir, ".staging-artifacts", runID)
+}
+
+// Dir is the per-run root a same-run ContextPointer resolves against.
+//
+// THIS IS THE DISTRIBUTION GAP, and it is worth being exact about, because it
+// is not the one I expected to find. A stage consumes prior work through
+// ContextPointers, and harness.Executor.materializeContext resolves each one
+// with cp.Artifact.Resolve(contextResolver.Dir()) — a read of
+// <journalRoot>/<ref.Path> on the LOCAL FILESYSTEM. So the engine's entire
+// inter-stage data channel is a path relative to a per-run directory that
+// whichever process runs the stage is assumed to be able to open.
+//
+// Locally that assumption holds trivially: one runner, one directory. Across
+// nodes it does not hold at all. Stage 1 records a blob into node A's staging
+// dir; stage 2 is polled by node B, whose staging dir for the same run is
+// empty; Resolve returns a missing file and the executor fails closed with an
+// integrity fault. Correct behaviour, useless outcome.
+//
+// It is the same defect class as claims.json+flock — coordination through a
+// filesystem two processes are assumed to share — and it is the reason PLACEMENT
+// spanning operating systems (engine.stageTaskQueue) is not yet the same thing
+// as WORK spanning them. Placement is done. The data plane is not.
+//
+// The shape of the fix is already implied by the refs: they are sha256
+// digests, so the staging dir wants to be a CACHE in front of a shared
+// content-addressed store, with the worker fetching any pointer digest it does
+// not hold before the executor resolves it. That leaves Resolve, the journal,
+// and tier 1 completely untouched.
+//
+// Until then this returns the local staging root, which resolves correctly for
+// any pointer THIS worker produced and fails closed for any it did not.
+func (s *StagingArtifacts) Dir() string {
+	if s == nil {
+		return ""
+	}
+	return s.root
 }
 
 // RecordSpanWithSchema records a within-stage trace span — in practice the
@@ -132,7 +168,7 @@ func (s *StagingArtifacts) record(name string, data []byte, integrity apiv1.Inte
 }
 
 func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity apiv1.Integrity, scrub bool) (journal.Ref, error) {
-	if s == nil || s.Dir == "" {
+	if s == nil || s.root == "" {
 		return journal.Ref{}, fmt.Errorf("workerhost: staging artifacts not configured")
 	}
 	if scrub && s.Scrubber != nil {
@@ -144,7 +180,7 @@ func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	abs := filepath.Join(s.Dir, rel)
+	abs := filepath.Join(s.root, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return journal.Ref{}, fmt.Errorf("workerhost: create artifact dir: %w", err)
 	}
