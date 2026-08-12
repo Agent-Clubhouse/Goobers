@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -111,6 +112,117 @@ func TestValidateWarnsOnUnclaimedRunnerCapability(t *testing.T) {
 	}
 	if strings.Contains(stdout, "CAP003") {
 		t.Fatalf("claimed capabilities must not warn:\n%s", stdout)
+	}
+}
+
+func TestAppendMaxOpenPRWarnings(t *testing.T) {
+	tests := []struct {
+		name        string
+		project     apiv1.RepoRef
+		repos       []instance.RepoRef
+		maxOpenPRs  int32
+		wantWarning bool
+		wantText    []string
+	}{
+		{
+			name:        "ADO project cannot enforce cap",
+			project:     apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "store", Name: "web"},
+			repos:       []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
+			maxOpenPRs:  2,
+			wantWarning: true,
+			wantText: []string{
+				"cannot be enforced for ADO project repository",
+				`"ado/acme/store/web"`,
+				"cap counts GitHub pull requests",
+			},
+		},
+		{
+			name:        "empty project with sole ADO repository cannot enforce cap",
+			project:     apiv1.RepoRef{},
+			repos:       []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
+			maxOpenPRs:  2,
+			wantWarning: true,
+			wantText: []string{
+				"cannot be enforced for ADO project repository",
+				`"acme/store/web"`,
+				"cap counts GitHub pull requests",
+			},
+		},
+		{
+			name:        "unconfigured GitHub project names actual binding",
+			project:     apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "other", Name: "site"},
+			repos:       []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web"}},
+			maxOpenPRs:  3,
+			wantWarning: true,
+			wantText: []string{
+				`binds to project repository "github/other/site"`,
+				"no configured binding",
+				"count remains unknown",
+			},
+		},
+		{
+			name:    "empty project names first repository fallback",
+			project: apiv1.RepoRef{},
+			repos: []instance.RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web"},
+				{Provider: "github", Owner: "other", Name: "site"},
+			},
+			maxOpenPRs:  3,
+			wantWarning: true,
+			wantText: []string{
+				"has no project repository binding",
+				`binds to instance repos[0] repository "acme/web"`,
+			},
+		},
+		{
+			name:       "configured GitHub project is enforceable",
+			project:    apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+			repos:      []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web"}},
+			maxOpenPRs: 1,
+		},
+		{
+			name:       "cap disabled",
+			project:    apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "store", Name: "web"},
+			repos:      []instance.RepoRef{{Provider: "ado", Owner: "acme", Project: "store", Name: "web"}},
+			maxOpenPRs: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{
+				Gaggles: []apiv1.Gaggle{{
+					ObjectMeta: metav1.ObjectMeta{Name: "example"},
+					Spec:       apiv1.GaggleSpec{Project: tc.project},
+				}},
+				Workflows: []apiv1.Workflow{{
+					ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+					Spec: apiv1.WorkflowSpec{
+						Gaggle:    "example",
+						Readiness: apiv1.ReadinessConditions{MaxOpenPRs: tc.maxOpenPRs},
+					},
+				}},
+			}
+			report := &validate.Report{}
+			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, report)
+			if got := len(warnings); (got == 1) != tc.wantWarning {
+				t.Fatalf("warning count = %d, want warning %t: %#v", got, tc.wantWarning, warnings)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			warning := warnings[0]
+			if warning.warning.Code != validate.WarningMaxOpenPRsUnenforceable {
+				t.Errorf("warning code = %q, want %q", warning.warning.Code, validate.WarningMaxOpenPRsUnenforceable)
+			}
+			if warning.path != "/spec/readiness/maxOpenPRs" {
+				t.Errorf("warning path = %q", warning.path)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(warning.warning.Explanation, want) {
+					t.Errorf("warning missing %q: %s", want, warning.warning.Explanation)
+				}
+			}
+		})
 	}
 }
 

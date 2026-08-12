@@ -287,11 +287,11 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	printValidationWarnings(stdout, skillWarnings)
 
 	// Static reality cross-checks (2026-08-08 cold-start audit): a
-	// requiredCapabilities token no runner claims (CAP003) and an automated
-	// gate completion branch a failed stage can never complete through
-	// (WF018). Appended to the report like the harness/skill warnings above,
-	// so --strict and the JSON report treat them as ordinary config
-	// warnings.
+	// requiredCapabilities token no runner claims (CAP003), an unenforceable
+	// maxOpenPRs cap (PRCAP001), and an automated gate completion branch a
+	// failed stage can never complete through (WF018). Appended to the report
+	// like the harness/skill warnings above, so --strict and the JSON report
+	// treat them as ordinary config warnings.
 	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, report)
 	for _, finding := range staticRealityWarnings {
 		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
