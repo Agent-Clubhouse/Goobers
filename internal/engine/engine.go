@@ -41,6 +41,14 @@ const (
 	// stage declares no duration limit. A constant (not wall-clock) keeps the
 	// workflow deterministic.
 	activityTimeout = time.Hour
+	// stageScheduleToStart bounds how long a stage may sit unclaimed on its
+	// task queue before the run fails. It exists for the mixed-platform case:
+	// a stage routed to "<queue>-windows" with no Windows worker polling would
+	// otherwise wait indefinitely, because Temporal's default here is
+	// unlimited. Generous enough that a scale-from-zero node pool (a cold
+	// Windows node pulls a multi-GB image) still wins the race, short enough
+	// that a genuinely absent worker is reported rather than hung.
+	stageScheduleToStart = 15 * time.Minute
 	// stageTimeoutGrace pads a declared limits.MaxDurationSeconds before it
 	// becomes the Temporal StartToCloseTimeout. The worker-side runtime
 	// self-enforces the declared limit and surfaces the overrun as
@@ -456,7 +464,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
-	ctx = stageActivityContext(ctx, env.Limits)
+	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)
 	if t.Type == apiv1.TaskAgentic {
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
@@ -647,7 +655,50 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits))
+	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, ""))
+}
+
+// stageActivityContextOn is stageActivityContext with per-stage placement: the
+// activity is dispatched to the task queue its platform capability names,
+// instead of inheriting the workflow's.
+//
+// This is the whole of per-stage routing. Temporal supports a TaskQueue per
+// ACTIVITY (ActivityOptions.TaskQueue), so the workflow keeps running on one
+// queue while individual stages are polled by workers elsewhere — which is why
+// engine.NewTemporalStarter taking a single queue was never the obstacle it
+// looked like. It is the workflow's queue, and that is correct.
+func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilities []string) workflow.Context {
+	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, stageTaskQueue(ctx, capabilities)))
+}
+
+// stageTaskQueue derives a stage's task queue from its declared platform
+// capability, per docs/design/mixed-platform-cloud-nodes.md: a stage naming
+// os=<goos> is polled from "<workflow queue>-<goos>", and anything else
+// inherits the workflow's own queue. Unlabelled therefore means linux, which is
+// the documented default, and an all-linux instance needs no extra queues.
+//
+// Returning empty means inherit; it is not an error. A workflow with no
+// platform capabilities behaves exactly as before this existed.
+func stageTaskQueue(ctx workflow.Context, capabilities []string) string {
+	suffix := platformQueueSuffix(capabilities)
+	if suffix == "" {
+		return ""
+	}
+	return workflow.GetInfo(ctx).TaskQueueName + "-" + suffix
+}
+
+// platformQueueSuffix is the queue suffix a stage's capabilities ask for, or
+// empty to inherit. Split out from stageTaskQueue so the placement rule is
+// testable as a pure function rather than only through a workflow environment.
+func platformQueueSuffix(capabilities []string) string {
+	for _, c := range capabilities {
+		goos, ok := strings.CutPrefix(c, "os=")
+		if !ok || goos == "" || goos == "linux" {
+			continue
+		}
+		return goos
+	}
+	return ""
 }
 
 // stageActivityOptions builds the options every engine activity dispatches
@@ -657,14 +708,23 @@ func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Co
 // which enforces the local runner's split policy/infrastructure budgets. A
 // declared duration limit is padded with stageTimeoutGrace so the worker's
 // own policy-classed enforcement of that limit always fires first.
-func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
+func stageActivityOptions(limits apiv1.Limits, taskQueue string) workflow.ActivityOptions {
 	timeout := activityTimeout
 	if limits.MaxDurationSeconds > 0 {
 		timeout = time.Duration(limits.MaxDurationSeconds)*time.Second + stageTimeoutGrace
 	}
 	return workflow.ActivityOptions{
+		// Empty inherits the workflow's queue — the linux default.
+		TaskQueue:           taskQueue,
 		StartToCloseTimeout: timeout,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		// FAIL FAST when nothing is polling the target queue. Temporal's
+		// documented default for ScheduleToStartTimeout is unlimited, so a
+		// stage routed to a platform with no capacity would queue FOREVER
+		// rather than surfacing — the opposite of the fail-fast behaviour
+		// docs/design/mixed-platform-cloud-nodes.md promises, and impossible
+		// to distinguish from a slow stage while it happens.
+		ScheduleToStartTimeout: stageScheduleToStart,
+		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
 }
 
