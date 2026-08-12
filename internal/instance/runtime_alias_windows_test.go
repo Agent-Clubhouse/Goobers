@@ -18,7 +18,10 @@ const (
 )
 
 func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "instance & (100%) !^")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	target := filepath.Join(root, "gaggles", "alpha", "runs")
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
@@ -26,7 +29,7 @@ func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "run.yaml"), []byte("runId: test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	alias := filepath.Join(root, "runs")
+	alias := filepath.Join(root, "legacy & (runs) %!^")
 	if err := createLegacyRuntimeAlias(alias, target); err != nil {
 		t.Fatalf("createLegacyRuntimeAlias: %v", err)
 	}
