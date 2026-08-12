@@ -1,0 +1,177 @@
+# CROSS-PLATFORM IMPLEMENT — the whole point of the ladder, in one run.
+#
+# Identical to default-implement except that two stages declare os=windows. The
+# run claims an issue on a Linux node, an agent writes the code on a Windows
+# node, and the pull request is opened and merged from Linux — one run id, one
+# workflow, one journal, two operating systems.
+#
+# It exercises all three inter-stage channels, which is the reason it is worth
+# running rather than just the probe:
+#   1. outputs        -> Temporal history           (was already distributed)
+#   2. artifacts      -> the fleet blob store       (internal/blobstore, new)
+#   3. code state     -> the run branch, pushed     (before leaving Windows)
+#
+# Channel 3 is the constraint the DSL cannot yet state: a stage handing work to
+# another platform must push first, because the git mirror is node-local.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: cross-platform-implement
+spec:
+  gaggle: testbed-minimal
+  displayName: Cross-platform implement (claim on Linux, code on Windows, merge from Linux)
+  # The default starter is intentionally manual-only so a fresh install never
+  # starts provider work without an operator action. Run it explicitly with
+  # `goobers run default-implement`; query-backlog then claims one
+  # maintainer-approved item before the coder runs.
+  # MANUAL-ONLY for now: a cron trigger is added only after first-value proof.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one approved backlog item to implement.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers"
+        maxItems: "1"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed-item
+      next: implement
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the claimed backlog item and commit the change.
+      # THE HOP. This stage is polled from "<workflow queue>-windows" by a
+      # Windows worker on a Windows node. It consumes query-backlog's
+      # claimed-item.json, which that Linux stage recorded into ITS staging
+      # directory — so this is also the first stage in the spike that cannot run
+      # without the fleet artifact store.
+      requiredCapabilities:
+        - os=windows
+      capabilities:
+        - repo:push
+        # See goobers/coder/goober.yaml — agent:model is required in the cloud
+        # where no stored Copilot sign-in exists to fall back to.
+        - agent:model
+      policyActions:
+        - modify-repository
+      next: push-branch
+    - name: push-branch
+      type: deterministic
+      goal: Push the implemented change as a branch.
+      run:
+        command: ["goobers", "push-branch"]
+      # ALSO WINDOWS, and not for symmetry — out of necessity. Code state
+      # between stages lives in the worker's LOCAL git mirror, not in any shared
+      # place: every stage attempt gets a fresh worktree on the run branch and
+      # discards it. The commit implement just made exists only in the Windows
+      # node's mirror, so the push has to happen before the run leaves Windows.
+      # A platform hop is a push boundary. Once pushed, open-pr on Linux clones
+      # a mirror that has the branch, and the run comes home.
+      requiredCapabilities:
+        - os=windows
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      next: open-pr
+    - name: open-pr
+      type: deterministic
+      goal: Open the pull request for the pushed branch.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        resultFile: "pr-result.json"
+      capabilities:
+        - provider:pr:write
+      policyActions:
+        - open-or-update-pr
+      expectedOutputs:
+        - pull-request-url
+        - prNumber
+        - opened
+      next: ci-poll
+    - name: ci-poll
+      type: deterministic
+      goal: Poll the pull request's CI checks until they conclude.
+      run:
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+      inputsFrom:
+        prNumber: prNumber
+      capabilities:
+        - provider:pr:write
+      expectedOutputs:
+        - ciStatus
+        - prNumber
+      next: ci-gate
+    # TWEAK 2: merge-pr requires headSha/baseSha SHA-pins and `pr-select` is the
+    # only shipped stage that emits them, so the loop has to re-select its own
+    # just-opened PR to learn the SHAs it just pushed.
+    - name: select-own-pr
+      type: deterministic
+      goal: Re-read this run's own pull request to obtain its head/base SHA pins.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        headPrefixes: "goobers/cross-platform-implement/"
+        authorScope: "goobers"
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      # TWEAK 3: pr-select hard-prescribes this policy action; neither
+      # `goobers pr-select --help` nor its man page mentions it.
+      policyActions:
+        - flag-foundation-coupling
+      expectedOutputs:
+        - number
+        - headSha
+        - baseSha
+      next: merge-pr
+    - name: merge-pr
+      type: deterministic
+      goal: Merge the pull request now that the repository's CI is green.
+      run:
+        command: ["goobers", "merge-pr"]
+      inputsFrom:
+        pullNumber: number
+        headSha: headSha
+        baseSha: baseSha
+      inputs:
+        verdict: "pass"
+        mergeMethod: "squash"
+        commitMessage: "Merged by the goobers cross-platform loop: claimed on Linux, implemented on Windows."
+        resultFile: "merge-result.json"
+      capabilities:
+        - github:pr:merge
+        - github:branch:delete
+      policyActions:
+        - merge-pr
+        - delete-branch
+      expectedOutputs:
+        - merged
+        # Terminal: the merged pull request is this loop's success artifact.
+  gates:
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-status
+        params:
+          equals: "passing"
+      branches:
+        pass: select-own-pr
+        fail: "@abort"
+        # TWEAK 1: validate rejects a ci-status gate that omits `timeout`.
+        timeout: "@escalate"
