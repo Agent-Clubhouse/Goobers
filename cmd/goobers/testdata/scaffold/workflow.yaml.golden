@@ -31,7 +31,7 @@ spec:
       next: ready-check
     - name: act
       type: agentic
-      goober: "reviewer2"
+      goober: "coder"
       goal: Continue the workflow using the prepared result.
       capabilities:
         - agent:model

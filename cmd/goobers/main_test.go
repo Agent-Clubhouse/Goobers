@@ -235,6 +235,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - agent:model
       next: done-check
   gates:
     - name: done-check
