@@ -27,6 +27,8 @@ spec:
       type: agentic
       goober: coder
       goal: Finish the change.
+      capabilities:
+        - agent:model
   gates:
     - name: review
       evaluator: human
@@ -106,6 +108,8 @@ spec:
       type: agentic
       goober: coder
       goal: Finish the change.
+      capabilities:
+        - agent:model
   gates:
     - name: review
       evaluator: automated

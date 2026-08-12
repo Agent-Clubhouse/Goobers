@@ -67,6 +67,7 @@ spec:
       goal: Implement the claimed issue in the run's worktree.
       capabilities:
         - repo:push
+        - agent:model
       retry:
         maxAttempts: 2
       next: review
@@ -144,8 +145,8 @@ func initAcceptanceDemo(t *testing.T) string {
 		name, role string
 		caps       []string
 	}{
-		{"implementer", "implementer", []string{"repo:push"}},
-		{"reviewer", "reviewer", nil},
+		{"implementer", "implementer", []string{"repo:push", "agent:model"}},
+		{"reviewer", "reviewer", []string{"agent:model"}},
 	} {
 		dir := filepath.Join(gaggleDir, "goobers", g.name)
 		writeFixture(t, filepath.Join(dir, "goober.yaml"), acceptanceGooberYAML(g.name, g.role, g.caps))

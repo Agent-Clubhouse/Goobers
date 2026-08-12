@@ -36,6 +36,7 @@ spec:
         local-ci stage below owns that authoritatively.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       retry:

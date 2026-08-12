@@ -43,6 +43,8 @@ spec:
   gaggle: site
   role: coder
   instructions: config.yaml
+  capabilities:
+    - agent:model
 ---
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
@@ -58,6 +60,8 @@ spec:
       type: agentic
       goober: author
       goal: Draft the site update.
+      capabilities:
+        - agent:model
       next: approve
   gates:
     - name: approve

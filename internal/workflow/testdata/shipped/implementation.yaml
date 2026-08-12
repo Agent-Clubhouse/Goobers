@@ -31,6 +31,7 @@ spec:
       capabilities:
         - repo:push
         - provider:pr:write
+        - agent:model
       policyActions:
         - modify-repository
         - open-or-update-pr
@@ -54,6 +55,7 @@ spec:
       capabilities:
         - repo:push
         - provider:pr:write
+        - agent:model
       policyActions:
         - modify-repository
         - open-or-update-pr

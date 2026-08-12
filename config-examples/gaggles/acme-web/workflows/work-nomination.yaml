@@ -64,6 +64,7 @@ spec:
         - repo:read
         - telemetry:read
         - github:issues:write
+        - agent:model
       policyActions:
         - comment-on-issue
         - create-issue

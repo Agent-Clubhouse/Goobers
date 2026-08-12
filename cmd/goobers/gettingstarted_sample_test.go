@@ -72,6 +72,7 @@ spec:
       goal: Implement the claimed tutorial issue and commit the change.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       next: review

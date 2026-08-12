@@ -36,6 +36,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - agent:model
       expectedOutputs:
         - pull-request
       # No `next` — this is the single, terminal state of the workflow.

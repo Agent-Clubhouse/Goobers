@@ -61,6 +61,7 @@ spec:
       goal: Wait until the daemon begins draining, then finish into the abort target.
       capabilities:
         - repo:push
+        - agent:model
       next: "@abort"
 `
 

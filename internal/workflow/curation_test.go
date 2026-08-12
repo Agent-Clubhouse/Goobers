@@ -179,15 +179,16 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Capability grant is issues-only (issue #25 scope: "no repo access").
-	if len(curator.Spec.Capabilities) != 2 ||
+	if len(curator.Spec.Capabilities) != 3 ||
 		curator.Spec.Capabilities[0] != "github:issues:write" ||
-		curator.Spec.Capabilities[1] != "github:milestones:write" {
-		t.Errorf("curator capabilities = %v, want exactly [github:issues:write github:milestones:write]", curator.Spec.Capabilities)
+		curator.Spec.Capabilities[1] != "github:milestones:write" ||
+		curator.Spec.Capabilities[2] != "agent:model" {
+		t.Errorf("curator capabilities = %v, want exactly [github:issues:write github:milestones:write agent:model]", curator.Spec.Capabilities)
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
-	const wantDigest = "sha256:66235bc31e1a10fe13b6baaee7ca81449d750f095ad524c3d5930025dae00cf0"
+	const wantDigest = "sha256:ec0ecc4ddbb155c4368647e7e517cb78b4ade51e57a6f88455234b53365eccf3"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
