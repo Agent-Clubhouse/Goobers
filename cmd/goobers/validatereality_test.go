@@ -346,6 +346,46 @@ func TestValidateCheckReposCIPollReality(t *testing.T) {
 			t.Errorf("a repository with CI must not warn:\n%s", stdout)
 		}
 	})
+
+	t.Run("routed credential without Actions read warns", func(t *testing.T) {
+		stubRepositoryRealityChecks(t, []string{"goobers", "goobers:claimed"}, 4, 1)
+		targetRepositoryWorkflowCount = func(context.Context, instance.RepoRef, string) (int, error) {
+			return 0, fmt.Errorf("GET actions/workflows failed: status 404: Not Found")
+		}
+		code, stdout, stderr := runArgs(t, "validate", "--check-repos", root)
+		if code != 0 {
+			t.Fatalf("advisory credential finding must not change the exit code: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		for _, want := range []string{
+			"routed credential could not read",
+			"GitHub Actions workflows",
+			"status 404",
+			"grant Actions: Read",
+			"correct its credential route",
+		} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("stdout missing %q:\n%s", want, stdout)
+			}
+		}
+
+		code, stdout, stderr = runArgs(t, "validate", "--json", "--check-repos", root)
+		if code != 0 || stderr != "" {
+			t.Fatalf("JSON validate code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		var envelope diagnosticsEnvelope
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("decode diagnostics: %v\n%s", err, stdout)
+		}
+		found := false
+		for _, finding := range envelope.Findings {
+			if finding.Code == "CIPOLL001" && strings.Contains(finding.Message, "routed credential could not read") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("diagnostics missing credential-read CIPOLL001: %+v", envelope.Findings)
+		}
+	})
 }
 
 // TestRepositoryRealityNotCheckedForNonGitHub asserts the no-false-confidence
