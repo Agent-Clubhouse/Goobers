@@ -269,6 +269,31 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Verify Authenticode signature
+        run: |
+          $path = 'winsign\goobers.exe'
+          $pe = [IO.File]::ReadAllBytes($path)
+          $optionalHeader = [BitConverter]::ToInt32($pe, 0x3c) + 24
+          $dataDirectoryOffset = switch ([BitConverter]::ToUInt16($pe, $optionalHeader)) {
+            0x10b { 96 }
+            0x20b { 112 }
+            default { throw "Unsupported PE optional-header format in $path" }
+          }
+          $certificateTable = $optionalHeader + $dataDirectoryOffset + (4 * 8)
+          $certificateOffset = [BitConverter]::ToUInt32($pe, $certificateTable)
+          $certificateSize = [BitConverter]::ToUInt32($pe, $certificateTable + 4)
+          if ($certificateOffset -eq 0 -or $certificateSize -eq 0) {
+            throw "PE Certificate Table is empty: $path is unsigned"
+          }
+          if ([uint64]$certificateOffset + $certificateSize -gt $pe.Length) {
+            throw "PE Certificate Table extends beyond the end of $path"
+          }
+
+          $signature = Get-AuthenticodeSignature -FilePath $path
+          if ($signature.Status -ne 'Valid') {
+            throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
+          }
+
       - name: Repackage signed archive
         shell: bash
         env:
