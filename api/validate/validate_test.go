@@ -82,17 +82,21 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the four
-	// example workflows that carry no schedule trigger. Preview warnings are
-	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
+	// The compatibility warnings are the manual-only advisories on the
+	// example workflows that carry no schedule trigger: default-implement and
+	// docs-updater in both acme-web and its #2777 acme-web-claude parallel
+	// (#2777's fleet posture duplicates the same workflow shape under a
+	// different harness), plus one implementation workflow per polyglot
+	// service. Preview warnings are asserted separately by
+	// TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
 	for _, warning := range report.Warnings() {
 		if warning.Code == WarningCompatibility {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 5 {
-		t.Fatalf("expected five actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 7 {
+		t.Fatalf("expected seven actionable manual-only compatibility warnings, got %+v", warnings)
 	}
 	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation, sawPythonImplementation bool
 	for _, w := range warnings {

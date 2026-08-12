@@ -1,0 +1,39 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: claude-backlog-assignment
+spec:
+  gaggle: acme-web-claude
+  displayName: Backlog assignment
+  # Opt-in canonical workflow: this example is embedded for operators to copy
+  # and configure, but is not installed in the self-host gaggle.
+  triggers:
+    - type: schedule
+      schedule: "34 */6 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: assign-backlog
+  tasks:
+    - name: assign-backlog
+      type: deterministic
+      goal: Assign eligible unassigned backlog items without exceeding configured roster capacity.
+      run:
+        command: ["goobers", "backlog-assignment"]
+      inputs:
+        strategy: "constant-cap"
+        # Inputs are strings in the workflow DSL, so the roster is encoded as
+        # JSON. Switch to round-robin and omit maxOpen to load-balance.
+        roster: '[{"assignee":"alice","maxOpen":5}]'
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:ready"
+        excludeLabels: "goobers/status:in-review"
+        maxItems: "20"
+        resultFile: "backlog-assignment.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      expectedOutputs:
+        - backlog-assignment

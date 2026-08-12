@@ -65,7 +65,12 @@ const (
 		"setup validates the instance and refuses an already configured target.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
-		"GitHub token and an authenticated Copilot CLI.\n\n" +
+		"GitHub token and an authenticated agent harness. The shipped template's\n" +
+		"goobers default to `harness: copilot`; to run it on Claude Code instead, set\n" +
+		"`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`\n" +
+		"after materializing the instance below (see\n" +
+		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
+		"for a full claude-code gaggle reference).\n\n" +
 		"### Materialize the sample and the instance\n\n" +
 		"Copy the paired sample into a separate throwaway directory, then scaffold the\n" +
 		"instance that will operate on it:\n\n" +
@@ -130,6 +135,13 @@ const (
 		"   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.\n" +
 		"   Configuration already pointing at a real repository is left alone unless\n" +
 		"   you pass `--replace`.\n\n" +
+		"4. Confirm Goobers can see and use your installed harness before the first\n" +
+		"   run — `--check-harness` preflights every harness referenced by the\n" +
+		"   instance's goobers and prints `HARNESS claude-code: OK` (or `HARNESS\n" +
+		"   copilot: OK`) once the CLI is installed and signed in:\n\n" +
+		"   ```sh\n" +
+		"   bin/goobers validate --check-harness ./tutorial-instance\n" +
+		"   ```\n\n" +
 		"### Run it\n\n" +
 		"```sh\n" +
 		"bin/goobers run quickstart ./tutorial-instance\n" +

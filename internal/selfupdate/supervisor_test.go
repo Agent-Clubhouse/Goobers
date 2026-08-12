@@ -183,11 +183,7 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 		if err != nil {
 			t.Fatal(err)
 		}
-	// Same budget as waitFor, and for the same reason: a fixed 1s here is the
-	// identical too-tight-for-Windows assumption, just expressed as a timer
-	// rather than a poll deadline. It only elapses when the supervisor really
-	// failed to stop.
-	case <-time.After(waitForBudget()):
+	case <-time.After(time.Second):
 		t.Fatal("supervisor did not stop")
 	}
 }
@@ -197,18 +193,9 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 // does (ci.yml's windows-smoke job documents the same finding for the
 // package-level `go test` timeout), so give the loop more real time to catch
 // up there rather than tightening the flake margin.
-//
-// The Windows budget was 5s until #2792 added this package to the windows gate,
-// at which point TestSupervisorPromotesHealthyCandidate began flaking there —
-// it exhausted the 5s waiting for the promotion to retire the request file on a
-// contended runner. These are CEILINGS on a 1ms poll loop, not sleeps: raising
-// one costs nothing whenever the condition is met promptly, and only buys
-// headroom when the runner is slow. So it is set generously rather than tuned
-// to the observed failure, per this repo's "never assert wall-clock in CI"
-// convention. A genuine hang still fails, just against the package timeout.
 func waitForBudget() time.Duration {
 	if runtime.GOOS == "windows" {
-		return 30 * time.Second
+		return 5 * time.Second
 	}
 	return time.Second
 }
