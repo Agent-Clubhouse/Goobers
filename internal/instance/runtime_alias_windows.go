@@ -4,6 +4,7 @@ package instance
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,10 +75,9 @@ func createLegacyRuntimeAlias(legacy, scoped string) (err error) {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(handle)
 
 	var bytesReturned uint32
-	return windows.DeviceIoControl(
+	deviceErr := windows.DeviceIoControl(
 		handle,
 		fsctlSetReparsePoint,
 		&reparseData[0],
@@ -87,6 +87,7 @@ func createLegacyRuntimeAlias(legacy, scoped string) (err error) {
 		&bytesReturned,
 		nil,
 	)
+	return errors.Join(deviceErr, windows.CloseHandle(handle))
 }
 
 func junctionSubstituteName(target string) string {

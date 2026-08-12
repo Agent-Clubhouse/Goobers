@@ -46,7 +46,7 @@ func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() { _ = windows.CloseHandle(handle) }()
 	data := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
 	var bytesReturned uint32
 	if err := windows.DeviceIoControl(handle, fsctlGetReparsePoint, nil, 0, &data[0], uint32(len(data)), &bytesReturned, nil); err != nil {
