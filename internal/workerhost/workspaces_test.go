@@ -42,6 +42,7 @@ func TestWorktreeWorkspacesRepoMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+
 	p := &WorktreeWorkspaces{
 		Manager:  mgr,
 		CloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
@@ -66,6 +67,71 @@ func TestWorktreeWorkspacesRepoMode(t *testing.T) {
 	head := gitOutput(t, ws.Path(), "rev-parse", "--abbrev-ref", "HEAD")
 	if head != "goobers/implementation/run-2" {
 		t.Fatalf("checked-out branch = %q, want the run branch", head)
+	}
+}
+
+func TestWorktreeWorkspacesSelectedBranch(t *testing.T) {
+	const selected = "goobers/implementation/pr-head"
+	repo := newFixtureRepo(t)
+	seed := t.TempDir()
+	runGit(t, "", "clone", repo, seed)
+	runGit(t, seed, "config", "user.email", "test@example.com")
+	runGit(t, seed, "config", "user.name", "test")
+	runGit(t, seed, "checkout", "-b", selected)
+	if err := os.WriteFile(filepath.Join(seed, "selected.txt"), []byte("selected revision\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", "selected.txt")
+	runGit(t, seed, "commit", "-m", "selected branch change")
+	runGit(t, seed, "push", "origin", selected)
+
+	mgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	p := &WorktreeWorkspaces{
+		Manager:  mgr,
+		CloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
+	}
+	req := engine.WorkspaceRequest{
+		RunID: "selected-run", Stage: "select", Workflow: "remediation",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Mode:    apiv1.WorkspaceRepo,
+	}
+	selecting, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("selecting Provision: %v", err)
+	}
+	runGit(t, selecting.Path(), "fetch", "origin", "refs/heads/"+selected)
+	runGit(t, selecting.Path(), "checkout", "-B", selected, "FETCH_HEAD")
+	if err := selecting.Remove(context.Background()); err != nil {
+		t.Fatalf("remove selecting workspace: %v", err)
+	}
+
+	req.Stage = "rework"
+	req.WorkspaceBranch = selected
+	rebound, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("rebound Provision: %v", err)
+	}
+	if head := gitOutput(t, rebound.Path(), "rev-parse", "--abbrev-ref", "HEAD"); head != selected {
+		t.Errorf("checked-out branch = %q, want %q", head, selected)
+	}
+	if _, err := os.Stat(filepath.Join(rebound.Path(), "selected.txt")); err != nil {
+		t.Fatalf("selected branch change is missing: %v", err)
+	}
+	if err := rebound.Remove(context.Background()); err != nil {
+		t.Fatalf("remove rebound workspace: %v", err)
+	}
+
+	req.Stage = "verify"
+	req.WorkspaceBranch = "goobers/implementation/missing"
+	if _, err := p.Provision(context.Background(), req); err == nil {
+		t.Fatal("missing selected branch was silently created from the default branch")
+	}
+	req.WorkspaceBranch = "main"
+	if _, err := p.Provision(context.Background(), req); err == nil {
+		t.Fatal("selected branch outside the run namespace fell back to the default branch")
 	}
 }
 

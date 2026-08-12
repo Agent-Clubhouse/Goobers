@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -24,6 +25,27 @@ import (
 
 // envelopeDigest is a syntactically valid sha256 digest for fixture artifacts.
 const envelopeDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+type workspaceBranchDeterministic struct {
+	mu       sync.Mutex
+	attempts map[string]int
+	branch   string
+}
+
+func (d *workspaceBranchDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stage := strings.TrimPrefix(env.TaskID, env.RunID+":")
+	d.attempts[stage]++
+	if stage == "rework" && d.attempts[stage] == 1 {
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(errors.New("worker restarted"))
+	}
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+	if stage == "select" {
+		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.branch}
+	}
+	return result, nil
+}
 
 // capturingDeterministic records every envelope it is dispatched with and
 // returns a canned result — usable behind both runners' invoke.Deterministic
@@ -75,6 +97,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 			Limits:         &apiv1.Limits{MaxTokens: 2000, MaxCostUSD: 3.5},
 		}},
 	}
+
 	in := runInput("complete", spec)
 	in.TriggerRef = "item#42"
 	in.BranchNamespace = "goobers/"
@@ -137,6 +160,42 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}
 	if err := validator.ValidateJSON("invocation.schema.json", raw); err != nil {
 		t.Fatalf("engine envelope does not validate against the closed invocation schema: %v", err)
+	}
+}
+
+func TestWorkspaceBranchRebindsLaterStagesAndRetries(t *testing.T) {
+	const selected = "goobers/implementation/pr-head"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "rework"},
+			{Name: "rework", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	workspaces := testWorkspaces(t)
+	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
+	env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+
+	requests := workspaces.provisioned()
+	if len(requests) != 4 {
+		t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
+	}
+	if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
+		t.Errorf("select request = %+v, want the run's default branch", requests[0])
+	}
+	for _, request := range requests[1:] {
+		if request.WorkspaceBranch != selected {
+			t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
+		}
 	}
 }
 
@@ -334,7 +393,7 @@ func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
 	a := &Activities{Det: det, Workspaces: workspaces}
 	res, err := a.RunDeterministic(context.Background(),
 		apiv1.InvocationEnvelope{TaskID: "run-x:local-ci", RunID: "run-x"},
-		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true})
+		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, "")
 	if err != nil {
 		t.Fatalf("RunDeterministic error = %v, want a business-failure envelope", err)
 	}
