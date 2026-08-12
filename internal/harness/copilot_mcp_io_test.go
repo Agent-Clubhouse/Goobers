@@ -132,6 +132,13 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	if arg == "" {
 		t.Fatal("expected a non-empty --additional-mcp-config argument")
 	}
+	if strings.HasPrefix(arg, "{") {
+		t.Fatalf("--additional-mcp-config must be a file path, got inline JSON %q", arg)
+	}
+	registrationData, err := os.ReadFile(arg)
+	if err != nil {
+		t.Fatalf("read --additional-mcp-config file: %v", err)
+	}
 
 	var parsed struct {
 		MCPServers map[string]struct {
@@ -141,12 +148,12 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 			Tools   []string `json:"tools"`
 		} `json:"mcpServers"`
 	}
-	if err := json.Unmarshal([]byte(arg), &parsed); err != nil {
-		t.Fatalf("--additional-mcp-config argument is not valid JSON: %v", err)
+	if err := json.Unmarshal(registrationData, &parsed); err != nil {
+		t.Fatalf("--additional-mcp-config file is not valid JSON: %v", err)
 	}
 	server, ok := parsed.MCPServers[goobersIOServerName]
 	if !ok {
-		t.Fatalf("registration missing %q server: %s", goobersIOServerName, arg)
+		t.Fatalf("registration missing %q server: %s", goobersIOServerName, registrationData)
 	}
 	if server.Type != "local" || server.Command != "/usr/local/bin/goobers" {
 		t.Fatalf("unexpected server registration: %+v", server)
@@ -166,6 +173,9 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(resolvedWorkspace, arg); err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("registration path %q is not inside the workspace %q", arg, resolvedWorkspace)
 	}
 	if rel, err := filepath.Rel(resolvedWorkspace, configPath); err != nil || strings.HasPrefix(rel, "..") {
 		t.Fatalf("config path %q is not inside the workspace %q", configPath, resolvedWorkspace)
@@ -204,12 +214,14 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	if runtime.GOOS == "windows" {
 		return
 	}
-	info, err := os.Stat(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("config file mode = %o, want 600", info.Mode().Perm())
+	for _, path := range []string{arg, configPath} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("config file %q mode = %o, want 600", path, info.Mode().Perm())
+		}
 	}
 }
 

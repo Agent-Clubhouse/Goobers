@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -26,6 +25,8 @@ const goobersIOServerName = "goobers-io"
 // its own, delivered via --additional-mcp-config instead of the shared
 // mcp-config.json those checks inspect.
 const goobersIORuntimeSubdir = ".goobers/mcp-io"
+
+const copilotMCPRegistrationFileName = "copilot-mcp-config.json"
 
 // goobersIOTools are goobers-io's own tool names, as the server itself
 // reports them in its tools/list response — used for the per-server "tools"
@@ -80,16 +81,17 @@ func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 	return req
 }
 
-// goobersIOAdditionalMCPConfigArg builds the --additional-mcp-config
-// argument that registers goobers-io for this invocation, and writes its
-// runtime config (workspace, declared artifactFile, materialized upstream
-// inputs) to a workspace-relative path passed to the spawned process via
-// --config, rather than through $COPILOT_HOME (goobers-io needs no
-// COPILOT_HOME redirection — it has no ambient credential to protect
-// against leaking, and redirecting it would be what breaks stored-login
-// auth for every other eligible stage). Returns ("", nil) when this
-// invocation isn't eligible or selfBin is unknown — the caller appends
-// nothing in that case.
+// goobersIOAdditionalMCPConfigArg writes the --additional-mcp-config file that
+// registers goobers-io for this invocation, plus the server's runtime config
+// (workspace, declared artifactFile, materialized upstream inputs), and returns
+// the registration file's path. Both files are workspace-relative rather than
+// $COPILOT_HOME-relative (goobers-io needs no COPILOT_HOME redirection — it has
+// no ambient credential to protect against leaking, and redirecting it would
+// be what breaks stored-login auth for every other eligible stage). Passing a
+// path instead of inline JSON also prevents the Windows PowerShell npm shim
+// from stripping the JSON's quotes while re-parsing argv. Returns ("", nil)
+// when this invocation isn't eligible or selfBin is unknown — the caller
+// appends nothing in that case.
 //
 // This write happens in the harness's own process, before the spawned
 // copilot subprocess is sandboxed — req.Workspace is the task's own
@@ -130,13 +132,15 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 		Args:    []string{"mcp-io", "--config", configPath},
 		Tools:   append([]string(nil), goobersIOTools...),
 	}
-	data, err := json.Marshal(map[string]interface{}{
+	registration := map[string]interface{}{
 		"mcpServers": map[string]interface{}{goobersIOServerName: server},
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode goobers-io MCP registration: %w", err)
 	}
-	return string(data), nil
+	registrationRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), copilotMCPRegistrationFileName)
+	registrationPath, err := mcpio.WriteJSON(req.Workspace, registrationRel, registration)
+	if err != nil {
+		return "", fmt.Errorf("write goobers-io MCP registration: %w", err)
+	}
+	return registrationPath, nil
 }
 
 // goobersIOPromptSection explains how to use whichever artifact tools this
