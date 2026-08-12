@@ -180,9 +180,10 @@ func TestRBACProbeErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestStorageWithoutRWXClassFails(t *testing.T) {
+func TestStorageWithoutRWXClassRecommendsSingleNodeRWO(t *testing.T) {
 	client := newFakeCluster(t)
-	// Replace the RWX class with a block-only one.
+	// Replace the RWX class with a block-only one — RWO-only is the
+	// documented safe topology (§4), so this must not fail.
 	if err := client.StorageV1().StorageClasses().Delete(context.Background(), "goobers-files", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,17 +196,36 @@ func TestStorageWithoutRWXClassFails(t *testing.T) {
 
 	report := Run(context.Background(), client, Options{})
 	result := resultByID(t, report, "storage-rwx")
+	if result.Status != StatusPass {
+		t.Fatalf("storage-rwx = %s, want pass", result.Status)
+	}
+	if !strings.Contains(result.Hint, "single node") {
+		t.Fatalf("hint %q does not recommend single-node RWO mounting", result.Hint)
+	}
+	if !report.Conformant {
+		t.Fatal("RWO-only storage is the recommended safe topology and must be conformant (§4)")
+	}
+}
+
+func TestStorageWithNoClassesFails(t *testing.T) {
+	client := newFakeCluster(t)
+	if err := client.StorageV1().StorageClasses().Delete(context.Background(), "goobers-files", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "storage-rwx")
 	if result.Status != StatusFail {
 		t.Fatalf("storage-rwx = %s, want fail", result.Status)
 	}
-	if !strings.Contains(result.Detail, "managed-disk") {
-		t.Fatalf("detail %q does not name the non-RWX classes", result.Detail)
+	if !strings.Contains(result.Detail, "no StorageClasses") {
+		t.Fatalf("detail %q does not name the absence of StorageClasses", result.Detail)
 	}
 	if result.Hint == "" {
 		t.Fatal("storage failure must carry a remediation hint")
 	}
 	if report.Conformant {
-		t.Fatal("no RWX storage must not be conformant (§4)")
+		t.Fatal("no StorageClasses at all must not be conformant (§4)")
 	}
 }
 

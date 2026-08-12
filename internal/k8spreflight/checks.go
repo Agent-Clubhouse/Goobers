@@ -180,7 +180,7 @@ func rwxCapable(provisioner string) bool {
 func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) Result {
 	result := Result{
 		ID:       "storage-rwx",
-		Title:    "ReadWriteMany-capable StorageClass for journal & artifacts",
+		Title:    "StorageClass safe for the instance root's file coordination",
 		Citation: "§4",
 		Severity: SeverityRequired,
 	}
@@ -191,7 +191,12 @@ func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) R
 		result.Hint = "grant list on storageclasses to the preflighting identity (fail-closed, never a silent pass)"
 		return result
 	}
-	var names []string
+	if len(classes.Items) == 0 {
+		result.Status = StatusFail
+		result.Detail = "the cluster has no StorageClasses"
+		result.Hint = "provision a StorageClass for the instance root; RWO mounted by a single node is the recommended safe default (§4)"
+		return result
+	}
 	for _, class := range classes.Items {
 		if rwxCapable(class.Provisioner) {
 			result.Status = StatusWarn
@@ -199,15 +204,10 @@ func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) R
 			result.Hint = "do not place an instance root containing lock files or SQLite databases on RWX/network storage; use RWO storage with a single node until storage roles are split or a cross-client safety probe is available"
 			return result
 		}
-		names = append(names, class.Name)
 	}
-	result.Status = StatusFail
-	if len(names) == 0 {
-		result.Detail = "the cluster has no StorageClasses"
-	} else {
-		result.Detail = fmt.Sprintf("no RWX-capable class among: %s", strings.Join(names, ", "))
-	}
-	result.Hint = "provision an RWX-capable class (Azure Files/Blob CSI, NFS, CephFS, …) for the shared journal volume (§4)"
+	result.Status = StatusPass
+	result.Detail = "no RWX-capable class found; the cluster's StorageClasses default to ReadWriteOnce, the recommended safe topology for the instance root (§4)"
+	result.Hint = "mount the instance root by a single node — do not scale the daemon deployment beyond one replica until lock-bearing state is split from projected journal/artifact storage"
 	return result
 }
 
