@@ -1,0 +1,127 @@
+# Temporal server for Spike 1 (#2840). SPIKE ARTIFACT.
+#
+# Hand-rolled rather than Helm, deliberately. The chart is not on a reachable
+# repo (charts.temporal.io does not resolve), the OCI path 403s, and the GitHub
+# chart drags in bitnami subcharts for a Postgres we are not using. This is
+# ~100 lines we control, on the SUPPORTED images.
+#
+# NOT temporalio/auto-setup: that image is formally deprecated ("no longer
+# maintained and will not receive updates") and frozen at 1.29.7 while
+# temporalio/server ships 1.31.2. Building the rung on it would pin V2's whole
+# Temporal baseline to a dead image. auto-setup's only real convenience is that
+# it runs the schema tool for you — so we run the schema tool ourselves, from
+# temporalio/admin-tools, in a Job.
+#
+# SDK compatibility: the repo pins go.temporal.io/sdk v1.47.0 / api v1.63.4
+# (go.mod), which is current against server 1.31.x.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: temporal-schema
+  namespace: temporal
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: schema
+          image: temporalio/admin-tools:1.31.2
+          env:
+            - {name: SQL_PLUGIN, value: postgres12}
+            - {name: SQL_HOST, value: temporal-pg-rw.temporal.svc.cluster.local}
+            - {name: SQL_PORT, value: "5432"}
+            - name: SQL_USER
+              valueFrom: {secretKeyRef: {name: temporal-pg-app, key: username}}
+            - name: SQL_PASSWORD
+              valueFrom: {secretKeyRef: {name: temporal-pg-app, key: password}}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "== temporal schema =="
+              # setup-schema is idempotent-ish: it fails if already initialised,
+              # so tolerate that and let update-schema do the real work. This Job
+              # must be safe to re-run — a spike redeploys constantly.
+              temporal-sql-tool --database temporal setup-schema -v 0.0 || echo "  (temporal already initialised)"
+              temporal-sql-tool --database temporal update-schema \
+                -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+              temporal-sql-tool --database temporal_visibility setup-schema -v 0.0 || echo "  (visibility already initialised)"
+              temporal-sql-tool --database temporal_visibility update-schema \
+                -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+              echo "== schema done =="
+---
+# temporalio/server does not ship a dynamicconfig file; only auto-setup does.
+# Without one the server refuses to start:
+#   unable to create dynamic config client: ... /etc/temporal/config/dynamicconfig/docker.yaml:
+#   no such file or directory
+# An empty document is valid and means "all defaults", which is what a spike wants.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: temporal-dynamicconfig
+  namespace: temporal
+data:
+  docker.yaml: |
+    # intentionally empty: server defaults
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-frontend
+  namespace: temporal
+spec:
+  selector: {app: temporal}
+  ports:
+    - {name: grpc, port: 7233, targetPort: 7233}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal
+  namespace: temporal
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: temporal}
+  template:
+    metadata:
+      labels: {app: temporal}
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: temporal
+          image: temporalio/server:1.31.2
+          env:
+            - {name: DB, value: postgres12}
+            - {name: POSTGRES_SEEDS, value: temporal-pg-rw.temporal.svc.cluster.local}
+            - {name: DB_PORT, value: "5432"}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: temporal-pg-app, key: username}}
+            - name: POSTGRES_PWD
+              valueFrom: {secretKeyRef: {name: temporal-pg-app, key: password}}
+            - {name: DBNAME, value: temporal}
+            - {name: VISIBILITY_DBNAME, value: temporal_visibility}
+            # All four roles in one pod. Dev-grade on purpose: the rung proves
+            # the ENGINE path, not a production Temporal topology.
+            - {name: SERVICES, value: "history,matching,frontend,worker"}
+            - {name: BIND_ON_IP, value: "0.0.0.0"}
+            - {name: TEMPORAL_BROADCAST_ADDRESS, valueFrom: {fieldRef: {fieldPath: status.podIP}}}
+            # No Elasticsearch: basic visibility only, per k8s-infra-shape.md §2.
+            - {name: ENABLE_ES, value: "false"}
+          volumeMounts:
+            - {name: dynamicconfig, mountPath: /etc/temporal/config/dynamicconfig}
+          ports:
+            - {containerPort: 7233}
+          readinessProbe:
+            tcpSocket: {port: 7233}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 2Gi}
+      volumes:
+        - name: dynamicconfig
+          configMap: {name: temporal-dynamicconfig}

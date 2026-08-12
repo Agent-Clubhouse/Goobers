@@ -1,0 +1,39 @@
+# PostgreSQL for Temporal persistence, via CloudNativePG. SPIKE ARTIFACT (#2840).
+#
+# This is Temporal's history store, NOT the Goobers journal. The journal stays as
+# files on the instance PVC — #2051 territory, deliberately out of the ladder.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: temporal
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: temporal-pg
+  namespace: temporal
+spec:
+  instances: 1
+  # PIN THE MAJOR VERSION. CNPG installs the newest PostgreSQL major when
+  # imageName is unset — PG 18 on current CNPG — which is outside Temporal's
+  # documented tested set. Silent at install time, interesting later.
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.6
+  storage:
+    size: 10Gi
+    storageClass: managed-csi
+  bootstrap:
+    initdb:
+      database: temporal
+      owner: temporal
+      # Temporal needs TWO databases. CNPG's initdb creates one, and its
+      # application user is deliberately NOT a superuser
+      # (enableSuperuserAccess defaults false), so Temporal's own
+      # createDatabase path cannot make the second one for itself. Create it
+      # here during bootstrap, where postInitSQL runs with the privileges to
+      # do it.
+      postInitSQL:
+        - CREATE DATABASE temporal_visibility OWNER temporal;
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
