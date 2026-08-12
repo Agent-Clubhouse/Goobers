@@ -1,0 +1,166 @@
+# Goobernetes Spike 0 (#2839) — tier-2 daemon in one pod. SPIKE ARTIFACT.
+#
+# Substitute ${AZURE_CLIENT_ID}, ${AZURE_TENANT_ID}, ${KEYVAULT_NAME}, ${IMAGE}
+# before applying — deploy/dev/k8s/deploy.sh does this. Instance-specific IDs
+# deliberately do NOT live in this repo (see the operator journal).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goobers
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goobers-sa
+  namespace: goobers
+  annotations:
+    azure.workload.identity/client-id: "${AZURE_CLIENT_ID}"
+---
+# Key Vault -> pod. Two delivery paths on purpose:
+#   objects:       mounts each secret as a FILE at /mnt/secrets-store/<name>,
+#                  which is what instance.yaml's token.file refs read.
+#   secretObjects: ALSO syncs the copilot token into a real k8s Secret, because
+#                  the harness sign-in preflight reads COPILOT_GITHUB_TOKEN from
+#                  ambient process env and never consults the credential
+#                  resolver (internal/harness/copilot.go:445-465). A file ref
+#                  alone would fail daemon startup.
+# Gotcha that shapes this: the synced Secret only exists once a pod MOUNTS the
+# CSI volume — secretKeyRef alone is not enough. The daemon pod does both.
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: goobers-kv
+  namespace: goobers
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    useVMManagedIdentity: "false"
+    clientID: "${AZURE_CLIENT_ID}"
+    keyvaultName: "${KEYVAULT_NAME}"
+    tenantId: "${AZURE_TENANT_ID}"
+    objects: |
+      array:
+        - |
+          objectName: goobers-testbed-token
+          objectType: secret
+        - |
+          objectName: copilot-token
+          objectType: secret
+  secretObjects:
+    - secretName: goobers-copilot
+      type: Opaque
+      data:
+        - objectName: copilot-token
+          key: token
+---
+# RWO Premium SSD. reclaimPolicy is the built-in class's Delete rather than the
+# epic's Retain: this ladder deletes the cluster between sessions, so Retain
+# would only strand billable disks.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-instance
+  namespace: goobers
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: managed-csi-premium
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers
+  namespace: goobers
+spec:
+  replicas: 1
+  # RWO disk + single writer: never run two daemons at once. Recreate, not
+  # RollingUpdate — a rolling update would try to attach the disk to a second
+  # pod and deadlock on up.lock even if it did attach.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: goobers}
+  template:
+    metadata:
+      labels:
+        app: goobers
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: goobers-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      initContainers:
+        # Seed the instance config onto the PVC on first boot. Idempotent: the
+        # config tree is refreshed every start (cheap, lets us iterate config
+        # without rebuilding the image), while journal/DB state on the PVC is
+        # never touched.
+        # Delivered as a tarball because ConfigMap keys cannot contain "/", so a
+        # nested config tree cannot be represented as individual keys.
+        - name: seed
+          image: ${IMAGE}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "seeding instance config -> /instance"
+              rm -rf /instance/config
+              tar xzf /seed/config.tgz -C /instance
+              echo "--- seeded ---"
+              ls -la /instance
+              find /instance/config -type f
+          volumeMounts:
+            - {name: instance, mountPath: /instance}
+            - {name: seed, mountPath: /seed}
+      containers:
+        - name: daemon
+          image: ${IMAGE}
+          args: ["up", "/instance"]
+          env:
+            # Preflight reads this from ambient env; see SecretProviderClass.
+            - name: COPILOT_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: goobers-copilot, key: token}
+            - name: HOME
+              value: /home/nonroot
+          volumeMounts:
+            - {name: instance, mountPath: /instance}
+            - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
+            - {name: home, mountPath: /home/nonroot}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 6Gi}
+        # `goobers up` serves the JSON API only. The portal is a separate
+        # command, so it is a second container sharing the pod network
+        # namespace — it reaches the daemon on 127.0.0.1:8080 and binds
+        # 127.0.0.1:8081 itself, which kubectl port-forward can reach.
+        - name: dashboard
+          image: ${IMAGE}
+          args: ["dashboard", "--port=8081", "--no-open", "/instance"]
+          env:
+            - name: HOME
+              value: /home/nonroot
+          volumeMounts:
+            - {name: instance, mountPath: /instance}
+            - {name: home, mountPath: /home/nonroot}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+      volumes:
+        - name: instance
+          persistentVolumeClaim: {claimName: goobers-instance}
+        - name: seed
+          configMap: {name: goobers-instance-config}
+        - name: home
+          emptyDir: {}
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: {secretProviderClass: goobers-kv}

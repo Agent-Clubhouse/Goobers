@@ -1,0 +1,143 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: default-implement
+spec:
+  gaggle: testbed-minimal
+  displayName: Minimal (issue -> PR -> merge on green CI)
+  # The default starter is intentionally manual-only so a fresh install never
+  # starts provider work without an operator action. Run it explicitly with
+  # `goobers run default-implement`; query-backlog then claims one
+  # maintainer-approved item before the coder runs.
+  # MANUAL-ONLY for now: a cron trigger is added only after first-value proof.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one approved backlog item to implement.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers"
+        maxItems: "1"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed-item
+      next: implement
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the claimed backlog item and commit the change.
+      capabilities:
+        - repo:push
+      policyActions:
+        - modify-repository
+      next: push-branch
+    - name: push-branch
+      type: deterministic
+      goal: Push the implemented change as a branch.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      next: open-pr
+    - name: open-pr
+      type: deterministic
+      goal: Open the pull request for the pushed branch.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        resultFile: "pr-result.json"
+      capabilities:
+        - provider:pr:write
+      policyActions:
+        - open-or-update-pr
+      expectedOutputs:
+        - pull-request-url
+        - prNumber
+        - opened
+      next: ci-poll
+    - name: ci-poll
+      type: deterministic
+      goal: Poll the pull request's CI checks until they conclude.
+      run:
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+      inputsFrom:
+        prNumber: prNumber
+      capabilities:
+        - provider:pr:write
+      expectedOutputs:
+        - ciStatus
+        - prNumber
+      next: ci-gate
+    # TWEAK 2: merge-pr requires headSha/baseSha SHA-pins and `pr-select` is the
+    # only shipped stage that emits them, so the loop has to re-select its own
+    # just-opened PR to learn the SHAs it just pushed.
+    - name: select-own-pr
+      type: deterministic
+      goal: Re-read this run's own pull request to obtain its head/base SHA pins.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        headPrefixes: "goobers/default-implement/"
+        authorScope: "goobers"
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      # TWEAK 3: pr-select hard-prescribes this policy action; neither
+      # `goobers pr-select --help` nor its man page mentions it.
+      policyActions:
+        - flag-foundation-coupling
+      expectedOutputs:
+        - number
+        - headSha
+        - baseSha
+      next: merge-pr
+    - name: merge-pr
+      type: deterministic
+      goal: Merge the pull request now that the repository's CI is green.
+      run:
+        command: ["goobers", "merge-pr"]
+      inputsFrom:
+        pullNumber: number
+        headSha: headSha
+        baseSha: baseSha
+      inputs:
+        verdict: "pass"
+        mergeMethod: "squash"
+        commitMessage: "Merged by the goobers minimal loop after green CI."
+        resultFile: "merge-result.json"
+      capabilities:
+        - github:pr:merge
+        - github:branch:delete
+      policyActions:
+        - merge-pr
+        - delete-branch
+      expectedOutputs:
+        - merged
+        # Terminal: the merged pull request is this loop's success artifact.
+  gates:
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-status
+        params:
+          equals: "passing"
+      branches:
+        pass: select-own-pr
+        fail: "@abort"
+        # TWEAK 1: validate rejects a ci-status gate that omits `timeout`.
+        timeout: "@escalate"

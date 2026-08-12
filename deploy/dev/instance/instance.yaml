@@ -1,0 +1,55 @@
+# Goobernetes spike instance (#2839) — SPIKE ARTIFACT.
+#
+# Tier-2 daemon running in one Linux pod on AKS. Deliberately minimal: one
+# gaggle, manual trigger, one run at a time. The point of Spike 0 is packaging,
+# egress, secrets, and headless agent auth — not scale.
+#
+# TARGET REPOS ARE TESTBEDS, NOT PRODUCTION. The filed epic pointed the spike at
+# the live Goobers/Goobers-Site backlogs; that would put a second claim ledger on
+# the same backlog the laptop instance curates — a production double-claim
+# hazard. goobers-testbed-minimal is a disposable fixture with the same shape.
+#
+# SECRETS: nothing inline (CFG-009, SEC-010). Both credentials originate in
+# Azure Key Vault and arrive on disk via the Secrets Store CSI driver, mounted
+# read-only at /mnt/secrets-store. The Copilot token ALSO reaches the process as
+# COPILOT_GITHUB_TOKEN (see the Deployment): the harness sign-in preflight reads
+# that from ambient process env, not from the credential resolver
+# (internal/harness/copilot.go:445-465), so a file ref alone is not sufficient
+# for daemon startup. Both mechanisms point at the same vault secret.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: Agent-Clubhouse
+    name: goobers-testbed-minimal
+    token:
+      file: /mnt/secrets-store/goobers-testbed-token
+credentials:
+  - capability: agent:model
+    token:
+      file: /mnt/secrets-store/copilot-token
+runner:
+  # What this CONTAINER actually has (deploy/dev/image/Dockerfile), verified in
+  # the built image: git 2.x, gh, node v22.23.2, @github/copilot 1.0.79.
+  # Capabilities are a CLAIM set with no host validation at config load — they
+  # are matched by exact string equality against requiredCapabilities declared
+  # by gaggles/stages, and a mismatch is a FATAL daemon-startup failure
+  # (internal/instance/gagglecapability.go:128 -> cmd/goobers/daemon.go:184).
+  # Neither testbed-minimal's gaggle nor default-implement declares any, so
+  # os=linux is a truthful superset rather than a requirement.
+  capabilities:
+    - os=linux
+# Loopback only. kubectl port-forward connects to the pod's own localhost, so a
+# 127.0.0.1 bind is reachable through it and #640's fail-closed off-loopback
+# rule is respected rather than worked around. NOTE: `goobers up` serves the
+# JSON API only — the portal is a separate command (`goobers dashboard`), which
+# is why the Deployment runs a second container.
+api:
+  listen: 127.0.0.1:8080
+runConditions:
+  # One run at a time. Spike 0 proves a loop, not concurrency.
+  maxParallelRuns: 1
+  claimsLockTimeout: 30s
+telemetry:
+  enabled: true
+timezone: America/Los_Angeles

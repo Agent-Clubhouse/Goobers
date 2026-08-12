@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: goobernetes-spike
+  annotations:
+    # default-implement is manual-only by design (a fresh install must never
+    # start provider work without an operator action). This acknowledgment keeps
+    # `validate --strict` green without weakening any other warning.
+    goobers.dev/acknowledge-manual-only: "true"
+spec:
+  instance:
+    name: goobernetes-spike
+    environment: dev
+  # Credentials are always references, never inline tokens (CFG-009, SEC-010).
+  # secretRef.name is a label here; the actual source is the CSI-mounted file
+  # declared per-repo in instance.yaml.
+  connections:
+    - name: repo-token
+      type: repo
+      provider: github
+      secretRef:
+        name: repo-token
+  gaggles:
+    - testbed-minimal

@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: testbed-minimal
+spec:
+  displayName: Example
+  # The project codebase this gaggle works on. Point this at your own repo.
+  project:
+    provider: github
+    owner: Agent-Clubhouse
+    name: goobers-testbed-minimal
+    branch: main
+    connectionRef: repo-token
+  # The singleton backlog this gaggle draws work from (GAG-004).
+  backlog:
+    provider: github
+    project: Agent-Clubhouse/goobers-testbed-minimal
+    labels:
+      - goobers
+    connectionRef: repo-token
+  isolation:
+    namespace: gaggle-testbed-minimal
