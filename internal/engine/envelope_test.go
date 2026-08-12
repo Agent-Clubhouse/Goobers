@@ -163,7 +163,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}
 }
 
-func TestWorkspaceBranchRebindsLaterStagesAndRetries(t *testing.T) {
+func TestWorkspaceBranchRebindsLaterStagesAcrossRetriesAndReplay(t *testing.T) {
 	const selected = "goobers/implementation/pr-head"
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -175,27 +175,92 @@ func TestWorkspaceBranchRebindsLaterStagesAndRetries(t *testing.T) {
 			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
 		},
 	}
+	for _, execution := range []string{"initial", "replay"} {
+		t.Run(execution, func(t *testing.T) {
+			workspaces := testWorkspaces(t)
+			det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+			var ts testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&ts)
+			env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
+			env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatalf("workflow error: %v", err)
+			}
+
+			requests := workspaces.provisioned()
+			if len(requests) != 4 {
+				t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
+			}
+			if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
+				t.Errorf("select request = %+v, want the run's default branch", requests[0])
+			}
+			for _, request := range requests[1:] {
+				if request.WorkspaceBranch != selected {
+					t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
+				}
+			}
+		})
+	}
+}
+
+func TestSelectedWorkspaceBranchRejectsInvalidOutput(t *testing.T) {
+	task := apiv1.Task{Name: "select", Type: apiv1.TaskDeterministic}
+	tests := []struct {
+		name    string
+		outputs map[string]interface{}
+		want    string
+		wantErr string
+	}{
+		{name: "absent", outputs: nil},
+		{name: "blank", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "  "}},
+		{name: "selected", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
+		{name: "non-string", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
+		{name: "outside namespace", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectedWorkspaceBranch(task, apiv1.ResultEnvelope{Outputs: tt.outputs}, providers.DefaultBranchNamespace)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("selectedWorkspaceBranch error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("selectedWorkspaceBranch error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("selectedWorkspaceBranch = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInvalidWorkspaceBranchFailsWorkflow(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"},
+	}}
 	workspaces := testWorkspaces(t)
-	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
-	env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatalf("workflow error: %v", err)
+	env.ExecuteWorkflow(Run, runInput("workspace-invalid", spec))
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "outside namespace") {
+		t.Fatalf("workflow error = %v, want invalid selected branch failure", err)
 	}
-
-	requests := workspaces.provisioned()
-	if len(requests) != 4 {
-		t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
-	}
-	if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
-		t.Errorf("select request = %+v, want the run's default branch", requests[0])
-	}
-	for _, request := range requests[1:] {
-		if request.WorkspaceBranch != selected {
-			t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
-		}
+	if requests := workspaces.provisioned(); len(requests) != 1 || requests[0].Stage != "select" {
+		t.Fatalf("workspace requests = %+v, want only the selecting stage", requests)
 	}
 }
 

@@ -83,6 +83,7 @@ func TestWorktreeWorkspacesSelectedBranch(t *testing.T) {
 	}
 	runGit(t, seed, "add", "selected.txt")
 	runGit(t, seed, "commit", "-m", "selected branch change")
+	selectedRevision := gitOutput(t, seed, "rev-parse", "HEAD")
 	runGit(t, seed, "push", "origin", selected)
 
 	mgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
@@ -117,11 +118,34 @@ func TestWorktreeWorkspacesSelectedBranch(t *testing.T) {
 	if head := gitOutput(t, rebound.Path(), "rev-parse", "--abbrev-ref", "HEAD"); head != selected {
 		t.Errorf("checked-out branch = %q, want %q", head, selected)
 	}
+	if revision := gitOutput(t, rebound.Path(), "rev-parse", "HEAD"); revision != selectedRevision {
+		t.Errorf("engine workspace revision = %q, want selected revision %q", revision, selectedRevision)
+	}
 	if _, err := os.Stat(filepath.Join(rebound.Path(), "selected.txt")); err != nil {
 		t.Fatalf("selected branch change is missing: %v", err)
 	}
 	if err := rebound.Remove(context.Background()); err != nil {
 		t.Fatalf("remove rebound workspace: %v", err)
+	}
+
+	local, err := mgr.Create(context.Background(), worktree.CreateOptions{
+		RepoURL:               repo,
+		RunID:                 "local-runner-parity",
+		BaseRef:               "main",
+		Branch:                selected,
+		RequireExistingBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("local-runner-equivalent worktree: %v", err)
+	}
+	if revision := gitOutput(t, local.Path, "rev-parse", "HEAD"); revision != selectedRevision {
+		t.Errorf("local workspace revision = %q, want selected revision %q", revision, selectedRevision)
+	}
+	if data, err := os.ReadFile(filepath.Join(local.Path, "selected.txt")); err != nil || string(data) != "selected revision\n" {
+		t.Errorf("local workspace selected content = %q, %v", data, err)
+	}
+	if err := local.Remove(context.Background(), worktree.RemoveOptions{}); err != nil {
+		t.Fatalf("remove local-runner-equivalent worktree: %v", err)
 	}
 
 	req.Stage = "verify"

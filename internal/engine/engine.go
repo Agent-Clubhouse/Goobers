@@ -293,7 +293,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
 			lastStage, lastResult = t.Name, res
 			if res.Status != apiv1.ResultFailure || !t.ContinueOnError {
-				if branch := selectedWorkspaceBranch(t, res, in.BranchNamespace); branch != "" {
+				branch, err := selectedWorkspaceBranch(t, res, in.BranchNamespace)
+				if err != nil {
+					return RunResult{}, fmt.Errorf("stage %q selected workspace branch: %w", t.Name, err)
+				}
+				if branch != "" {
 					workspaceBranch = branch
 				}
 			}
@@ -560,19 +564,27 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 	}
 }
 
-func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespace string) string {
+func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespace string) (string, error) {
 	if t.Type != apiv1.TaskDeterministic {
-		return ""
+		return "", nil
 	}
-	value, ok := result.Outputs[runner.WorkspaceBranchOutput].(string)
+	raw, exists := result.Outputs[runner.WorkspaceBranchOutput]
+	if !exists {
+		return "", nil
+	}
+	value, ok := raw.(string)
 	if !ok {
-		return ""
+		return "", fmt.Errorf("%s must be a string, got %T", runner.WorkspaceBranchOutput, raw)
 	}
 	branch := strings.TrimSpace(value)
-	if !strings.HasPrefix(branch, providers.NormalizeBranchNamespace(namespace)) {
-		return ""
+	if branch == "" {
+		return "", nil
 	}
-	return branch
+	normalizedNamespace := providers.NormalizeBranchNamespace(namespace)
+	if !strings.HasPrefix(branch, normalizedNamespace) {
+		return "", fmt.Errorf("%s %q is outside namespace %q", runner.WorkspaceBranchOutput, branch, normalizedNamespace)
+	}
+	return branch, nil
 }
 
 // buildInvocation assembles a stage invocation envelope to the closed
