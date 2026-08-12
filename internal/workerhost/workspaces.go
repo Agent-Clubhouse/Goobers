@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
@@ -69,14 +70,23 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			providers.NormalizeBranchNamespace(req.BranchNamespace),
 			req.Workflow, req.RunID,
 		)
+		if req.WorkspaceBranch != "" {
+			namespace := providers.NormalizeBranchNamespace(req.BranchNamespace)
+			if !strings.HasPrefix(req.WorkspaceBranch, namespace) {
+				return nil, fmt.Errorf("workerhost: selected workspace branch %q for stage %q is outside namespace %q", req.WorkspaceBranch, req.Stage, namespace)
+			}
+			branch = req.WorkspaceBranch
+		}
 		wt, err := p.Manager.Create(ctx, worktree.CreateOptions{
-			RepoURL:    repoURL,
-			RunID:      req.RunID + "-" + req.Stage,
-			OwnerRunID: req.RunID,
-			BaseRef:    baseRef,
-			Branch:     branch,
-			SyncBase:   req.SyncBase,
-			Sparse:     sparseCones(req.RepoRef.Checkout),
+			RepoURL:               repoURL,
+			RunID:                 req.RunID + "-" + req.Stage,
+			OwnerRunID:            req.RunID,
+			BaseRef:               baseRef,
+			Branch:                branch,
+			SyncBase:              req.SyncBase,
+			RequireExistingBranch: req.WorkspaceBranch != "",
+			AcquireRemoteBranch:   req.WorkspaceBranch != "",
+			Sparse:                sparseCones(req.RepoRef.Checkout),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workerhost: create worktree for stage %q: %w", req.Stage, err)

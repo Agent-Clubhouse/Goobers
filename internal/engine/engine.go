@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
 
 // Run statuses.
@@ -258,6 +259,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	gateAttempts := map[string]int{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
+	var workspaceBranch string
 	state := in.Spec.Start
 	steps := 0
 
@@ -277,7 +279,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -290,6 +292,15 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			upstream[t.Name] = res
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
 			lastStage, lastResult = t.Name, res
+			if res.Status != apiv1.ResultFailure || !t.ContinueOnError {
+				branch, err := selectedWorkspaceBranch(t, res, in.BranchNamespace)
+				if err != nil {
+					return RunResult{}, fmt.Errorf("stage %q selected workspace branch: %w", t.Name, err)
+				}
+				if branch != "" {
+					workspaceBranch = branch
+				}
+			}
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
 			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
 			if terminal {
@@ -307,7 +318,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// verdict — the same durable wait marker the local runner persists
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
-			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, gateAttempts, rec)
+			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateAttempts, rec)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -414,7 +425,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -464,7 +475,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// the journal ungraded and diverge from the local runner.
 		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
 			var result stageActivityResult
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env).Get(ctx, &result)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env, workspaceBranch).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
 		})
@@ -482,7 +493,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	run := *t.Run
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
 		var result stageActivityResult
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run, workspaceBranch).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	})
@@ -492,7 +503,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // outcome plus, for an agentic gate, the reviewer's full Verdict (journaled as
 // the verdict artifact alongside gate.evaluated, mirroring internal/gate's
 // recordVerdict).
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -536,10 +547,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env).Get(ctx, &verdict)
+			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch).Get(ctx, &verdict)
 		}); err != nil {
 			return "", nil, err
 		}
+
 		return string(verdict.Decision), &verdict, nil
 
 	case apiv1.EvaluatorHuman:
@@ -550,6 +562,29 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 	default:
 		return "", nil, fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
 	}
+}
+
+func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespace string) (string, error) {
+	if t.Type != apiv1.TaskDeterministic {
+		return "", nil
+	}
+	raw, exists := result.Outputs[runner.WorkspaceBranchOutput]
+	if !exists {
+		return "", nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string, got %T", runner.WorkspaceBranchOutput, raw)
+	}
+	branch := strings.TrimSpace(value)
+	if branch == "" {
+		return "", nil
+	}
+	normalizedNamespace := providers.NormalizeBranchNamespace(namespace)
+	if !strings.HasPrefix(branch, normalizedNamespace) {
+		return "", fmt.Errorf("%s %q is outside namespace %q", runner.WorkspaceBranchOutput, branch, normalizedNamespace)
+	}
+	return branch, nil
 }
 
 // buildInvocation assembles a stage invocation envelope to the closed

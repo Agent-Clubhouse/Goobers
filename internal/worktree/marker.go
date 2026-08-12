@@ -49,6 +49,11 @@ type marker struct {
 	SizeBytes    *int64    `json:"size_bytes,omitempty"`
 }
 
+type branchAcquisition struct {
+	OwnerRunID string `json:"owner_run_id"`
+	Branch     string `json:"branch"`
+}
+
 func (m marker) directoryName() (string, error) {
 	// Markers written before directory hashing used the full worktree ID.
 	if m.Directory == "" {
@@ -71,13 +76,25 @@ func (m marker) retainedAt() time.Time {
 }
 
 func writeMarker(path string, m marker) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("worktree: create marker dir: %w", err)
-	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("worktree: encode marker: %w", err)
+	}
+	return writeMarkerData(path, data)
+}
+
+func writeBranchAcquisition(path string, acquisition branchAcquisition) error {
+	data, err := json.Marshal(acquisition)
+	if err != nil {
+		return fmt.Errorf("worktree: encode branch acquisition: %w", err)
+	}
+	return writeMarkerData(path, data)
+}
+
+func writeMarkerData(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("worktree: create marker dir: %w", err)
 	}
 	// Write to a temp file, fsync it, rename, then fsync the parent
 	// directory — a rename alone can still leave a torn or entirely absent
