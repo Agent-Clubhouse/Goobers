@@ -196,3 +196,108 @@ func TestGatherPRContextADOPopulatesVerdictFromThread(t *testing.T) {
 		t.Fatalf("comments = %+v, want only the non-system verdict thread comment", got.GatherPRContext.Comments)
 	}
 }
+
+func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
+	const (
+		prNumber = 359
+		prBranch = "goobers/impl/run-359"
+	)
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin, RunID: "run-ado-digest", BaseRef: "main",
+		Branch: "goobers/pr-remediation/run-ado-digest",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+	if _, err := checkoutExistingBranch(wt.Path, prBranch, "test-token"); err != nil {
+		t.Fatalf("checkout PR branch: %v", err)
+	}
+	digest, err := diffDigest(wt.Path, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest: %v", err)
+	}
+	stateBody, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: digest, HeadSHA: headSHA, BaseSHA: baseSHA,
+		Escalated: true, EscalatedHeadSHA: headSHA, EscalatedBaseSHA: baseSHA,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	threadValues := []interface{}{map[string]interface{}{
+		"id": 17, "status": "active",
+		"comments": []interface{}{map[string]interface{}{
+			"id": 23, "content": stateBody, "commentType": "text",
+			"author":        map[string]string{"displayName": "merge-review-bot"},
+			"publishedDate": "2026-08-08T00:01:00Z",
+		}},
+	}}
+	rec := &adoCheckpointRecorder{}
+	mux := adoCheckpointMux(t, repo, prNumber, headSHA, baseSHA, []string{needsRemediationLabel}, threadValues, rec)
+	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]string{"providerDisplayName": "merge-review-bot"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	stubADOProviderForCheckpointStage(t, server.URL)
+
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_RUN_ID", "run-ado-digest")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Chdir(wt.Path)
+	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	if err := updateRemediationNoopState(
+		layoutFor(root).SchedulerDir(),
+		remediationNoopKey("", prNumber),
+		remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest},
+		"prior-ado-digest-run",
+	); err != nil {
+		t.Fatalf("seed digest no-op state: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "gather-pr-context", root)
+	if code != 0 {
+		t.Fatalf("gather-pr-context (ADO): code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "visibly parked") {
+		t.Fatalf("stdout = %q, want visible parking result", stdout)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if !hasAnyLabel(rec.addedLabels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("added labels = %v, want %s", rec.addedLabels, remediationEscalatedLabel)
+	}
+	if !hasAnyLabel(rec.removedLabels, []string{needsRemediationLabel}) {
+		t.Fatalf("removed labels = %v, want %s", rec.removedLabels, needsRemediationLabel)
+	}
+	if !rec.threadPatched || !strings.Contains(rec.patchedContent, "unchanged diff digest") {
+		t.Fatalf("thread patched = %v, content = %q; want visible unchanged-digest reason", rec.threadPatched, rec.patchedContent)
+	}
+	if rec.workItemTouched {
+		t.Fatal("ADO parking touched a work item instead of native PR labels")
+	}
+	state, err := readRemediationNoopState(layoutFor(root).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read no-op state: %v", err)
+	}
+	record := state.Records[remediationNoopKey("", prNumber)]
+	if record.Attempts != remediationNoopLimit || !record.Parked {
+		t.Fatalf("no-op record = %+v, want parked at limit %d", record, remediationNoopLimit)
+	}
+}

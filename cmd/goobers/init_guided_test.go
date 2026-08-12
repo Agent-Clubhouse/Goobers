@@ -37,6 +37,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"make ci", // #2071: no build manifest in this test's cwd, so no default is offered
 		"make",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -167,6 +168,7 @@ func TestGuidedInitDefaultPathCreatesSiblingConfigSource(t *testing.T) {
 		"acme/widget",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -208,6 +210,40 @@ func TestDocumentationURLPinsStableReleaseBuilds(t *testing.T) {
 		if got := documentationURL("docs/concepts/README.md"); got != want {
 			t.Errorf("documentationURL with version %q = %q, want %q", test.version, got, want)
 		}
+	}
+}
+
+// TestPromptGuidedOptionsSelectsClaudeCodeHarness pins #2777: claude-code
+// must be choosable in the guided prompt flow (not just discoverable via
+// --harness), and choosing it must route the optional model-auth token
+// through ClaudeTokenEnv instead of CopilotTokenEnv.
+func TestPromptGuidedOptionsSelectsClaudeCodeHarness(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"work-nomination",
+		"claude-code",
+		"",
+		"",
+		"WIDGET_CLAUDE_TOKEN",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if opts.Harness != "claude-code" {
+		t.Fatalf("opts.Harness = %q, want claude-code", opts.Harness)
+	}
+	if opts.ClaudeTokenEnv != "WIDGET_CLAUDE_TOKEN" || opts.CopilotTokenEnv != "" {
+		t.Fatalf("unexpected model-auth token refs: claude=%q copilot=%q", opts.ClaudeTokenEnv, opts.CopilotTokenEnv)
+	}
+	if !strings.Contains(stdout.String(), "Claude Code model auth") {
+		t.Errorf("stdout lacks the Claude Code model-auth prompt:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "Copilot model auth") {
+		t.Errorf("stdout unexpectedly shows the Copilot model-auth prompt:\n%s", stdout.String())
 	}
 }
 
