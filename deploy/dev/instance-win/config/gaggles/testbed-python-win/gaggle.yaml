@@ -19,7 +19,7 @@ spec:
     provider: github
     project: Agent-Clubhouse/goobers-testbed-python
     labels:
-      - goobers
+      - goobers:approved
     connectionRef: repo-token
   isolation:
     namespace: gaggle-testbed-python-win

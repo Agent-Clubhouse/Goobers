@@ -23,7 +23,13 @@ spec:
       run:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
-        trustLabel: "goobers"
+        # testbed-python labels its backlog goobers:approved + goobers:ready,
+        # NOT the bare "goobers" that testbed-minimal uses. backlog.labels is a
+        # hard AND-filter, so the bare label would match nothing and every run
+        # would find no work — silently, since "no work" is a success.
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:ready"
+        excludeLabels: "goobers/status:in-review"
         maxItems: "1"
         resultFile: "claimed-item.json"
       capabilities:
