@@ -20,3 +20,5 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and return a result envelope.
+      capabilities:
+        - agent:model
