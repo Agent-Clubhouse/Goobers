@@ -487,6 +487,41 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRegistryAdaptersAreConformanceCovered is the tactical
+// guard #2776 asks for at the actual production registration point: every
+// name buildHarnessRegistry registers must also be in
+// harness.ConformanceCoveredAdapterNames(), and vice versa. A third adapter
+// registered here without also being exercised by
+// internal/harness/conformance_test.go's dimension suite fails immediately,
+// instead of silently shipping an under-tested capability the way tools
+// allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
+// each did for weeks before their own follow-up issue was filed.
+func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+	// Names() returns registration keys (a goober's spec.harness value, e.g.
+	// "copilot") which can differ from an adapter's own diagnostic Name()
+	// (e.g. "copilot-cli") — ConformanceCoveredAdapterNames() tracks the
+	// latter, matching internal/harness/conformance_test.go's own table, so
+	// resolve each key to its adapter's Name() before comparing.
+	var registered []string
+	for _, key := range registry.Names() {
+		adapter, err := registry.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", key, err)
+		}
+		registered = append(registered, adapter.Name())
+	}
+	slices.Sort(registered)
+	covered := append([]string(nil), harness.ConformanceCoveredAdapterNames()...)
+	slices.Sort(covered)
+	if !slices.Equal(registered, covered) {
+		t.Fatalf("registered adapters = %v, conformance-covered adapters = %v — a registered adapter is missing conformance coverage, or a covered name is no longer registered", registered, covered)
+	}
+}
+
 // TestBuildHarnessRegistryAppliesLauncherOverride pins the #2483 config-driven
 // launcher: RunnerConfig.HarnessCommand replaces the base CLI invocation for a
 // named harness (e.g. pointing Copilot at a contract-compatible wrapper like
@@ -622,17 +657,6 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			},
 			want: `capability "contents:read" is not declared`,
 		},
-		{
-			name: "unsupported MCP harness",
-			spec: apiv1.GooberSpec{
-				Harness: apiv1.HarnessClaudeCode,
-				MCPServers: []apiv1.MCPServer{{
-					Name:    "context",
-					Command: "context-server",
-				}},
-			},
-			want: `mcpServers are only supported by harness "copilot"`,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := compiledMachinesWithWarnings(
@@ -763,7 +787,10 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 }
 
-func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+// TestBuildRunnerConfigAcceptsMCPServersForClaudeCode pins #1492: mcpServers
+// is adapter-neutral — declaring it for claude-code is no longer rejected at
+// admission or run-construction time, matching Copilot.
+func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 	const gooberName = "coder"
 	spec := apiv1.GooberSpec{
 		Harness: apiv1.HarnessClaudeCode,
@@ -772,13 +799,14 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 			Command: "context-server",
 		}},
 	}
+	scrubber := journal.NewRegistryScrubber()
 	cfg, _, err := buildRunnerConfig(
 		instance.NewLayout(t.TempDir()),
 		&instance.Config{},
 		map[string]apiv1.GooberSpec{gooberName: spec},
 		map[string]string{gooberName: "instructions"},
 		nil,
-		journal.NewRegistryScrubber(),
+		scrubber,
 		nil,
 		nil,
 		apiv1.RepoRef{},
@@ -792,9 +820,12 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
 
-	_, err = cfg.NewAgentic(gooberName, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
-		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
+	goober, err := cfg.NewAgentic(gooberName, runnerWiringHarnessRecorder{dir: t.TempDir()}, scrubber)
+	if err != nil {
+		t.Fatalf("NewAgentic: %v", err)
+	}
+	if goober == nil {
+		t.Fatal("NewAgentic returned a nil goober for a valid claude-code mcpServers declaration")
 	}
 }
 
