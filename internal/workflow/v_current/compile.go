@@ -524,7 +524,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 }
 
 func requiresModelCapability(h apiv1.Harness, knownHarnesses map[string]bool) bool {
-	return knownHarnesses != nil && h == apiv1.HarnessCopilot
+	return knownHarnesses != nil && (h == apiv1.HarnessCopilot || h == apiv1.HarnessClaudeCode)
 }
 
 func unknownCapability(value string) string {

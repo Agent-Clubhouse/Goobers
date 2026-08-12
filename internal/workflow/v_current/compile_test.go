@@ -1677,8 +1677,22 @@ func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing
 			wantAccepted: true,
 		},
 		{
-			name:         "claude code uses its own authentication",
+			name:     "claude code goober grant missing",
+			harness:  apiv1.HarnessClaudeCode,
+			taskCaps: []string{string(capability.AgentModel)},
+			wantErr:  `task "implement" uses goober "coder" (harness: claude-code) but the goober does not grant capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:       "claude code task declaration missing",
+			harness:    apiv1.HarnessClaudeCode,
+			gooberCaps: []string{string(capability.AgentModel)},
+			wantErr:    `task "implement" uses goober "coder" (harness: claude-code) but does not declare capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:         "claude code both declared",
 			harness:      apiv1.HarnessClaudeCode,
+			gooberCaps:   []string{string(capability.AgentModel)},
+			taskCaps:     []string{string(capability.AgentModel)},
 			wantAccepted: true,
 		},
 	}
