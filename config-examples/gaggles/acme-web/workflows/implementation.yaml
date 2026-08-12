@@ -107,6 +107,7 @@ spec:
         address it before making further changes.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       retry:
@@ -143,6 +144,7 @@ spec:
         after review.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       retry:

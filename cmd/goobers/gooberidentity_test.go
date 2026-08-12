@@ -32,6 +32,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 			Instructions: "instructions.md",
 			Harness:      apiv1.HarnessCopilot,
 			Model:        "claude-sonnet-4.5",
+			Capabilities: []string{"agent:model"},
 		},
 	}
 	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
@@ -42,6 +43,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 			Tasks: []apiv1.Task{{
 				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
 				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
 			}},
 		},
 	}}}
@@ -103,7 +105,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {
 			Gaggle: "alpha", Instructions: "instructions.md", Skills: []string{"testing"},
-			Harness: apiv1.HarnessCopilot, Model: "claude-sonnet-4.5",
+			Harness: apiv1.HarnessCopilot, Model: "claude-sonnet-4.5", Capabilities: []string{"agent:model"},
 		},
 	}
 	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
@@ -113,6 +115,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 			Tasks: []apiv1.Task{{
 				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
 				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
 			}},
 		},
 	}}}
@@ -203,6 +206,7 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 			Instructions: "instructions.md",
 			Harness:      apiv1.HarnessCopilot,
 			Model:        "retired-model",
+			Capabilities: []string{"agent:model"},
 			HarnessOptions: map[string]apiextensionsv1.JSON{
 				"fallback-to-default": {Raw: []byte("true")},
 			},
@@ -216,6 +220,7 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 			Tasks: []apiv1.Task{{
 				Name: "implement", Type: apiv1.TaskAgentic, Goal: "Implement.",
 				Goober: "coder", Next: workflow.TerminalComplete,
+				Capabilities: []string{"agent:model"},
 			}},
 		},
 	}}}

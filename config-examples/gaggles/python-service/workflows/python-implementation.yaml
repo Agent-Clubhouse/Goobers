@@ -26,6 +26,7 @@ spec:
         in-session; the deterministic local-ci stage owns that authoritatively.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       retry:

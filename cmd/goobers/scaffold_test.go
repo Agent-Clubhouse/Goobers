@@ -72,7 +72,6 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "goober.yaml"):     "testdata/scaffold/goober.yaml.golden",
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "instructions.md"): "testdata/scaffold/instructions.md.golden",
 		filepath.Join(gaggleDir, "skills", "reviewer2", "SKILL.md"):         "testdata/scaffold/SKILL.md.golden",
-		workflowPath: "testdata/scaffold/workflow.yaml.golden",
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil {
@@ -85,6 +84,20 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 		if string(got) != string(want) {
 			t.Errorf("%s differs from %s", path, golden)
 		}
+	}
+	gotWorkflow, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read scaffold %s: %v", workflowPath, err)
+	}
+	wantWorkflow, err := renderScaffoldTemplate(
+		"templates/scaffold/workflow.yaml.tmpl",
+		scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "coder"},
+	)
+	if err != nil {
+		t.Fatalf("render workflow template: %v", err)
+	}
+	if string(gotWorkflow) != string(wantWorkflow) {
+		t.Errorf("%s differs from rendered workflow template", workflowPath)
 	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)

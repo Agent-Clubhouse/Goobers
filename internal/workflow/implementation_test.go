@@ -190,12 +190,15 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 
 	// Capability grants match issue #27's scope, split by least privilege:
-	// implementer=[repo:push], reviewer=[] (pure evaluation, no write).
-	if len(goobers["implementer"].Capabilities) != 1 || goobers["implementer"].Capabilities[0] != "repo:push" {
-		t.Errorf("implementer capabilities = %v, want exactly [repo:push]", goobers["implementer"].Capabilities)
+	// implementer=[repo:push, agent:model], reviewer=[agent:model] (pure
+	// evaluation, no write).
+	if len(goobers["implementer"].Capabilities) != 2 ||
+		goobers["implementer"].Capabilities[0] != "repo:push" ||
+		goobers["implementer"].Capabilities[1] != "agent:model" {
+		t.Errorf("implementer capabilities = %v, want exactly [repo:push agent:model]", goobers["implementer"].Capabilities)
 	}
-	if len(goobers["reviewer"].Capabilities) != 0 {
-		t.Errorf("reviewer capabilities = %v, want none", goobers["reviewer"].Capabilities)
+	if len(goobers["reviewer"].Capabilities) != 1 || goobers["reviewer"].Capabilities[0] != "agent:model" {
+		t.Errorf("reviewer capabilities = %v, want exactly [agent:model]", goobers["reviewer"].Capabilities)
 	}
 
 	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
@@ -240,7 +243,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// ci-poll input builder injects that default where 1.4 left it unset), so
 	// the compiled runtime behavior is identical; only the hashed definition
 	// (DSLVersion + the now-explicit pin) moved the digest.
-	const wantDigest = "sha256:e2744c769f96d917c6797a17aa3ba9e8fe115846a8ff744da8b9a5358e7829ad"
+	const wantDigest = "sha256:743c1246e3b876dc802e212954668e10227967bcbbb49c096d56e9a53f4d06b5"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

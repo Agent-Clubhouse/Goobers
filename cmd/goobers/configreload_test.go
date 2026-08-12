@@ -602,6 +602,8 @@ spec:
       type: agentic
       goober: coder
       goal: Complete the fixture task.
+      capabilities:
+        - agent:model
 `)
 	// Scoped (gaggles/example/skills/implement) always wins over the shared
 	// instance-level fallback (skillPackagePaths) — and the starter scaffold

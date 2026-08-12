@@ -16,6 +16,7 @@ spec:
   capabilities:
     - github:issues:write
     - github:milestones:write
+    - agent:model
   policyActions:
     - assign-milestone
     - close-issue

@@ -441,10 +441,10 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		}
 	}
 
-	checkHarness := func(gooberName, ctx string) {
+	checkHarness := func(gooberName, ctx string) (apiv1.GooberSpec, apiv1.Harness, bool) {
 		g, ok := goobers[gooberName]
 		if !ok {
-			return // existence is the config validator's cross-ref concern.
+			return apiv1.GooberSpec{}, "", false // existence is the config validator's cross-ref concern.
 		}
 		h := g.Harness
 		if h == "" {
@@ -453,6 +453,13 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if knownHarnesses != nil && !knownHarnesses[string(h)] {
 			problems = append(problems, fmt.Sprintf("%s goober %q uses unknown harness %q", ctx, gooberName, h))
 		}
+		if requiresModelCapability(h, knownHarnesses) && !toSet(g.Capabilities)[string(capability.AgentModel)] {
+			problems = append(problems, fmt.Sprintf(
+				"%s uses goober %q (harness: %s) but the goober does not grant capability %q; the harness will receive no model credential",
+				ctx, gooberName, h, capability.AgentModel,
+			))
+		}
+		return g, h, true
 	}
 
 	for _, t := range def.Spec.Tasks {
@@ -471,8 +478,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if t.Type != apiv1.TaskAgentic || t.Goober == "" {
 			continue
 		}
-		checkHarness(t.Goober, fmt.Sprintf("task %q", t.Name))
-		g, ok := goobers[t.Goober]
+		g, h, ok := checkHarness(t.Goober, fmt.Sprintf("task %q", t.Name))
 		if !ok {
 			continue
 		}
@@ -483,6 +489,12 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			}
 		}
 		taskCapabilities := toSet(t.Capabilities)
+		if requiresModelCapability(h, knownHarnesses) && !taskCapabilities[string(capability.AgentModel)] {
+			problems = append(problems, fmt.Sprintf(
+				"task %q uses goober %q (harness: %s) but does not declare capability %q; the harness will receive no model credential",
+				t.Name, t.Goober, h, capability.AgentModel,
+			))
+		}
 		requiredMCPCapabilities := map[string]bool{}
 		for _, server := range g.MCPServers {
 			for _, ref := range server.CredentialRefs {
@@ -505,10 +517,14 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 	}
 	for _, gate := range def.Spec.Gates {
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil && gate.Agentic.Goober != "" {
-			checkHarness(gate.Agentic.Goober, fmt.Sprintf("gate %q reviewer", gate.Name))
+			_, _, _ = checkHarness(gate.Agentic.Goober, fmt.Sprintf("gate %q reviewer", gate.Name))
 		}
 	}
 	return problems
+}
+
+func requiresModelCapability(h apiv1.Harness, knownHarnesses map[string]bool) bool {
+	return knownHarnesses != nil && (h == apiv1.HarnessCopilot || h == apiv1.HarnessClaudeCode)
 }
 
 func unknownCapability(value string) string {
