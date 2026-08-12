@@ -44,6 +44,7 @@ type ExporterKind string
 type Config struct {
 	ServiceName        string
 	ServiceVersion     string
+	BuildCommit        string
 	Environment        string
 	Exporter           ExporterKind
 	OTLPEndpoint       string
@@ -67,21 +68,27 @@ type Client struct {
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "goobers"
-	}
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
 		scrubber = providerNet
 	}
 
+	instanceID, err := NewRunID()
+	if err != nil {
+		return nil, fmt.Errorf("generate telemetry service instance id: %w", err)
+	}
 	res, err := resource.New(ctx,
-		resource.WithAttributes(scrubAttributes(scrubber, resourceAttrs(serviceName, cfg))...),
+		resource.WithAttributes(
+			attribute.String("service.name", "goobers"),
+			attribute.String("service.instance.id", instanceID),
+		),
+		resource.WithAttributes(resourceAttrs(cfg)...),
+		resource.WithFromEnv(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
+	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
 
 	exporters, err := spanExporters(ctx, cfg)
 	if err != nil {
@@ -323,12 +330,16 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	return append(exporters, exporter), nil
 }
 
-func resourceAttrs(serviceName string, cfg Config) []attribute.KeyValue {
-	attrs := []attribute.KeyValue{
-		attribute.String("service.name", serviceName),
+func resourceAttrs(cfg Config) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 4+len(cfg.ResourceAttributes))
+	if cfg.ServiceName != "" {
+		attrs = append(attrs, attribute.String("service.name", cfg.ServiceName))
 	}
 	if cfg.ServiceVersion != "" {
 		attrs = append(attrs, attribute.String("service.version", cfg.ServiceVersion))
+	}
+	if cfg.BuildCommit != "" {
+		attrs = append(attrs, attribute.String("goobers.build.commit", cfg.BuildCommit))
 	}
 	if cfg.Environment != "" {
 		attrs = append(attrs, attribute.String("deployment.environment", cfg.Environment))

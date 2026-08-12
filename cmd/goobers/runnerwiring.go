@@ -61,6 +61,7 @@ func buildTelemetryClient(
 	cfg := telemetry.Config{
 		ServiceName:    "goobers",
 		ServiceVersion: version.Get().Version,
+		BuildCommit:    version.Get().Commit,
 		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
 		Scrubber:       scrubber,
 		Batch:          true,

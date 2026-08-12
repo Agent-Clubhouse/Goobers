@@ -57,10 +57,13 @@ vendor-neutral form.
 ## 4. State & storage
 
 - **Journal & artifacts:** same on-disk layout as tiers 1–2 (`runs/`, `scheduler/`) on a
-  cluster volume — requirement: a `ReadWriteMany`-capable StorageClass **or** blob-backed
-  CSI mount; append-only usage, digested artifacts. Run ownership/single-writer is
-  enforced by Temporal workflow identity at tier 3, **not** by file flocks — shared
-  storage is a projection target, not a coordination mechanism.
+  cluster volume. `ReadWriteMany` or blob-backed storage is suitable only for projected
+  journals and artifacts that do not use filesystem coordination. The current instance
+  root also contains POSIX lock files and SQLite WAL databases; it must use RWO storage
+  mounted by a single node until those storage roles are split or the provisioner is
+  verified safe for cross-client `flock` and SQLite WAL. Provisioner names alone do not
+  establish either property. Temporal workflow identity enforces run ownership at tier 3,
+  but does not replace the instance root's other file locks.
 - **Temporal persistence:** PostgreSQL (managed recommended); sizing guidance: modest —
   history is bounded per run and projected out; retention window configurable.
 - **Telemetry:** OTLP export; reference substrate ADX, vendor-neutral form = any OTLP

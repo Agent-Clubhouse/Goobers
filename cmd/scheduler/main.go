@@ -235,6 +235,7 @@ func schedulerTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.C
 	return telemetry.Config{
 		ServiceName:    "scheduler",
 		ServiceVersion: version.Get().Version,
+		BuildCommit:    version.Get().Commit,
 		Environment:    cfg.environment,
 		Exporter:       cfg.exporter,
 		OTLPEndpoint:   cfg.otlpEndpoint,
