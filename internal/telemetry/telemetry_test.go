@@ -1052,7 +1052,7 @@ func attrMap(span sdktrace.ReadOnlySpan) map[string]string {
 func resourceAttrMap(span sdktrace.ReadOnlySpan) map[string]string {
 	attrs := map[string]string{}
 	for _, attr := range span.Resource().Attributes() {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	return attrs
 }
