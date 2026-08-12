@@ -16,6 +16,23 @@ through pull requests.
 go build -o bin/goobers ./cmd/goobers    # or: make build
 ```
 
+## Pick an agent harness
+
+Every agentic goober needs one configured harness: GitHub Copilot CLI or
+Claude Code CLI. Install and sign in to whichever one your goobers declare
+(`harness: copilot` or `harness: claude-code` in their `goober.yaml`) before
+section 2 below — the deterministic demo in section 1 needs neither. For
+Claude Code:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+claude auth login
+```
+
+For host setup differences (Homebrew paths, WSL 2, launchd/systemd PATH
+quirks), see the platform guide linked in section 1 below. Section 2
+shows how to confirm Goobers can see whichever harness you installed.
+
 ## 1. Run the zero-credential demo
 
 The hermetic demo uses mock providers and requires no repository, provider
@@ -57,7 +74,12 @@ bin/goobers trace <run-id> ./demo-instance
 
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
-GitHub token and an authenticated Copilot CLI.
+GitHub token and an authenticated agent harness. The shipped template's
+goobers default to `harness: copilot`; to run it on Claude Code instead, set
+`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
+after materializing the instance below (see
+[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
+for a full claude-code gaggle reference).
 
 ### Materialize the sample and the instance
 
@@ -139,6 +161,15 @@ with a real one.
    token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.
    Configuration already pointing at a real repository is left alone unless
    you pass `--replace`.
+
+4. Confirm Goobers can see and use your installed harness before the first
+   run — `--check-harness` preflights every harness referenced by the
+   instance's goobers and prints `HARNESS claude-code: OK` (or `HARNESS
+   copilot: OK`) once the CLI is installed and signed in:
+
+   ```sh
+   bin/goobers validate --check-harness ./tutorial-instance
+   ```
 
 ### Run it
 

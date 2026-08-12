@@ -93,7 +93,7 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 	b.WriteString("## Scratch files\n\n")
 	b.WriteString("If you need a scratch file for intermediate processing, write it as a relative path inside your current workspace — do not assume `/tmp` or any other absolute host path is writable.\n\n")
 
-	if autoGoobersIOEligible(req) {
+	if req.GoobersIORegistered {
 		b.WriteString(goobersIOPromptSection(req))
 	}
 

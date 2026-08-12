@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -225,8 +226,28 @@ func (r *claudeSequenceRunner) Run(_ context.Context, req ProcessRequest) (Proce
 	return result, nil
 }
 
+// stubClaudeCredentialsHome points HOME at a fresh directory seeded with a
+// stored credential, so an unsandboxed Run's unconditional credential-seeding
+// finds a file to copy instead of falling through to the real macOS
+// Keychain — the fallback that TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing
+// exercises deliberately, but that other tests must not hit incidentally.
+func stubClaudeCredentialsHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	credentialDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialDir, ".credentials.json"), []byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
 	const limit = 512
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	raw := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -267,6 +288,7 @@ func TestClaudeAdapterPreservesTerminalResultBeyondTranscriptLimit(t *testing.T)
 }
 
 func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	raw := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -305,6 +327,7 @@ func TestClaudeAdapterSkipsOversizedEventBeforeCapturedTerminalResult(t *testing
 
 func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *testing.T) {
 	const limit = 4096
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	recovery := []byte(strings.Join([]string{
 		`{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
@@ -361,6 +384,7 @@ func TestClaudeAdapterRecoveryPreservesTerminalResultBeyondTranscriptLimit(t *te
 }
 
 func TestClaudeAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	for _, tc := range []struct {
 		name           string
 		mode           Mode
@@ -451,6 +475,7 @@ func commandPromptValue(command []string) string {
 }
 
 func TestClaudeAdapterFailsClosedWhenRecoveryOmitsCompletion(t *testing.T) {
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &claudeSequenceRunner{
 		results: []ProcessResult{
@@ -519,6 +544,35 @@ func TestClaudeAdapterRejectsInvalidConfiguration(t *testing.T) {
 	}
 	if err := adapter.ValidateConfig("", testHarnessOptions(t, map[string]interface{}{"effort": "extreme"})); err == nil {
 		t.Fatal("expected invalid effort to fail")
+	}
+}
+
+func TestClaudeAdapterValidateConfigRejectsUnsupportedModel(t *testing.T) {
+	adapter := &ClaudeAdapter{}
+	err := adapter.ValidateConfig("claude-nonexistent-model", nil)
+	if err == nil {
+		t.Fatal("expected unsupported model to fail admission")
+	}
+	if !strings.Contains(err.Error(), "claude-nonexistent-model") {
+		t.Fatalf("error does not name the rejected model: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude-sonnet-5") {
+		t.Fatalf("error does not list a valid model: %v", err)
+	}
+}
+
+func TestClaudeAdapterValidateConfigAcceptsKnownModels(t *testing.T) {
+	adapter := &ClaudeAdapter{}
+	if err := adapter.ValidateConfig("", nil); err != nil {
+		t.Fatalf("empty model should defer to the harness default: %v", err)
+	}
+	if err := adapter.ValidateConfig("auto", nil); err != nil {
+		t.Fatalf(`"auto" should defer to the harness default: %v`, err)
+	}
+	for model := range claudeKnownModels {
+		if err := adapter.ValidateConfig(model, nil); err != nil {
+			t.Fatalf("ValidateConfig(%q): %v", model, err)
+		}
 	}
 }
 
@@ -652,6 +706,35 @@ func TestSeedClaudeCredentialsKeychainFailuresFailClosed(t *testing.T) {
 	}
 }
 
+// A Mac that never signed in to Claude Code has no keychain item, and
+// security(1) reports that with exit status 44. That is the same "there is no
+// stored login here" state the file branch treats as optional, so it must not
+// fail the run — before this, the adapter was unusable on any such machine,
+// which is every macOS CI runner (TestClaudeAdapterRunWiresGoobersIO failed
+// there with `exit status 44` while passing on developer laptops that happened
+// to have a real login stored).
+func TestSeedClaudeCredentialsKeychainItemNotFoundIsOptional(t *testing.T) {
+	notFound := exec.Command("sh", "-c", "exit 44").Run()
+	var exitErr *exec.ExitError
+	if !errors.As(notFound, &exitErr) || exitErr.ExitCode() != keychainItemNotFoundExit {
+		t.Fatalf("fixture error = %v, want *exec.ExitError with status %d", notFound, keychainItemNotFoundExit)
+	}
+	destination := t.TempDir()
+	err := seedClaudeCredentialsForPlatform(
+		context.Background(),
+		[]string{"HOME=" + t.TempDir()},
+		destination,
+		"darwin",
+		func(context.Context, string) ([]byte, error) { return nil, notFound },
+	)
+	if err != nil {
+		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, ".credentials.json")); !os.IsNotExist(err) {
+		t.Fatalf("stat seeded credentials = %v, want not-exist (nothing to seed)", err)
+	}
+}
+
 func TestSeedClaudeCredentialsMissingFileRemainsOptionalOutsideMacOS(t *testing.T) {
 	called := false
 	err := seedClaudeCredentialsForPlatform(
@@ -669,6 +752,77 @@ func TestSeedClaudeCredentialsMissingFileRemainsOptionalOutsideMacOS(t *testing.
 	}
 	if called {
 		t.Fatal("Keychain reader called outside macOS")
+	}
+}
+
+// TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox plants a fake ambient
+// ~/.claude — settings.json with a hook, a plugin directory, and an MCP
+// server config — and asserts an unsandboxed run neither points
+// CLAUDE_CONFIG_DIR at it nor copies any of it into the isolated runtime
+// directory the run actually uses; only stored credentials cross over.
+func TestClaudeAdapterIsolatesAmbientConfigWithoutSandbox(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ambientDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(filepath.Join(ambientDir, "plugins", "evil-plugin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, "settings.json"),
+		[]byte(`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo ambient-hook-fired"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, "plugins", "evil-plugin", "plugin.json"),
+		[]byte(`{"name":"evil-plugin"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, ".mcp.json"),
+		[]byte(`{"mcpServers":{"ambient":{"command":"ambient-mcp"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ambientDir, ".credentials.json"),
+		[]byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude"}, Runner: runner}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var configDir string
+	for _, entry := range runner.lastReq.Env {
+		if v, ok := strings.CutPrefix(entry, "CLAUDE_CONFIG_DIR="); ok {
+			configDir = v
+		}
+	}
+	if configDir == "" {
+		t.Fatal("expected CLAUDE_CONFIG_DIR override on an unsandboxed run")
+	}
+	if configDir == ambientDir {
+		t.Fatalf("CLAUDE_CONFIG_DIR points at the ambient config directory: %s", configDir)
+	}
+	for _, name := range []string{"settings.json", "plugins", ".mcp.json"} {
+		if _, err := os.Stat(filepath.Join(configDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("ambient %s is visible in the isolated config dir: %v", name, err)
+		}
+	}
+	copied, err := os.ReadFile(filepath.Join(configDir, ".credentials.json"))
+	if err != nil {
+		t.Fatalf("read isolated credential copy: %v", err)
+	}
+	if string(copied) != `{"oauthToken":"stored-login"}` {
+		t.Fatalf("isolated credential copy = %q", copied)
 	}
 }
 
@@ -701,6 +855,7 @@ func TestClaudeAdapterRejectsSymlinkedSandboxRuntime(t *testing.T) {
 
 func runClaudeAdapterForCommand(t *testing.T, tools []string) []string {
 	t.Helper()
+	stubClaudeCredentialsHome(t)
 	workspace := t.TempDir()
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0},

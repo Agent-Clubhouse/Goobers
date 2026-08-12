@@ -21,10 +21,15 @@ type Notifier interface {
 }
 
 type commandRunner interface {
+	LookPath(string) (string, error)
 	Run(context.Context, string, ...string) error
 }
 
 type execRunner struct{}
+
+func (execRunner) LookPath(name string) (string, error) {
+	return exec.LookPath(name)
+}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) error {
 	return exec.CommandContext(ctx, name, args...).Run()
@@ -34,6 +39,11 @@ type macOSNotifier struct {
 	run commandRunner
 }
 
+type linuxNotifier struct {
+	executable string
+	run        commandRunner
+}
+
 // NewNative returns the notifier for the current platform. The boolean is
 // false when the platform has no implementation.
 func NewNative() (Notifier, bool) {
@@ -41,10 +51,18 @@ func NewNative() (Notifier, bool) {
 }
 
 func newForPlatform(platform string, run commandRunner) (Notifier, bool) {
-	if platform != "darwin" {
+	switch platform {
+	case "darwin":
+		return &macOSNotifier{run: run}, true
+	case "linux":
+		executable, err := run.LookPath("notify-send")
+		if err != nil {
+			return nil, false
+		}
+		return &linuxNotifier{executable: executable, run: run}, true
+	default:
 		return nil, false
 	}
-	return &macOSNotifier{run: run}, true
 }
 
 func (n *macOSNotifier) Notify(ctx context.Context, message Message) error {
@@ -54,6 +72,13 @@ func (n *macOSNotifier) Notify(ctx context.Context, message Message) error {
 		escapeAppleScriptString(message.Title),
 	)
 	if err := n.run.Run(ctx, "osascript", "-e", script); err != nil {
+		return fmt.Errorf("desktop notification: %w", err)
+	}
+	return nil
+}
+
+func (n *linuxNotifier) Notify(ctx context.Context, message Message) error {
+	if err := n.run.Run(ctx, n.executable, message.Title, message.Body); err != nil {
 		return fmt.Errorf("desktop notification: %w", err)
 	}
 	return nil
