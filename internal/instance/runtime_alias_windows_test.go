@@ -11,7 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const fsctlGetReparsePoint = 0x000900a8
+const (
+	fsctlGetReparsePoint   = 0x000900a8
+	ioReparseTagMountPoint = 0xa0000003
+)
 
 func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 	root := t.TempDir()
