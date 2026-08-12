@@ -1,0 +1,46 @@
+# Goobernetes Spike 0-W — Windows instance. SPIKE ARTIFACT.
+#
+# A SECOND, fully isolated Goobers instance in the same AKS cluster as the Linux
+# one. No coordination between them: separate namespace, separate PVC, separate
+# claim ledger, separate backlog repo. Proving two instances can share a cluster
+# is a deliverable in its own right — it is the shape a multi-team adopter wants.
+#
+# Isolation is also what makes a Windows instance tractable at all. Windows
+# *stages* cannot participate in a Linux instance's claim ledger — an RWO Azure
+# Disk attaches to one node, and the flock-based ledger is node-local by
+# construction. A whole separate instance sidesteps that entirely: it owns its
+# ledger, so it can run claims-coupled stages freely.
+#
+# SECRETS: unlike the Linux instance, this one takes secrets from a plain
+# Kubernetes Secret volume rather than the Secrets Store CSI driver. Deliberate
+# spike simplification — CSI-on-Windows is a separate variable, and this rung is
+# already carrying the Windows container, the Windows agent harness, and Windows
+# git. The values still originate in Key Vault; deploy-win.sh reads them from
+# there. Swapping to CSI is a follow-up, not a finding.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: Agent-Clubhouse
+    name: goobers-testbed-python
+    token:
+      file: C:\secrets\goobers-testbed-token
+credentials:
+  - capability: agent:model
+    token:
+      file: C:\secrets\copilot-token
+runner:
+  # os=windows is the platform capability token from
+  # docs/design/mixed-platform-cloud-nodes.md. Nothing in this instance's
+  # workflows requires it — capabilities are a claim set, and a mismatch is a
+  # FATAL daemon-startup failure, so this is a truthful superset, not a filter.
+  capabilities:
+    - os=windows
+api:
+  listen: 127.0.0.1:8080
+runConditions:
+  maxParallelRuns: 1
+  claimsLockTimeout: 30s
+telemetry:
+  enabled: true
+timezone: America/Los_Angeles

@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: testbed-python-win
+spec:
+  displayName: Testbed Python (Windows instance)
+  # DELIBERATELY A DIFFERENT REPO from the Linux instance's testbed-minimal.
+  # The two instances in this cluster share no backlog, so they cannot contend
+  # for a claim — which is the point. Claim ledgers are per-instance files on
+  # per-instance RWO disks; two instances curating one backlog would be exactly
+  # the double-claim hazard that kept this spike off the production repos.
+  project:
+    provider: github
+    owner: Agent-Clubhouse
+    name: goobers-testbed-python
+    branch: main
+    connectionRef: repo-token
+  backlog:
+    provider: github
+    project: Agent-Clubhouse/goobers-testbed-python
+    labels:
+      - goobers
+    connectionRef: repo-token
+  isolation:
+    namespace: gaggle-testbed-python-win

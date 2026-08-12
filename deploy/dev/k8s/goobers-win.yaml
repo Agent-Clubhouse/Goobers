@@ -1,0 +1,97 @@
+# Goobernetes Spike 0-W — second, isolated Goobers instance on Windows.
+# SPIKE ARTIFACT. Substituted by deploy-win.sh.
+#
+# Shares the cluster with the Linux instance and nothing else: own namespace,
+# own PVC, own claim ledger, own backlog repo.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goobers-win
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goobers-sa
+  namespace: goobers-win
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-instance
+  namespace: goobers-win
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: managed-csi-premium
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-win
+  namespace: goobers-win
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: goobers-win}
+  template:
+    metadata:
+      labels: {app: goobers-win}
+    spec:
+      serviceAccountName: goobers-sa
+      nodeSelector:
+        kubernetes.io/os: windows
+      # NOTE: no fsGroup / runAsUser / runAsNonRoot here. Those are Linux-only
+      # PodSecurityContext fields; Windows uses securityContext.windowsOptions
+      # and the image's USER. A pod spec is therefore NOT portable across the
+      # two OSes even when the workload is identical — a real constraint for
+      # any future mixed-OS manifest set.
+      initContainers:
+        - name: seed
+          image: ${IMAGE_WIN}
+          command: ["powershell", "-Command"]
+          args:
+            - |
+              $ErrorActionPreference='Stop';
+              Write-Host 'seeding instance config -> C:\instance';
+              if (Test-Path C:\instance\config) { Remove-Item -Recurse -Force C:\instance\config }
+              # Windows Server 2022 ships bsdtar as tar.exe, so the same tarball
+              # the Linux instance uses works here unchanged.
+              tar.exe xzf C:\seed\config.tgz -C C:\instance;
+              Get-ChildItem -Recurse C:\instance\config | Select-Object -ExpandProperty FullName;
+              Write-Host '--- staging secrets ---';
+              New-Item -ItemType Directory -Force -Path C:\secrets | Out-Null;
+              Copy-Item C:\secrets-src\* C:\secrets\ -Force;
+              Get-ChildItem C:\secrets
+          volumeMounts:
+            - {name: instance, mountPath: "C:\\instance"}
+            - {name: seed, mountPath: "C:\\seed"}
+            - {name: secrets-src, mountPath: "C:\\secrets-src", readOnly: true}
+            - {name: secrets, mountPath: "C:\\secrets"}
+      containers:
+        - name: daemon
+          image: ${IMAGE_WIN}
+          args: ["up", "--diagnostics", "C:\\instance"]
+          env:
+            - name: COPILOT_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: goobers-secrets, key: copilot-token}
+          volumeMounts:
+            - {name: instance, mountPath: "C:\\instance"}
+            - {name: secrets, mountPath: "C:\\secrets"}
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits: {memory: 6Gi}
+      volumes:
+        - name: instance
+          persistentVolumeClaim: {claimName: goobers-instance}
+        - name: seed
+          configMap: {name: goobers-instance-config}
+        - name: secrets-src
+          secret: {secretName: goobers-secrets}
+        - name: secrets
+          emptyDir: {}

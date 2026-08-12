@@ -1,0 +1,56 @@
+# Goobernetes Spike 0-W — Windows container image. SPIKE ARTIFACT.
+#
+# A standalone Windows Goobers instance: its own PVC, its own claim ledger, no
+# coordination with the Linux instance. That isolation is what makes a Windows
+# instance possible at all today — Windows *stages* sharing a Linux instance's
+# RWO disk are impossible, but a whole separate instance has no such constraint.
+#
+# ltsc2022 must match the AKS node's Windows Server version (Windows2022 pool).
+# Host/container version mismatch fails at pod start with an opaque error.
+#
+# goobers.exe is COPIED IN, not built here: Go cross-compiles to windows/amd64
+# from any host (CGO_ENABLED=0), which is far cheaper than a Go toolchain layer
+# inside a multi-GB Windows image. Build it first:
+#
+#   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o <ctx>/goobers.exe ./cmd/goobers
+#   az acr build -r <acr> --platform windows/amd64 -f Dockerfile.windows -t goobers-win:spike <ctx>
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+SHELL ["powershell", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+# Node.js — resolved from the dist index rather than pinned by URL, because a
+# hardcoded patch version rots and fails the build months later for no reason.
+RUN $idx = Invoke-RestMethod https://nodejs.org/dist/index.json; \
+    $v = ($idx | Where-Object { $_.version -like 'v22.*' } | Select-Object -First 1).version; \
+    Write-Host "node $v"; \
+    Invoke-WebRequest "https://nodejs.org/dist/$v/node-$v-win-x64.zip" -OutFile node.zip; \
+    Expand-Archive node.zip -DestinationPath C:\; \
+    Rename-Item "C:\node-$v-win-x64" C:\nodejs; \
+    Remove-Item node.zip
+
+# MinGit — the portable Git for Windows build. Goobers shells out to `git` for
+# every clone and worktree operation, so this is not optional.
+RUN $rel = Invoke-RestMethod https://api.github.com/repos/git-for-windows/git/releases/latest -Headers @{'User-Agent'='goobernetes'}; \
+    $asset = $rel.assets | Where-Object { $_.name -like 'MinGit-*-64-bit.zip' } | Select-Object -First 1; \
+    Write-Host ("git " + $asset.name); \
+    Invoke-WebRequest $asset.browser_download_url -OutFile git.zip; \
+    Expand-Archive git.zip -DestinationPath C:\git; \
+    Remove-Item git.zip
+
+RUN setx /M PATH ('C:\nodejs;C:\git\cmd;C:\goobers;' + $env:PATH)
+
+# The agent harness.
+RUN npm install -g @github/copilot; npm cache clean --force
+
+COPY goobers.exe C:/goobers/goobers.exe
+
+# Windows containers cannot run as an arbitrary uid the way Linux can;
+# ContainerUser is the conventional non-admin principal. Note this differs from
+# the Linux image's uid 65532 — pod securityContexts are NOT interchangeable
+# across the two, which is itself a finding for mixed-OS manifests.
+USER ContainerUser
+WORKDIR C:/instance
+
+ENTRYPOINT ["C:\\goobers\\goobers.exe"]
+CMD ["up", "C:\\instance"]

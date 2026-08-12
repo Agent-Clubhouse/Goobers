@@ -1,0 +1,18 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: goobernetes-spike-win
+  annotations:
+    goobers.dev/acknowledge-manual-only: "true"
+spec:
+  instance:
+    name: goobernetes-spike-win
+    environment: dev
+  connections:
+    - name: repo-token
+      type: repo
+      provider: github
+      secretRef:
+        name: repo-token
+  gaggles:
+    - testbed-python-win
