@@ -41,8 +41,6 @@
 //   - taskOutcome does not honor the #415 non-retryable escalation bypass
 //     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
 //     the local runner, bypassing the Next gate).
-//   - WorkspaceBranchOutput (#392) sticky workspace-branch rebinding is not
-//     applied between stages.
 //   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail

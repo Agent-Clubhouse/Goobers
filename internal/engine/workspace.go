@@ -24,6 +24,10 @@ type WorkspaceRequest struct {
 	// BranchNamespace is the run's pinned branch-namespace root; empty means
 	// the default namespace.
 	BranchNamespace string
+	// WorkspaceBranch is the run-scoped branch selected by an earlier
+	// deterministic stage. Empty means the run's own derived branch. A non-empty
+	// branch must already exist; provisioners must never create it from base.
+	WorkspaceBranch string
 	// RepoRef is the repository a repo-mode workspace is provisioned from.
 	RepoRef apiv1.RepoRef
 	// Mode selects the workspace kind. Empty or apiv1.WorkspaceRepo provisions
