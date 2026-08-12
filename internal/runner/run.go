@@ -4039,6 +4039,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			// from base instead would hand the stage a pristine checkout
 			// wearing the PR's branch name. Fail loudly instead.
 			RequireExistingBranch: workspaceBranch != "",
+			AcquireRemoteBranch:   workspaceBranch != "",
 			Sparse:                sparse,
 		})
 		if err != nil {

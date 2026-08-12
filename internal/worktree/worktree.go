@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -65,6 +66,11 @@ type CreateOptions struct {
 	// stage in this same run fetched it. Anything that clears the mirror
 	// between stages reaches this path.
 	RequireExistingBranch bool
+	// AcquireRemoteBranch fetches Branch explicitly from origin once per
+	// OwnerRunID before requiring it. The durable acquisition ref makes a retry
+	// or process restart reuse the same logical branch without resetting commits
+	// made by earlier stages in the run.
+	AcquireRemoteBranch bool
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
@@ -168,6 +174,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if opts.SyncBase && opts.Branch == "" {
 		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
 	}
+	if opts.AcquireRemoteBranch && !opts.RequireExistingBranch {
+		return nil, fmt.Errorf("worktree: AcquireRemoteBranch requires RequireExistingBranch")
+	}
 
 	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
 	if err != nil {
@@ -188,6 +197,19 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 			lock.Unlock()
 		}
 	}()
+
+	if opts.AcquireRemoteBranch {
+		acquiredRef := acquiredBranchRef(opts.OwnerRunID, opts.Branch)
+		if !refExists(ctx, repoDir, acquiredRef) {
+			ref := "refs/heads/" + opts.Branch
+			if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, "fetch", "origin", "+"+ref+":"+ref); err != nil {
+				return nil, fmt.Errorf("worktree: acquire branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+			if err := runGit(ctx, repoDir, "update-ref", acquiredRef, ref); err != nil {
+				return nil, fmt.Errorf("worktree: record acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+		}
+	}
 
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
@@ -398,6 +420,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func acquiredBranchRef(ownerRunID, branch string) string {
+	sum := sha256.Sum256([]byte(ownerRunID + "\x00" + branch))
+	return fmt.Sprintf("refs/goobers/acquired/%x", sum)
 }
 
 func retryBotIdentityConfig(ctx context.Context, op func() error) error {

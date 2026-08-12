@@ -85,6 +85,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			Branch:                branch,
 			SyncBase:              req.SyncBase,
 			RequireExistingBranch: req.WorkspaceBranch != "",
+			AcquireRemoteBranch:   req.WorkspaceBranch != "",
 			Sparse:                sparseCones(req.RepoRef.Checkout),
 		})
 		if err != nil {

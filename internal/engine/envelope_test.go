@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
+	temporalworker "go.temporal.io/sdk/worker"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -163,7 +169,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}
 }
 
-func TestWorkspaceBranchRebindsLaterStagesAcrossRetriesAndReplay(t *testing.T) {
+func TestWorkspaceBranchRebindsLaterStagesAcrossRetries(t *testing.T) {
 	const selected = "goobers/implementation/pr-head"
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -175,31 +181,96 @@ func TestWorkspaceBranchRebindsLaterStagesAcrossRetriesAndReplay(t *testing.T) {
 			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
 		},
 	}
-	for _, execution := range []string{"initial", "replay"} {
-		t.Run(execution, func(t *testing.T) {
-			workspaces := testWorkspaces(t)
-			det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
-			var ts testsuite.WorkflowTestSuite
-			env := temporaltest.NewWorkflowEnvironment(&ts)
-			env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
-			env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
-			if err := env.GetWorkflowError(); err != nil {
-				t.Fatalf("workflow error: %v", err)
-			}
+	workspaces := testWorkspaces(t)
+	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
+	env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
 
-			requests := workspaces.provisioned()
-			if len(requests) != 4 {
-				t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
-			}
-			if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
-				t.Errorf("select request = %+v, want the run's default branch", requests[0])
-			}
-			for _, request := range requests[1:] {
-				if request.WorkspaceBranch != selected {
-					t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
-				}
-			}
-		})
+	requests := workspaces.provisioned()
+	if len(requests) != 4 {
+		t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
+	}
+	if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
+		t.Errorf("select request = %+v, want the run's default branch", requests[0])
+	}
+	for _, request := range requests[1:] {
+		if request.WorkspaceBranch != selected {
+			t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
+		}
+	}
+}
+
+func TestWorkspaceBranchHistoryReplays(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+		CachedDownload: testsuite.CachedDownload{Version: "default"},
+		LogLevel:       "error",
+		Stdout:         io.Discard,
+		Stderr:         io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("start Temporal dev server: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("stop Temporal dev server: %v", err)
+		}
+	})
+
+	const (
+		selected  = "goobers/implementation/pr-head"
+		taskQueue = "workspace-branch-replay"
+	)
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	in := runInput("workspace-history-replay", spec)
+	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+	temporalClient := server.Client()
+	w := temporalworker.New(temporalClient, taskQueue, temporalworker.Options{})
+	RegisterWith(w, &Activities{Det: det, Workspaces: testWorkspaces(t)})
+	if err := w.Start(); err != nil {
+		t.Fatalf("start Temporal worker: %v", err)
+	}
+	t.Cleanup(w.Stop)
+
+	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        "workspace-branch-history-replay",
+		TaskQueue: taskQueue,
+	}, Run, in)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	var result RunResult
+	if err := run.Get(ctx, &result); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+
+	iter := temporalClient.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	history := &historypb.History{}
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			t.Fatalf("read workflow history: %v", err)
+		}
+		history.Events = append(history.Events, event)
+	}
+	replayer := temporalworker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(Run)
+	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+		t.Fatalf("replay selected-branch workflow history: %v", err)
 	}
 }
 
