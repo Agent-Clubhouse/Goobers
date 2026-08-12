@@ -33,7 +33,7 @@ RUN $idx = Invoke-RestMethod https://nodejs.org/dist/index.json; \
 # every clone and worktree operation, so this is not optional.
 RUN $rel = Invoke-RestMethod https://api.github.com/repos/git-for-windows/git/releases/latest -Headers @{'User-Agent'='goobernetes'}; \
     $asset = $rel.assets | Where-Object { $_.name -like 'MinGit-*-64-bit.zip' } | Select-Object -First 1; \
-    Write-Host ("git " + $asset.name); \
+    Write-Host "git $($asset.name)"; \
     Invoke-WebRequest $asset.browser_download_url -OutFile git.zip; \
     Expand-Archive git.zip -DestinationPath C:\git; \
     Remove-Item git.zip
