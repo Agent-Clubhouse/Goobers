@@ -1666,7 +1666,7 @@ func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing
 		},
 		{
 			name:         "both declared",
-			harness:      apiv1.HarnessClaudeCode,
+			harness:      apiv1.HarnessCopilot,
 			gooberCaps:   []string{string(capability.AgentModel)},
 			taskCaps:     []string{string(capability.AgentModel)},
 			wantAccepted: true,
@@ -1674,6 +1674,11 @@ func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing
 		{
 			name:         "custom harness does not require platform model credential",
 			harness:      apiv1.Harness("alternate"),
+			wantAccepted: true,
+		},
+		{
+			name:         "claude code uses its own authentication",
+			harness:      apiv1.HarnessClaudeCode,
 			wantAccepted: true,
 		},
 	}

@@ -23,7 +23,7 @@ func TestScaffoldTemplatesGolden(t *testing.T) {
 		{"goober", "templates/scaffold/goober.yaml.tmpl", "testdata/scaffold/goober.yaml.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"instructions", "templates/scaffold/instructions.md.tmpl", "testdata/scaffold/instructions.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"skill", "templates/scaffold/SKILL.md.tmpl", "testdata/scaffold/SKILL.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
-		{"workflow", "templates/scaffold/workflow.yaml.tmpl", "testdata/scaffold/workflow.yaml.golden", scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "coder"}},
+		{"workflow", "templates/scaffold/workflow.yaml.tmpl", "testdata/scaffold/workflow.yaml.golden", scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "reviewer2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := renderScaffoldTemplate(tc.template, tc.data)

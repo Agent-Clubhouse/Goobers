@@ -73,7 +73,7 @@ func inventoryDefinitions() *instance.ConfigSet {
 					Role:         "implementer",
 					Instructions: "builder.md",
 					Skills:       []string{"testing", "coding"},
-					Capabilities: []string{"repo:push", "agent:model"},
+					Capabilities: []string{"repo:push"},
 				},
 			},
 		},
@@ -93,8 +93,6 @@ func testInventoryWorkflow(gaggle, name, displayName, goober string, kind apiv1.
 	}
 	if kind == apiv1.TaskDeterministic {
 		task.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
-	} else {
-		task.Capabilities = []string{"agent:model"}
 	}
 	return apiv1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{

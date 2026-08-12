@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
@@ -12,7 +11,6 @@ import (
 func TestBYOMCPCredentialDoesNotBecomeTaskCapability(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {
-			Capabilities: []string{string(capability.AgentModel)},
 			MCPServers: []apiv1.MCPServer{{
 				Name: "vendor",
 				URL:  "https://mcp.example.test",
@@ -27,7 +25,6 @@ func TestBYOMCPCredentialDoesNotBecomeTaskCapability(t *testing.T) {
 	for _, version := range []string{vcurrent.DSLVersion, vnext.DSLVersion} {
 		t.Run(version, func(t *testing.T) {
 			def := Definition{Name: "mcp-byo", Version: 1, DSLVersion: version, Spec: linearSpec()}
-			def.Spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
 			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {
 				t.Fatalf("Compile: %v", err)
 			}

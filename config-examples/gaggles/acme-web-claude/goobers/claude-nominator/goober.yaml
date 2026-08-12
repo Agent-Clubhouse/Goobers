@@ -19,7 +19,6 @@ spec:
     - telemetry:read
     - github:issues:write
     - github:issues:approve
-    - agent:model
   policyActions:
     - comment-on-issue
     - create-issue

@@ -209,13 +209,12 @@ func TestRunnerResumeGooberDigestMismatchFailsBeforeDispatch(t *testing.T) {
 		Tasks: []apiv1.Task{{
 			Name: "implement", Type: apiv1.TaskAgentic, Goal: "implement",
 			Goober: "coder", Next: workflow.TerminalComplete,
-			Capabilities: []string{"agent:model"},
 		}},
 	}
 	machine, err := workflow.Compile(
 		workflow.Definition{Name: "goober-fixture", Version: 1, Spec: spec},
 		workflow.WithGoobers(map[string]apiv1.GooberSpec{
-			"coder": {Instructions: "coder.md", Harness: apiv1.HarnessCopilot, Capabilities: []string{"agent:model"}},
+			"coder": {Instructions: "coder.md", Harness: apiv1.HarnessCopilot},
 		}),
 		workflow.WithPreviewFeatures(true),
 	)

@@ -12,8 +12,6 @@ spec:
   harness: claude-code
   model: auto
   harnessOptions: {}
-  capabilities:
-    - agent:model
   skills:
     - implement
     - run-tests

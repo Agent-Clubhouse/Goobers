@@ -12,11 +12,9 @@ spec:
   harnessOptions: {}
   # Implement-only: this stage never opens the PR or touches issues directly
   # (those are separate deterministic stages in the implementation
-  # workflow) — repo:push covers repository writes; agent:model authenticates
-  # the harness without granting provider mutation.
+  # workflow) — repo:push is the whole grant.
   capabilities:
     - repo:push
-    - agent:model
   policyActions:
     - modify-repository
   skills:

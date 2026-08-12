@@ -12,8 +12,7 @@ spec:
   harnessOptions: {}
   # Pure evaluation: reviews evidence pointers and returns a Verdict. No
   # write capability of any kind — it never mutates the repo, issue, or PR.
-  capabilities:
-    - agent:model
+  capabilities: []
   skills:
     - review
   tools:

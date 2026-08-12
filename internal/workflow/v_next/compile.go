@@ -465,7 +465,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if knownHarnesses != nil && !knownHarnesses[string(h)] {
 			problems = append(problems, fmt.Sprintf("%s goober %q uses unknown harness %q", ctx, gooberName, h))
 		}
-		if tokenBackedHarness(h) && !toSet(g.Capabilities)[string(capability.AgentModel)] {
+		if requiresModelCapability(h, knownHarnesses) && !toSet(g.Capabilities)[string(capability.AgentModel)] {
 			problems = append(problems, fmt.Sprintf(
 				"%s uses goober %q (harness: %s) but the goober does not grant capability %q; the harness will receive no model credential",
 				ctx, gooberName, h, capability.AgentModel,
@@ -501,7 +501,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			}
 		}
 		taskCapabilities := toSet(t.Capabilities)
-		if tokenBackedHarness(h) && !taskCapabilities[string(capability.AgentModel)] {
+		if requiresModelCapability(h, knownHarnesses) && !taskCapabilities[string(capability.AgentModel)] {
 			problems = append(problems, fmt.Sprintf(
 				"task %q uses goober %q (harness: %s) but does not declare capability %q; the harness will receive no model credential",
 				t.Name, t.Goober, h, capability.AgentModel,
@@ -535,8 +535,8 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 	return problems
 }
 
-func tokenBackedHarness(h apiv1.Harness) bool {
-	return h == apiv1.HarnessCopilot || h == apiv1.HarnessClaudeCode
+func requiresModelCapability(h apiv1.Harness, knownHarnesses map[string]bool) bool {
+	return knownHarnesses != nil && h == apiv1.HarnessCopilot
 }
 
 func unknownCapability(value string) string {

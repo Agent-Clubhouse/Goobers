@@ -568,7 +568,7 @@ func TestWorkspaceBranchRejectsUntrustedRebindingsOnResume(t *testing.T) {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"}},
 		Start:    "implement",
 		Tasks: []apiv1.Task{
-			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement", Next: workflow.TerminalComplete, Capabilities: []string{"agent:model"}},
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "implementer", Goal: "implement", Next: workflow.TerminalComplete},
 		},
 	}
 	machine, err := workflow.Compile(
