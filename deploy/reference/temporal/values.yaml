@@ -28,6 +28,8 @@ grafana:
 server:
   # §7: HA optional at first; scale replicas with the chart defaults later.
   replicaCount: 1
+  nodeSelector:
+    kubernetes.io/os: linux
   # §7 sizing: Temporal shares the 2-4 vCPU / 8-16GB control-plane band; §4:
   # history is bounded per run and projected out to the run journal, so
   # persistence stays modest.
@@ -84,8 +86,15 @@ schema:
   update:
     enabled: true
 
+# The chart uses the admin-tools placement for its schema setup/update Jobs.
+admintools:
+  nodeSelector:
+    kubernetes.io/os: linux
+
 # Web UI: reachable only through the customer's authed ingress (§3: human
 # access via the OIDC issuer; cluster RBAC and Goobers RBAC not conflated).
 web:
   enabled: true
   replicaCount: 1
+  nodeSelector:
+    kubernetes.io/os: linux
