@@ -5,9 +5,11 @@
 wiring is authorized by this document.** Implementation stays gated on a demonstrated
 customer shape (§6 defines the trigger).
 
-**Locked decisions (Lead ruling, 2026-07-25, recorded on #659):** the platform label is a
-**stage-level** attribute, an unlabeled stage defaults to **linux**, and the scheduler
-**fails fast** with a clear diagnostic when no node matches — no queue-and-wait.
+**Locked target decisions (Lead ruling, 2026-07-25, recorded on #659):** the platform
+label is a **stage-level** attribute, an unlabeled stage defaults to **linux**, and the
+scheduler **fails fast** with a clear diagnostic when no node matches — no
+queue-and-wait. The current implementation only provides the declaration surface; it
+does not yet provide stage-level routing (§2).
 
 ---
 
@@ -51,69 +53,77 @@ one field and something contradictory in the other); one vocabulary, already sch
 enforced, is cheaper and matches "no implementation until demanded" — the doc reserves the
 token, not a new contract surface.
 
-- **Placement**: `Task.RequiredCapabilities` (`api/v1alpha1/workflow_types.go:174`) — a
-  per-stage list, already unioned with the gaggle's own `RequiredCapabilities`
-  (`api/v1alpha1/gaggle_types.go:38-51`) when a run is admitted
-  (`internal/instance/gagglecapability.go:59-137` `WorkflowRequiredCapabilities`). This is
-  exactly the "per stage" placement the Lead ruling locked — no schema change needed to
-  reach it.
+- **Declaration**: `Task.RequiredCapabilities` (`api/v1alpha1/workflow_types.go:174`) is
+  a per-stage list, so no schema change is needed to declare which stage needs a
+  platform. Declaration granularity is not execution granularity, however:
+  `WorkflowRequiredCapabilities` unions the gaggle's requirements and every stage's
+  requirements when the local scheduler admits a run
+  (`internal/instance/gagglecapability.go:59-137`). The one local runner that claims that
+  union then executes every stage in the workflow.
 - **Who stamps it**: whoever authors the workflow definition (the same author who writes
   any other `RequiredCapabilities` entry, e.g. `dotnet@8`) — no new authoring surface, no
   separate approval path.
-- **Default**: a stage with no `os=*` token in its resolved `RequiredCapabilities` is
-  **unlabeled ⇒ linux**. Concretely: `internal/runnercap.Claimed.Missing` never receives
-  an implicit `os=linux` requirement for an unlabeled stage — a Linux runner's claimed set
-  need not (and should not) enumerate `os=linux` itself, since Linux is the ambient
-  default, not an opt-in claim. Only `os=windows` (or a future non-Linux `os=*` value)
-  is ever meaningfully "missing."
+- **Default**: in the target stage-level router, a stage with no `os=*` token in its
+  resolved `RequiredCapabilities` is **unlabeled ⇒ linux**. The current local admission
+  check does not inject an implicit `os=linux` into the workflow-level union, so a Linux
+  runner's claimed set need not enumerate it. Only `os=windows` (or a future non-Linux
+  `os=*` value) is meaningfully "missing" today.
 - **Reservation, not a new schema field**: nothing here requires a work-item contract
   change. If, once demand materializes, the implementation finds `os=*` too coarse (e.g.
   needing an architecture qualifier), that is a follow-up issue filed against
   `RequiredCapabilities`'s existing free-form vocabulary, not a reason to add a field now.
 
-### 2.2 Mixed-platform pipelines: in scope, for free
+### 2.2 Mixed-platform pipelines: declared, not yet routable
 
-Because the label is per-stage and the union happens per-run at admission time (not
-per-workflow), a single workflow with stage A requiring nothing (linux) and stage B
-requiring `os=windows` is **already representable and already correctly routed** by the
-existing mechanism, once a Windows-capable runner exists to claim it — no additional
-design work. **Decision: mixed-platform pipelines are in v1 of this design**, not deferred,
-because "in v1" costs nothing beyond what P13's stage-level placement already implies. This
-answers the open question in #659's body: routing is per-stage, and per-stage routing was
-never blocked on a "whole pipeline" decision to begin with — the granularity issue does not
-arise.
+A workflow can declare stage A with no platform requirement and stage B with
+`os=windows`, but it is **not** currently routed across Linux and Windows runners.
+`WorkflowRequiredCapabilities` flattens those declarations into one run-level union. The
+local scheduler therefore admits the entire workflow only to a runner that claims
+`os=windows`, and that runner executes both stages. A single run spanning two operating
+systems is not expressible today.
+
+Mixed-platform pipelines remain a target of this design, but their implementation is
+deferred until the customer trigger in §6. They require all of the following rather than
+arriving for free with the existing declaration field:
+
+1. Per-stage capability resolution that combines the gaggle requirements with the
+   current stage's `Task.RequiredCapabilities`, instead of flattening every stage into a
+   run-level union.
+2. A multi-queue Temporal starter and dispatch path that selects the platform queue for
+   each stage.
+3. A finite schedule-to-start bound that turns an unroutable stage into the locked
+   fail-fast diagnostic instead of leaving it queued indefinitely.
 
 ### 2.3 Interim (local) scheduler mapping
 
-No mapping work is needed: `internal/localscheduler`'s existing schedule-time admission
-check (§3 below) already treats `os=windows` as an ordinary capability token. The interim
+`internal/localscheduler`'s existing schedule-time admission check (§5 below) treats
+`os=windows` as an ordinary capability token, but only at run granularity. The interim
 scheduler has exactly one runner identity per daemon process (today's single-runner
-model), so "Windows node pool" in the interim scheduler degenerates to: an operator runs a
-second Goobers daemon process on a Windows host, whose `instance.yaml` claims
-`os=windows`, pointed at the same gaggle config. Cross-daemon run distribution is out of
-scope for the interim scheduler generally (single-runner model, `docs/ARCHITECTURE.md`
-§3.1) and stays out of scope here — this document does not introduce multi-runner
-dispatch to the local runner.
+model). A workflow with any Windows-labeled stage must therefore run in full on a daemon
+whose `instance.yaml` claims `os=windows`; the local scheduler cannot split its stages
+between daemons. Cross-daemon run distribution is out of scope for the interim scheduler
+generally (single-runner model, `docs/ARCHITECTURE.md` §3.1) and stays out of scope here.
 
 ### 2.4 V2 (Temporal) task-queue mapping
 
-`docs/design/v2-cloud-scale.md` Workstream G2 already partitions Tier 3 by mapping gaggles
-to Temporal task queues + worker deployments per gaggle, so one hot gaggle cannot starve
-others. Platform routing is an **orthogonal second axis on the same queue-naming scheme**,
-not a competing model:
+`docs/design/v2-cloud-scale.md` Workstream G2 partitions Tier 3 by mapping gaggles to
+Temporal task queues + worker deployments per gaggle, so one hot gaggle cannot starve
+others. Platform routing is a target **orthogonal second axis on the same queue-naming
+scheme**, not a capability of the current engine:
 
 - Queue name becomes `<gaggle>` for the default (Linux) case — byte-identical to G2's
   existing scheme, so a gaggle that never uses `os=windows` sees no change at all — and
-  `<gaggle>-windows` for a run whose resolved `RequiredCapabilities` include `os=windows`.
+  `<gaggle>-windows` for a stage whose resolved capabilities include `os=windows`.
 - A Windows worker deployment (§3) polls only `<gaggle>-windows`-suffixed queues for the
   gaggles it serves; it never claims the unsuffixed queue.
-- Dispatch-time queue selection is a pure function of the same
-  `WorkflowRequiredCapabilities` union the interim scheduler already computes — the V2
-  runner does not re-derive platform routing from scratch, it reads the same admission
-  facts through a different transport.
-- This mapping is a **sketch for when V2 work starts**, not an implementation instruction;
-  V2 Tier 3 itself is not yet built (`docs/ARCHITECTURE.md` §3.2 — Temporal is explicitly
-  "never part of the product surface" today).
+- Dispatch-time queue selection resolves the current stage's effective capabilities; it
+  must not use the run-level `WorkflowRequiredCapabilities` union.
+- The current engine does not read `RequiredCapabilities`, and
+  `engine.NewTemporalStarter` accepts one task queue. Implementing this mapping therefore
+  requires the per-stage resolver and multi-queue producer path named in §2.2.
+- Stage dispatch must set a finite schedule-to-start bound and surface expiration as the
+  no-matching-node diagnostic. Without that bound, Temporal's default permits an
+  unmatched task to wait indefinitely.
 
 ## 3. Node-pool shape
 
@@ -175,8 +185,8 @@ specifies further.
 
 ## 5. Failure & scheduling semantics
 
-**Decision (Lead ruling): fail fast, not queue-and-wait.** This is not a new behavior to
-build — it is the existing schedule-time admission check, reused as-is:
+**Decision (Lead ruling): fail fast, not queue-and-wait.** The local runner provides this
+behavior at whole-run admission:
 
 `internal/localscheduler/scheduler.go` (around line 1121) already refuses to schedule a
 run whose resolved `RequiredCapabilities` are not a subset of the runner's claimed set:
@@ -190,12 +200,16 @@ if missing := s.runnerCapabilities.Missing(entry.RequiredCapabilities); len(miss
 }
 ```
 
-The code comment at that site already calls this "the load-bearing seam a future
-dynamic/multi-runner router grows from" — this document confirms that a `os=windows`
-capability is exactly such a case, requiring no new failure mode: a workflow with an
-`os=windows` stage and no Windows-claiming runner in the fleet is refused to schedule with
-a `missing capability: os=windows` diagnostic, exactly like any other unmet
-`RequiredCapabilities` entry today. No timeout, no queue, no partial-run start.
+The code comment at that site calls this "the load-bearing seam a future
+dynamic/multi-runner router grows from." A workflow with an `os=windows` stage and no
+Windows claim on the local runner is refused with `missing capability: os=windows`
+before any stage starts. If the runner does claim it, the whole workflow runs there.
+
+The Temporal engine does not yet provide the equivalent contract: it neither resolves
+stage capabilities nor selects among platform queues, and it has no finite
+schedule-to-start bound. The implementation triggered by §6 must add all three so an
+unmatched stage fails within a defined interval with a clear diagnostic rather than
+remaining queued.
 
 **Observability**: the refusal is already a first-class journal event
 (`journal.EventTickSkipped`) with a `Reason` string naming the missing token — this is
@@ -218,15 +232,14 @@ prefers Windows"), **and that gaggle is already active** (not hypothetical/prosp
 When that concrete case exists:
 
 1. The gaggle's workflow author adds `os=windows` to the relevant stage's
-   `RequiredCapabilities` (§2.1) — no schema change needed, this works today for the
-   *authoring* half.
+   `RequiredCapabilities` (§2.1). No schema change is needed for this authoring half.
 2. Provisioning a Windows node that claims `os=windows` in its `runner.capabilities`
-   becomes the actual trigger for implementation work — until then, step 1 alone just
-   produces a correctly-fail-fast-refused run (§5), which is itself proof the routing
-   model requires no new machinery to express the requirement, only a node to satisfy it.
-3. That provisioning need is what should be filed as the implementation issue(s), scoped
-   against whichever of P9/P10/P11 are still open at that time (§3's provisional
-   sections) — not against this design doc, which remains closed once merged.
+   triggers the routing implementation. Until then, the local runner either refuses the
+   whole run or executes every stage on a Windows-capable runner; the Temporal engine
+   does not enforce the declaration.
+3. The implementation issues must cover per-stage capability resolution, multi-queue
+   Temporal dispatch, and the schedule-to-start failure bound (§2.2), as well as whichever
+   of P9/P10/P11 remain open at that time (§3's provisional sections).
 
 No dates, capacity planning, or provisioning automation are proposed here — this section
 exists solely so "customer demand" is recognizable when it arrives, per #659's own
