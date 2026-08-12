@@ -3,7 +3,9 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/goobers/goobers/internal/mcpio"
@@ -135,6 +137,26 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode goobers-io MCP registration: %w", err)
+	}
+	// On Windows the CLI is reached through npm's generated .ps1 shim
+	// (resolveHarnessCommand), and `powershell.exe -File` re-parses argv: the
+	// double quotes in this JSON are stripped before the CLI ever sees it, so
+	// it rejects the value at column 2 ("key must be a string") and EVERY
+	// agentic stage fails. The flag documents a file form -- "JSON string or
+	// file path (prefix with @)" -- which carries no shell-hostile characters.
+	// Windows-only on purpose: the inline form is proven on Linux/macOS, and a
+	// spike branch is the wrong place to change a working path. Upstream should
+	// likely use the file form everywhere (it also keeps argv small and
+	// readable in process listings) -- see the filed issue.
+	if runtime.GOOS == "windows" {
+		registrationPath := filepath.Join(
+			filepath.Dir(configPath),
+			goobersIOServerName+"-registration.json",
+		)
+		if err := os.WriteFile(registrationPath, data, 0o600); err != nil {
+			return "", fmt.Errorf("write goobers-io MCP registration: %w", err)
+		}
+		return "@" + registrationPath, nil
 	}
 	return string(data), nil
 }
