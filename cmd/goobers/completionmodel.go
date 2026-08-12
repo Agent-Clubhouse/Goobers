@@ -190,6 +190,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 	},
+	"engine-project": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+	},
 	"engine-start": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the workflow"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to dispatch onto"},

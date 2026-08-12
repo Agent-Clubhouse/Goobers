@@ -57,6 +57,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
@@ -997,6 +998,32 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers elect-lander
+~~~
+
+## `goobers engine-project`
+
+write a completed engine run's journal into the instance (experimental)
+
+~~~text
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's journal into the instance (experimental):
+query the run's journal projection from Temporal, replay it, and write the
+standard runs/<id>/ layout. The projection is a function of workflow
+history, so this is read-only against Temporal and may be run at any time
+after the run closes.
+
+Fails closed if the run directory already exists: a journal is authored
+once, and overwriting one would destroy the record it exists to be.
+
+Exit codes: 0 = projected, 1 = query/write failure, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-project --gaggle my-gaggle 1a2b3c4d
+$ goobers engine-project --gaggle my-gaggle 1a2b3c4d /instance
 ~~~
 
 ## `goobers engine-start`

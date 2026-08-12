@@ -299,6 +299,10 @@ func init() {
 			withSynopsis(synopsisByID["engine-start"]).
 			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
 			withExamples("goobers engine-start default-implement", "goobers engine-start --task-queue goobers-spike default-implement /instance"),
+		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
+			withSynopsis(synopsisByID["engine-project"]).
+			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
+			withExamples("goobers engine-project --gaggle my-gaggle 1a2b3c4d", "goobers engine-project --gaggle my-gaggle 1a2b3c4d /instance"),
 		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).

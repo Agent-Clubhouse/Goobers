@@ -86,6 +86,9 @@ _goobers_completion()
         engine-start)
             flags+=" --gaggle --task-queue --temporal-hostport --temporal-namespace --dedupe-key"
             ;;
+        engine-project)
+            flags+=" --gaggle --temporal-hostport --temporal-namespace"
+            ;;
         worker)
             flags+=" --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root --instance"
             ;;
