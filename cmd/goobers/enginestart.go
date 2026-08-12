@@ -24,18 +24,22 @@ import (
 // start (the registry snapshot, so a later re-registration cannot change a run
 // in flight) and hands it to Temporal. Everything after that is the engine's.
 //
-// KNOWN LIMIT, worth stating rather than discovering: NewTemporalStarter takes
-// exactly ONE task queue, so every stage of the run lands on the same queue.
-// Per-stage routing — the thing a mixed-OS workflow needs — is a producer-side
-// gap this command inherits and does not fix.
+// ON THE ONE TASK QUEUE, since the obvious reading is wrong: NewTemporalStarter
+// takes exactly one queue, and that is correct — it is the WORKFLOW's queue, and
+// a workflow runs in one place. Individual stages are not bound by it. Temporal
+// carries a task queue per ACTIVITY (ActivityOptions.TaskQueue), so a stage that
+// declares os=windows is polled by a Windows worker while the workflow itself
+// stays put. Per-stage placement lives in engine.stageActivityOptions, not here.
+// See internal/engine/placement_test.go.
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
 	"Dispatch one run onto the tier-3 engine (experimental): pin the workflow\n" +
 	"definition, connect to Temporal, and start the engine workflow on a task\n" +
 	"queue a `goobers worker` is serving. The run id is derived from\n" +
 	"gaggle+workflow+--dedupe-key, so starting the same unit of work twice is\n" +
 	"rejected as already running rather than duplicated.\n\n" +
-	"Every stage of the run lands on the SAME task queue: the starter takes one\n" +
-	"queue, so per-stage routing does not exist yet.\n\n" +
+	"This queue is the workflow's. A stage that declares a platform dispatches to\n" +
+	"\"<queue>-<goos>\" instead, so one run can span operating systems as long as a\n" +
+	"worker is serving each derived queue.\n\n" +
 	"Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.\n"
 
 func runEngineStart(args []string, stdout, stderr io.Writer) int {

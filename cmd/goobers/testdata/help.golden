@@ -797,8 +797,9 @@ queue a `goobers worker` is serving. The run id is derived from
 gaggle+workflow+--dedupe-key, so starting the same unit of work twice is
 rejected as already running rather than duplicated.
 
-Every stage of the run lands on the SAME task queue: the starter takes one
-queue, so per-stage routing does not exist yet.
+This queue is the workflow's. A stage that declares a platform dispatches to
+"<queue>-<goos>" instead, so one run can span operating systems as long as a
+worker is serving each derived queue.
 
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
