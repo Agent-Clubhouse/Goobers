@@ -214,6 +214,7 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l window -
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l aggregate -r -a 'all stage-failure-rate error-signature gate-noise' -d 'Aggregate to detect'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l threshold -r -d 'Threshold override k=v'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l format -r -a 'candidate-findings' -d 'Artifact format'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l gaggle -r -d 'Gaggle to query'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Workflow keying the query'
 complete -c goobers -n '__fish_seen_subcommand_from docs-churn' -l repo -r -d 'Git repository/worktree to scan'
 complete -c goobers -n '__fish_seen_subcommand_from docs-churn' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Workflow keying the watermark'
