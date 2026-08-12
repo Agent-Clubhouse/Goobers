@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-docs
+spec:
+  gaggle: acme-web-claude
+  role: docs
+  displayName: Docs updater (Claude Code)
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - repo:push
+    - agent:model
+  policyActions:
+    - modify-repository
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - claude-docs-updater

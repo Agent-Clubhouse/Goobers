@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -702,6 +703,35 @@ func TestSeedClaudeCredentialsKeychainFailuresFailClosed(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "empty Claude Code credentials") {
 		t.Fatalf("empty keychain error = %v", err)
+	}
+}
+
+// A Mac that never signed in to Claude Code has no keychain item, and
+// security(1) reports that with exit status 44. That is the same "there is no
+// stored login here" state the file branch treats as optional, so it must not
+// fail the run — before this, the adapter was unusable on any such machine,
+// which is every macOS CI runner (TestClaudeAdapterRunWiresGoobersIO failed
+// there with `exit status 44` while passing on developer laptops that happened
+// to have a real login stored).
+func TestSeedClaudeCredentialsKeychainItemNotFoundIsOptional(t *testing.T) {
+	notFound := exec.Command("sh", "-c", "exit 44").Run()
+	var exitErr *exec.ExitError
+	if !errors.As(notFound, &exitErr) || exitErr.ExitCode() != keychainItemNotFoundExit {
+		t.Fatalf("fixture error = %v, want *exec.ExitError with status %d", notFound, keychainItemNotFoundExit)
+	}
+	destination := t.TempDir()
+	err := seedClaudeCredentialsForPlatform(
+		context.Background(),
+		[]string{"HOME=" + t.TempDir()},
+		destination,
+		"darwin",
+		func(context.Context, string) ([]byte, error) { return nil, notFound },
+	)
+	if err != nil {
+		t.Fatalf("seedClaudeCredentialsForPlatform: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, ".credentials.json")); !os.IsNotExist(err) {
+		t.Fatalf("stat seeded credentials = %v, want not-exist (nothing to seed)", err)
 	}
 }
 
