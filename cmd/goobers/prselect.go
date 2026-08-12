@@ -101,7 +101,16 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
+	// provider unconditionally addressed a Gitea-routed repo's selection scan
+	// to api.github.com with a Gitea credential, failing the stage with a 401
+	// github_auth_failed on a repo that has no GitHub side at all — the same
+	// defect open-pr's per-kind dispatch fixed for PR creation.
+	provider, err := remediationStageProvider(root, repo, token, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
@@ -322,7 +331,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 func pullRequestsForSelection(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	base string,
 	headPrefixes []string,
@@ -685,7 +694,7 @@ func isOwnPullRequest(author, head string, headPrefixes []string, expectedAuthor
 // AuthenticatedLogin call) fails OPEN to the branch-prefix heuristic rather
 // than failing the whole stage — a momentary identity-lookup hiccup must
 // never block a merge-review cycle outright.
-func daemonIdentityAuthorLogin(ctx context.Context, root string, provider *providers.GitHubProvider) string {
+func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) string {
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil || cfg.DaemonIdentity == nil {
 		return ""

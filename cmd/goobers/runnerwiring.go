@@ -1571,6 +1571,15 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
+	// The refresher polls through providers.GitHubProvider's
+	// ListOpenPullRequests, which no other backend implements. Rather than
+	// silently building a GitHub client for a non-GitHub repo — which polls
+	// api.github.com with that forge's token and fails 401 on every refresh,
+	// leaving the cap reading a stale/zero count that quietly mis-admits work —
+	// refuse at wiring time so the operator sees the unsupported combination.
+	if repoProvider := cfg.Repos[0].Provider; repoProvider != "" && repoProvider != string(providers.ProviderGitHub) {
+		return nil, fmt.Errorf("workflow readiness.maxOpenPRs is only supported on github repositories, not %q", repoProvider)
+	}
 	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
@@ -1629,12 +1638,46 @@ type backlogCounter struct {
 	resolver       credentials.Resolver
 	reg            runner.SecretRegistrar
 	schedulerDir   string
-	quota          *localscheduler.ProviderQuotaState
-	cursor         string
+	// root is the instance root the Gitea arm resolves its forge BaseURL from.
+	// The counter polls the repo's declared provider, not GitHub unconditionally:
+	// a Gitea instance with a type=backlog-item trigger otherwise counted its
+	// backlog against api.github.com and every tick failed 401, permanently
+	// wedging that workflow's fan-out at zero eligible items.
+	root   string
+	quota  *localscheduler.ProviderQuotaState
+	cursor string
+}
+
+// backlogCountProvider is the single read the counter needs. Both backends
+// implement it, so the counter stays provider-neutral once resolved.
+type backlogCountProvider interface {
+	ListWorkItems(ctx context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
+}
+
+// newCounterProvider dispatches on the counted repo's own provider kind. The
+// GitHub arm keeps the conditional-GET snapshot read cache and the scheduler's
+// quota accounting (both GitHub HTTPClient decorators); the Gitea arm stays
+// uncached and unmetered, matching every other Gitea arm in the tree, and
+// refunds any prepaid poll reservation immediately since it consumes no GitHub
+// quota.
+func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountProvider, func(), error) {
+	if b.repo.Provider == providers.ProviderGitea {
+		token, err := b.resolver.Resolve(ctx, b.ref)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		b.reg.Register([]byte(token))
+		provider, err := newGiteaProviderForStage(b.root, b.repo, token)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return provider, func() {}, nil
+	}
+	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
-	provider, cleanup, err := newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
+	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
@@ -1733,7 +1776,19 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
+// backlogCounterRepoRef resolves the counted repository, carrying the repo's
+// OWN declared provider kind rather than an unconditional GitHub. The kind is
+// what newCounterProvider dispatches on, so hard-coding it here sent a Gitea
+// instance's backlog count to api.github.com.
+func backlogCounterRepoRef(cfg *instance.Config, repoRef apiv1.RepoRef) providers.RepositoryRef {
+	provider := providers.ProviderGitHub
+	if len(cfg.Repos) > 0 && cfg.Repos[0].Provider != "" {
+		provider = providers.ProviderKind(cfg.Repos[0].Provider)
+	}
+	return providers.RepositoryRef{Provider: provider, Owner: repoRef.Owner, Name: repoRef.Name}
+}
+
+func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState, root string) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -1771,13 +1826,14 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 		// below targets repoRef, so its token must resolve from the same
 		// owner/name binding — matching buildScheduleDemandCounter.
 		ref:            repoRef.Owner + "/" + repoRef.Name,
-		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:           backlogCounterRepoRef(cfg, repoRef),
 		labels:         labels,
 		labelPredicate: predicate,
 		fieldPredicate: fieldPredicate,
 		resolver:       resolver,
 		reg:            reg,
 		schedulerDir:   schedulerDir,
+		root:           root,
 	}
 	if quota != nil {
 		counter.quota = quota

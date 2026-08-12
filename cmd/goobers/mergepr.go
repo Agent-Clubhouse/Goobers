@@ -119,12 +119,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// merge epic.
 	isADO := repo.Provider == providers.ProviderADO
 
-	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
+	// prProvider is the provider-neutral forge surface the non-ADO helpers
 	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
 	// ADO, where both helpers are gated OFF. dispatcher is the provider-neutral
 	// landing seam (CONF-1 #2074) every poll/compare/detect/enqueue/merge call
 	// flows through, so both providers run one shared code path.
-	var prProvider *providers.GitHubProvider
+	var prProvider mergeProvider
 	var dispatcher *providers.Dispatcher
 	if isADO {
 		// Merge/completion authority on ADO rides on the dedicated
@@ -156,7 +156,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		prProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+		prProvider, terr = mergeStageProviderWithRecorder(root, repo, token, sidecarMutationRecorder{kind: "pr"})
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
 		// dispatcher is the capability-checked seam (CONF-1 #2074) for the
 		// landing-surface calls below (CompareCommits/DetectMergePolicy/
 		// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
@@ -554,9 +558,8 @@ type mergeBranchCleanup struct {
 	Error      string
 }
 
-func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
+func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider mergeProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
-	recorder := sidecarMutationRecorder{kind: "branch"}
 	fail := func(err error) mergeBranchCleanup {
 		out.Status = "failed"
 		out.Error = err.Error()
@@ -582,11 +585,21 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return out
 	}
 
-	token, err := providerToken(capability.GitHubBranchDelete)
+	// Assert the capability is granted before mutating, and build the delete
+	// through a branch-scoped recorder so the journal records kind="branch",
+	// distinct from the merge that preceded it. Routed by repo kind: the old
+	// code built a GitHub provider here unconditionally, which sent the branch
+	// delete to api.github.com on a Gitea-routed repo.
+	branchToken, err := providerToken(capability.GitHubBranchDelete)
 	if err != nil {
 		return fail(err)
 	}
-	branchProvider := newGitHubProvider(token, providers.WithMutationRecorder(recorder))
+	branchProvider, err := mergeStageProviderWithRecorder(
+		providerStageRoot(""), *headRepository, branchToken, sidecarMutationRecorder{kind: "branch"},
+	)
+	if err != nil {
+		return fail(err)
+	}
 	if _, err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))
 	}

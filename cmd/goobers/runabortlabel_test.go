@@ -42,7 +42,7 @@ func newRunAbortLabelJournal(t *testing.T, prID string) (string, string, *journa
 			Type:        journal.EventRefTouched,
 			Stage:       "open-pr",
 			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: prID},
-			Runner:      map[string]any{"operation": "create"},
+			Runner:      map[string]any{"operation": prOpenOperation},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -105,6 +105,85 @@ func TestLabelAbortedRunPRLabelsThePROnlyWhenAborted(t *testing.T) {
 			events := runAbortLabelEvents(t, runsDir, runID)
 			if len(events) != tc.wantCalls {
 				t.Fatalf("journaled label events = %d, want %d", len(events), tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestLabelAbortedRunPROnlyOwnsPRsItOpened pins the scope of "the PR this run
+// opened". A merge-review run journals a kind="pr" ref for the PR it reviews
+// with runner.operation=="label" (apply-verdict); that PR belongs to the
+// originating implementation run, not to the reviewer. Labeling it on abort
+// stamped the permanent, non-self-healing abortedRunLabel on a PR that a
+// needs-changes verdict had just sent back for remediation, blocking
+// pr-select and merge-pr forever. Only operation=="open" confers ownership.
+func TestLabelAbortedRunPROnlyOwnsPRsItOpened(t *testing.T) {
+	type ref struct {
+		id        string
+		operation string
+	}
+	tests := []struct {
+		name      string
+		refs      []ref
+		wantCalls int
+		wantID    string
+	}{
+		{
+			name:      "merge-review run that only labeled a PR owns nothing",
+			refs:      []ref{{id: "31", operation: "label"}},
+			wantCalls: 0,
+		},
+		{
+			name:      "implementation run that opened the PR owns it",
+			refs:      []ref{{id: "31", operation: prOpenOperation}},
+			wantCalls: 1,
+			wantID:    "31",
+		},
+		{
+			name:      "mixed refs select the opened PR, not the merely-labeled one",
+			refs:      []ref{{id: "31", operation: "label"}, {id: "99", operation: prOpenOperation}},
+			wantCalls: 1,
+			wantID:    "99",
+		},
+		{
+			name:      "other non-open operations confer no ownership either",
+			refs:      []ref{{id: "31", operation: "comment"}, {id: "32", operation: "close"}},
+			wantCalls: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runsDir, runID, jr := newRunAbortLabelJournal(t, "")
+			for _, r := range tc.refs {
+				if err := jr.Append(journal.Event{
+					Type:        journal.EventRefTouched,
+					ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: r.id},
+					Runner:      map[string]any{"operation": r.operation},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var calls int
+			var gotReq providers.UpdateWorkItemRequest
+			labelPR := func(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+				calls++
+				gotReq = req
+				return providers.WorkItem{}, nil
+			}
+			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+			if err := labelAbortedRunPR(runsDir, runID, journal.PhaseAborted, jr, repo, labelPR); err != nil {
+				t.Fatalf("labelAbortedRunPR: %v", err)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("label calls = %d, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 1 && gotReq.ID != tc.wantID {
+				t.Fatalf("labeled PR ID = %q, want %q", gotReq.ID, tc.wantID)
+			}
+			// The label event is the durable cross-run block; it must
+			// not be appended for a PR the run does not own.
+			if events := runAbortLabelEvents(t, runsDir, runID); len(events) != tc.wantCalls {
+				t.Fatalf("journaled %s events = %d, want %d", runAbortLabelOperation, len(events), tc.wantCalls)
 			}
 		})
 	}
@@ -195,7 +274,7 @@ func TestRunAbortLabelsOpenPR(t *testing.T) {
 		Type:        journal.EventRefTouched,
 		Stage:       "open-pr",
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "77"},
-		Runner:      map[string]any{"operation": "create"},
+		Runner:      map[string]any{"operation": prOpenOperation},
 	}); err != nil {
 		t.Fatal(err)
 	}

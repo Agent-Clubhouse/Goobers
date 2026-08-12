@@ -39,7 +39,7 @@ type foundationCoupling struct {
 
 func loadFoundationCouplings(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	dependents []providers.PullRequestSummary,
 	openPRs []providers.PullRequestSummary,
@@ -150,7 +150,7 @@ func newPullRequestDiffProfile(pr providers.PullRequestSummary, files []provider
 
 func repositoryFileLineCounts(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pr providers.PullRequestSummary,
 	file providers.ChangedFile,
@@ -314,7 +314,7 @@ func substantiallyRewrites(file providers.ChangedFile, lines fileLineCounts, cou
 	return file.Deletions*2 >= lines.before, true
 }
 
-func flagFoundationCoupling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, coupling foundationCoupling, existingBlockers []int) (bool, error) {
+func flagFoundationCoupling(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, coupling foundationCoupling, existingBlockers []int) (bool, error) {
 	for _, blocker := range existingBlockers {
 		if blocker == coupling.foundation.Number {
 			return false, nil

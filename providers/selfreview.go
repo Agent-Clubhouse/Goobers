@@ -8,27 +8,30 @@ import (
 	"strings"
 )
 
-// selfReviewMarker is the stable fragment GitHub returns in its categorical
-// refusal to let an account review its own pull request — present in both the
-// APPROVE message ("Can not approve your own pull request") and the
-// REQUEST_CHANGES message ("Can not request changes on your own pull
-// request"). Matching the shared tail rather than either full message covers
-// both review events with one predicate.
-const selfReviewMarker = "your own pull request"
+// selfReviewMarker is the stable fragment a forge returns in its categorical
+// refusal to let an account review its own pull request.
+//
+// GitHub emits it in both the APPROVE message ("Can not approve your own pull
+// request") and the REQUEST_CHANGES message ("Can not request changes on your
+// own pull request"). Gitea emits "approve your own pull is not allowed" — the
+// same refusal, one word shorter. Matching "your own pull" rather than "your
+// own pull request" covers every review event on both forges with one
+// predicate; the longer form silently failed to match Gitea, turning a soft
+// skip into a hard stage failure that blocked the whole publish path.
+const selfReviewMarker = "your own pull"
 
-// IsSelfReviewError reports whether err is GitHub's categorical refusal to let
+// IsSelfReviewError reports whether err is a forge's categorical refusal to let
 // an account submit a native Review on its own pull request — an HTTP 422 whose
-// body carries the "…your own pull request" message. GitHub enforces this
-// regardless of token scope; it is not configurable and never succeeds on
-// retry.
+// body carries the "…your own pull…" message. Neither GitHub nor Gitea makes
+// this configurable, and it never succeeds on retry.
 //
 // It fires whenever the reviewing identity is also the PR author. On an
-// instance with a single GitHub credential backing both github:pr:write (opens
-// the PR) and github:pr:review (reviews it), that is EVERY daemon-authored PR
+// instance with a single credential backing both github:pr:write (opens the
+// PR) and github:pr:review (reviews it), that is EVERY daemon-authored PR
 // (#870). A caller that can fall back to a non-native handoff — publishing the
 // verdict as a label/comment — should treat this as a soft skip rather than a
 // hard failure, since a self-authored native Review carries no value the
-// platform would honor anyway (GitHub never counts a self-approval toward a
+// platform would honor anyway (neither forge counts a self-approval toward a
 // required-review rule).
 func IsSelfReviewError(err error) bool {
 	if err == nil {

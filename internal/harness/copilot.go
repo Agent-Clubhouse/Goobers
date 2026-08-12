@@ -729,6 +729,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	var completionErr error
 	if runErr == nil {
 		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
+		if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
+			// Copilot does not reliably echo its final message to stdout under
+			// --silent --output-format=text with MCP tools attached: the answer
+			// lands in the session log while the stdout capture stays empty, so
+			// the read above reports "final response is not valid JSON" for a
+			// completion the model produced correctly. Recover it from the log
+			// before spending the contract-recovery turn (which re-runs the whole
+			// session and hits the same stdout gap, failing the stage twice and
+			// stranding committed work on the branch).
+			if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+				payload, completionErr = recovered, nil
+			}
+		}
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
 			// the same session one contract-only turn without extending its budget.
@@ -765,6 +778,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 					completionErr = nil
 				} else {
 					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
+					if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
+						// Same stdout gap on the recovery turn.
+						if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+							payload, completionErr = recovered, nil
+						}
+					}
 				}
 			}
 		}
@@ -820,6 +839,40 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 	}
 }
 
+// readCopilotCompletionFromSession recovers a completion envelope from the CLI's
+// own session log when the stdout capture came up empty or unparseable.
+//
+// Copilot does not reliably echo its final assistant message to stdout under
+// --silent --output-format=text once MCP tools are attached. The message is
+// always written to the session log, so when stdout yields nothing the log still
+// holds a well-formed completion. Without this fallback the harness reports
+// "Copilot final response is not valid JSON" for a completion the model produced
+// correctly, burns the contract-recovery turn on the same stdout gap, and fails
+// the stage twice -- stranding work the agent already committed to the branch.
+//
+// It is deliberately a FALLBACK, not the primary path: stdout remains
+// authoritative when present, and this only fires after the normal read has
+// already failed with ErrNoCompletion. The recovered payload goes through the
+// same extraction and envelope validation as any other completion, so a genuinely
+// malformed final message still fails.
+func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, bool) {
+	if path == "" {
+		return nil, false
+	}
+	native, ok := readCopilotSessionTranscript(path, limit)
+	if !ok || len(native.finalMessage) == 0 {
+		return nil, false
+	}
+	payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessage))
+	if !json.Valid(payload) {
+		return nil, false
+	}
+	if err := validateCopilotCompletion(mode, payload); err != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
 func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("%w: Copilot final response was not captured", ErrNoCompletion)
@@ -860,6 +913,17 @@ func extractCompletionJSON(payload []byte) []byte {
 		}
 		trimmed = unfenced
 	}
+	// LAST, not first. The capture buffer holds the model's whole final turn,
+	// and a tool-using model routinely emits JSON before its completion: shell
+	// output like `git status --porcelain=v2`, a pretty-printed config it just
+	// read, or its own narration quoting a fragment. Taking the FIRST balanced
+	// value returns one of those, which then fails envelope validation and
+	// kills the stage with "final response is not valid JSON" even though the
+	// model's actual completion — the last value — was perfectly well formed.
+	// The completion is by construction what the model ends on.
+	if inner, ok := lastJSONValue(trimmed); ok {
+		return inner
+	}
 	if inner, ok := firstJSONValue(trimmed); ok {
 		return inner
 	}
@@ -892,6 +956,98 @@ func stripCodeFence(payload []byte) ([]byte, bool) {
 		return payload, false
 	}
 	return body[:end], true
+}
+
+// lastJSONValue returns the LAST balanced, valid JSON object or array in
+// payload.
+//
+// This exists because firstJSONValue picks the wrong value for a tool-using
+// model: the captured final turn frequently contains JSON that is NOT the
+// completion (shell output the model echoed, a config file it read back, a
+// fragment it quoted while narrating), and the completion envelope is what the
+// model ends on. Scanning from the end finds the completion; scanning from the
+// start finds the noise and fails the stage on a well-formed response.
+//
+// It scans FORWARD and keeps the last match rather than walking backwards from
+// the final closer. A backwards walk cannot cheaply honour string literals --
+// a `}` or `]` inside a JSON string ("contains a brace } in prose") corrupts a
+// reverse depth count and mismatches the opener. firstJSONValue already does
+// correct forward scanning with string/escape handling, so this reuses that
+// pass repeatedly over the remaining tail.
+func lastJSONValue(payload []byte) ([]byte, bool) {
+	var last []byte
+	var found bool
+	for offset := 0; offset < len(payload); {
+		value, start, end, ok := nextJSONValue(payload[offset:])
+		if !ok {
+			break
+		}
+		last = value
+		found = true
+		_ = start
+		offset += end
+	}
+	return last, found
+}
+
+// nextJSONValue finds the first balanced, valid JSON object or array in payload
+// and reports it along with its start and end offsets (end is exclusive).
+// String literals and escapes are honoured so braces or brackets inside strings
+// do not corrupt the depth count. When the first structural candidate does not
+// parse, the scan advances past that opener and keeps looking, so one
+// unparseable fragment does not hide a valid value later in the payload.
+func nextJSONValue(payload []byte) (value []byte, start, end int, ok bool) {
+	searchFrom := 0
+	for {
+		rel := bytes.IndexAny(payload[searchFrom:], "{[")
+		if rel < 0 {
+			return nil, 0, 0, false
+		}
+		start = searchFrom + rel
+		opener := payload[start]
+		closer := byte('}')
+		if opener == '[' {
+			closer = ']'
+		}
+		depth := 0
+		inString := false
+		escaped := false
+		for i := start; i < len(payload); i++ {
+			ch := payload[i]
+			if inString {
+				switch {
+				case escaped:
+					escaped = false
+				case ch == '\\':
+					escaped = true
+				case ch == '"':
+					inString = false
+				}
+				continue
+			}
+			switch ch {
+			case '"':
+				inString = true
+			case opener:
+				depth++
+			case closer:
+				depth--
+				if depth == 0 {
+					candidate := payload[start : i+1]
+					if json.Valid(candidate) {
+						return candidate, start, i + 1, true
+					}
+					// Balanced but not valid JSON: skip this opener and
+					// resume the search after it.
+					searchFrom = start + 1
+					goto nextCandidate
+				}
+			}
+		}
+		// Unbalanced to end of payload: no further candidate can start here.
+		return nil, 0, 0, false
+	nextCandidate:
+	}
 }
 
 // firstJSONValue scans for the first balanced JSON object or array in payload,

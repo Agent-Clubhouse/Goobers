@@ -212,7 +212,27 @@ func writeRemediationResponseResult(result remediationResponseResult, stderr io.
 	return 0
 }
 
+// remediationStageNames resolves which journal stage names carry this run's
+// finding responses and its publication result.
+//
+// These were hardcoded to "implement" and "push-remediated", which silently
+// coupled the command to ONE workflow topology: the canonical pr-remediation
+// example happens to name its agentic stage "implement". A gaggle whose
+// remediation stage is named anything else ("remediate" reads more honestly,
+// since the stage repasses an existing branch rather than implementing an
+// issue) fails here with "no implement stage result found" — and fails LATE,
+// after the agent has already reviewed the findings, written the fix, committed
+// it, and passed verify. The whole cycle is discarded for a naming mismatch.
+//
+// The defaults preserve the previous behaviour exactly; the inputs let a
+// workflow declare its own stage names.
+func remediationStageNames() (implementStage, pushStage string) {
+	return providerInput("implementStage", "implement"),
+		providerInput("pushStage", "push-remediated")
+}
+
 func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, string, bool, error) {
+	implementStage, pushStage := remediationStageNames()
 	runDir, err := runDirFor(layoutFor(root), runID)
 	if err != nil {
 		return apiv1.Verdict{}, "", false, err
@@ -239,14 +259,14 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 			ref := *event.Ref
 			contextRef = &ref
 		}
-		if event.Type == journal.EventStageFinished && event.Stage == "implement" {
+		if event.Type == journal.EventStageFinished && event.Stage == implementStage {
 			implementFound = true
 			rawResponses = ""
 			if raw, ok := event.Outputs[findingResponsesOutput].(string); ok {
 				rawResponses = raw
 			}
 		}
-		if event.Type == journal.EventStageFinished && event.Stage == "push-remediated" {
+		if event.Type == journal.EventStageFinished && event.Stage == pushStage {
 			pushFound = true
 			published, _ = event.Outputs[pushRemediatedPublishedOutput].(string)
 		}
@@ -255,11 +275,15 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		return apiv1.Verdict{}, "", false, fmt.Errorf("gather-pr-context produced no remediation-brief.json artifact")
 	}
 	if !implementFound {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("no implement stage result found")
+		return apiv1.Verdict{}, "", false, fmt.Errorf(
+			"no %q stage result found in this run's journal; set the implementStage input if the remediation stage has a different name",
+			implementStage)
 	}
 	if requirePublication {
 		if !pushFound {
-			return apiv1.Verdict{}, "", false, fmt.Errorf("no push-remediated stage result found")
+			return apiv1.Verdict{}, "", false, fmt.Errorf(
+				"no %q stage result found in this run's journal; set the pushStage input if the publication stage has a different name",
+				pushStage)
 		}
 		if published != "true" && published != "false" {
 			return apiv1.Verdict{}, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
@@ -286,6 +310,85 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	return *brief.GatherPRContext.Verdict, rawResponses, published == "true", nil
 }
 
+// parseFindingResponses decodes the findingResponses output.
+//
+// The canonical form is a JSON array of {finding, disposition, detail}. That
+// form is nested JSON inside a JSON string value, and a model emitting it
+// through a completion envelope has to escape two levels correctly. A malformed
+// completion can produce
+//
+//	"findingResponses":"[{\"finding\":1,...\"detail\":\"...\"}]},"summary":...
+//
+// -- the inner array closed, then the outer string value was never terminated.
+// The whole result is discarded on a quoting error in
+// the accounting, and the PR sat unremediated.
+//
+// So a line-oriented fallback is accepted: one finding per line, as
+//
+//	1: addressed: added the negative assertions
+//	2: declined: out of scope for this item
+//
+// It carries exactly the same information with no nested quoting to get wrong.
+// JSON stays first so existing workflows and the canonical examples are
+// untouched; the fallback only runs when JSON decoding fails.
+func parseFindingResponses(raw string) ([]findingDisposition, error) {
+	trimmed := strings.TrimSpace(raw)
+
+	var responses []findingDisposition
+	jsonErr := json.Unmarshal([]byte(trimmed), &responses)
+	if jsonErr == nil {
+		return responses, nil
+	}
+
+	lineResponses, lineErr := parseFindingResponseLines(trimmed)
+	if lineErr == nil && len(lineResponses) > 0 {
+		return lineResponses, nil
+	}
+
+	// Report the JSON failure: it is the canonical form, so its error is the
+	// more useful diagnostic when neither shape parses.
+	return nil, fmt.Errorf("decode JSON array: %w (a line-oriented \"N: disposition: detail\" form is also accepted)", jsonErr)
+}
+
+// parseFindingResponseLines parses the line-oriented fallback form. Each
+// non-empty line must be "<n>: <addressed|declined>: <detail>". Leading list
+// markers ("-", "*") and a "#" before the number are tolerated, since a model
+// asked for a list tends to produce one.
+func parseFindingResponseLines(raw string) ([]findingDisposition, error) {
+	var out []findingDisposition
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "-*	 ")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimPrefix(line, "#")
+
+		numberPart, rest, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("line %q is not \"<n>: <disposition>: <detail>\"", line)
+		}
+		number, err := strconv.Atoi(strings.TrimSpace(numberPart))
+		if err != nil {
+			return nil, fmt.Errorf("line %q does not start with a finding number", line)
+		}
+		dispositionPart, detail, ok := strings.Cut(rest, ":")
+		if !ok {
+			return nil, fmt.Errorf("line %q has no detail after the disposition", line)
+		}
+		out = append(out, findingDisposition{
+			Finding:     number,
+			Disposition: strings.TrimSpace(dispositionPart),
+			Detail:      strings.TrimSpace(detail),
+		})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no finding response lines found")
+	}
+	return out, nil
+}
+
 // validateFindingResponses enforces the remediation account contract against
 // the original merge-review verdict: every verdict finding needs exactly one
 // addressed/declined disposition with a detail. Responses numbered past the
@@ -302,9 +405,9 @@ func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDi
 		return nil, fmt.Errorf("latest implement result omitted %s for %d finding(s)", findingResponsesOutput, len(findings))
 	}
 
-	var responses []findingDisposition
-	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
-		return nil, fmt.Errorf("decode JSON array: %w", err)
+	responses, err := parseFindingResponses(raw)
+	if err != nil {
+		return nil, err
 	}
 
 	seen := make(map[int]bool, len(responses))
