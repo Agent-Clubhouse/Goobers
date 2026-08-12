@@ -1,0 +1,229 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/workerhost"
+	"github.com/goobers/goobers/internal/worktree"
+)
+
+// workerSeams supplies the engine's agentic and deterministic executors inside
+// `goobers worker`.
+//
+// WHY AN ADAPTER RATHER THAN A RESHAPE OF EngineDeps.
+//
+// bootstrap.EngineDeps holds single interface values — one Goober, one Det —
+// constructed once per process. The local runner's equivalent seams are per-RUN
+// FACTORIES (runner.NewDeterministicFunc / NewAgenticFunc) because an executor
+// binds its ArtifactRecorder at construction time and must not be shared across
+// runs. Those two shapes do not meet.
+//
+// They do not have to. Every activity hands the seam an InvocationEnvelope, and
+// the envelope carries RunID and Gaggle — so one long-lived value can dispatch
+// to a per-run executor on each call. That keeps the change additive: neither
+// internal/engine nor internal/bootstrap is touched, and the executors used are
+// the SAME ones the local runner builds, from the same buildRunnerConfig, which
+// is what conformance between the two tiers rests on.
+type workerSeams struct {
+	root     string
+	scrubber journal.Scrubber
+	shared   *journal.RegistryScrubber
+
+	mu       sync.Mutex
+	byGaggle map[string]*gaggleSeams
+}
+
+type gaggleSeams struct {
+	cfg     runner.Config
+	runsDir string
+}
+
+// newWorkerSeams loads an instance from root and prepares per-gaggle executor
+// factories. It fails closed: a worker that cannot construct the same executors
+// the local runner would is a worker that will fail every real stage at
+// dispatch, and it is better to know that at startup.
+func newWorkerSeams(root string) (*workerSeams, error) {
+	l := instance.NewLayout(root)
+	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+		return nil, fmt.Errorf("worker: load instance config: %w", err)
+	}
+	shared, scrub := journal.DefaultScrubber()
+	return &workerSeams{
+		root:     root,
+		scrubber: scrub,
+		shared:   shared,
+		byGaggle: map[string]*gaggleSeams{},
+	}, nil
+}
+
+// forGaggle builds (once) the runner config for a gaggle, reusing the daemon's
+// own wiring so the worker's executors are configured identically to tier 1 —
+// same credential grants, same env allowlist, same stage timeouts, same
+// instance root for goobers-CLI stages.
+func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if g, ok := w.byGaggle[gaggle]; ok {
+		return g, nil
+	}
+
+	l := instance.NewLayout(w.root)
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("worker: load instance config: %w", err)
+	}
+	set, _, err := loadConfigDirectory(l.ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("worker: load config directory: %w", err)
+	}
+	instance.ApplyGaggleCICommand(set)
+
+	goobers, err := resolveGoobersForGaggle(set, gaggle)
+	if err != nil {
+		return nil, err
+	}
+	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	if err != nil {
+		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
+	}
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	if err != nil {
+		return nil, fmt.Errorf("worker: harness preflight: %w", err)
+	}
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return nil, fmt.Errorf("worker: secret stores: %w", err)
+	}
+
+	scoped := l.ForGaggle(gaggle)
+	wtMgr, err := worktree.NewManager(scoped.WorkcopiesDir())
+	if err != nil {
+		return nil, fmt.Errorf("worker: worktree manager: %w", err)
+	}
+
+	project := gaggleProjectRef(set, gaggle)
+	runnerCfg, _, err := buildRunnerConfig(
+		scoped, cfg, goobers, instructions,
+		nil, // telemetry: the worker's spans come from the engine, not this client
+		w.shared, wtMgr, branchNamespacesByGaggle(set), project, nil,
+		harnessInfo, stores,
+		instance.EffectiveAgenticSandbox(cfg, nil),
+		nil, // provider quota: scheduler-side concern, not the executor's
+	)
+	if err != nil {
+		return nil, fmt.Errorf("worker: build runner config for gaggle %q: %w", gaggle, err)
+	}
+
+	g := &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir()}
+	w.byGaggle[gaggle] = g
+	return g, nil
+}
+
+// recorderFor returns the artifact recorder and secret registrar for one run.
+// See internal/workerhost.StagingArtifacts for why this is not the run's
+// journal: the worker did not mint the run, cannot author its identity without
+// inventing conformance-normative fields, and must not create a directory the
+// engine's projection will later try to create itself.
+func (w *workerSeams) recorderFor(g *gaggleSeams, runID string) (runner.ArtifactRecorder, runner.SecretRegistrar) {
+	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
+	return workerhost.NewStagingArtifacts(dir, w.scrubber), w.shared
+}
+
+// Deterministic returns the engine's deterministic seam.
+func (w *workerSeams) Deterministic() invoke.Deterministic { return workerDet{seams: w} }
+
+// Agentic returns the engine's agentic seam.
+func (w *workerSeams) Agentic() invoke.Goober { return workerGoober{seams: w} }
+
+type workerDet struct{ seams *workerSeams }
+
+func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	g, err := d.seams.forGaggle(env.Gaggle)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if g.cfg.NewDeterministic == nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: no deterministic executor configured for gaggle %q", env.Gaggle)
+	}
+	rec, reg := d.seams.recorderFor(g, env.RunID)
+	exec, err := g.cfg.NewDeterministic(rec, reg)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: construct deterministic executor: %w", err)
+	}
+	return exec.Run(ctx, env, run)
+}
+
+type workerGoober struct{ seams *workerSeams }
+
+func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	exec, err := a.executor(env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return exec.Invoke(ctx, env)
+}
+
+func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	exec, err := a.executor(env)
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	return exec.Review(ctx, env)
+}
+
+func (a workerGoober) executor(env apiv1.InvocationEnvelope) (invoke.Goober, error) {
+	if env.Goober == "" {
+		// Fail closed and say why. Before the envelope carried a goober name
+		// this seam could not route at all, which is the gap that blocked the
+		// whole wiring slice.
+		return nil, fmt.Errorf("worker: envelope for run %q stage %q carries no goober name", env.RunID, env.TaskID)
+	}
+	g, err := a.seams.forGaggle(env.Gaggle)
+	if err != nil {
+		return nil, err
+	}
+	if g.cfg.NewAgentic == nil {
+		return nil, fmt.Errorf("worker: no agentic executor configured for gaggle %q", env.Gaggle)
+	}
+	rec, reg := a.seams.recorderFor(g, env.RunID)
+	exec, err := g.cfg.NewAgentic(env.Goober, rec, reg)
+	if err != nil {
+		return nil, fmt.Errorf("worker: construct agentic executor for goober %q: %w", env.Goober, err)
+	}
+	return exec, nil
+}
+
+// gaggleProjectRef is the gaggle's project repo, zero when not configured —
+// which leaves credentials on the first-repo default, matching the daemon's
+// legacy-runtime path.
+func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == gaggle {
+			return set.Gaggles[i].Spec.Project
+		}
+	}
+	return apiv1.RepoRef{}
+}
+
+// resolveGoobersForGaggle returns the goober specs a gaggle's stages may name.
+func resolveGoobersForGaggle(set *instance.ConfigSet, gaggle string) (map[string]apiv1.GooberSpec, error) {
+	out := map[string]apiv1.GooberSpec{}
+	for i := range set.Goobers {
+		g := set.Goobers[i]
+		if g.Spec.Gaggle == "" || g.Spec.Gaggle == gaggle {
+			out[g.Name] = g.Spec
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("worker: no goobers configured for gaggle %q", gaggle)
+	}
+	return out, nil
+}

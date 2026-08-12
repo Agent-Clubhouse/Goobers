@@ -424,7 +424,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
-	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	env := buildInvocation(in, t.Name, t.Goober, t.Goal, inputs, t.Capabilities, limits, upstream)
 	env.MinimumIntegrity = t.MinimumIntegrity
 	// Both admission checks run before dispatch, matching the local runner.
 	// The engine resolves inputsFrom only against the immediately preceding
@@ -510,7 +510,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// subject stage's ResultEnvelope over the wire envelope (§2.4), so
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
+		env := buildInvocation(in, g.Name, "", "gate: "+g.Name, nil, nil, limits, nil)
 		env.Inputs = gate.AutomatedInputs(subject)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
@@ -531,7 +531,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if g.Agentic != nil {
 			gateCaps = in.GateGooberCapabilities[g.Agentic.Goober]
 		}
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
+		env := buildInvocation(in, g.Name, agenticGateGoober(g), "gate: "+g.Name, nil, gateCaps, limits, upstream)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var verdict apiv1.Verdict
@@ -562,7 +562,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 // host provisions one fresh per attempt and stamps it into the envelope
 // before the stage executes (Activities.provisionWorkspace) — failing closed,
 // never dispatching a partial envelope.
-func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
+func buildInvocation(in RunInput, stateName, goober, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
 	inputs := make(map[string]interface{}, len(taskInputs))
 	for k, v := range taskInputs {
 		inputs[k] = v
@@ -582,6 +582,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		Gaggle:          in.Gaggle,
 		BranchNamespace: in.BranchNamespace,
 		BaseBranch:      baseBranch,
+		Goober:          goober,
 		Goal:            goal,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
@@ -590,6 +591,14 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		Limits:          limits,
 		Inputs:          inputs,
 	}
+}
+
+// agenticGateGoober is the reviewer goober for an agentic gate, empty otherwise.
+func agenticGateGoober(g apiv1.Gate) string {
+	if g.Agentic == nil {
+		return ""
+	}
+	return g.Agentic.Goober
 }
 
 func normalizeItemIntegrity(item *apiv1.BacklogItem) *apiv1.BacklogItem {

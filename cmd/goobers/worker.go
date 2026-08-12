@@ -71,6 +71,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	namespace := fs.String("temporal-namespace", workerEnvOr("GOOBERS_TEMPORAL_NAMESPACE", "default"), "Temporal namespace")
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
+	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -91,6 +92,22 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// The runtime wiring slice. Without --instance the worker keeps its
+	// previous shape: workspaces and automated gates only, every real stage
+	// failing closed with "not configured". With it, the agentic and
+	// deterministic seams are the SAME executors the local runner builds, from
+	// the same buildRunnerConfig — which is what journal conformance between
+	// the two tiers rests on.
+	if *instanceRoot != "" {
+		seams, serr := newWorkerSeams(*instanceRoot)
+		if serr != nil {
+			pf(stderr, "error: %v\n", serr)
+			return 1
+		}
+		deps.Goober = seams.Agentic()
+		deps.Det = seams.Deterministic()
+		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
 	}
 	host, err := workerhost.New(workerhost.Config{
 		HostPort:     *hostPort,

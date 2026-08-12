@@ -843,26 +843,36 @@ func writeClaimLockTimeoutOutcome(timeoutErr *claimsLockTimeoutError) error {
 // withFileLock is the un-instrumented blocking lock used by non-claim cache
 // and merge locks. Claim-ledger and blocked-record access must go through
 // withClaimLock instead so its wait/hold contention is measured (#791).
+// withFileLock runs fn under an exclusive file lock, BOUNDED by the instance's
+// configured cross-process lock timeout.
+//
+// It used to call lock.Acquire directly: no timeout and no
+// ctx — the primitive has no notion of "wait up to N". Eight call sites across
+// five files (merge.lock, the sibling-context / merge-policy / api-read caches,
+// post-merge-reconcile) inherited that, so any holder that wedged mid-hold — a
+// hung provider call, a killed process on a filesystem that leaks the lock —
+// blocked every other run on that lock forever, with no diagnostic.
+//
+// The bounded discipline already existed 200 lines above for claims
+// (withClaimLock). This reuses its acquisition loop so there is one behaviour,
+// not two. Timeout resolution degrades safely: a lock path whose shape does not
+// yield an instance root falls back to the built-in default rather than failing
+// closed, which matters for the sharded api-read locks that sit a level deeper.
 func withFileLock(lockPath string, fn func() error) error {
-	return withBlockingFileLock(lockPath, nil, nil, fn)
+	return withBoundedFileLock(lockPath, "file-lock", fn)
 }
 
-// withBlockingFileLock provides the blocking lock discipline shared by the
-// claims lock and unrelated cache/merge locks. The optional callbacks run
-// immediately after acquisition and release.
-func withBlockingFileLock(lockPath string, onAcquired, onReleased func(), fn func() error) error {
-	held, err := lock.Acquire(lockPath)
+// withBoundedFileLock is withFileLock with a caller-supplied operation name,
+// which surfaces in the timeout error so a wedge names the culprit.
+func withBoundedFileLock(lockPath, operation string, fn func() error) error {
+	timeout, err := claimsLockTimeoutForPath(lockPath)
+	if err != nil || timeout <= 0 {
+		timeout = instance.DefaultClaimsLockTimeout
+	}
+	held, err := acquireClaimLock(lockPath, operation, timeout, time.Now())
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return err
 	}
-	if onAcquired != nil {
-		onAcquired()
-	}
-	defer func() {
-		_ = held.Release()
-		if onReleased != nil {
-			onReleased()
-		}
-	}()
+	defer func() { _ = held.Release() }()
 	return fn()
 }
