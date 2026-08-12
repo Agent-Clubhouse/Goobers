@@ -121,6 +121,7 @@ func runtimeTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.Con
 	return telemetry.Config{
 		ServiceName:    "goober-runtime",
 		ServiceVersion: version.Get().Version,
+		BuildCommit:    version.Get().Commit,
 		Environment:    cfg.environment,
 		Exporter:       cfg.exporter,
 		OTLPEndpoint:   cfg.otlpEndpoint,
