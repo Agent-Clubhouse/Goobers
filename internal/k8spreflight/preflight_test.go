@@ -21,9 +21,9 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// newFakeCluster returns a fake clientset shaped like a conformant cluster:
-// current version, NetworkPolicy API served, an RWX-capable StorageClass, and
-// every SelfSubjectAccessReview allowed.
+// newFakeCluster returns a fake clientset shaped like an otherwise conformant
+// cluster: current version, NetworkPolicy API served, an inferred RWX-capable
+// StorageClass, and every SelfSubjectAccessReview allowed.
 func newFakeCluster(t *testing.T) *fake.Clientset {
 	t.Helper()
 	client := fake.NewClientset(
@@ -98,8 +98,12 @@ func TestRunConformantClusterPasses(t *testing.T) {
 		t.Fatalf("conformant cluster reported non-conformant: %+v", report.Results)
 	}
 	for _, result := range report.Results {
-		if result.Status != StatusPass {
-			t.Errorf("check %s = %s (%s), want pass", result.ID, result.Status, result.Detail)
+		want := StatusPass
+		if result.ID == "storage-rwx" {
+			want = StatusWarn
+		}
+		if result.Status != want {
+			t.Errorf("check %s = %s (%s), want %s", result.ID, result.Status, result.Detail, want)
 		}
 	}
 }
@@ -202,6 +206,26 @@ func TestStorageWithoutRWXClassFails(t *testing.T) {
 	}
 	if report.Conformant {
 		t.Fatal("no RWX storage must not be conformant (§4)")
+	}
+}
+
+func TestStorageInferredRWXWarnsAboutCoordinationSafety(t *testing.T) {
+	report := Run(context.Background(), newFakeCluster(t), Options{})
+	result := resultByID(t, report, "storage-rwx")
+
+	if result.Status != StatusWarn || result.Severity != SeverityRequired {
+		t.Fatalf("storage-rwx = %s/%s, want required warn", result.Status, result.Severity)
+	}
+	for _, caveat := range []string{"flock", "SQLite WAL"} {
+		if !strings.Contains(result.Detail, caveat) {
+			t.Errorf("detail %q does not name %s safety", result.Detail, caveat)
+		}
+	}
+	if !strings.Contains(result.Hint, "RWO") || !strings.Contains(result.Hint, "single node") {
+		t.Errorf("hint %q does not recommend safe storage topology", result.Hint)
+	}
+	if !report.Conformant {
+		t.Fatal("inferred RWX capability must warn, not break conformance")
 	}
 }
 

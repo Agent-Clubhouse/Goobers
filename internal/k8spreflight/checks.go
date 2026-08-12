@@ -194,8 +194,9 @@ func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) R
 	var names []string
 	for _, class := range classes.Items {
 		if rwxCapable(class.Provisioner) {
-			result.Status = StatusPass
-			result.Detail = fmt.Sprintf("class %q (provisioner %s) supports ReadWriteMany — capability inferred from the provisioner, a PVC bind probe is a follow-up", class.Name, class.Provisioner)
+			result.Status = StatusWarn
+			result.Detail = fmt.Sprintf("class %q (provisioner %s) may support ReadWriteMany, but provisioner-name inference cannot verify cross-client POSIX flock or SQLite WAL safety", class.Name, class.Provisioner)
+			result.Hint = "do not place an instance root containing lock files or SQLite databases on RWX/network storage; use RWO storage with a single node until storage roles are split or a cross-client safety probe is available"
 			return result
 		}
 		names = append(names, class.Name)
