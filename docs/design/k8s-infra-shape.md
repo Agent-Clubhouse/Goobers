@@ -102,7 +102,11 @@ vendor-neutral form.
 - Large-repo pools: nodes hosting object caches/baked snapshots want fast local NVMe;
   label + affinity (`goobers.dev/cache-node`) documented.
 - Windows node pools: only for teams whose stages require Windows
-  (cross-platform-support P13); default is Linux-only.
+  (cross-platform-support P13); default is Linux-only. Every Linux workload must select
+  `kubernetes.io/os: linux`, and every Windows node must carry the
+  `kubernetes.io/os=windows:NoSchedule` taint. Windows workloads select
+  `kubernetes.io/os: windows` and tolerate that taint. This defense in depth prevents an
+  unpinned Linux pod from attaching a Linux filesystem volume to a Windows node.
 
 ## 8. Deliverables filed from this doc
 

@@ -21,6 +21,8 @@ spec:
         app.kubernetes.io/component: operator
     spec:
       serviceAccountName: goobers-operator
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
