@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
@@ -37,6 +38,10 @@ type workerSeams struct {
 	root     string
 	scrubber journal.Scrubber
 	shared   *journal.RegistryScrubber
+	// store is the fleet-wide content-addressed store stage artifacts travel
+	// through. Nil means node-local only: every stage of a run must then be
+	// polled by THIS worker or the first cross-node pointer fails closed.
+	store blobstore.Store
 
 	mu       sync.Mutex
 	byGaggle map[string]*gaggleSeams
@@ -57,7 +62,7 @@ type gaggleSeams struct {
 // factories. It fails closed: a worker that cannot construct the same executors
 // the local runner would is a worker that will fail every real stage at
 // dispatch, and it is better to know that at startup.
-func newWorkerSeams(root string) (*workerSeams, error) {
+func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 	l := instance.NewLayout(root)
 	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
 		return nil, fmt.Errorf("worker: load instance config: %w", err)
@@ -67,6 +72,7 @@ func newWorkerSeams(root string) (*workerSeams, error) {
 		root:     root,
 		scrubber: scrub,
 		shared:   shared,
+		store:    store,
 		byGaggle: map[string]*gaggleSeams{},
 	}, nil
 }
@@ -147,7 +153,17 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 // engine's projection will later try to create itself.
 func (w *workerSeams) recorderFor(g *gaggleSeams, runID string) (runner.ArtifactRecorder, runner.SecretRegistrar) {
 	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
-	return workerhost.NewStagingArtifacts(dir, w.scrubber), w.shared
+	return workerhost.NewStagingArtifacts(dir, w.scrubber, w.store), w.shared
+}
+
+// materialize fetches every context blob this node does not already hold, so
+// the harness's local Resolve finds them. It is the fetch half of the data
+// plane; the recorder's write-through is the other half. Called at the top of
+// every stage seam, because a stage cannot know whether its predecessor ran
+// here — and with a shared store it no longer has to.
+func (w *workerSeams) materialize(ctx context.Context, g *gaggleSeams, env apiv1.InvocationEnvelope) error {
+	dir := workerhost.StagingArtifactsDir(g.runsDir, env.RunID)
+	return workerhost.MaterializeContext(ctx, w.store, dir, env.ContextPointers)
 }
 
 // Deterministic returns the engine's deterministic seam.
@@ -197,6 +213,9 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	if g.cfg.NewDeterministic == nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: no deterministic executor configured for gaggle %q", env.Gaggle)
 	}
+	if err := d.seams.materialize(ctx, g, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	rec, reg := d.seams.recorderFor(g, env.RunID)
 	exec, err := g.cfg.NewDeterministic(rec, reg)
 	if err != nil {
@@ -212,6 +231,9 @@ func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) 
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
+	if err := a.materialize(ctx, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	return exec.Invoke(ctx, env)
 }
 
@@ -220,7 +242,18 @@ func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) 
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
+	if err := a.materialize(ctx, env); err != nil {
+		return apiv1.Verdict{}, err
+	}
 	return exec.Review(ctx, env)
+}
+
+func (a workerGoober) materialize(ctx context.Context, env apiv1.InvocationEnvelope) error {
+	g, err := a.seams.forGaggle(env.Gaggle)
+	if err != nil {
+		return err
+	}
+	return a.seams.materialize(ctx, g, env)
 }
 
 func (a workerGoober) executor(env apiv1.InvocationEnvelope) (invoke.Goober, error) {

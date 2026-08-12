@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/signals"
@@ -35,6 +36,10 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"  --instance <dir>           instance root; wires the real agentic and\n" +
 	"                             deterministic executors (default\n" +
 	"                             $GOOBERS_INSTANCE_ROOT)\n" +
+	"  --blob-store <dir>         directory backing the fleet-wide\n" +
+	"                             content-addressed artifact store; required\n" +
+	"                             for a run whose stages are served by more\n" +
+	"                             than one worker (default $GOOBERS_BLOB_STORE)\n" +
 	"  --task-queue <queue>       task queue to serve; repeatable for multiple\n" +
 	"                             queues (default $GOOBERS_TASK_QUEUE, else\n" +
 	"                             \"goobers-engine\")\n" +
@@ -79,6 +84,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
+	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -107,7 +113,22 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// the same buildRunnerConfig — which is what journal conformance between
 	// the two tiers rests on.
 	if *instanceRoot != "" {
-		seams, serr := newWorkerSeams(*instanceRoot)
+		// The fleet's content-addressed store, if one is configured. Without it
+		// a run is only safely served by a SINGLE worker: stage artifacts stay
+		// on the node that produced them, and the first ContextPointer resolved
+		// somewhere else fails closed. With it, the node-local staging
+		// directory becomes a cache and stages may be polled anywhere.
+		var store blobstore.Store
+		if *blobRoot != "" {
+			dirStore, berr := blobstore.NewDir(*blobRoot)
+			if berr != nil {
+				pf(stderr, "error: %v\n", berr)
+				return 1
+			}
+			store = dirStore
+			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+		}
+		seams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)
 			return 1

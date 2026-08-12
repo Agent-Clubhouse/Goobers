@@ -1,6 +1,7 @@
 package workerhost
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -48,13 +50,39 @@ type StagingArtifacts struct {
 	// Scrubber redacts secrets before bytes are written, matching the journal's
 	// own guarantee that a recorded artifact is scrubbed at rest.
 	Scrubber journal.Scrubber
+	// Store, when set, receives every recorded blob as well — the write-through
+	// half of the distributed data plane (see workerhost.MaterializeContext for
+	// the fetch half). Nil keeps the recorder purely local, which is the tier-1
+	// shape and the default.
+	//
+	// Write-through happens AFTER the local write and its failure is not fatal:
+	// a stage that produced its artifact correctly has not failed because the
+	// fleet store was briefly unreachable, and the blob is content-addressed, so
+	// a later Put of the same digest is indistinguishable from this one. What
+	// is lost is only the ability of a LATER stage on a DIFFERENT node to read
+	// it, and that surfaces there, as an integrity fault, with the digest in
+	// hand.
+	Store blobstore.Store
 
-	mu sync.Mutex
+	mu      sync.Mutex
+	putErrs []error
 }
 
-// NewStagingArtifacts returns a recorder rooted at dir.
-func NewStagingArtifacts(dir string, scrubber journal.Scrubber) *StagingArtifacts {
-	return &StagingArtifacts{root: dir, Scrubber: scrubber}
+// StoreErrors returns write-through failures observed so far, for a caller that
+// wants to log them. They are not returned from Record* on purpose: see Store.
+func (s *StagingArtifacts) StoreErrors() []error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.putErrs...)
+}
+
+// NewStagingArtifacts returns a recorder rooted at dir, optionally writing
+// through to a fleet-wide store.
+func NewStagingArtifacts(dir string, scrubber journal.Scrubber, store blobstore.Store) *StagingArtifacts {
+	return &StagingArtifacts{root: dir, Scrubber: scrubber, Store: store}
 }
 
 // StagingArtifactsDir is the staging root for runID beneath a runs directory.
@@ -194,10 +222,16 @@ func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity
 			return journal.Ref{}, fmt.Errorf("workerhost: write artifact %q: %w", name, err)
 		}
 	}
-	return journal.Ref{
+	ref := journal.Ref{
 		Path:      filepath.ToSlash(rel),
 		Digest:    "sha256:" + digest,
 		Size:      int64(len(data)),
 		Integrity: integrity,
-	}, nil
+	}
+	if s.Store != nil {
+		if err := s.Store.Put(context.Background(), ref.Digest, data); err != nil {
+			s.putErrs = append(s.putErrs, err)
+		}
+	}
+	return ref, nil
 }

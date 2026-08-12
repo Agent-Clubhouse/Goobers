@@ -15,7 +15,7 @@ func (fixedScrubber) Scrub(b []byte) []byte {
 
 func TestRecordArtifactScrubsAndDeduplicates(t *testing.T) {
 	dir := t.TempDir()
-	s := NewStagingArtifacts(dir, fixedScrubber{})
+	s := NewStagingArtifacts(dir, fixedScrubber{}, nil)
 
 	ref, err := s.RecordArtifact("stdout.log", []byte("token=s3cret done"))
 	if err != nil {
@@ -40,7 +40,7 @@ func TestRecordArtifactScrubsAndDeduplicates(t *testing.T) {
 }
 
 func TestRecordArtifactBoundedTruncatesAfterScrubbing(t *testing.T) {
-	s := NewStagingArtifacts(t.TempDir(), fixedScrubber{})
+	s := NewStagingArtifacts(t.TempDir(), fixedScrubber{}, nil)
 	ref, err := s.RecordArtifactBounded("big.log", []byte("aaaaaaaaaaaaaaaaaaaa"), 4)
 	if err != nil {
 		t.Fatalf("RecordArtifactBounded: %v", err)

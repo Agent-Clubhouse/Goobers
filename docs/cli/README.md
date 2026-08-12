@@ -3215,6 +3215,10 @@ Flags:
   --instance <dir>           instance root; wires the real agentic and
                              deterministic executors (default
                              $GOOBERS_INSTANCE_ROOT)
+  --blob-store <dir>         directory backing the fleet-wide
+                             content-addressed artifact store; required
+                             for a run whose stages are served by more
+                             than one worker (default $GOOBERS_BLOB_STORE)
   --task-queue <queue>       task queue to serve; repeatable for multiple
                              queues (default $GOOBERS_TASK_QUEUE, else
                              "goobers-engine")
