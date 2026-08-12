@@ -78,11 +78,12 @@ func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
 
 	sort.Strings(consumers)
 	want := []string{
+		"acme-web-claude/claude-merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 		"acme-web/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 		"goobers/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 	}
-	if producers != 3 {
-		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 3", producers)
+	if producers != 4 {
+		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 4", producers)
 	}
 	if !reflect.DeepEqual(consumers, want) {
 		t.Fatalf("gather-sibling-context fail-branch consumers =\n%s\nwant\n%s",

@@ -31,20 +31,27 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
 	}
-	if len(set.Gaggles) != 4 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] || !gotGaggles["python-service"] {
+	if len(set.Gaggles) != 5 || !gotGaggles["acme-web"] || !gotGaggles["acme-web-claude"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] || !gotGaggles["python-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships twelve goobers (acme-web: coder, curator, docs,
-	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer; java-service: java-implementer, java-reviewer;
-	// python-service: python-implementer, python-reviewer) and twelve
-	// workflows (acme-web's nine + one implementation reference per service);
-	// check membership, not order.
+	// config-examples ships eighteen goobers (acme-web: coder, curator, docs,
+	// implementer, nominator, reviewer; acme-web-claude: the same six roles
+	// claude-prefixed to stay globally unique, #2777's additive parallel
+	// gaggle; dotnet-service: dotnet-implementer, dotnet-reviewer;
+	// java-service: java-implementer, java-reviewer; python-service:
+	// python-implementer, python-reviewer) and twenty-one workflows
+	// (acme-web's nine, acme-web-claude's same nine names again since
+	// workflow names are scoped by gaggle not global, and one implementation
+	// reference per polyglot service); check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer", "python-implementer", "python-reviewer"}
+	wantGoobers := []string{
+		"coder", "curator", "docs", "implementer", "nominator", "reviewer",
+		"claude-coder", "claude-curator", "claude-docs", "claude-implementer", "claude-nominator", "claude-reviewer",
+		"dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer", "python-implementer", "python-reviewer",
+	}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -57,13 +64,17 @@ func TestLoadConfigDirValid(t *testing.T) {
 	var inlineWorkflow *apiv1.Workflow
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
-		if w.Name == "inline-policy-check" {
+		if w.Name == "inline-policy-check" && w.Spec.Gaggle == "acme-web" {
 			workflow := w
 			inlineWorkflow = &workflow
 		}
 	}
 	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
-	if len(set.Workflows) != len(wantWorkflows) {
+	// acme-web-claude reuses acme-web's nine workflow names verbatim (workflow
+	// identity is gaggle-scoped, unlike goober names), so the total count is
+	// twelve unique names but twenty-one total definitions.
+	const wantTotalWorkflows = 21
+	if len(set.Workflows) != wantTotalWorkflows {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
 	for _, name := range wantWorkflows {
@@ -186,7 +197,7 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 12 {
+	if len(set.Goobers) != 18 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
@@ -213,7 +224,7 @@ func TestLoadConfigDirIgnoresSkillPackageYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 12 {
+	if len(set.Goobers) != 18 {
 		t.Fatalf("skill support file leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
