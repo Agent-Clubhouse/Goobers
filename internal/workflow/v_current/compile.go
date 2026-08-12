@@ -207,12 +207,52 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
 	problems = append(problems, runScriptProblems(def)...)
+	problems = append(problems, claimLedgerPlacementProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func claimLedgerPlacementProblems(def Definition) []string {
+	var firstTask string
+	var firstPlacement []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" ||
+			!providerstage.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
+			continue
+		}
+		placement := canonicalPlacement(task.RequiredCapabilities)
+		if firstTask == "" {
+			firstTask = task.Name
+			firstPlacement = placement
+			continue
+		}
+		if strings.Join(placement, "\x00") != strings.Join(firstPlacement, "\x00") {
+			return []string{fmt.Sprintf(
+				"claims-mutating tasks %q and %q declare incompatible requiredCapabilities %q and %q; all claims-mutating tasks must use identical placement requirements",
+				firstTask, task.Name, firstPlacement, placement,
+			)}
+		}
+	}
+	return nil
+}
+
+func canonicalPlacement(required []string) []string {
+	placement := append([]string(nil), required...)
+	sort.Strings(placement)
+	if len(placement) < 2 {
+		return placement
+	}
+	distinct := placement[:1]
+	for _, value := range placement[1:] {
+		if value != distinct[len(distinct)-1] {
+			distinct = append(distinct, value)
+		}
+	}
+	return distinct
 }
 
 func runScriptProblems(def Definition) []string {

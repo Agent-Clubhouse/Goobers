@@ -25,6 +25,9 @@ type CapabilityUse struct {
 type Command struct {
 	ResultFile   string
 	Capabilities []CapabilityUse
+
+	mutatesClaimLedger bool
+	claimMutationFlags []string
 }
 
 func required(cap capability.Capability, consequence string) CapabilityUse {
@@ -85,9 +88,11 @@ var commands = map[string]Command{
 			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"read-only"}, "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime"),
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
 		},
+		claimMutationFlags: []string{"claim", "reconcile", "release"},
 	},
 	"select-source": {
-		ResultFile: "selection.json",
+		ResultFile:         "selection.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"),
 		},
@@ -131,7 +136,8 @@ var commands = map[string]Command{
 		},
 	},
 	"gather-pr-context": {
-		ResultFile: "remediation-brief.json",
+		ResultFile:         "remediation-brief.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation issue routing fails at runtime"),
@@ -151,7 +157,8 @@ var commands = map[string]Command{
 		},
 	},
 	"issue-close-out": {
-		ResultFile: "issue-close-out-result.json",
+		ResultFile:         "issue-close-out-result.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so issue close-out fails at runtime"),
 		},
@@ -193,13 +200,15 @@ var commands = map[string]Command{
 		},
 	},
 	"pr-select": {
-		ResultFile: "selected-pr.json",
+		ResultFile:         "selected-pr.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
 	"pr-claim": {
-		ResultFile: "pr-remediation-lifecycle.json",
+		ResultFile:         "pr-remediation-lifecycle.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"),
 		},
@@ -254,7 +263,8 @@ var commands = map[string]Command{
 		},
 	},
 	"update-behind-pr": {
-		ResultFile: "update-behind-result.json",
+		ResultFile:         "update-behind-result.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so behind-base pull-request update fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so behind-base remediation routing fails at runtime"),
@@ -315,6 +325,15 @@ func ResultFile(command string) (string, bool) {
 		return "", false
 	}
 	return entry.ResultFile, true
+}
+
+// MutatesClaimLedger reports whether a built-in invocation can write claims.json.
+func MutatesClaimLedger(command string, args []string) bool {
+	entry, ok := Lookup(command)
+	if !ok {
+		return false
+	}
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
 }
 
 func (u CapabilityUse) required(args []string) bool {

@@ -160,6 +160,36 @@ func TestRequiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestMutatesClaimLedger(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+		want    bool
+	}{
+		{name: "backlog claim", command: "backlog-query", args: []string{"--claim"}, want: true},
+		{name: "backlog reconcile", command: "backlog-query", args: []string{"--reconcile"}, want: true},
+		{name: "backlog release", command: "backlog-query", args: []string{"--release=true"}, want: true},
+		{name: "disabled backlog mutation", command: "backlog-query", args: []string{"--claim=false"}},
+		{name: "read-only backlog query", command: "backlog-query", args: []string{"--read-only"}},
+		{name: "flags terminated", command: "backlog-query", args: []string{"--", "--claim"}},
+		{name: "PR selection", command: "pr-select", want: true},
+		{name: "PR context", command: "gather-pr-context", want: true},
+		{name: "behind PR update", command: "update-behind-pr", want: true},
+		{name: "PR release", command: "pr-claim", args: []string{"--release"}, want: true},
+		{name: "issue close-out", command: "issue-close-out", want: true},
+		{name: "decomposition source", command: "select-source", want: true},
+		{name: "unrelated command", command: "open-pr"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := MutatesClaimLedger(test.command, test.args); got != test.want {
+				t.Fatalf("MutatesClaimLedger(%q, %q) = %t, want %t", test.command, test.args, got, test.want)
+			}
+		})
+	}
+}
+
 func TestManifestCapabilityUsesAreActionable(t *testing.T) {
 	for name, entry := range commands {
 		seen := map[capability.Capability]bool{}
