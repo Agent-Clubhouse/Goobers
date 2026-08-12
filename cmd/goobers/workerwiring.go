@@ -111,16 +111,19 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	}
 
 	scoped := l.ForGaggle(gaggle)
-	wtMgr, err := worktree.NewManager(scoped.WorkcopiesDir())
-	if err != nil {
-		return nil, fmt.Errorf("worker: worktree manager: %w", err)
-	}
-
 	project := gaggleProjectRef(set, gaggle)
 	runnerCfg, credentialedMgr, err := buildRunnerConfig(
 		scoped, cfg, goobers, instructions,
 		nil, // telemetry: the worker's spans come from the engine, not this client
-		w.shared, wtMgr, branchNamespacesByGaggle(set), project, nil,
+		// nil manager ON PURPOSE. buildRunnerConfig builds its own only when
+		// this is nil, and that is the branch that attaches the git
+		// environment — WithGitEnvironment, the askpass resolver that
+		// authenticates mirror clone/fetch with the repo's configured
+		// credential (#667). Passing a manager in SUPPRESSES it, which is how
+		// the first engine dispatches failed: a bare manager clones a public
+		// repo happily and dies on a private one with "could not read Username
+		// for 'https://github.com'".
+		w.shared, nil, branchNamespacesByGaggle(set), project, nil,
 		harnessInfo, stores,
 		instance.EffectiveAgenticSandbox(cfg, nil),
 		nil, // provider quota: scheduler-side concern, not the executor's
@@ -130,7 +133,7 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	}
 
 	if credentialedMgr == nil {
-		credentialedMgr = wtMgr
+		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
 	g := &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr}
 	w.byGaggle[gaggle] = g
