@@ -21,9 +21,16 @@ func isLegacyRuntimeAlias(path string, info fs.FileInfo) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	attributes, err := windows.GetFileAttributes(name)
+	if err != nil {
+		return false, err
+	}
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+		return false, nil
+	}
 	handle, err := windows.CreateFile(
 		name,
-		0,
+		windows.GENERIC_READ,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
@@ -33,13 +40,27 @@ func isLegacyRuntimeAlias(path string, info fs.FileInfo) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var data windows.ByHandleFileInformation
-	infoErr := windows.GetFileInformationByHandle(handle, &data)
+	data := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+	var bytesReturned uint32
+	reparseErr := windows.DeviceIoControl(
+		handle,
+		windows.FSCTL_GET_REPARSE_POINT,
+		nil,
+		0,
+		&data[0],
+		uint32(len(data)),
+		&bytesReturned,
+		nil,
+	)
 	closeErr := windows.CloseHandle(handle)
-	if err := errors.Join(infoErr, closeErr); err != nil {
+	if err := errors.Join(reparseErr, closeErr); err != nil {
 		return false, err
 	}
-	return data.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0, nil
+	if bytesReturned < 4 {
+		return false, fmt.Errorf("read reparse point %s: response is %d bytes", path, bytesReturned)
+	}
+	tag := binary.LittleEndian.Uint32(data[:4])
+	return tag == windows.IO_REPARSE_TAG_MOUNT_POINT || tag == windows.IO_REPARSE_TAG_SYMLINK, nil
 }
 
 func createLegacyRuntimeAlias(legacy, scoped string) error {

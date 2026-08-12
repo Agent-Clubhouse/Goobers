@@ -64,18 +64,45 @@ func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 	}
 }
 
-func TestRuntimeDirsSkipJunctionAliases(t *testing.T) {
+func TestLegacyRuntimeJunctionSurvivesStartupLifecycle(t *testing.T) {
 	layout := NewLayout(t.TempDir())
-	if err := layout.EnsureGaggleRuntime("alpha"); err != nil {
+	legacyRun := filepath.Join(layout.RunsDir(), "run-1", "run.yaml")
+	legacyWorkcopy := filepath.Join(layout.WorkcopiesDir(), "repo", "repo.git", "HEAD")
+	for path, contents := range map[string]string{
+		legacyRun:      "runId: test\n",
+		legacyWorkcopy: "ref: refs/heads/main\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migration, err := layout.MigrateLegacyRuntimeWithReport([]string{"alpha"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := layout.CompleteLegacyRuntimeMigration(migration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := layout.MigrateLegacyRuntimeWithReport([]string{"alpha"}); err != nil {
+		t.Fatalf("restart migration: %v", err)
+	}
+
 	scoped := layout.ForGaggle("alpha")
-	for _, pair := range [][2]string{
-		{layout.RunsDir(), scoped.RunsDir()},
-		{layout.WorkcopiesDir(), scoped.WorkcopiesDir()},
-	} {
-		if err := createLegacyRuntimeAlias(pair[0], pair[1]); err != nil {
+	for _, alias := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
+		info, err := os.Lstat(alias)
+		if err != nil {
 			t.Fatal(err)
+		}
+		isAlias, err := isLegacyRuntimeAlias(alias, info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !isAlias {
+			t.Fatalf("%s was not recognized as a legacy runtime alias", alias)
 		}
 	}
 
