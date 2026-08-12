@@ -39,6 +39,9 @@ spec:
       goal: Implement the claimed backlog item and commit the change.
       capabilities:
         - repo:push
+        # See goobers/coder/goober.yaml — agent:model is required in the cloud
+        # where no stored Copilot sign-in exists to fall back to.
+        - agent:model
       policyActions:
         - modify-repository
       next: push-branch

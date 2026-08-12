@@ -10,8 +10,16 @@
 # hazard. goobers-testbed-minimal is a disposable fixture with the same shape.
 #
 # SECRETS: nothing inline (CFG-009, SEC-010). Both credentials originate in
-# Azure Key Vault and arrive on disk via the Secrets Store CSI driver, mounted
-# read-only at /mnt/secrets-store. The Copilot token ALSO reaches the process as
+# Azure Key Vault, arrive via the Secrets Store CSI driver, and are re-staged to
+# /mnt/secrets at mode 0600 by an initContainer.
+#
+# The re-staging is NOT incidental. The CSI driver mounts secret files 0644, and
+# `internal/credentials` fail-closes on any token file readable by group/other
+# ("secret file is not private to its owner ... run: chmod 600"). Mounting the
+# CSI path directly fails every stage at worktree creation. A k8s Secret volume
+# with defaultMode 0600 does not solve it either: those files are owned by root,
+# so 0600 makes them unreadable to uid 65532. Copy + chmod in an initContainer
+# is the mechanism that satisfies both. The Copilot token ALSO reaches the process as
 # COPILOT_GITHUB_TOKEN (see the Deployment): the harness sign-in preflight reads
 # that from ambient process env, not from the credential resolver
 # (internal/harness/copilot.go:445-465), so a file ref alone is not sufficient
@@ -23,11 +31,11 @@ repos:
     owner: Agent-Clubhouse
     name: goobers-testbed-minimal
     token:
-      file: /mnt/secrets-store/goobers-testbed-token
+      file: /mnt/secrets/goobers-testbed-token
 credentials:
   - capability: agent:model
     token:
-      file: /mnt/secrets-store/copilot-token
+      file: /mnt/secrets/copilot-token
 runner:
   # What this CONTAINER actually has (deploy/dev/image/Dockerfile), verified in
   # the built image: git 2.x, gh, node v22.23.2, @github/copilot 1.0.79.

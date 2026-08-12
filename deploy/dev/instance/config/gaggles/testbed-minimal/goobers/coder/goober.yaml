@@ -14,6 +14,15 @@ spec:
   harnessOptions: {}
   capabilities:
     - repo:push
+    # SPIKE 0 FINDING (2026-08-12): agent:model must be declared explicitly in
+    # the cloud. On a laptop this line is unnecessary — the Copilot CLI falls
+    # back to the operator's stored interactive sign-in — so the testbed config
+    # this was copied from omits it and works fine locally. In a container there
+    # is no stored sign-in, and capability admission (SEC-042) will not
+    # materialize a credential for a capability the stage never declared, so the
+    # harness gets no COPILOT_GITHUB_TOKEN and authentication fails at startup:
+    #   "No model backend (auth, legacy provider, or BYOK registry) available"
+    - agent:model
   # TWEAK 4: `goobers init` scaffolds skills "implement"/"run-tests" but ships
   # no skill packages for them, so a freshly-initialized instance validates
   # with two SKILL002 warnings out of the box. Dropped them.

@@ -118,10 +118,32 @@ spec:
           volumeMounts:
             - {name: instance, mountPath: /instance}
             - {name: seed, mountPath: /seed}
+        # Re-stage CSI secrets at 0600. The CSI driver mounts them 0644, and
+        # internal/credentials fail-closes on any token file readable by
+        # group/other ("secret file is not private to its owner"). A k8s Secret
+        # volume with defaultMode 0600 does not work either — those files are
+        # owned by root, so 0600 hides them from uid 65532. Copy + chmod does.
+        - name: stage-secrets
+          image: ${IMAGE}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cp /mnt/secrets-store/goobers-testbed-token /mnt/secrets/goobers-testbed-token
+              cp /mnt/secrets-store/copilot-token         /mnt/secrets/copilot-token
+              chmod 600 /mnt/secrets/*
+              ls -l /mnt/secrets
+          volumeMounts:
+            - {name: secrets-csi, mountPath: /mnt/secrets-store, readOnly: true}
+            - {name: secrets, mountPath: /mnt/secrets}
       containers:
         - name: daemon
           image: ${IMAGE}
-          args: ["up", "/instance"]
+          # --diagnostics keeps stage stdout/stderr as run artifacts. On by
+          # default for the spike: when a stage fails in-cluster there is no
+          # terminal to re-run it in, and the harness error alone reports only
+          # "exit status 1".
+          args: ["up", "--diagnostics", "/instance"]
           env:
             # Preflight reads this from ambient env; see SecretProviderClass.
             - name: COPILOT_GITHUB_TOKEN
@@ -131,7 +153,10 @@ spec:
               value: /home/nonroot
           volumeMounts:
             - {name: instance, mountPath: /instance}
-            - {name: secrets, mountPath: /mnt/secrets-store, readOnly: true}
+            - {name: secrets, mountPath: /mnt/secrets, readOnly: true}
+            # The CSI volume stays mounted on a long-lived container on purpose:
+            # the synced k8s Secret only exists while a pod mounts it.
+            - {name: secrets-csi, mountPath: /mnt/secrets-store, readOnly: true}
             - {name: home, mountPath: /home/nonroot}
           resources:
             requests: {cpu: 500m, memory: 1Gi}
@@ -159,7 +184,11 @@ spec:
           configMap: {name: goobers-instance-config}
         - name: home
           emptyDir: {}
+        # Where the initContainer re-stages the CSI secrets at 0600. Memory-backed
+        # so tokens never touch the node's disk.
         - name: secrets
+          emptyDir: {medium: Memory}
+        - name: secrets-csi
           csi:
             driver: secrets-store.csi.k8s.io
             readOnly: true
