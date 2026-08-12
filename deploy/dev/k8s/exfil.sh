@@ -11,14 +11,19 @@ set -euo pipefail
 
 RUNG="${1:?usage: exfil.sh <rung-label> [dest-root]}"
 DEST_ROOT="${2:-$HOME/source/Goobers-Review/Goobernetes-Spike/runs}"
+# Overridable so the same script serves the second (Windows) instance:
+#   NS=goobers-win SELECTOR=app=goobers-win INSTANCE_PATH='C:\instance' ./exfil.sh spike-0-w
 NS="${NS:-goobers}"
+SELECTOR="${SELECTOR:-app=goobers}"
+INSTANCE_PATH="${INSTANCE_PATH:-/instance}"
+CONTAINERS="${CONTAINERS:-daemon dashboard seed stage-secrets}"
 DEST="$DEST_ROOT/$RUNG"
 STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 mkdir -p "$DEST"
 echo "==> exfil '$RUNG' -> $DEST  (captured $STAMP)"
 
-POD="$(kubectl -n "$NS" get pod -l app=goobers -o jsonpath='{.items[0].metadata.name}')"
+POD="$(kubectl -n "$NS" get pod -l "$SELECTOR" -o jsonpath='{.items[0].metadata.name}')"
 echo "    pod: $POD"
 
 # --- provenance -------------------------------------------------------------
@@ -33,7 +38,7 @@ echo "    pod: $POD"
   echo "k8s_version:    $(kubectl version -o json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["serverVersion"]["gitVersion"])' 2>/dev/null || echo unknown)"
   echo "image:          $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[0].image}')"
   echo "image_digest:   $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[0].imageID}')"
-  echo "goobers_version: $(kubectl -n "$NS" exec "$POD" -c daemon -- goobers --version 2>/dev/null || echo unavailable)"
+  echo "goobers_version: $(kubectl -n "$NS" exec "$POD" -c daemon -- goobers --version 2>/dev/null || kubectl -n "$NS" exec "$POD" -c daemon -- goobers.exe --version 2>/dev/null || echo unavailable)"
   echo "pod_started:    $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.startTime}')"
 } > "$DEST/PROVENANCE.txt"
 cat "$DEST/PROVENANCE.txt"
@@ -44,7 +49,7 @@ cat "$DEST/PROVENANCE.txt"
 # projections, and not the record of what happened. The journal is.
 echo "==> run journals + instance log"
 kubectl -n "$NS" exec "$POD" -c daemon -- \
-  tar czf - -C /instance \
+  tar czf - -C "$INSTANCE_PATH" \
     --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
     --exclude='workcopies' \
     gaggles scheduler 2>/dev/null > "$DEST/instance-journal.tgz" || {
@@ -60,7 +65,7 @@ find "$DEST/instance" -type d -name 'runs' -exec sh -c 'ls -1 "$1" 2>/dev/null |
 
 # --- logs and cluster state -------------------------------------------------
 echo "==> logs"
-for c in daemon dashboard seed; do
+for c in $CONTAINERS; do
   kubectl -n "$NS" logs "$POD" -c "$c" --timestamps > "$DEST/log-$c.txt" 2>/dev/null \
     && echo "    log-$c.txt ($(wc -l < "$DEST/log-$c.txt" | tr -d ' ') lines)" || true
   kubectl -n "$NS" logs "$POD" -c "$c" --timestamps --previous > "$DEST/log-$c-previous.txt" 2>/dev/null || rm -f "$DEST/log-$c-previous.txt"
