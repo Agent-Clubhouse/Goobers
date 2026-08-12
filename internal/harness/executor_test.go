@@ -577,6 +577,73 @@ func TestExecutorLinksEveryTaskOutcomeToCapturedTranscript(t *testing.T) {
 	}
 }
 
+func TestExecutorRecordsScrubbedStderrArtifactOnHarnessFailure(t *testing.T) {
+	reg, scrubber := journal.DefaultScrubber()
+	secret := "opaque-harness-secret"
+	reg.Register([]byte(secret))
+
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           "run-1",
+		Workflow:        "default-implement",
+		WorkflowVersion: 1,
+		Gaggle:          "example",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+
+	exec, err := NewExecutor(
+		&FakeAdapter{
+			Transcript: []byte("failed"),
+			Stderr:     []byte("request rejected token=" + secret),
+			Act: func(context.Context, RunRequest) error {
+				return errors.New("exit status 1")
+			},
+		},
+		testInjector(t, "", "", noopRegistrar{}),
+		jr, jr, NewContextResolver(jr, runsDir), scrubber, "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err == nil {
+		t.Fatal("Invoke error = nil, want harness failure")
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("Artifacts = %#v, want stderr artifact", result.Artifacts)
+	}
+	reader, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded bool
+	for _, event := range events {
+		if event.Type == journal.EventArtifactRecorded && event.Name == "implement/stderr.log" {
+			recorded = true
+			break
+		}
+	}
+	if !recorded {
+		t.Fatal("implement/stderr.log artifact event was not recorded")
+	}
+	data, err := result.Artifacts[0].Resolve(jr.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(secret)) || !bytes.Contains(data, []byte("[REDACTED]")) {
+		t.Fatalf("stderr artifact was not scrubbed: %q", data)
+	}
+}
+
 func TestExecutorPassesHarnessConfig(t *testing.T) {
 	rec := &fakeRecorder{}
 	adapter := &FakeAdapter{

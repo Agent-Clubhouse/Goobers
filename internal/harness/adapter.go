@@ -151,6 +151,9 @@ type Outcome struct {
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past
 	// the cap (0 if TranscriptTruncated is false).
 	TranscriptDroppedBytes int64
+	// Stderr is the separately captured harness subprocess stderr. It is
+	// bounded at MaxTranscriptBytes and recorded as a run artifact on failure.
+	Stderr []byte
 }
 
 // PreflightInfo describes the installed harness verified before agentic work

@@ -774,6 +774,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+		Stderr:                 result.Stderr,
 	}
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
@@ -959,6 +960,11 @@ func validateCopilotCompletion(mode Mode, payload []byte) error {
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
 	firstTranscript, secondTranscript, dropped := retainedProcessTranscripts(first, second, limit)
+	firstStderr, secondStderr, stderrDropped := retainedProcessOutput(
+		processOutput{data: first.Stderr, dropped: first.StderrDroppedBytes},
+		processOutput{data: second.Stderr, dropped: second.StderrDroppedBytes},
+		limit,
+	)
 
 	transcript := append([]byte(nil), firstTranscript...)
 	if len(firstTranscript) > 0 && len(secondTranscript) > 0 {
@@ -968,45 +974,73 @@ func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult
 	if dropped > 0 {
 		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
 	}
+	stderr := append([]byte(nil), firstStderr...)
+	if len(firstStderr) > 0 && len(secondStderr) > 0 {
+		stderr = append(stderr, '\n')
+	}
+	stderr = append(stderr, secondStderr...)
+	if stderrDropped > 0 {
+		stderr = append(stderr, transcriptTruncationMarker(stderrDropped)...)
+	}
 	return ProcessResult{
 		Transcript:             transcript,
 		ExitCode:               second.ExitCode,
 		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
 		TranscriptDroppedBytes: dropped,
+		Stderr:                 stderr,
+		StderrTruncated:        first.StderrTruncated || second.StderrTruncated || stderrDropped > 0,
+		StderrDroppedBytes:     stderrDropped,
 	}
 }
 
 func retainedProcessTranscripts(first, second ProcessResult, limit int64) ([]byte, []byte, int64) {
+	return retainedProcessOutput(
+		processOutput{data: first.Transcript, dropped: first.TranscriptDroppedBytes},
+		processOutput{data: second.Transcript, dropped: second.TranscriptDroppedBytes},
+		limit,
+	)
+}
+
+type processOutput struct {
+	data    []byte
+	dropped int64
+}
+
+func retainedProcessOutput(first, second processOutput, limit int64) ([]byte, []byte, int64) {
 	if limit <= 0 {
 		limit = DefaultMaxTranscriptBytes
 	}
 
-	firstTranscript := processTranscriptBytes(first)
-	secondTranscript := processTranscriptBytes(second)
+	firstBytes := processOutputBytes(first)
+	secondBytes := processOutputBytes(second)
 
 	// The recovery turn is the most useful diagnostic when the first turn
 	// omitted its contract, so retain it first and use the remaining allowance
 	// for the initial turn.
-	secondRetained := min(int64(len(secondTranscript)), limit)
+	secondRetained := min(int64(len(secondBytes)), limit)
 	remaining := limit - secondRetained
 	var firstRetained int64
 	if secondRetained == 0 {
-		firstRetained = min(int64(len(firstTranscript)), remaining)
-	} else if len(firstTranscript) > 0 && remaining > 1 {
-		firstRetained = min(int64(len(firstTranscript)), remaining-1)
+		firstRetained = min(int64(len(firstBytes)), remaining)
+	} else if len(firstBytes) > 0 && remaining > 1 {
+		firstRetained = min(int64(len(firstBytes)), remaining-1)
 	}
-	dropped := first.TranscriptDroppedBytes + second.TranscriptDroppedBytes +
-		int64(len(firstTranscript)) - firstRetained +
-		int64(len(secondTranscript)) - secondRetained
+	dropped := first.dropped + second.dropped +
+		int64(len(firstBytes)) - firstRetained +
+		int64(len(secondBytes)) - secondRetained
 
-	return firstTranscript[:firstRetained], secondTranscript[:secondRetained], dropped
+	return firstBytes[:firstRetained], secondBytes[:secondRetained], dropped
+}
+
+func processOutputBytes(output processOutput) []byte {
+	if output.dropped <= 0 {
+		return output.data
+	}
+	return bytes.TrimSuffix(output.data, transcriptTruncationMarker(output.dropped))
 }
 
 func processTranscriptBytes(result ProcessResult) []byte {
-	if result.TranscriptDroppedBytes <= 0 {
-		return result.Transcript
-	}
-	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
+	return processOutputBytes(processOutput{data: result.Transcript, dropped: result.TranscriptDroppedBytes})
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/

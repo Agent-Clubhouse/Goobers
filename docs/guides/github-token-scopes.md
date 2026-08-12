@@ -92,25 +92,28 @@ goober uses the `copilot` harness — curator, implementer, reviewer, nominator,
 analyst, config-author in the shipped gaggle). The GitHub Copilot CLI authenticates to its model backend independently of
 repository credentials. For an interactive local daemon, first run `copilot`
 and sign in normally. Goobers passes only the profile-location variables needed
-to find that stored session; it does not copy ambient token variables.
+to find that stored session. An ambient model token is copied only into the
+preflight probe, not into live stages.
 
 For a headless Windows Service, CI runner, or dedicated account without a stored
 session, configure a separate fine-grained PAT with **Copilot Requests:
-Read-only**. A PAT without that account permission fails at the first agentic
-stage even when ordinary repository operations work.
+Read-only**. A PAT without that account permission fails the auth preflight (or
+the first agentic stage when preflight is disabled) even when ordinary
+repository operations work.
 
 Goobers still models model access as **`agent:model`**. When no token grant is
 configured, the Copilot adapter uses the stored CLI session. When a grant is
 configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
 from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
 
-Current limitation: the production harness auth preflight runs before this
-capability credential is resolved. A token-backed agentic stage on a clean
-service or CI profile therefore still needs a stored Copilot CLI sign-in to
-pass startup. The
+The production harness auth preflight runs before the configured capability
+credential is resolved, but since #1996 it can authenticate a clean service or
+CI profile from `COPILOT_GITHUB_TOKEN` in the ambient Goobers process
+environment. The adapter copies that value only into the tool-disabled sign-in
+probe; live stages still receive it through the `agent:model` capability
+boundary. The
 [hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
-records the failure and the required preflight change; do not bypass the
-capability boundary with ambient token passthrough.
+records the original limitation and its correction.
 
 **Cross-org reality — why it must be a separate token.** "Copilot Requests" is
 an **account-level** permission: it can only be granted on a **personal**
@@ -157,6 +160,12 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
 ```
 
+Also expose the same model token to the Goobers process for preflight:
+
+```sh
+export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
+```
+
 Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
@@ -169,14 +178,14 @@ authentication. Missing grants for repository capabilities remain errors.
 
 Verify harness availability before a live run with
 `goobers validate --check-harness`. When `AuthCheckArgs` is configured, its
-authentication probe receives only the base environment, not the configured
-`agent:model` credential, so it can validate a stored CLI session but not the
-token's scope. The token is first resolved and injected as
-`COPILOT_GITHUB_TOKEN` when `CopilotAdapter.Run` executes an agentic stage, so a
-mis-scoped token fails there. On a clean profile, the current preflight blocks
-before that stage; token-backed preflight validation requires the change
-documented in the
-[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md).
+authentication probe receives a stored CLI session or an ambient
+`COPILOT_GITHUB_TOKEN`, not the configured `agent:model` credential. A
+`token.file` reference alone is therefore insufficient for daemon startup even
+though Goobers can resolve it for the eventual agentic stage: expose the same
+value to the Goobers process as `COPILOT_GITHUB_TOKEN`. On Kubernetes, mount the
+synced Secret for the file ref and also consume that Secret key through
+`secretKeyRef` for the environment variable. A mis-scoped token then fails
+during the preflight rather than at the first agentic stage.
 
 ## GitHub App installation tokens (`auth.kind: github-app`)
 
