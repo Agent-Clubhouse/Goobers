@@ -147,6 +147,9 @@ render the effective instance config (secrets redacted)
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
 .TP
+\fBgoobers engine-start\fR
+dispatch one run onto the tier-3 engine via Temporal (experimental)
+.TP
 \fBgoobers escalations show\fR
 show escalation cause + per-stage artifact timeline
 .TP
@@ -434,6 +437,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
 \fBgoobers-elect-lander\fR(1),
+\fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-examples\fR(1),

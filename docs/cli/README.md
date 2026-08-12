@@ -57,6 +57,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
@@ -996,6 +997,32 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers elect-lander
+~~~
+
+## `goobers engine-start`
+
+dispatch one run onto the tier-3 engine via Temporal (experimental)
+
+~~~text
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental): pin the workflow
+definition, connect to Temporal, and start the engine workflow on a task
+queue a `goobers worker` is serving. The run id is derived from
+gaggle+workflow+--dedupe-key, so starting the same unit of work twice is
+rejected as already running rather than duplicated.
+
+Every stage of the run lands on the SAME task queue: the starter takes one
+queue, so per-stage routing does not exist yet.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-start default-implement
+$ goobers engine-start --task-queue goobers-spike default-implement /instance
 ~~~
 
 ## `goobers escalations`

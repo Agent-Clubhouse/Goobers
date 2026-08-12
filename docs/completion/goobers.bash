@@ -83,8 +83,11 @@ _goobers_completion()
                 status) flags+=" --json" ;;
             esac
             ;;
+        engine-start)
+            flags+=" --gaggle --task-queue --temporal-hostport --temporal-namespace --dedupe-key"
+            ;;
         worker)
-            flags+=" --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root --instance"
             ;;
         dashboard)
             flags+=" --port --no-open --dev-assets"

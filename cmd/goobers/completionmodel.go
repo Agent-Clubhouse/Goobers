@@ -188,6 +188,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
+		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
+	},
+	"engine-start": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the workflow"},
+		{name: "task-queue", takesArg: true, desc: "Task queue to dispatch onto"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "dedupe-key", takesArg: true, desc: "Dedupe key folded into the run id"},
 	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},

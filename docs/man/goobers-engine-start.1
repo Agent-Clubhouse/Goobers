@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ENGINE START" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers engine-start \- dispatch one run onto the tier-3 engine via Temporal (experimental)
+.SH SYNOPSIS
+\fBgoobers engine-start\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental): pin the workflow
+definition, connect to Temporal, and start the engine workflow on a task
+queue a `goobers worker` is serving. The run id is derived from
+gaggle+workflow+--dedupe-key, so starting the same unit of work twice is
+rejected as already running rather than duplicated.
+
+Every stage of the run lands on the SAME task queue: the starter takes one
+queue, so per-stage routing does not exist yet.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers engine-start default-implement
+goobers engine-start --task-queue goobers-spike default-implement /instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

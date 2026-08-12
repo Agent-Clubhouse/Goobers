@@ -181,6 +181,34 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {memory: 1Gi}
+        # Temporal worker — the tier-3 engine path. Colocated in this pod on
+        # purpose (#2840): it shares the instance PVC, so its executors reach
+        # the same instance root, worktrees, and staging artifacts the daemon
+        # does. Spike 2 is where the worker moves off this node and the
+        # colocation assumption gets tested rather than relied on.
+        - name: worker
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          args:
+            - "worker"
+            - "--instance=/instance"
+            - "--temporal-hostport=temporal-frontend.temporal.svc.cluster.local:7233"
+            - "--task-queue=goobers-spike"
+            - "--work-root=/instance/workercache"
+          env:
+            - name: COPILOT_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: goobers-copilot, key: token}
+            - name: HOME
+              value: /home/nonroot
+          volumeMounts:
+            - {name: instance, mountPath: /instance}
+            - {name: secrets, mountPath: /mnt/secrets, readOnly: true}
+            - {name: secrets-csi, mountPath: /mnt/secrets-store, readOnly: true}
+            - {name: home, mountPath: /home/nonroot}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 4Gi}
         # OTel collector SIDECAR, not a Deployment: see instance.yaml's telemetry
         # block. Shares this pod's network namespace, so 127.0.0.1:4317
         # satisfies the loopback-only rule for insecure OTLP honestly.
