@@ -1,0 +1,5 @@
+
+# Cross-compiled Windows binary staged into the image build context by
+# deploy-worker-win.sh. It is a 116 MB build artifact, not source, and GitHub
+# refuses files over 100 MB — it must never be committed.
+goobers.exe
