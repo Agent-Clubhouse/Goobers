@@ -56,6 +56,75 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsIncompatibleClaimLedgerPlacement(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "claim",
+		Tasks: []apiv1.Task{
+			{
+				Name: "claim", Type: apiv1.TaskDeterministic, Goal: "claim", Next: "release",
+				Run:                  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				RequiredCapabilities: []string{"os=linux"},
+			},
+			{
+				Name: "release", Type: apiv1.TaskDeterministic, Goal: "release",
+				Run:                  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--release"}},
+				RequiredCapabilities: []string{"os=windows"},
+			},
+		},
+	}
+	_, err := compileAcknowledged(Definition{Name: "claims-placement", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `claims-mutating tasks "claim" and "release" declare incompatible requiredCapabilities`) {
+		t.Fatalf("Compile error = %v, want incompatible claims placement", err)
+	}
+}
+
+func TestClaimLedgerPlacementProblems(t *testing.T) {
+	task := func(name, command string, args, required []string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:                  &apiv1.DeterministicRun{Command: append([]string{"goobers", command}, args...)},
+			RequiredCapabilities: required,
+		}
+	}
+	tests := []struct {
+		name  string
+		tasks []apiv1.Task
+		want  bool
+	}{
+		{
+			name: "same placement in different order",
+			tasks: []apiv1.Task{
+				task("select", "pr-select", nil, []string{"git", "os=linux"}),
+				task("release", "pr-claim", []string{"--release"}, []string{"os=linux", "git"}),
+			},
+		},
+		{
+			name: "pinned and unpinned differ",
+			tasks: []apiv1.Task{
+				task("select", "select-source", nil, nil),
+				task("close", "issue-close-out", nil, []string{"os=linux"}),
+			},
+			want: true,
+		},
+		{
+			name: "non-mutating backlog query ignored",
+			tasks: []apiv1.Task{
+				task("read", "backlog-query", []string{"--read-only"}, []string{"os=windows"}),
+				task("claim", "backlog-query", []string{"--claim"}, []string{"os=linux"}),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := claimLedgerPlacementProblems(Definition{Spec: apiv1.WorkflowSpec{Tasks: test.tasks}})
+			if (len(got) > 0) != test.want {
+				t.Fatalf("claimLedgerPlacementProblems() = %v, want problem %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileRejectsUnknownMinimumIntegrity(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0].MinimumIntegrity = "owner-ish"
