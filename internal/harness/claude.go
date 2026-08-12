@@ -266,12 +266,29 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if extra == nil {
 		extra = claudeExtraArgs(req.Tools)
 	}
-	mcpArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
+	var mcpConfigArgs []string
+	goobersIOArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: %w", err)
 	}
-	if mcpArg != "" {
-		extra = append(append([]string(nil), extra...), "--mcp-config", mcpArg, "--strict-mcp-config")
+	if goobersIOArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, goobersIOArg)
+	}
+	declaredMCPArg, mcpEnvAdditions, err := prepareClaudeMCP(ctx, req)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if declaredMCPArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, declaredMCPArg)
+	}
+	// A single --mcp-config flag takes multiple space-separated values
+	// (confirmed live: repeated servers from separate values merge cleanly),
+	// so goobers-io's registration and a goober's declared mcpServers coexist
+	// under one flag invocation without conflicting.
+	if len(mcpConfigArgs) > 0 {
+		extra = append(append([]string(nil), extra...), "--mcp-config")
+		extra = append(extra, mcpConfigArgs...)
+		extra = append(extra, "--strict-mcp-config")
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
@@ -290,6 +307,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if err != nil {
 		return Outcome{}, err
 	}
+	env = append(env, mcpEnvAdditions...)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,
@@ -506,6 +524,17 @@ func seedClaudeCredentialsForPlatform(
 		var err error
 		credentials, err = readKeychain(ctx, claudeCodeKeychainService)
 		if err != nil {
+			// "No such item" is the Keychain's spelling of the same state the
+			// file branch above treats as optional: this machine simply has no
+			// stored Claude Code login. Every other platform returns nil here
+			// rather than failing, and so should darwin — otherwise the adapter
+			// is unusable on any Mac where Claude Code was never signed in,
+			// which includes every CI runner. Genuine failures (a locked
+			// keychain, a denied prompt, security(1) missing) still fail
+			// closed, since they leave the credential state unknown.
+			if isKeychainItemNotFound(err) {
+				return nil
+			}
 			return fmt.Errorf("read Claude Code credentials from macOS Keychain service %q: %w", claudeCodeKeychainService, err)
 		}
 		credentials = bytes.TrimSpace(credentials)
@@ -525,4 +554,19 @@ func seedClaudeCredentialsForPlatform(
 
 func readClaudeKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
 	return exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+}
+
+// keychainItemNotFoundExit is security(1)'s exit status for
+// errSecItemNotFound — "The specified item could not be found in the keychain."
+// It is a distinct status from its permission and I/O failures, which is what
+// makes "absent" separable from "could not be determined" here.
+const keychainItemNotFoundExit = 44
+
+// isKeychainItemNotFound reports whether err is security(1) saying the item
+// simply is not there, as opposed to any failure that leaves the credential
+// state unknown. Matched on the exit status rather than the message so it does
+// not depend on security(1)'s stderr wording.
+func isKeychainItemNotFound(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == keychainItemNotFoundExit
 }

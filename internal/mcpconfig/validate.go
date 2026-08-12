@@ -13,18 +13,19 @@ import (
 )
 
 // ValidateForHarness checks that the selected harness can isolate and
-// materialize the declared servers before validating their contents.
+// materialize the declared servers before validating their contents. Both
+// supported harnesses (Copilot, claude-code — #1492) share the same
+// materialization shape: a workspace/config-scoped file plus one shared
+// process environment for every locally-spawned stdio server, so the same
+// validation applies to both.
 func ValidateForHarness(harness apiv1.Harness, servers []apiv1.MCPServer, declaredCapabilities, tools []string) error {
 	if harness == "" {
 		harness = apiv1.HarnessCopilot
 	}
-	if len(servers) > 0 && harness != apiv1.HarnessCopilot {
-		return fmt.Errorf("mcpServers are only supported by harness %q; harness %q must not declare them", apiv1.HarnessCopilot, harness)
-	}
 	if err := Validate(servers, declaredCapabilities, tools); err != nil {
 		return err
 	}
-	return validateCopilotCredentialIsolation(servers)
+	return validateLocalCredentialIsolation(harness, servers)
 }
 
 // Validate checks MCP server shape, tool policy, and ensures every first-party
@@ -181,10 +182,15 @@ func BYOCredentialKeys(servers []apiv1.MCPServer) []string {
 	return keys
 }
 
-// Copilot launches every local MCP server with its own environment, so each
-// local server must be explicitly authorized for every credential in the
-// shared Copilot process environment.
-func validateCopilotCredentialIsolation(servers []apiv1.MCPServer) error {
+// validateLocalCredentialIsolation rejects a declaration the given harness
+// cannot materialize safely. Every supported harness launches each
+// locally-spawned MCP server sharing that invocation's own process
+// environment, not an isolated one per server — confirmed live for
+// claude-code (#1492) the same way it was already established for Copilot —
+// so a credential granted to one local stdio server is reachable by every
+// other local stdio server in the same invocation unless that server
+// explicitly claims it too.
+func validateLocalCredentialIsolation(harness apiv1.Harness, servers []apiv1.MCPServer) error {
 	keys := make([]string, 0)
 	seen := make(map[string]bool)
 	serverKeys := make([]map[string]bool, len(servers))
@@ -207,7 +213,7 @@ func validateCopilotCredentialIsolation(servers []apiv1.MCPServer) error {
 			if !serverKeys[i][key] {
 				return fmt.Errorf(
 					"mcpServers[%d] local stdio server %q cannot isolate credential %q granted to another server because harness %q uses one shared process environment; add an explicit credentialRef for that credential or use a remote server",
-					i, server.Name, key, apiv1.HarnessCopilot,
+					i, server.Name, key, harness,
 				)
 			}
 		}
