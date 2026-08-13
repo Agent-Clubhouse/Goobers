@@ -217,7 +217,7 @@ func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
 // shape — Temporal's unlimited default is structurally unreachable (#622).
 func TestStageActivityOptionsAlwaysCarryExplicitRetryPolicy(t *testing.T) {
 	for _, limits := range []apiv1.Limits{{}, {MaxDurationSeconds: 90}} {
-		opts := stageActivityOptions(limits)
+		opts := stageActivityOptions(limits, "")
 		if opts.RetryPolicy == nil {
 			t.Fatalf("limits %+v: RetryPolicy is nil — Temporal's unlimited default would apply", limits)
 		}
@@ -233,11 +233,11 @@ func TestStageActivityOptionsAlwaysCarryExplicitRetryPolicy(t *testing.T) {
 // FailureTypeStage, the local runner's class) always beats Temporal's
 // infra-classed timeout; an undeclared limit keeps the constant default.
 func TestStageActivityTimeoutRunsGraceBehindDeclaredLimit(t *testing.T) {
-	if got := stageActivityOptions(apiv1.Limits{}).StartToCloseTimeout; got != activityTimeout {
+	if got := stageActivityOptions(apiv1.Limits{}, "").StartToCloseTimeout; got != activityTimeout {
 		t.Fatalf("undeclared limit StartToCloseTimeout = %v, want %v", got, activityTimeout)
 	}
 	want := 90*time.Second + stageTimeoutGrace
-	if got := stageActivityOptions(apiv1.Limits{MaxDurationSeconds: 90}).StartToCloseTimeout; got != want {
+	if got := stageActivityOptions(apiv1.Limits{MaxDurationSeconds: 90}, "").StartToCloseTimeout; got != want {
 		t.Fatalf("declared limit StartToCloseTimeout = %v, want %v (limit + grace, so the worker-side policy timeout wins the race)", got, want)
 	}
 }
