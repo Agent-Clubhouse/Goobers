@@ -182,6 +182,18 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"service status": {
 		{name: "json", desc: "Emit JSON"},
 	},
+	"engine-start": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the workflow"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+	},
+	"engine-project": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+	},
 	"worker": {
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},

@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -19,6 +23,36 @@ import (
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
+
+type completedRunFake struct {
+	projection JournalProjection
+	executions []*workflowpb.WorkflowExecutionInfo
+	queries    int
+}
+
+type projectionValue struct {
+	projection JournalProjection
+}
+
+func (v projectionValue) HasValue() bool { return true }
+
+func (v projectionValue) Get(valuePtr interface{}) error {
+	out, ok := valuePtr.(*JournalProjection)
+	if !ok {
+		return errors.New("unexpected projection destination")
+	}
+	*out = v.projection
+	return nil
+}
+
+func (f *completedRunFake) ListWorkflow(_ context.Context, _ *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error) {
+	return &workflowservice.ListWorkflowExecutionsResponse{Executions: f.executions}, nil
+}
+
+func (f *completedRunFake) QueryWorkflow(_ context.Context, _, _, _ string, _ ...interface{}) (converter.EncodedValue, error) {
+	f.queries++
+	return projectionValue{projection: f.projection}, nil
+}
 
 // executeForProjection runs one engine fixture in the Temporal test
 // environment and returns its queried journal projection. wantWorkflowErr
@@ -52,6 +86,49 @@ func projectionInput(name string, spec apiv1.WorkflowSpec) RunInput {
 	in := runInput(name, spec)
 	in.TriggerKind = string(journal.TriggerManual)
 	return in
+}
+
+func TestCompletedRunReconcilerProjectsAndObservesOnce(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("project-automatic", spec), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &completedRunFake{
+		projection: proj,
+		executions: []*workflowpb.WorkflowExecutionInfo{{
+			Execution: &commonpb.WorkflowExecution{WorkflowId: proj.Identity.RunID},
+			Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
+		}},
+	}
+	runsDir := filepath.Join(t.TempDir(), "runs")
+	var observedSeq uint64
+	reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, func(_ context.Context, runID string, seq uint64) error {
+		if runID != proj.Identity.RunID {
+			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
+		}
+		observedSeq = seq
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 1 {
+		t.Fatalf("first Reconcile = (%d, %v), want (1, nil)", count, err)
+	}
+	if observedSeq == 0 || !journal.Recorded(filepath.Join(runsDir, proj.Identity.RunID)) {
+		t.Fatalf("projection was not published and observed: seq=%d", observedSeq)
+	}
+	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 0 {
+		t.Fatalf("second Reconcile = (%d, %v), want idempotent (0, nil)", count, err)
+	}
+	if fake.queries != 2 {
+		t.Fatalf("projection queries = %d, want 2 (identity validation plus projection)", fake.queries)
+	}
 }
 
 func TestProjectionJournalsTypedIntegrityRefusal(t *testing.T) {
