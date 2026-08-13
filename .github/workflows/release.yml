@@ -301,16 +301,16 @@ jobs:
             throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
           }
 
+      # bash on the windows-latest image has no `zip`; Compress-Archive is
+      # built into Windows and needs no extra install.
       - name: Repackage signed archive
-        shell: bash
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          ARCHIVE="dist/goobers_${TAG}_windows_amd64.zip"
-          rm -f "$ARCHIVE"
-          (cd winsign && zip -qr "../$ARCHIVE" .)
-          rm -rf winsign
+          $Archive = "dist\goobers_${env:TAG}_windows_amd64.zip"
+          Remove-Item -ErrorAction SilentlyContinue $Archive
+          Compress-Archive -Path (Join-Path winsign '*') -DestinationPath $Archive
+          Remove-Item -Recurse -Force winsign
 
       - name: Recompute SHA256SUMS
         shell: bash
