@@ -141,6 +141,67 @@ func TestCompletedRunReconcilerRetriesObservationForRecordedJournal(t *testing.T
 	}
 }
 
+func TestCompletedRunReconcilerReplacesInterruptedProjection(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("project-interrupted", spec), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &completedRunFake{
+		projection: proj,
+		executions: []*workflowpb.WorkflowExecutionInfo{{
+			Execution: &commonpb.WorkflowExecution{WorkflowId: proj.Identity.RunID},
+			Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
+		}},
+	}
+	runsDir := filepath.Join(t.TempDir(), "runs")
+	partial, err := journal.Create(runsDir, proj.Identity, map[string][]byte{
+		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
+	})
+	if err != nil {
+		t.Fatalf("create interrupted projection: %v", err)
+	}
+	if err := partial.Close(); err != nil {
+		t.Fatalf("close interrupted projection: %v", err)
+	}
+
+	var observedSeq uint64
+	reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, func(_ context.Context, runID string, seq uint64) error {
+		if runID != proj.Identity.RunID {
+			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
+		}
+		observedSeq = seq
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 1 {
+		t.Fatalf("Reconcile = (%d, %v), want (1, nil)", count, err)
+	}
+	if fake.queries != 2 {
+		t.Fatalf("projection queries = %d, want 2", fake.queries)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, proj.Identity.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != len(proj.Ops) || events[len(events)-1].Type != journal.EventRunFinished {
+		t.Fatalf("replacement events = %d ending in %s, want %d ending in run.finished", len(events), events[len(events)-1].Type, len(proj.Ops))
+	}
+	if observedSeq != events[len(events)-1].Seq {
+		t.Fatalf("observed seq = %d, want terminal seq %d", observedSeq, events[len(events)-1].Seq)
+	}
+}
+
 func TestProjectCompletedRunForGaggleObservesRecordedJournal(t *testing.T) {
 	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
 	proj := executeForProjection(t, projectionInput("project-manual-existing", spec), &Activities{

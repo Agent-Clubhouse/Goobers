@@ -92,10 +92,17 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 		if journal.Recorded(dir) {
-			if err := observeProjectedRun(ctx, r.observe, runID, dir); err != nil {
+			complete, err := projectedJournalComplete(dir)
+			if err != nil {
 				errs = append(errs, err)
+				continue
 			}
-			continue
+			if complete {
+				if err := observeProjectedRun(ctx, r.observe, runID, dir); err != nil {
+					errs = append(errs, err)
+				}
+				continue
+			}
 		}
 		if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe); err != nil {
 			errs = append(errs, err)
@@ -114,7 +121,13 @@ func ProjectCompletedRunForGaggle(ctx context.Context, q projectionQuerier, work
 		return "", err
 	}
 	if journal.Recorded(dir) {
-		return dir, observeProjectedRun(ctx, observe, workflowID, dir)
+		complete, err := projectedJournalComplete(dir)
+		if err != nil {
+			return "", err
+		}
+		if complete {
+			return dir, observeProjectedRun(ctx, observe, workflowID, dir)
+		}
 	}
 	return projectCompletedRun(ctx, q, workflowID, gaggle, runsDir, observe)
 }
