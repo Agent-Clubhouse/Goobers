@@ -6,11 +6,12 @@ import (
 	"io"
 	"time"
 
+	"go.temporal.io/sdk/client"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
-	"go.temporal.io/sdk/client"
 )
 
 // runEngineStart dispatches ONE run onto the tier-3 engine path.

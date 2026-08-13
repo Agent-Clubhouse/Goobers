@@ -6,9 +6,10 @@ import (
 	"io"
 	"time"
 
+	"go.temporal.io/sdk/client"
+
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
-	"go.temporal.io/sdk/client"
 )
 
 // runEngineProject writes an engine run's journal into the instance.
