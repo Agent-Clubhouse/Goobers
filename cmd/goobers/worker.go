@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/journal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
@@ -162,6 +163,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
+	_, scrubber := journal.DefaultScrubber()
 	return workerEngineRuntime{
 		deps: bootstrap.EngineDeps{
 			Auto: gate.NewAutomatedEvaluator(),
@@ -169,6 +171,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 				Manager:    wtMgr,
 				ScratchDir: filepath.Join(workRoot, "scratch"),
 			},
+			Scrubber: scrubber,
 		},
 		rootClaim: rootClaim,
 	}, nil
