@@ -40,7 +40,7 @@ spec:
           # (#632): it serves the named task queue(s) until SIGTERM, then
           # drains. One task queue per Deployment — set the queue to the one
           # this gaggle/workflow dispatches to (default "goobers-engine").
-          args: ["worker", "--task-queue", "goobers-engine"]
+          args: ["worker", "--task-queue", "goobers-engine", "--work-root", "/var/lib/goobers-worker"]
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
@@ -53,6 +53,10 @@ spec:
             # file locks — this mount is a projection target.
             - name: journal
               mountPath: /var/lib/goobers
+            # Worktrees are pod-private: their PID ownership records are not
+            # meaningful across pod process namespaces.
+            - name: workspaces
+              mountPath: /var/lib/goobers-worker
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -71,3 +75,5 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
+        - name: workspaces
+          emptyDir: {}

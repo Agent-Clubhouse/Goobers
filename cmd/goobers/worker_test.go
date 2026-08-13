@@ -54,10 +54,12 @@ func TestRunWorkerHelpComesFromRegistry(t *testing.T) {
 }
 
 func TestWorkerEngineDepsWiresWorkspacesAndAutomated(t *testing.T) {
-	deps, err := workerEngineDeps(filepath.Join(t.TempDir(), "work"))
+	engineRuntime, err := workerEngineDeps(filepath.Join(t.TempDir(), "work"))
 	if err != nil {
 		t.Fatalf("workerEngineDeps: %v", err)
 	}
+	t.Cleanup(func() { _ = engineRuntime.Close() })
+	deps := engineRuntime.deps
 	if deps.Workspaces == nil {
 		t.Error("no workspace provisioner wired — every workspace stage would fail closed")
 	}
@@ -94,10 +96,12 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 	}
 
 	workRoot := filepath.Join(t.TempDir(), strings.Repeat("w", 100))
-	deps, err := workerEngineDepsForPlatform(workRoot, "windows")
+	engineRuntime, err := workerEngineDepsForPlatform(workRoot, "windows", "test-worker")
 	if err != nil {
 		t.Fatalf("workerEngineDepsForPlatform: %v", err)
 	}
+	t.Cleanup(func() { _ = engineRuntime.Close() })
+	deps := engineRuntime.deps
 	workspaces, ok := deps.Workspaces.(*workerhost.WorktreeWorkspaces)
 	if !ok {
 		t.Fatalf("workspaces = %T, want *workerhost.WorktreeWorkspaces", deps.Workspaces)
@@ -127,4 +131,31 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 	if len(runDirs) != 0 {
 		t.Fatalf("checkout directories created before preflight: %v", runDirs)
 	}
+}
+
+func TestClaimWorkerRootRejectsAnotherWorker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "work")
+	first, err := claimWorkerRoot(root, "worker-a")
+	if err != nil {
+		t.Fatalf("claimWorkerRoot: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Release() })
+
+	second, err := claimWorkerRoot(root, "worker-a")
+	if err == nil {
+		_ = second.Release()
+		t.Fatal("same-host worker claimed a live worker's root")
+	}
+	if !strings.Contains(err.Error(), "another live worker") {
+		t.Fatalf("concurrent claim error = %v, want live-worker failure", err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatalf("release first claim: %v", err)
+	}
+	restarted, err := claimWorkerRoot(root, "worker-a")
+	if err != nil {
+		t.Fatalf("replacement worker could not recover root: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Release() })
 }

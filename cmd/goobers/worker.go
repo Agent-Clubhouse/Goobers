@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
@@ -87,18 +89,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "goobers-worker")
 	}
-	deps, err := workerEngineDeps(root)
+	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	defer func() { _ = engineRuntime.Close() }()
 	host, err := workerhost.New(workerhost.Config{
 		HostPort:     *hostPort,
 		Namespace:    *namespace,
 		TaskQueues:   queues,
 		DrainTimeout: *drain,
 		BuildVersion: version.Get().Version,
-		Deps:         deps,
+		Deps:         engineRuntime.deps,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -122,31 +125,92 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+type workerEngineRuntime struct {
+	deps      bootstrap.EngineDeps
+	rootClaim *platformlock.Handle
+}
+
+func (r workerEngineRuntime) Close() error {
+	return r.rootClaim.Release()
+}
+
 // workerEngineDeps wires the execution seams this slice of the worker
 // provides: real workspace provisioning (worktrees + scratch dirs) and the
 // pure automated gate evaluator. Agentic/deterministic executors belong to the
 // runtime wiring slice; the engine's activities fail closed ("not configured")
 // if a stage needs one.
-func workerEngineDeps(workRoot string) (bootstrap.EngineDeps, error) {
-	return workerEngineDepsForPlatform(workRoot, runtime.GOOS)
+func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
+	owner, err := os.Hostname()
+	if err != nil {
+		return workerEngineRuntime{}, fmt.Errorf("resolve worker workspace owner: %w", err)
+	}
+	return workerEngineDepsForPlatform(workRoot, runtime.GOOS, owner)
 }
 
-func workerEngineDepsForPlatform(workRoot, goos string) (bootstrap.EngineDeps, error) {
-	var managerOptions []worktree.ManagerOption
+const workerRootOwnerFile = ".goobers-worker-owner"
+
+func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
+	rootClaim, err := claimWorkerRoot(workRoot, owner)
+	if err != nil {
+		return workerEngineRuntime{}, err
+	}
+	managerOptions := []worktree.ManagerOption{worktree.WithWriterIdentity(owner)}
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
 	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
 	if err != nil {
-		return bootstrap.EngineDeps{}, err
+		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
-	return bootstrap.EngineDeps{
-		Auto: gate.NewAutomatedEvaluator(),
-		Workspaces: &workerhost.WorktreeWorkspaces{
-			Manager:    wtMgr,
-			ScratchDir: filepath.Join(workRoot, "scratch"),
+	return workerEngineRuntime{
+		deps: bootstrap.EngineDeps{
+			Auto: gate.NewAutomatedEvaluator(),
+			Workspaces: &workerhost.WorktreeWorkspaces{
+				Manager:    wtMgr,
+				ScratchDir: filepath.Join(workRoot, "scratch"),
+			},
 		},
+		rootClaim: rootClaim,
 	}, nil
+}
+
+func claimWorkerRoot(root, owner string) (*platformlock.Handle, error) {
+	if owner == "" {
+		return nil, errors.New("worker workspace owner must not be empty")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("create worker workspace root %s: %w", root, err)
+	}
+	path := filepath.Join(root, workerRootOwnerFile)
+	held, err := platformlock.TryAcquire(path)
+	if errors.Is(err, platformlock.ErrHeld) {
+		return nil, fmt.Errorf("worker workspace root %s is claimed by another live worker; each worker requires a private work root", root)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim worker workspace root %s: %w", root, err)
+	}
+	f := held.File()
+	if err := f.Chmod(0o600); err != nil {
+		_ = held.Release()
+		return nil, fmt.Errorf("secure worker workspace owner %s: %w", path, err)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = held.Release()
+		return nil, fmt.Errorf("reset worker workspace owner %s: %w", path, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = held.Release()
+		return nil, fmt.Errorf("seek worker workspace owner %s: %w", path, err)
+	}
+	if _, err := fmt.Fprintln(f, owner); err != nil {
+		_ = held.Release()
+		return nil, fmt.Errorf("write worker workspace owner %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = held.Release()
+		return nil, fmt.Errorf("sync worker workspace owner %s: %w", path, err)
+	}
+	return held, nil
 }
 
 func workerEnvOr(key, fallback string) string {
