@@ -1644,6 +1644,10 @@ type backlogCounter struct {
 	root   string
 	quota  *localscheduler.ProviderQuotaState
 	cursor string
+	// giteaBaseURL is static instance configuration. Cache it after the first
+	// successful resolution while continuing to resolve the credential on every
+	// poll so token rotation remains effective.
+	giteaBaseURL string
 }
 
 // backlogCountProvider is the single read the counter needs. Both backends
@@ -1665,13 +1669,33 @@ func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountPr
 			return nil, func() {}, err
 		}
 		b.reg.Register([]byte(token))
-		provider, err := newGiteaProviderForStage(b.root, b.repo, token)
+		baseURL, err := b.giteaCounterBaseURL()
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return provider, func() {}, nil
+		telemetryOpt := providers.WithGiteaRateLimitObserver(
+			telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+		)
+		return providers.NewGiteaProvider(baseURL, token, telemetryOpt), func() {}, nil
 	}
 	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
+}
+
+func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.giteaBaseURL != "" {
+		return b.giteaBaseURL, nil
+	}
+	repo, err := giteaRepoRefForStage(b.root, b.repo)
+	if err != nil {
+		return "", err
+	}
+	if repo.BaseURL == "" {
+		return "", fmt.Errorf("gitea repo %s/%s has no baseUrl configured", b.repo.Owner, b.repo.Name)
+	}
+	b.giteaBaseURL = repo.BaseURL
+	return b.giteaBaseURL, nil
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {

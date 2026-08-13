@@ -187,6 +187,40 @@ func TestBacklogCounterCountsAgainstGitea(t *testing.T) {
 	}
 }
 
+func TestBacklogCounterGiteaCachesStaticBaseURL(t *testing.T) {
+	t.Setenv("GITEA_BACKLOG_TOK", "gitea-backlog-token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"number":11,"title":"a","state":"open","labels":[{"name":"goobers:ready"}]}]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	root, cfg := giteaCounterInstance(t, srv.URL)
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/widgets", Env: "GITEA_BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{Triggers: []apiv1.Trigger{{
+		Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"goobers:ready": "true"},
+	}}}}
+	counter, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf,
+		apiv1.RepoRef{Owner: "acme", Name: "widgets"}, resolver,
+		&backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := counter.EligibleCount(context.Background()); err != nil {
+		t.Fatalf("first EligibleCount: %v", err)
+	}
+	if err := os.Remove(instance.NewLayout(root).ConfigFile()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := counter.EligibleCount(context.Background()); err != nil {
+		t.Fatalf("second EligibleCount with cached base URL: %v", err)
+	}
+}
+
 // TestBuildOpenPRRefresherRefusesNonGitHubRepo covers the one audited surface
 // that CANNOT be routed: the #353 open-PR cap polls ListOpenPullRequests, which
 // only the GitHub backend implements. Building a GitHub client for a Gitea repo
