@@ -71,6 +71,43 @@ func printValidationWarnings(w io.Writer, warnings []validate.CodedWarning) {
 	}
 }
 
+// appendHarnessPreflightWarnings surfaces harnesses whose live startup
+// preflight probe failed (#2812) as report warnings, without failing the
+// caller — see harnessPreflightFailures' doc comment for why this is
+// deliberately non-fatal. Sorted by harness name for deterministic output.
+func appendHarnessPreflightWarnings(report *validate.Report, failures harnessPreflightFailures) ([]validate.CodedWarning, error) {
+	if len(failures) == 0 {
+		return nil, nil
+	}
+	if report == nil {
+		return nil, errors.New("validation report is nil")
+	}
+	names := make([]string, 0, len(failures))
+	for h := range failures {
+		names = append(names, string(h))
+	}
+	sort.Strings(names)
+	coded := make([]validate.CodedWarning, 0, len(failures))
+	for _, name := range names {
+		h := apiv1.Harness(name)
+		message := fmt.Sprintf("harness %q failed its startup preflight probe and is unavailable until this is resolved: %v", name, failures[h])
+		report.Issues = append(report.Issues, validate.Issue{
+			Code:     validate.WarningHarnessPreflightFailed,
+			Severity: validate.Warning,
+			Kind:     "Harness",
+			Name:     name,
+			Message:  message,
+		})
+		coded = append(coded, validate.CodedWarning{
+			Code:        validate.WarningHarnessPreflightFailed,
+			Severity:    validate.Warning,
+			Scope:       "Harness/" + name,
+			Explanation: message,
+		})
+	}
+	return coded, nil
+}
+
 func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarnessWarning) ([]validate.CodedWarning, error) {
 	if len(warnings) == 0 {
 		return nil, nil

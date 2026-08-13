@@ -593,9 +593,17 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	harnessInfo, harnessFailures, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
 	if err != nil {
 		return nil, err
+	}
+	// #2812: a harness whose live preflight probe failed (bad/expired
+	// credential, exhausted quota) does not fail startup outright — only
+	// warns. Workflows on other, healthy harnesses still run; a run that
+	// actually dispatches through the failed harness fails on its own, same
+	// as always.
+	if _, err := appendHarnessPreflightWarnings(report, harnessFailures); err != nil {
+		return nil, fmt.Errorf("append harness preflight warnings: %w", err)
 	}
 	repoRefs, err := repoRefsByWorkflow(set)
 	if err != nil {

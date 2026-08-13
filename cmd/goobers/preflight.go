@@ -18,10 +18,18 @@ var preflightHarnesses = preflightAgenticHarnesses
 
 type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 
+// harnessPreflightFailures maps a harness to why its live preflight probe
+// could not be confirmed usable (bad/expired credential, exhausted quota,
+// non-responsive CLI). Distinct from the error preflightAgenticHarnesses
+// itself returns, which is reserved for structural problems (an unregistered
+// harness, adapter construction failure) — those indicate a config/code
+// defect and still fail startup outright. A live-probe failure is scoped to
+// that one harness: other, healthy harnesses and the workflows that use them
+// are unaffected.
+type harnessPreflightFailures map[apiv1.Harness]error
+
 // preflightAgenticHarnesses preflights every distinct harness an agentic task
-// or reviewer gate references, failing closed on the first unusable one
-// (missing binary, non-responsive, signed out, or missing a version) with that
-// harness's own actionable message. Deterministic-only workflows reference no
+// or reviewer gate references. Deterministic-only workflows reference no
 // harness and are skipped.
 //
 // Wired into daemon startup (buildSchedulerSetup, shared by `goobers up` and
@@ -33,9 +41,21 @@ type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 // environment as a dispatched run and the operator's harnessCommand override
 // (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
 // or network can't hang startup.
-func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string) (harnessPreflightInfo, error) {
+//
+// A harness's live probe failing (missing binary, non-responsive, signed
+// out, over quota, or a version check that returns no version) is recorded
+// in the returned harnessPreflightFailures map, not treated as fatal here —
+// #2812: one broken harness (e.g. Copilot over quota) must not block startup
+// for every other, healthy harness's workflows. The caller is responsible
+// for surfacing these as warnings and for any run that actually dispatches
+// through the broken harness failing on its own, the same way it always has.
+// Only a structural failure — harnessAdapterFor itself erroring, which means
+// the harness isn't wired up at all rather than merely unreachable right
+// now — still fails this call outright.
+func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string) (harnessPreflightInfo, harnessPreflightFailures, error) {
 	seen := map[apiv1.Harness]bool{}
 	info := make(harnessPreflightInfo)
+	failures := make(harnessPreflightFailures)
 	preflight := func(wfName, stageName, gooberName string) error {
 		spec, ok := goobers[gooberName]
 		if !ok {
@@ -57,10 +77,12 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 		result, err := adapter.Preflight(ctx)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("workflow %q stage %q harness preflight: %w", wfName, stageName, err)
+			failures[h] = fmt.Errorf("workflow %q stage %q harness preflight: %w", wfName, stageName, err)
+			return nil
 		}
 		if result.Version == "" {
-			return fmt.Errorf("workflow %q stage %q harness preflight: %s returned no version", wfName, stageName, adapter.Name())
+			failures[h] = fmt.Errorf("workflow %q stage %q harness preflight: %s returned no version", wfName, stageName, adapter.Name())
+			return nil
 		}
 		info[h] = result
 		return nil
@@ -71,7 +93,7 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 				continue
 			}
 			if err := preflight(wf.Name, task.Name, task.Goober); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		for _, gate := range wf.Spec.Gates {
@@ -79,9 +101,9 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 				continue
 			}
 			if err := preflight(wf.Name, gate.Name, gate.Agentic.Goober); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
-	return info, nil
+	return info, failures, nil
 }

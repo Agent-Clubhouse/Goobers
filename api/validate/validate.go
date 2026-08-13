@@ -121,6 +121,14 @@ const (
 	// declared completion is therefore unreachable dead config (2026-08-08
 	// cold-start audit, swift #3's verified shape).
 	WarningGateCompletionHidesFailure WarningCode = "WF018"
+	// WarningHarnessPreflightFailed identifies a harness whose live startup
+	// preflight probe failed (missing/expired credential, exhausted quota,
+	// non-responsive CLI) — reported so an operator sees it, but non-fatal:
+	// #2812 scopes the failure to that one harness rather than blocking
+	// `goobers up`/`goobers run` for every harness. A run that actually
+	// dispatches through the failed harness still fails on its own, exactly
+	// as it did before this warning existed.
+	WarningHarnessPreflightFailed WarningCode = "HARN001"
 )
 
 const (
