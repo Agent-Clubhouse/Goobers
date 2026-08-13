@@ -312,12 +312,16 @@ jobs:
           Compress-Archive -Path (Join-Path winsign '*') -DestinationPath $Archive
           Remove-Item -Recurse -Force winsign
 
+      # --text forces GNU coreutils' non-asterisk "<hex>  <filename>" marker;
+      # its Windows build defaults to binary-mode "<hex> *<filename>", which
+      # breaks the later `grep --fixed-strings "  <filename>"` checks in
+      # "Verify release artifacts" (shasum never adds this marker at all).
       - name: Recompute SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
           if command -v sha256sum >/dev/null 2>&1; then
-            cksum() { sha256sum "$1"; }
+            cksum() { sha256sum --text "$1"; }
           else
             cksum() { shasum -a 256 "$1"; }
           fi
