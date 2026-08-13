@@ -256,7 +256,7 @@ type runtimeTestWorkspaces struct {
 }
 
 func (w runtimeTestWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
-	return runtimeTestWorkspace{path: w.path}, nil
+	return runtimeTestWorkspace(w), nil
 }
 
 type runtimeTestWorkspace struct {
