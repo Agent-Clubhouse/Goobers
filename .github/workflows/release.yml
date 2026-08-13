@@ -420,12 +420,21 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
+          # One blank answer per remaining prompt up to and including
+          # "Optional Copilot Requests PAT environment variable" (accept its
+          # default/skip it), THEN 'no' declines "Create an empty GitHub
+          # repository...?" and 'yes' confirms "Create this onboarding
+          # mapping?". Miscounting this list silently shifts every answer
+          # after it by one prompt (goobers-v0.1.0's release dry run hit
+          # this same class of bug once already — see docs/guides/releases.md
+          # history / PR #2784).
           printf '%s\n' \
             'new-local' \
             'smoke/quickstart-config' \
             'Agent-Clubhouse/Goobers' \
             '' \
             'implementation' \
+            '' \
             '' \
             '' \
             '' \
