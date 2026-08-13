@@ -2086,11 +2086,15 @@ Decisions this design pass could not make. None blocks the document; each blocks
     (`DispatchEpoch`)? The envelope is a general contract and a future idempotency-needing kind would want
     the same field; naming it narrowly is honest today, and renaming later costs another
     `StageContractVersion` bump.
-13. **Is a shared, version-blind `run.kind` enum listing `external-call` acceptable** given the
-    v_next-only decision? The schema is the union across DSL versions and the interpreter does the
-    gating — the same arrangement `workspace: repo-readonly` already lives under — but confirm that a 1.4
-    workflow getting an "unknown kind" compile error rather than a schema-validation error is the
-    intended author experience.
+13. **Confirm the frozen-interpreter refusal is the right author experience.** The shared kind
+    vocabulary is version-blind by construction (the schema is the union across DSL versions and the
+    interpreter does the gating — the arrangement `workspace: repo-readonly` already lives under), so
+    XC-A1b adds a per-kind minimum DSL version and `v_current` refuses both `run.kind: external-call`
+    and any `callout:invoke@…` grant, each naming `2.0` and `goobers fix --to 2.0` (§2.3, §4.6). That
+    closes the safety question — none of the guards that make a call-out safe exist in `v_current` —
+    but it is the one place this design touches the frozen interpreter, so confirm the freeze-policy
+    reading: it is contract-preserving because it refuses a document no 1.4 author can have written,
+    the field not existing in 1.4. This overlaps q10.
 14. **Is D-C3's scoping right** (refuse duplicate token refs only when at least one capability is
     `callout:invoke@*`), or should the rule be instance-wide with an explicit opt-out? Instance-wide is
     stronger but would newly fail instances legitimately sharing one token across provider capabilities.
