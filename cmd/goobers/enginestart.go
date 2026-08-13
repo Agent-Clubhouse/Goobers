@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"flag"
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"io"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
