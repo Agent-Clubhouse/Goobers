@@ -842,29 +842,38 @@ func writeClaimLockTimeoutOutcome(timeoutErr *claimsLockTimeoutError) error {
 	return errors.Join(errs...)
 }
 
-// withFileLock is the un-instrumented blocking lock used by non-claim cache
-// and merge locks. Claim-ledger and blocked-record access must go through
-// withClaimLock instead so its wait/hold contention is measured (#791).
+// withFileLock is the blocking lock used by non-claim cache and merge locks.
+// Claim-ledger and blocked-record access must go through withClaimLock instead
+// so its wait/hold contention is measured (#791).
+//
+// BOUNDED, where it used to block forever. It called lock.Acquire directly —
+// no timeout, no context — so a stale holder wedged the caller permanently with
+// no diagnostic and nothing to time out. Six call sites shared that behaviour
+// (merge.lock, the sibling-context / merge-policy / api-read caches, and
+// post-merge reconcile), and the bounded discipline already existed 200 lines
+// away for claims: acquireClaimLock retries against a deadline and reports the
+// operation by name.
+//
+// Reusing it means a wedged lock now fails with the operation named instead of
+// hanging, and the fix is one function rather than six.
 func withFileLock(lockPath string, fn func() error) error {
-	return withBlockingFileLock(lockPath, nil, nil, fn)
+	return withBoundedFileLock(lockPath, "file-lock", fn)
 }
 
-// withBlockingFileLock provides the blocking lock discipline shared by the
-// claims lock and unrelated cache/merge locks. The optional callbacks run
-// immediately after acquisition and release.
-func withBlockingFileLock(lockPath string, onAcquired, onReleased func(), fn func() error) error {
-	held, err := lock.Acquire(lockPath)
+// withBoundedFileLock is withFileLock with the operation named for diagnostics.
+func withBoundedFileLock(lockPath, operation string, fn func() error) error {
+	// The instance's configured claims-lock timeout, falling back to the
+	// package default when this lock is not inside an instance root. These are
+	// cache and merge locks, so the same bound is the right order of magnitude
+	// and stays operator-tunable through one setting rather than two.
+	timeout, err := claimsLockTimeoutForPath(lockPath)
+	if err != nil || timeout <= 0 {
+		timeout = instance.DefaultClaimsLockTimeout
+	}
+	held, err := acquireClaimLock(lockPath, operation, timeout, time.Now())
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return fmt.Errorf("acquire %s lock: %w", operation, err)
 	}
-	if onAcquired != nil {
-		onAcquired()
-	}
-	defer func() {
-		_ = held.Release()
-		if onReleased != nil {
-			onReleased()
-		}
-	}()
+	defer func() { _ = held.Release() }()
 	return fn()
 }
