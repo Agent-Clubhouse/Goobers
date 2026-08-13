@@ -1,13 +1,68 @@
 package runner
 
 import (
+	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/worktree"
 )
+
+func TestFinishRecordsTerminalWhenPinnedOutcomeWriteFails(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	runID := "terminal-pinned-outcome-failure"
+	repoURL, err := r.cfg.RepoCloneURL(in.RepoRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.cfg.Worktrees.AcquirePinned(context.Background(), worktree.PinnedOptions{
+		RepoURL: repoURL, RunID: runID, BaseRef: "main", Branch: "goobers/test/" + runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Release() }()
+	r.pinnedRuns[runID] = lease
+
+	roots, err := filepath.Glob(filepath.Join(r.cfg.Worktrees.PinnedRoot(), "*"))
+	if err != nil || len(roots) != 1 {
+		t.Fatalf("pinned roots = %v, %v; want one", roots, err)
+	}
+	if err := os.WriteFile(filepath.Join(roots[0], "failure-streak.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: runID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = jr.Close() }()
+	finalized := false
+	r.cfg.FinalizeTerminal = func(string, journal.RunPhase) error {
+		finalized = true
+		return nil
+	}
+
+	res, finishErr := r.finish(runID, jr, journal.PhaseFailed, "verify", 2)
+	if finishErr == nil || !strings.Contains(finishErr.Error(), "decode pinned failure streak") {
+		t.Fatalf("finish error = %v, want pinned outcome error", finishErr)
+	}
+	if res.Phase != journal.PhaseFailed || !finalized {
+		t.Fatalf("result = %+v, finalized = %v; terminalization must still complete", res, finalized)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseFailed {
+		t.Fatalf("phase = %q, %v; want failed", phase, err)
+	}
+}
 
 // TestFinishRecordsTerminalEvenWhenPrepareTerminalFails is the runner half of
 // the stranded-claim fix.

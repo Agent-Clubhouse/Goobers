@@ -451,7 +451,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
 	// §1a/§8). On GitHub !isADO is always true, so behavior is unchanged.
 	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, prProvider)
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -558,7 +558,7 @@ type mergeBranchCleanup struct {
 	Error      string
 }
 
-func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider mergeProvider) mergeBranchCleanup {
+func cleanupMergedBranch(ctx context.Context, root string, headRepository *providers.RepositoryRef, headBranch string, prProvider mergeProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
 	fail := func(err error) mergeBranchCleanup {
 		out.Status = "failed"
@@ -595,7 +595,7 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return fail(err)
 	}
 	branchProvider, err := mergeStageProviderWithRecorder(
-		providerStageRoot(""), *headRepository, branchToken, sidecarMutationRecorder{kind: "branch"},
+		root, *headRepository, branchToken, sidecarMutationRecorder{kind: "branch"},
 	)
 	if err != nil {
 		return fail(err)

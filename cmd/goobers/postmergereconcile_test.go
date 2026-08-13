@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,40 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestReconcilePostMergeDispatchesOpenPRScanToGitea(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/repos/your-org/your-repo/pulls" {
+			t.Errorf("request path = %q, want Gitea pulls endpoint", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "token test-token" {
+			t.Errorf("Authorization = %q, want Gitea token", got)
+			http.Error(w, "wrong token", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	configureRemediationGitea(t, root, server.URL)
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "test-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesWrite)), "test-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "test-token")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), filepath.Join(t.TempDir(), "reconcile-result.json"))
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if requests == 0 {
+		t.Fatal("Gitea received no open-PR scan")
+	}
+}
 
 func postMergeReconcileEnv(t *testing.T, serverURL string) string {
 	t.Helper()

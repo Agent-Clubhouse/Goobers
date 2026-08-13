@@ -1571,15 +1571,6 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
-	// The refresher polls through providers.GitHubProvider's
-	// ListOpenPullRequests, which no other backend implements. Rather than
-	// silently building a GitHub client for a non-GitHub repo — which polls
-	// api.github.com with that forge's token and fails 401 on every refresh,
-	// leaving the cap reading a stale/zero count that quietly mis-admits work —
-	// refuse at wiring time so the operator sees the unsupported combination.
-	if repoProvider := cfg.Repos[0].Provider; repoProvider != "" && repoProvider != string(providers.ProviderGitHub) {
-		return nil, fmt.Errorf("workflow readiness.maxOpenPRs is only supported on github repositories, not %q", repoProvider)
-	}
 	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
@@ -1602,10 +1593,17 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// list to poll, so its count stays "unknown" (Admit fails open).
 			continue
 		}
-		key := repo.Owner + "/" + repo.Name
+		// ListOpenPullRequests is currently a GitHub-only surface. Validate the
+		// repository selected for this capped gaggle, not cfg.Repos[0]: mixed-
+		// provider instances may bind different workflows to different forges.
+		if repo.Provider != "" && repo.Provider != string(providers.ProviderGitHub) {
+			return nil, fmt.Errorf("workflow readiness.maxOpenPRs for gaggle %q is only supported on github repositories, not %q", gaggle, repo.Provider)
+		}
+		credentialRef := repo.Owner + "/" + repo.Name
+		key := repo.Provider + ":" + credentialRef
 		refresher := byRepo[key]
 		if refresher == nil {
-			lister := &resolvingOpenPRLister{ref: key, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+			lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
 			repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 			// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 			// the daemon's "parked pending a human" signal on a PR — it cannot be
@@ -1781,9 +1779,23 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // what newCounterProvider dispatches on, so hard-coding it here sent a Gitea
 // instance's backlog count to api.github.com.
 func backlogCounterRepoRef(cfg *instance.Config, repoRef apiv1.RepoRef) providers.RepositoryRef {
-	provider := providers.ProviderGitHub
-	if len(cfg.Repos) > 0 && cfg.Repos[0].Provider != "" {
-		provider = providers.ProviderKind(cfg.Repos[0].Provider)
+	provider := providers.ProviderKind(repoRef.Provider)
+	if configured, ok := configuredRepoForProject(cfg, repoRef); ok && configured.Provider != "" {
+		provider = providers.ProviderKind(configured.Provider)
+	} else if cfg != nil {
+		// Older/defaulted gaggle refs may omit Provider. Match their concrete
+		// binding by repository identity instead of inheriting cfg.Repos[0].
+		for _, configured := range cfg.Repos {
+			if configured.Owner == repoRef.Owner && configured.Project == repoRef.Project && configured.Name == repoRef.Name {
+				if configured.Provider != "" {
+					provider = providers.ProviderKind(configured.Provider)
+				}
+				break
+			}
+		}
+	}
+	if provider == "" {
+		provider = providers.ProviderGitHub
 	}
 	return providers.RepositoryRef{Provider: provider, Owner: repoRef.Owner, Name: repoRef.Name}
 }

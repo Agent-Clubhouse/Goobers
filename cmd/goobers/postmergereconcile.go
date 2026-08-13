@@ -136,8 +136,16 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	issuesProvider := newGitHubProvider(issuesToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	provider, err := mergeStageProviderWithRecorder(root, repo, prToken, sidecarMutationRecorder{kind: "pr"})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProviderWithRecorder(root, repo, issuesToken, false, sidecarMutationRecorder{kind: "issue"})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
@@ -161,7 +169,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 func reconcileOpenPullRequestParks(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	base string,
@@ -232,7 +240,8 @@ func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix s
 
 func reconcilePostMerges(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	limit int,
@@ -335,7 +344,8 @@ func reconcilePostMerges(
 
 func reconcilePostMergeActions(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	root string,
 	poll providers.PullRequestPollResult,
 	key string,
@@ -370,7 +380,7 @@ func reconcilePostMergeActions(
 	}
 
 	if err := run("branch cleanup", &entry.Actions.BranchCleanup, func() []error {
-		cleanup := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		cleanup := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		if cleanup.Error != "" {
 			return []error{errors.New(cleanup.Error)}
 		}

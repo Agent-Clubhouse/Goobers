@@ -65,6 +65,14 @@ func TestBacklogCounterRepoRefCarriesConfiguredProvider(t *testing.T) {
 			cfg:  &instance.Config{Repos: []instance.RepoRef{{Owner: "acme", Name: "web"}}},
 			want: providers.ProviderGitHub,
 		},
+		{
+			name: "mixed instance selects the matching non-first repo",
+			cfg: &instance.Config{Repos: []instance.RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web"},
+				{Provider: "gitea", Owner: "acme", Name: "widgets"},
+			}},
+			want: providers.ProviderGitea,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +81,40 @@ func TestBacklogCounterRepoRefCarriesConfiguredProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildOpenPRRefresherValidatesTheSelectedRepoProvider(t *testing.T) {
+	workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
+		Gaggle: "selected", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 3},
+	}}}
+
+	t.Run("non-first gitea binding is refused", func(t *testing.T) {
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN"}},
+			{Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test", Token: instance.TokenRef{Env: "GITEA_TOKEN"}},
+		}}
+		projects := map[string]apiv1.RepoRef{
+			"selected": {Provider: apiv1.ProviderGitea, Owner: "acme", Name: "widgets"},
+		}
+		_, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		if err == nil || !strings.Contains(err.Error(), "gitea") {
+			t.Fatalf("error = %v, want selected gitea binding refused", err)
+		}
+	})
+
+	t.Run("non-first github binding is accepted", func(t *testing.T) {
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test", Token: instance.TokenRef{Env: "GITEA_TOKEN"}},
+			{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "GH_TOKEN"}},
+		}}
+		projects := map[string]apiv1.RepoRef{
+			"selected": {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		}
+		set, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		if err != nil || set == nil {
+			t.Fatalf("set = %v, error = %v; want selected github binding accepted", set, err)
+		}
+	})
 }
 
 // TestBacklogCounterCountsAgainstGitea is the end-to-end proof that a Gitea

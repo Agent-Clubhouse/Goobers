@@ -112,6 +112,16 @@ func TestPhaseFromEventsDistinguishesPendingHumanDecision(t *testing.T) {
 			want: PhaseRunning,
 		},
 		{
+			name: "an interleaved sibling branch does not execute a pending human gate",
+			events: []Event{
+				{Type: EventRunStarted},
+				{Type: EventGatePaused, Gate: "approval", Branch: 1},
+				{Type: EventStageFinished, Stage: "sibling-work", Branch: 2},
+				{Type: EventGateEvaluated, Gate: "approval", Verdict: "reject", Target: TargetAbort, Branch: 1},
+			},
+			want: PhaseRunning,
+		},
+		{
 			name: "an executed gate after the pause is terminal",
 			events: []Event{
 				{Type: EventRunStarted},

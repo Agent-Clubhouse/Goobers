@@ -429,8 +429,15 @@ func reconstructPhase(events []Event) RunPhase {
 // preserves the stranded-claim fix.
 func terminalGateExecuted(events []Event, i int) bool {
 	gateName := events[i].Gate
+	branch := events[i].Branch
 	for j := i - 1; j >= 0; j-- {
 		ev := events[j]
+		// Parallel branches share one append-only journal. Only records from
+		// this evaluation's branch can establish whether its gate was paused or
+		// started; another branch may interleave arbitrary events between them.
+		if ev.Branch != branch {
+			continue
+		}
 		if ev.Gate != gateName {
 			// Reached records belonging to a different gate or stage: no
 			// pending-decision pause for this one.
