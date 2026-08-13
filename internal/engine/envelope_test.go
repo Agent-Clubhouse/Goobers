@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -667,6 +668,48 @@ func TestAutomatedGateGetsNoWorkspace(t *testing.T) {
 	provisioned := workspaces.provisioned()
 	if len(provisioned) != 1 || provisioned[0].Stage != "implement" {
 		t.Errorf("workspace requests = %+v, want only the task's", provisioned)
+	}
+}
+
+func TestAutomatedGateRejectsReservedSubjectOutputs(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a result",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "check",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "check",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort},
+		}},
+	}
+	called := false
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{
+		Det: &capturingDeterministic{result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Error:   &apiv1.ErrorInfo{Code: "actual", Message: "failed"},
+			Outputs: map[string]interface{}{gate.InputKeyStatus: "success"},
+		}},
+		Auto: automatedFunc(func(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+			called = true
+			return gate.OutcomePass, nil
+		}),
+		Workspaces: testWorkspaces(t),
+	})
+	env.ExecuteWorkflow(Run, runInput("reserved-output", spec))
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "reserved automated input keys: status") {
+		t.Fatalf("workflow error = %v, want reserved status output diagnostic", err)
+	}
+	if called {
+		t.Fatal("automated evaluator was called with a reserved subject output")
 	}
 }
 

@@ -522,7 +522,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
-		env.Inputs = gate.AutomatedInputs(subject)
+		env.Inputs, err = gate.AutomatedInputs(subject)
+		if err != nil {
+			return "", nil, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
+		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var outcome string
