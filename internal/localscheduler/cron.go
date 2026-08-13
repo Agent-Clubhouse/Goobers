@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robfig/cron"
+	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
 // Schedule is a parsed cron/interval expression: Next reports the next fire
@@ -29,12 +29,9 @@ func ParseSchedule(expr string) (Schedule, error) {
 	if fields := strings.Fields(expr); len(fields) == 6 {
 		return nil, fmt.Errorf("localscheduler: 6-field cron (with seconds) is not supported in V0 — %q; use standard 5-field cron, a descriptor, or \"@every <duration>\"", expr)
 	}
-	sched, err := cron.ParseStandard(expr)
+	sched, err := scheduleexpr.ParseRuntime(expr)
 	if err != nil {
 		return nil, fmt.Errorf("localscheduler: invalid schedule %q: %w", expr, err)
-	}
-	if sched.Next(time.Unix(0, 0)).IsZero() {
-		return nil, fmt.Errorf("localscheduler: invalid schedule %q: expression can never fire", expr)
 	}
 	return sched, nil
 }

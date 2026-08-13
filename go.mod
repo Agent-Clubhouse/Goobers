@@ -13,7 +13,7 @@ require (
 	github.com/google/cel-go v0.30.0
 	github.com/nexus-rpc/sdk-go v0.6.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
-	github.com/robfig/cron v1.2.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/yuin/goldmark v1.8.5
 	go.opentelemetry.io/collector/pdata v1.63.0
@@ -41,6 +41,8 @@ require (
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/yaml v1.6.0
 )
+
+require github.com/robfig/cron v1.2.0 // indirect
 
 require (
 	cel.dev/expr v0.25.2 // indirect
