@@ -32,6 +32,7 @@ type marker struct {
 	Branch         string `json:"branch,omitempty"`
 	StartRef       string `json:"start_ref,omitempty"`
 	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
+	Writer         string `json:"writer,omitempty"`
 	PID            int    `json:"pid"`
 	// PIDStartedAt is PID's own OS-reported start time at marker-creation
 	// time (#2052), best-effort — empty when proc.StartTime couldn't
