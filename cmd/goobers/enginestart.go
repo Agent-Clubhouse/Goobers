@@ -46,8 +46,9 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: load instance config: %v\n", err)
 		return 2
 	}
-	set, _, err := loadConfigDirectory(l.ConfigDir())
+	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
+		printValidationIssues(stderr, report)
 		pf(stderr, "error: load config directory: %v\n", err)
 		return 2
 	}
