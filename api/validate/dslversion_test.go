@@ -177,7 +177,7 @@ func TestLiveMatrixDeprecates14AndKeeps20Silent(t *testing.T) {
 	for _, want := range []string{
 		`dslVersion "1.4" is deprecated`,
 		`replacement "2.0"`,
-		"unsupported after v0.2.0",
+		"unsupported after v0.5.0",
 		"goobers fix --to 2.0",
 	} {
 		if !strings.Contains(warnings[0].Explanation, want) {

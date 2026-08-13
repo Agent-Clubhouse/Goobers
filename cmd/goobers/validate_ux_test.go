@@ -635,7 +635,7 @@ func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
 		"DVL001",
 		`spec has no dslVersion pin; defaulting to "1.4"`,
 		"DVL020",
-		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (deprecated, replacement 2.0, unsupported after v0.2.0)",
+		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (deprecated, replacement 2.0, unsupported after v0.5.0)",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)

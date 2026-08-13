@@ -229,7 +229,7 @@ become unsupported.
 
 **Current state:** DSL `2.0` is the supported authoring version; every
 shipped, reference, and example workflow pins it. DSL `1.4` is `deprecated`
-(replacement `2.0`, unsupported after `v0.2.0`) — a workflow pinned to `1.4`
+(replacement `2.0`, unsupported after `v0.5.0`) — a workflow pinned to `1.4`
 still loads and runs, but `goobers validate` emits a `DVL020` warning. Migrate
 a pinned workflow mechanically with `goobers fix --to 2.0`; the only semantic
 delta the migrator pins is `automated.pollIntervalSeconds: 10` on gates fed by
