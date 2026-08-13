@@ -990,75 +990,10 @@ func lastJSONValue(payload []byte) ([]byte, bool) {
 	return last, found
 }
 
-// nextJSONValue finds the first balanced, valid JSON object or array in payload
-// and reports it along with its start and end offsets (end is exclusive).
-// String literals and escapes are honoured so braces or brackets inside strings
-// do not corrupt the depth count. When the first structural candidate does not
-// parse, the scan advances past that opener and keeps looking, so one
-// unparseable fragment does not hide a valid value later in the payload.
-func nextJSONValue(payload []byte) (value []byte, start, end int, ok bool) {
-	searchFrom := 0
-	for {
-		rel := bytes.IndexAny(payload[searchFrom:], "{[")
-		if rel < 0 {
-			return nil, 0, 0, false
-		}
-		start = searchFrom + rel
-		opener := payload[start]
-		closer := byte('}')
-		if opener == '[' {
-			closer = ']'
-		}
-		depth := 0
-		inString := false
-		escaped := false
-		for i := start; i < len(payload); i++ {
-			ch := payload[i]
-			if inString {
-				switch {
-				case escaped:
-					escaped = false
-				case ch == '\\':
-					escaped = true
-				case ch == '"':
-					inString = false
-				}
-				continue
-			}
-			switch ch {
-			case '"':
-				inString = true
-			case opener:
-				depth++
-			case closer:
-				depth--
-				if depth == 0 {
-					candidate := payload[start : i+1]
-					if json.Valid(candidate) {
-						return candidate, start, i + 1, true
-					}
-					// Balanced but not valid JSON: skip this opener and
-					// resume the search after it.
-					searchFrom = start + 1
-					goto nextCandidate
-				}
-			}
-		}
-		// Unbalanced to end of payload: no further candidate can start here.
-		return nil, 0, 0, false
-	nextCandidate:
-	}
-}
-
-// firstJSONValue scans for the first balanced JSON object or array in payload,
-// honoring string literals and escapes so braces or brackets inside strings do
-// not corrupt the depth count. It returns (value, true) only when the extracted
-// span parses as valid JSON.
-func firstJSONValue(payload []byte) ([]byte, bool) {
-	start := bytes.IndexAny(payload, "{[")
-	if start < 0 {
-		return nil, false
-	}
+// scanBalancedJSONSpan returns the exclusive end offset of the balanced JSON
+// object or array beginning at start. String literals and escapes are honoured
+// so structural characters inside strings do not affect nesting depth.
+func scanBalancedJSONSpan(payload []byte, start int) (end int, ok bool) {
 	opener := payload[start]
 	closer := byte('}')
 	if opener == '[' {
@@ -1088,15 +1023,55 @@ func firstJSONValue(payload []byte) ([]byte, bool) {
 		case closer:
 			depth--
 			if depth == 0 {
-				candidate := payload[start : i+1]
-				if json.Valid(candidate) {
-					return candidate, true
-				}
-				return nil, false
+				return i + 1, true
 			}
 		}
 	}
-	return nil, false
+	return 0, false
+}
+
+// nextJSONValue finds the first balanced, valid JSON object or array in payload
+// and reports it along with its start and end offsets (end is exclusive).
+// When a balanced structural candidate is invalid, scanning resumes after its
+// opener so it cannot hide a later valid value.
+func nextJSONValue(payload []byte) (value []byte, start, end int, ok bool) {
+	searchFrom := 0
+	for {
+		rel := bytes.IndexAny(payload[searchFrom:], "{[")
+		if rel < 0 {
+			return nil, 0, 0, false
+		}
+		start = searchFrom + rel
+		end, balanced := scanBalancedJSONSpan(payload, start)
+		if !balanced {
+			return nil, 0, 0, false
+		}
+		candidate := payload[start:end]
+		if json.Valid(candidate) {
+			return candidate, start, end, true
+		}
+		searchFrom = start + 1
+	}
+}
+
+// firstJSONValue scans for the first balanced JSON object or array in payload,
+// honoring string literals and escapes so braces or brackets inside strings do
+// not corrupt the depth count. It returns (value, true) only when the extracted
+// span parses as valid JSON.
+func firstJSONValue(payload []byte) ([]byte, bool) {
+	start := bytes.IndexAny(payload, "{[")
+	if start < 0 {
+		return nil, false
+	}
+	end, ok := scanBalancedJSONSpan(payload, start)
+	if !ok {
+		return nil, false
+	}
+	candidate := payload[start:end]
+	if !json.Valid(candidate) {
+		return nil, false
+	}
+	return candidate, true
 }
 
 func validateCopilotCompletion(mode Mode, payload []byte) error {
