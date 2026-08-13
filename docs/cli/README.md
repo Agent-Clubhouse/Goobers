@@ -861,7 +861,7 @@ $ goobers connect acme/web --json ./my-instance
 serve and open the local operations portal
 
 ~~~text
-Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]
+Usage: goobers dashboard [--port=<port|auto>] [--listen=<host>] [--no-open] [--dev-assets=<dir>] [path]
 
 Serve the embedded portal against the live daemon when `goobers up` is
 running, or against a standalone read-only service otherwise. The default

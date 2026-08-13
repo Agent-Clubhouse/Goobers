@@ -210,6 +210,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"dashboard": {
+		{name: "listen", takesArg: true, desc: "Interface to bind; loopback by default"},
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},

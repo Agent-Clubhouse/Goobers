@@ -2187,6 +2187,11 @@ func validateCollectorPort(port string) error {
 	return nil
 }
 
+// IsLoopbackHost reports whether host names the loopback interface. Exported so
+// the dashboard can gate its own bind with the same predicate the API listener
+// uses, rather than growing a second, subtly different notion of "local".
+func IsLoopbackHost(host string) bool { return isLoopbackHost(host) }
+
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true

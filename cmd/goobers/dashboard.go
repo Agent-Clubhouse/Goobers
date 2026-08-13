@@ -93,7 +93,7 @@ func runDashboard(args []string, stdout, stderr io.Writer) int {
 	return runDashboardContext(ctx, args, stdout, stderr)
 }
 
-const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]\n\n" +
+const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<host>] [--no-open] [--dev-assets=<dir>] [path]\n\n" +
 	"Serve the embedded portal against the live daemon when `goobers up` is\n" +
 	"running, or against a standalone read-only service otherwise. The default\n" +
 	"port is %d; --port=auto increments from there until a port is available.\n" +
@@ -106,6 +106,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	portValue := flags.String("port", strconv.Itoa(defaultDashboardPort), "dashboard port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the dashboard URL without opening a browser")
 	devAssets := flags.String("dev-assets", "", "serve a portal build from this directory instead of embedded assets")
+	listenHost := flags.String("listen", "", "interface to bind; loopback by default. A non-loopback host requires api.tls and api.auth.oidc (SEC-043)")
 	// dashboardHelp carries a %d for the default port, so it renders here (and
 	// in the registry) through defaultDashboardPort rather than via the plain
 	// helpUsage path — keeping the documented port coupled to the constant.
@@ -157,7 +158,12 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
 		return 1
 	}
-	listener, err := listenDashboard(port)
+	bindHost, err := dashboardHost(*listenHost, config)
+	if err != nil {
+		pf(stderr, "error: %v\n", errors.Join(err, api.close()))
+		return 2
+	}
+	listener, err := listenDashboardOn(bindHost, port)
 	if err != nil {
 		pf(stderr, "error: %v\n", errors.Join(err, api.close()))
 		return 1
@@ -235,9 +241,43 @@ func parseDashboardPort(value string) (dashboardPort, error) {
 	return dashboardPort{number: number}, nil
 }
 
+// dashboardHost resolves the interface the portal binds, and refuses to expose
+// it off-loopback unless the instance is authenticated.
+//
+// The portal had no bind flag at all: the host was hard-coded to 127.0.0.1, so
+// an operator who configured api.auth.oidc and api.tls correctly could serve the
+// API off-box and still had no way to serve the PORTAL anywhere but a
+// port-forward (#2884). deploy/reference documents "ONE HTTPS inbound door for
+// API + portal", a topology the binary could not produce.
+//
+// The gate mirrors validateAPIConfig exactly (SEC-043, #640) rather than
+// inventing a second posture: loopback is always allowed, anything else needs
+// both TLS and an authenticator configured, and there is no insecure override.
+// Deliberately strict, because the thing behind this listener is not read-only
+// — internal/httpapi has mutating handlers.
+func dashboardHost(host string, cfg *instance.Config) (string, error) {
+	if host == "" {
+		return "127.0.0.1", nil
+	}
+	if instance.IsLoopbackHost(host) {
+		return host, nil
+	}
+	if cfg == nil || cfg.API.TLS == nil || cfg.API.Auth == nil {
+		return "", fmt.Errorf("--listen host %q is not loopback: serving the portal off-loopback requires "+
+			"both api.tls (certFile + keyFile) and api.auth.oidc in instance.yaml so the instance is encrypted "+
+			"and authenticated; there is no insecure override — bind a loopback address and port-forward instead "+
+			"(SEC-043, #640, #2884)", host)
+	}
+	return host, nil
+}
+
 func listenDashboard(port dashboardPort) (net.Listener, error) {
+	return listenDashboardOn("127.0.0.1", port)
+}
+
+func listenDashboardOn(host string, port dashboardPort) (net.Listener, error) {
 	for number := port.number; number <= 65535; number++ {
-		address := net.JoinHostPort("127.0.0.1", strconv.Itoa(number))
+		address := net.JoinHostPort(host, strconv.Itoa(number))
 		listener, err := net.Listen("tcp", address)
 		if err == nil {
 			return listener, nil
