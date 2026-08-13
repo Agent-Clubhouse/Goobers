@@ -429,8 +429,17 @@ func reconstructPhase(events []Event) RunPhase {
 // preserves the stranded-claim fix.
 func terminalGateExecuted(events []Event, i int) bool {
 	gateName := events[i].Gate
+	branch := events[i].Branch
 	for j := i - 1; j >= 0; j-- {
 		ev := events[j]
+		if ev.Branch != branch {
+			// An event from a different parallel branch (internal/runner/
+			// resume.go's parallel-reconstruction scans filter the same way):
+			// irrelevant to this gate's own pause/started/evaluated sequence
+			// regardless of its Gate/Type, so it must never terminate this
+			// scan or stand in as this gate's "different gate" signal.
+			continue
+		}
 		if ev.Gate != gateName {
 			// Reached records belonging to a different gate or stage: no
 			// pending-decision pause for this one.

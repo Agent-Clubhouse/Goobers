@@ -156,6 +156,24 @@ func TestPhaseFromEventsDistinguishesPendingHumanDecision(t *testing.T) {
 			want: PhaseAborted,
 		},
 		{
+			// A DIFFERENT branch's differently-named gate.evaluated lands
+			// between this branch's own gate.paused and its later (human-
+			// written, no gate.started) gate.evaluated. Before the fix, that
+			// unrelated-branch event's differing Gate name terminated the
+			// backward scan with a "different gate" return-true — an
+			// erroneous EXECUTED verdict — before the scan ever reached this
+			// branch's own gate.paused, which would have correctly read it as
+			// still pending.
+			name: "an unrelated event on a DIFFERENT branch does not make this one executed",
+			events: []Event{
+				{Type: EventRunStarted},
+				{Type: EventGatePaused, Gate: "approval", Branch: 1},
+				{Type: EventGateEvaluated, Gate: "other-branch-gate", Branch: 2, Target: "next"},
+				{Type: EventGateEvaluated, Gate: "approval", Branch: 1, Verdict: "reject", Target: TargetAbort},
+			},
+			want: PhaseRunning,
+		},
+		{
 			// Once the runner resumes and executes the decision, the run really
 			// does end.
 			name: "resumed and executed human rejection terminalizes",
