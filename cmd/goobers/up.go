@@ -359,6 +359,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Definitions, setup.Watermarks, setup.InstanceLog)
+	if err != nil {
+		pf(stderr, "error: start engine projection reconciler: %v\n", err)
+		return 1
+	}
+	defer stopEngineProjection()
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)

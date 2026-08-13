@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // ErrUnprojectable marks a history whose journal projection failed closed
@@ -73,6 +76,59 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 		return "", err
 	}
 
+	finalDir := filepath.Join(runsDir, proj.Identity.RunID)
+	replacePartial := false
+	if journal.Recorded(finalDir) {
+		complete, err := projectedJournalComplete(finalDir)
+		if err != nil {
+			return "", fmt.Errorf("engine: inspect existing projected journal for run %q: %w", proj.Identity.RunID, err)
+		}
+		if complete {
+			return finalDir, nil
+		}
+		replacePartial = true
+	}
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		return "", fmt.Errorf("engine: create projected runs directory: %w", err)
+	}
+	stagingRoot := journal.RunCreationStagingDir(runsDir)
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		return "", fmt.Errorf("engine: create projection staging root: %w", err)
+	}
+	stagingDir, err := os.MkdirTemp(stagingRoot, proj.Identity.RunID+"-projection-")
+	if err != nil {
+		return "", fmt.Errorf("engine: create projection staging directory: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(stagingDir)
+		_ = os.RemoveAll(journal.RunCreationStagingDir(stagingDir))
+	}()
+
+	projectedDir, err := writeProjectedRun(stagingDir, proj)
+	if err != nil {
+		return "", err
+	}
+	if replacePartial {
+		if err := os.RemoveAll(finalDir); err != nil {
+			return "", fmt.Errorf("engine: remove partial projection for run %q: %w", proj.Identity.RunID, err)
+		}
+	}
+	if err := os.Rename(projectedDir, finalDir); err != nil {
+		if journal.Recorded(finalDir) {
+			complete, inspectErr := projectedJournalComplete(finalDir)
+			if inspectErr == nil && complete {
+				return finalDir, nil
+			}
+		}
+		return "", fmt.Errorf("engine: publish projected journal for run %q: %w", proj.Identity.RunID, err)
+	}
+	if err := durability.SyncDir(runsDir); err != nil {
+		return "", fmt.Errorf("engine: sync projected runs directory: %w", err)
+	}
+	return finalDir, nil
+}
+
+func writeProjectedRun(runsDir string, proj JournalProjection) (string, error) {
 	inputs := map[string][]byte{
 		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
 	}
@@ -142,7 +198,34 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 			}
 		}
 	}
+	if err := jr.Close(); err != nil {
+		return "", fmt.Errorf("engine: close projected journal for run %q: %w", id.RunID, err)
+	}
 	return jr.Dir(), nil
+}
+
+func projectedJournalComplete(dir string) (bool, error) {
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return false, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, err
+	}
+	if len(events) == 0 {
+		return false, nil
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished {
+		return false, nil
+	}
+	switch journal.RunPhase(last.Status) {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // validateProjection is the fail-closed gate: every op must be a shape the

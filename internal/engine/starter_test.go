@@ -85,6 +85,9 @@ func TestTemporalStarterStartsRun(t *testing.T) {
 	if fs.gotOpts.TaskQueue != "goobers" {
 		t.Errorf("task queue = %q, want goobers", fs.gotOpts.TaskQueue)
 	}
+	if got := fs.gotOpts.Memo[RunGaggleMemoKey]; got != "web" {
+		t.Errorf("gaggle memo = %q, want web", got)
+	}
 }
 
 func TestTemporalStarterAlreadyRunningIsNoOp(t *testing.T) {

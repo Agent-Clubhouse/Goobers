@@ -160,6 +160,10 @@ Advanced operator commands:
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [--branch <name>] [--target <tag>] [--health-ticks <n>] [--health-timeout <duration>] [path]
                                 stage and request a supervised binary update
+  goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] <workflow> [path]
+                                dispatch one run onto the tier-3 engine (experimental)
+  goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
+                                write a completed engine run's journal into the instance (experimental)
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>]
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
@@ -786,6 +790,22 @@ apply-verdict. Advisory-mode PRs are never elected. Requires selectedNumber
 and advisoryMode (inputsFrom gather-sibling-context).
 Exit codes: 0 = decided (elected or not — both normal), 1 = business
 error, 2 = usage/IO error.
+
+### engine-project
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's standard journal into the instance.
+
+Exit codes: 0 = projected or already present, 1 = query/write failure,
+2 = usage/config error.
+
+### engine-start
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental). The run id is
+derived from gaggle, workflow, and --dedupe-key.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
 ### escalations
 Usage: goobers escalations [--json] [path]

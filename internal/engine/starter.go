@@ -12,6 +12,10 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
+// RunGaggleMemoKey identifies engine runs in Temporal visibility without
+// requiring a namespace-specific search attribute registration.
+const RunGaggleMemoKey = "goobers.run.gaggle.v1"
+
 // StartResult reports the outcome of starting a run.
 type StartResult struct {
 	// RunID is the run/workflow id the run executes under.
@@ -78,6 +82,9 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 		TaskQueue:                                s.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
+		Memo: map[string]interface{}{
+			RunGaggleMemoKey: in.Gaggle,
+		},
 	}
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)
 	if err != nil {
