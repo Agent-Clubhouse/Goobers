@@ -2314,9 +2314,14 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
-	if err := r.recordPinnedOutcome(runID, phase, jr); err != nil {
-		return Result{}, err
-	}
+	// recordPinnedOutcome, like PrepareTerminal below, is BEST EFFORT and must
+	// never prevent the run from being recorded terminal. Returning early on
+	// its I/O error used to skip prepareTerminal AND the run.finished append
+	// entirely, which leaves the run reconstructing as PhaseRunning forever —
+	// the exact bug class the PrepareTerminal handling below already guards
+	// against, one step earlier. The error is still surfaced to the caller
+	// AFTER terminalization so nothing is silently swallowed.
+	pinnedErr := r.recordPinnedOutcome(runID, phase, jr)
 	// PrepareTerminal is BEST EFFORT and must never prevent the run from being
 	// recorded terminal. It performs external forge cleanup (branch delete,
 	// goobers:run-aborted labeling), so it fails on any forge outage or
@@ -2331,14 +2336,14 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 	// swallowed.
 	prepareErr := r.prepareTerminal(runID, phase, jr)
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
-		return Result{}, errors.Join(prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
+		return Result{}, errors.Join(pinnedErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
 	r.notifyTerminal(runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
-		return res, errors.Join(prepareErr, err)
+		return res, errors.Join(pinnedErr, prepareErr, err)
 	}
-	return res, prepareErr
+	return res, errors.Join(pinnedErr, prepareErr)
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
