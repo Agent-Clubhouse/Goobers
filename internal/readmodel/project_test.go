@@ -478,6 +478,53 @@ func TestUpsertIsIdempotentAndNeverRewinds(t *testing.T) {
 	}
 }
 
+func TestUpsertCorrectsTerminalProjectionAtSameJournalPosition(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	identity := testIdentity()
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventRunStarted, nil),
+		ev(2, 2*time.Second, journal.EventGateStarted, func(e *journal.Event) {
+			e.Gate = "terminal-gate"
+		}),
+		ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Target = "terminal-gate", journal.TargetAbort
+		}),
+	}
+	corrected := ProjectRun(identity, Projection{}, events)
+	stale := corrected
+	stale.Run.Phase = journal.PhaseRunning
+	stale.Run.Terminal = false
+	stale.Run.FinishedAt = nil
+	if err := store.UpsertRun(ctx, stale); err != nil {
+		t.Fatalf("upsert stale interpretation: %v", err)
+	}
+	if err := store.UpsertRun(ctx, corrected); err != nil {
+		t.Fatalf("upsert corrected interpretation: %v", err)
+	}
+
+	got, ok, err := store.GetRun(ctx, identity.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get corrected run: ok=%v err=%v", ok, err)
+	}
+	if got.Phase != journal.PhaseAborted || !got.Terminal || got.FinishedAt == nil {
+		t.Fatalf("corrected projection = phase %q terminal %v finished %v, want aborted terminal",
+			got.Phase, got.Terminal, got.FinishedAt)
+	}
+	changes, err := store.Changes(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("changes: %v", err)
+	}
+	if len(changes) != 2 || changes[1].Kind != ChangeRunFinished {
+		t.Fatalf("changes = %+v, want created then finished", changes)
+	}
+}
+
 // TestCountByPhaseIsAnIndexedAggregate pins §5.4's replacement for the directory
 // walk: "stored, that becomes one indexed aggregate over phase = 'running'".
 func TestCountByPhaseIsAnIndexedAggregate(t *testing.T) {
