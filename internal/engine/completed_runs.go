@@ -85,7 +85,11 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			errs = append(errs, errors.New("engine: completed workflow has no workflow id"))
 			continue
 		}
-		if journal.Recorded(filepath.Join(runsDir, runID)) {
+		dir := filepath.Join(runsDir, runID)
+		if journal.Recorded(dir) {
+			if err := observeProjectedRun(ctx, r.observe, runID, dir); err != nil {
+				errs = append(errs, err)
+			}
 			continue
 		}
 		if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe); err != nil {
@@ -100,8 +104,9 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 // ProjectCompletedRunForGaggle is the manual projection path with the same
 // gaggle validation and read-model notification used by the reconciler.
 func ProjectCompletedRunForGaggle(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver) (string, error) {
-	if journal.Recorded(filepath.Join(runsDir, workflowID)) {
-		return filepath.Join(runsDir, workflowID), nil
+	dir := filepath.Join(runsDir, workflowID)
+	if journal.Recorded(dir) {
+		return dir, observeProjectedRun(ctx, observe, workflowID, dir)
 	}
 	return projectCompletedRun(ctx, q, workflowID, gaggle, runsDir, observe)
 }
@@ -121,21 +126,29 @@ func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, g
 	if err != nil {
 		return "", err
 	}
-	if observe != nil {
-		rd, err := journal.OpenRead(dir)
-		if err != nil {
-			return "", err
-		}
-		events, err := rd.Events()
-		if err != nil {
-			return "", err
-		}
-		if len(events) == 0 {
-			return "", fmt.Errorf("%w: projected journal has no events", ErrUnprojectable)
-		}
-		if err := observe(ctx, workflowID, events[len(events)-1].Seq); err != nil {
-			return "", fmt.Errorf("engine: notify projected run %q: %w", workflowID, err)
-		}
+	if err := observeProjectedRun(ctx, observe, workflowID, dir); err != nil {
+		return "", err
 	}
 	return dir, nil
+}
+
+func observeProjectedRun(ctx context.Context, observe ProjectionObserver, workflowID, dir string) error {
+	if observe == nil {
+		return nil
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("%w: projected journal has no events", ErrUnprojectable)
+	}
+	if err := observe(ctx, workflowID, events[len(events)-1].Seq); err != nil {
+		return fmt.Errorf("engine: notify projected run %q: %w", workflowID, err)
+	}
+	return nil
 }

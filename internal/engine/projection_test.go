@@ -88,7 +88,7 @@ func projectionInput(name string, spec apiv1.WorkflowSpec) RunInput {
 	return in
 }
 
-func TestCompletedRunReconcilerProjectsAndObservesOnce(t *testing.T) {
+func TestCompletedRunReconcilerRetriesObservationForRecordedJournal(t *testing.T) {
 	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
 	proj := executeForProjection(t, projectionInput("project-automatic", spec), &Activities{
 		Det:        &scriptedStages{},
@@ -106,19 +106,26 @@ func TestCompletedRunReconcilerProjectsAndObservesOnce(t *testing.T) {
 		}},
 	}
 	runsDir := filepath.Join(t.TempDir(), "runs")
-	var observedSeq uint64
+	var (
+		observeCalls int
+		observedSeq  uint64
+	)
 	reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, func(_ context.Context, runID string, seq uint64) error {
+		observeCalls++
 		if runID != proj.Identity.RunID {
 			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
 		}
 		observedSeq = seq
+		if observeCalls == 1 {
+			return errors.New("intake unavailable")
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count, err := reconciler.Reconcile(context.Background()); err != nil || count != 1 {
-		t.Fatalf("first Reconcile = (%d, %v), want (1, nil)", count, err)
+	if count, err := reconciler.Reconcile(context.Background()); err == nil || count != 0 {
+		t.Fatalf("first Reconcile = (%d, %v), want (0, observer error)", count, err)
 	}
 	if observedSeq == 0 || !journal.Recorded(filepath.Join(runsDir, proj.Identity.RunID)) {
 		t.Fatalf("projection was not published and observed: seq=%d", observedSeq)
@@ -128,6 +135,43 @@ func TestCompletedRunReconcilerProjectsAndObservesOnce(t *testing.T) {
 	}
 	if fake.queries != 2 {
 		t.Fatalf("projection queries = %d, want 2 (identity validation plus projection)", fake.queries)
+	}
+	if observeCalls != 2 {
+		t.Fatalf("observer calls = %d, want 2", observeCalls)
+	}
+}
+
+func TestProjectCompletedRunForGaggleObservesRecordedJournal(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("project-manual-existing", spec), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	runsDir := filepath.Join(t.TempDir(), "runs")
+	dir, err := ProjectRun(runsDir, proj)
+	if err != nil {
+		t.Fatalf("ProjectRun: %v", err)
+	}
+	fake := &completedRunFake{projection: proj}
+	var observedSeq uint64
+	gotDir, err := ProjectCompletedRunForGaggle(context.Background(), fake, proj.Identity.RunID, "web", runsDir, func(_ context.Context, runID string, seq uint64) error {
+		if runID != proj.Identity.RunID {
+			t.Errorf("observed run id = %q, want %q", runID, proj.Identity.RunID)
+		}
+		observedSeq = seq
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ProjectCompletedRunForGaggle: %v", err)
+	}
+	if gotDir != dir {
+		t.Fatalf("projected dir = %q, want %q", gotDir, dir)
+	}
+	if observedSeq == 0 {
+		t.Fatal("recorded journal was not observed")
+	}
+	if fake.queries != 0 {
+		t.Fatalf("projection queries = %d, want 0 for recorded journal", fake.queries)
 	}
 }
 
