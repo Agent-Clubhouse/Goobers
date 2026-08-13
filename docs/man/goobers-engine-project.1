@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ENGINE PROJECT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers engine-project \- write a completed engine run's journal into the instance (experimental)
+.SH SYNOPSIS
+\fBgoobers engine-project\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's journal into the instance (experimental):
+query the run's journal projection from Temporal, replay it, and write the
+standard runs/<id>/ layout. The projection is a function of workflow
+history, so this is read-only against Temporal and may be run at any time
+after the run closes.
+
+Fails closed if the run directory already exists: a journal is authored
+once, and overwriting one would destroy the record it exists to be.
+
+Exit codes: 0 = projected, 1 = query/write failure, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers engine-project --gaggle my-gaggle 1a2b3c4d
+goobers engine-project --gaggle my-gaggle 1a2b3c4d /instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

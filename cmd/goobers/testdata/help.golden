@@ -160,7 +160,11 @@ Advanced operator commands:
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [--branch <name>] [--target <tag>] [--health-ticks <n>] [--health-timeout <duration>] [path]
                                 stage and request a supervised binary update
-  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>]
+  goobers engine-start [--gaggle <g>] [--task-queue <q>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--dedupe-key <k>] <workflow> [path]
+                                dispatch one run onto the tier-3 engine (experimental)
+  goobers engine-project --gaggle <g> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
+                                write a completed engine run's journal into the instance (experimental)
+  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>]
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
@@ -786,6 +790,35 @@ apply-verdict. Advisory-mode PRs are never elected. Requires selectedNumber
 and advisoryMode (inputsFrom gather-sibling-context).
 Exit codes: 0 = decided (elected or not — both normal), 1 = business
 error, 2 = usage/IO error.
+
+### engine-project
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's journal into the instance (experimental):
+query the run's journal projection from Temporal, replay it, and write the
+standard runs/<id>/ layout. The projection is a function of workflow
+history, so this is read-only against Temporal and may be run at any time
+after the run closes.
+
+Fails closed if the run directory already exists: a journal is authored
+once, and overwriting one would destroy the record it exists to be.
+
+Exit codes: 0 = projected, 1 = query/write failure, 2 = usage/config error.
+
+### engine-start
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental): pin the workflow
+definition, connect to Temporal, and start the engine workflow on a task
+queue a `goobers worker` is serving. The run id is derived from
+gaggle+workflow+--dedupe-key, so starting the same unit of work twice is
+rejected as already running rather than duplicated.
+
+This queue is the workflow's. A stage that declares a platform dispatches to
+"<queue>-<goos>" instead, so one run can span operating systems as long as a
+worker is serving each derived queue.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
 ### escalations
 Usage: goobers escalations [--json] [path]
