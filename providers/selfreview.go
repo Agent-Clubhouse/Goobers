@@ -8,21 +8,38 @@ import (
 	"strings"
 )
 
-// selfReviewMarker is the stable fragment a forge returns in its categorical
-// refusal to let an account review its own pull request.
+// githubSelfReviewMarker is the stable fragment GitHub returns in its
+// categorical refusal to let an account review its own pull request —
+// present in both the APPROVE message ("Can not approve your own pull
+// request") and the REQUEST_CHANGES message ("Can not request changes on
+// your own pull request"). Matching the shared tail rather than either full
+// message covers both review events with one predicate.
+const githubSelfReviewMarker = "your own pull request"
+
+// giteaSelfReviewMarker is Gitea's shorter categorical refusal ("approve your
+// own pull is not allowed") — the same refusal as githubSelfReviewMarker, one
+// word shorter, so it needs its own exact fragment rather than reusing
+// GitHub's.
 //
-// GitHub emits it in both the APPROVE message ("Can not approve your own pull
-// request") and the REQUEST_CHANGES message ("Can not request changes on your
-// own pull request"). Gitea emits "approve your own pull is not allowed" — the
-// same refusal, one word shorter. Matching "your own pull" rather than "your
-// own pull request" covers every review event on both forges with one
-// predicate; the longer form silently failed to match Gitea, turning a soft
-// skip into a hard stage failure that blocked the whole publish path.
-const selfReviewMarker = "your own pull"
+// A single combined marker ("your own pull") once covered both forges with
+// one predicate, but that fragment is also a substring of unrelated 422
+// bodies that merely mention "your own pull" in passing (e.g. a differently
+// worded validation or branch-protection message), which would misclassify
+// them as a self-review refusal. Keeping two explicit, provider-specific
+// markers stays precise on both forges without that false-positive surface.
+const giteaSelfReviewMarker = "your own pull is not allowed"
+
+// isSelfReviewBody reports whether a 422 response body is either forge's
+// categorical self-review refusal.
+func isSelfReviewBody(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, githubSelfReviewMarker) || strings.Contains(lower, giteaSelfReviewMarker)
+}
 
 // IsSelfReviewError reports whether err is a forge's categorical refusal to let
 // an account submit a native Review on its own pull request — an HTTP 422 whose
-// body carries the "…your own pull…" message. Neither GitHub nor Gitea makes
+// body carries GitHub's or Gitea's self-review message (see
+// githubSelfReviewMarker/giteaSelfReviewMarker). Neither GitHub nor Gitea makes
 // this configurable, and it never succeeds on retry.
 //
 // It fires whenever the reviewing identity is also the PR author. On an
@@ -40,13 +57,13 @@ func IsSelfReviewError(err error) bool {
 	var responseErr *providerResponseError
 	if errors.As(err, &responseErr) {
 		return responseErr.statusCode == http.StatusUnprocessableEntity &&
-			strings.Contains(strings.ToLower(responseErr.body), selfReviewMarker)
+			isSelfReviewBody(responseErr.body)
 	}
 	// Subprocess-crossed or already-stringified error (the typed value did not
 	// survive): match the same 422 + marker in the flattened message, mirroring
 	// IsTransientError's string-fallback discipline.
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "status 422") && strings.Contains(msg, selfReviewMarker)
+	return strings.Contains(msg, "status 422") && isSelfReviewBody(msg)
 }
 
 // IsFineGrainedPATReviewNotFoundError reports whether err has the opaque shape

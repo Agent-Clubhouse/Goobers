@@ -59,6 +59,35 @@ func TestIsSelfReviewError(t *testing.T) {
 			err:  errors.New("status 500: server error your own pull request"),
 			want: false,
 		},
+		{
+			name: "typed 422 gitea self-review refusal",
+			err: &providerResponseError{
+				statusCode: http.StatusUnprocessableEntity,
+				body:       `{"message":"approve your own pull is not allowed"}`,
+			},
+			want: true,
+		},
+		{
+			// Crafted to share the "your own pull" prefix the old, over-broad
+			// single marker matched, without completing either forge's actual
+			// exact refusal phrase ("your own pull request" / "your own pull
+			// is not allowed") — the near-miss the narrower two-marker check
+			// must reject.
+			name: "typed 422 near-miss unrelated validation error",
+			err: &providerResponseError{
+				statusCode: http.StatusUnprocessableEntity,
+				body:       `{"message":"branch protection forbids merging your own pull without a second approver"}`,
+			},
+			want: false,
+		},
+		{
+			name: "typed 422 branch-protection error is not a self-review error",
+			err: &providerResponseError{
+				statusCode: http.StatusUnprocessableEntity,
+				body:       `{"message":"At least 1 approving review is required by reviewers with write access"}`,
+			},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
