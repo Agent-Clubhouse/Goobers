@@ -265,3 +265,17 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+
+# Fleet-wide content-addressed artifact store (#2866). The Dir implementation is
+# constructed by `goobers worker --blob-store`, which lands with the worker
+# runtime-seams slice; MaterializeContext already consumes the Store interface.
+# These exemptions become stale the moment that slice merges, and test/deadcode
+# rejects stale entries — so removing them is part of that change, by design.
+github.com/goobers/goobers/internal/blobstore.NewDir # Directory-backed Store constructor, called by `goobers worker --blob-store` in the runtime-seams slice (#2866), exercised by blobstore tests.
+github.com/goobers/goobers/internal/workerhost.MaterializeContext # Fetch half of the distributed data plane (#2866): fills the node-local cache before a stage resolves its ContextPointers. Called from the worker stage seams, which land with the runtime-seams slice; exercised by materialize tests.
+github.com/goobers/goobers/internal/blobstore.Dir.Describe # Store identity for diagnostics, reachable once a worker constructs a Dir (#2866), exercised by blobstore tests.
+github.com/goobers/goobers/internal/blobstore.Dir.Get # Content-addressed read, reachable once a worker constructs a Dir (#2866), exercised by blobstore tests.
+github.com/goobers/goobers/internal/blobstore.Dir.Has # Presence probe, reachable once a worker constructs a Dir (#2866), exercised by blobstore tests.
+github.com/goobers/goobers/internal/blobstore.Dir.Put # Idempotent rename-published write, reachable once a worker constructs a Dir (#2866), exercised by blobstore tests including a 16-writer concurrency case.
+github.com/goobers/goobers/internal/blobstore.pathForDigest # Digest validation boundary that keeps a remote-origin digest from becoming a path, exercised by the malformed-digest tests.
+github.com/goobers/goobers/internal/blobstore.Dir.pathFor # Digest-to-path mapping reachable through the Store methods above, exercised by blobstore tests.
