@@ -233,15 +233,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
-		// worktree at this exact key can only be a previous attempt of the
-		// SAME (run, stage) that never got torn down — a crash mid-attempt
-		// (this key survives until the daemon resumes the same stage), or a
-		// same-process retry whose own Remove call failed (RemoveOptions
-		// errors were being silently discarded). Both cases are always
-		// sequential with whatever is calling Create now — a genuinely
-		// concurrent second attempt of the same (run, stage) never happens
-		// — so it is always safe to clear it and start fresh rather than
-		// refusing forever until an operator does disk surgery.
+		// worktree at this exact key is a previous attempt of the SAME
+		// (run, stage) that never got torn down. This is safe only within
+		// one manager ownership domain; worker startup enforces a pod-private
+		// root before distributed attempts can reach this path.
 		if err := m.forceClear(ctx, key, path, opts.RunID); err != nil {
 			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
 		}
@@ -297,6 +292,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		OwnerRunID:   opts.OwnerRunID,
 		Directory:    directory,
 		Branch:       opts.Branch,
+		Writer:       m.writerIdentity,
 		PID:          pid,
 		PIDStartedAt: startedAt,
 		CreatedAt:    time.Now(),

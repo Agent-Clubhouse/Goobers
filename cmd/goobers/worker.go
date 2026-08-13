@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -128,11 +129,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 // runtime wiring slice; the engine's activities fail closed ("not configured")
 // if a stage needs one.
 func workerEngineDeps(workRoot string) (bootstrap.EngineDeps, error) {
-	return workerEngineDepsForPlatform(workRoot, runtime.GOOS)
+	owner, err := os.Hostname()
+	if err != nil {
+		return bootstrap.EngineDeps{}, fmt.Errorf("resolve worker workspace owner: %w", err)
+	}
+	return workerEngineDepsForPlatform(workRoot, runtime.GOOS, owner)
 }
 
-func workerEngineDepsForPlatform(workRoot, goos string) (bootstrap.EngineDeps, error) {
-	var managerOptions []worktree.ManagerOption
+const workerRootOwnerFile = ".goobers-worker-owner"
+
+func workerEngineDepsForPlatform(workRoot, goos, owner string) (bootstrap.EngineDeps, error) {
+	if err := claimWorkerRoot(workRoot, owner); err != nil {
+		return bootstrap.EngineDeps{}, err
+	}
+	managerOptions := []worktree.ManagerOption{worktree.WithWriterIdentity(owner)}
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
@@ -147,6 +157,43 @@ func workerEngineDepsForPlatform(workRoot, goos string) (bootstrap.EngineDeps, e
 			ScratchDir: filepath.Join(workRoot, "scratch"),
 		},
 	}, nil
+}
+
+func claimWorkerRoot(root, owner string) error {
+	if owner == "" {
+		return errors.New("worker workspace owner must not be empty")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return fmt.Errorf("create worker workspace root %s: %w", root, err)
+	}
+	path := filepath.Join(root, workerRootOwnerFile)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		if _, err := fmt.Fprintln(f, owner); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("write worker workspace owner %s: %w", path, err)
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("sync worker workspace owner %s: %w", path, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close worker workspace owner %s: %w", path, err)
+		}
+		return nil
+	}
+	if !os.IsExist(err) {
+		return fmt.Errorf("claim worker workspace root %s: %w", root, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read worker workspace owner %s: %w", path, err)
+	}
+	existing := strings.TrimSpace(string(data))
+	if existing != owner {
+		return fmt.Errorf("worker workspace root %s is owned by %q, not %q; each worker pod requires a private work root", root, existing, owner)
+	}
+	return nil
 }
 
 func workerEnvOr(key, fallback string) string {

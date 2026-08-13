@@ -94,7 +94,7 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 	}
 
 	workRoot := filepath.Join(t.TempDir(), strings.Repeat("w", 100))
-	deps, err := workerEngineDepsForPlatform(workRoot, "windows")
+	deps, err := workerEngineDepsForPlatform(workRoot, "windows", "test-worker")
 	if err != nil {
 		t.Fatalf("workerEngineDepsForPlatform: %v", err)
 	}
@@ -126,5 +126,19 @@ func TestWorkerEngineDepsWindowsPreflightsPathLength(t *testing.T) {
 	}
 	if len(runDirs) != 0 {
 		t.Fatalf("checkout directories created before preflight: %v", runDirs)
+	}
+}
+
+func TestClaimWorkerRootRejectsAnotherWorker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "work")
+	if err := claimWorkerRoot(root, "worker-a"); err != nil {
+		t.Fatalf("claimWorkerRoot: %v", err)
+	}
+	if err := claimWorkerRoot(root, "worker-a"); err != nil {
+		t.Fatalf("same owner could not reclaim its root: %v", err)
+	}
+	err := claimWorkerRoot(root, "worker-b")
+	if err == nil || !strings.Contains(err.Error(), "requires a private work root") {
+		t.Fatalf("different owner claim error = %v, want private-root failure", err)
 	}
 }
