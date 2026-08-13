@@ -184,6 +184,72 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	}
 }
 
+func TestProjectionTreatsExecutedTerminalGateAsTerminalWithoutRunFinished(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		want   journal.RunPhase
+	}{
+		{name: "abort", target: journal.TargetAbort, want: journal.PhaseAborted},
+		{name: "escalate", target: journal.TargetEscalate, want: journal.PhaseEscalated},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []journal.Event{
+				ev(1, time.Second, journal.EventRunStarted, nil),
+				ev(2, 2*time.Second, journal.EventGateStarted, func(e *journal.Event) {
+					e.Gate = "terminal-gate"
+				}),
+				ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+					e.Gate, e.Target = "terminal-gate", tc.target
+				}),
+				// Terminal cleanup may append diagnostics after the gate while
+				// still failing before run.finished.
+				ev(4, 4*time.Second, journal.EventRefTouched, nil),
+			}
+
+			whole := ProjectRun(testIdentity(), Projection{}, events)
+			if whole.Run.Phase != tc.want || !whole.Run.Terminal {
+				t.Fatalf("projection = phase %q terminal %v, want %q terminal",
+					whole.Run.Phase, whole.Run.Terminal, tc.want)
+			}
+			wantFinished := projectBase.Add(3 * time.Second)
+			if whole.Run.FinishedAt == nil || !whole.Run.FinishedAt.Equal(wantFinished) {
+				t.Fatalf("finished_at = %v, want terminal gate time %v", whole.Run.FinishedAt, wantFinished)
+			}
+
+			// The fix must preserve rebuild/incremental equivalence even when
+			// the split falls between gate.started and gate.evaluated.
+			for split := 0; split <= len(events); split++ {
+				first := ProjectRun(testIdentity(), Projection{}, events[:split])
+				incremental := ProjectRun(testIdentity(), first, events[split:])
+				if !reflect.DeepEqual(incremental.Run, whole.Run) {
+					t.Fatalf("split at %d differs:\n incremental = %+v\n whole = %+v",
+						split, incremental.Run, whole.Run)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectionKeepsPendingHumanTerminalDecisionRunning(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventRunStarted, nil),
+		ev(2, 2*time.Second, journal.EventGatePaused, func(e *journal.Event) {
+			e.Gate = "approval"
+		}),
+		ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Target, e.Actor = "approval", journal.TargetAbort, "maintainer"
+		}),
+	}
+
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if projection.Run.Phase != journal.PhaseRunning || projection.Run.Terminal || projection.Run.FinishedAt != nil {
+		t.Fatalf("pending human decision projected as phase %q terminal %v finished %v, want running",
+			projection.Run.Phase, projection.Run.Terminal, projection.Run.FinishedAt)
+	}
+}
+
 func TestStageOutcomeMatchesAnyAttempt(t *testing.T) {
 	store := openTestStore(t)
 	projection := ProjectRun(testIdentity(), Projection{}, completedRunEvents())

@@ -344,6 +344,24 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if row.CurrentStage == event.Gate {
 				row.CurrentStage = ""
 			}
+			// An executed gate that selects a reserved terminal target is itself
+			// a durable terminal fact. Older runners could fail during external
+			// terminal cleanup before appending run.finished; requiring that
+			// trailing event leaves the derived read model reporting the run as
+			// active forever even though the journal has already ended it.
+			//
+			// Human decisions are different: EvaluateHuman records the decision
+			// onto a paused run before the runner resumes and executes it. Actor
+			// is normative on that event, so a non-empty actor keeps the run live
+			// until its later resume/finish records arrive.
+			if event.Actor == "" {
+				if phase, terminal := terminalGatePhase(event.Target); terminal {
+					row.Phase = phase
+					finished := event.Time
+					row.FinishedAt = &finished
+					row.CurrentStage = ""
+				}
+			}
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
 			row.Phase = journal.PhaseRunning
@@ -507,5 +525,16 @@ func terminalPhase(phase journal.RunPhase) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func terminalGatePhase(target string) (journal.RunPhase, bool) {
+	switch target {
+	case journal.TargetAbort:
+		return journal.PhaseAborted, true
+	case journal.TargetEscalate:
+		return journal.PhaseEscalated, true
+	default:
+		return "", false
 	}
 }
