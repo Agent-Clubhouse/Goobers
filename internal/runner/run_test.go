@@ -940,6 +940,32 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func TestRunnerAutomatedGateRejectsReservedSubjectOutputs(t *testing.T) {
+	const runID = "run-reserved-output"
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":implement": {
+			status:    apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{Code: "actual", Message: "failed"},
+			outputs:   map[string]interface{}{gate.InputKeyStatus: "success"},
+		},
+	}, auto)
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved automated input keys: status") {
+		t.Fatalf("Start error = %v, want reserved status output diagnostic", err)
+	}
+	if auto.env.TaskID != "" {
+		t.Fatal("automated evaluator was called with a reserved subject output")
+	}
+}
+
 func escalationParkingMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
 	spec := apiv1.WorkflowSpec{

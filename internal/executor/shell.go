@@ -608,12 +608,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
 					mergeResultFileOutputs(&result, data)
-					if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-						message, _ := result.Outputs[OutputErrorMessage].(string)
+					code, message, retryable := consumeErrorOutputs(result.Outputs)
+					if code != "" {
 						if message == "" {
 							message = fmt.Sprintf("command exited %d", exitCode)
 						}
-						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
+						if retryable {
 							return apiv1.ResultEnvelope{}, providerStageInfrastructureFailure(command[1], code, message, result.Outputs)
 						}
 
@@ -709,6 +709,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
+	code, message, retryable := consumeErrorOutputs(result.Outputs)
 	if exitCode == 0 {
 		// OutputNoWork (issue #233) only ever downgrades a would-be Success
 		// to NoWork — it's read from result.Outputs, which is only ever
@@ -729,12 +730,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// A typed error reported through the declared result file (see
 	// OutputErrorCode) beats the generic nonzero_exit: the command knew
 	// exactly why it failed and said so structurally.
-	if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-		message, _ := result.Outputs[OutputErrorMessage].(string)
+	if code != "" {
 		if message == "" {
 			message = fmt.Sprintf("command exited %d", exitCode)
 		}
-		retryable, _ := result.Outputs[OutputErrorRetryable].(bool)
 		result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: retryable}
 		result.Summary = message
 		return result, nil
@@ -749,6 +748,16 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
+}
+
+func consumeErrorOutputs(outputs map[string]interface{}) (code, message string, retryable bool) {
+	code, _ = outputs[OutputErrorCode].(string)
+	message, _ = outputs[OutputErrorMessage].(string)
+	retryable, _ = outputs[OutputErrorRetryable].(bool)
+	delete(outputs, OutputErrorCode)
+	delete(outputs, OutputErrorMessage)
+	delete(outputs, OutputErrorRetryable)
+	return code, message, retryable
 }
 
 func providerStageInfrastructureFailure(stage, code, message string, outputs map[string]interface{}) error {

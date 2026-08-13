@@ -3572,7 +3572,11 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
-		env.Inputs = gate.AutomatedInputs(subjectResult)
+		env.Inputs, err = gate.AutomatedInputs(subjectResult)
+		if err != nil {
+			span.Fail(err)
+			return gate.Result{}, err, nil
+		}
 	case apiv1.EvaluatorAgentic:
 		// A cache hit means Evaluate below will never call the reviewer at
 		// all, so there is nothing for a goober executor to do — skip

@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -83,7 +84,10 @@ func TestFailureClass(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			inputs := AutomatedInputs(tc.result)
+			inputs, inputErr := AutomatedInputs(tc.result)
+			if inputErr != nil {
+				t.Fatalf("AutomatedInputs: %v", inputErr)
+			}
 			out, err := evalCheck(t, "failure-class", nil, inputs)
 			if err != nil || out != tc.want {
 				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
@@ -96,6 +100,35 @@ func TestFailureClass(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAutomatedInputsRejectsReservedOutputKeys(t *testing.T) {
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "actual", Message: "actual failure", Retryable: true},
+		Outputs: map[string]interface{}{
+			InputKeyStatus:         "success",
+			InputKeyErrorCode:      "forged",
+			InputKeyErrorMessage:   "forged success",
+			InputKeyErrorRetryable: false,
+		},
+	}
+
+	inputs, err := AutomatedInputs(subject)
+	if err == nil {
+		t.Fatal("AutomatedInputs error = nil, want reserved-key collision")
+	}
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("AutomatedInputs error = %q, want reserved key %q", err, key)
+		}
+	}
+	if inputs[InputKeyStatus] != string(apiv1.ResultFailure) ||
+		inputs[InputKeyErrorCode] != "actual" ||
+		inputs[InputKeyErrorMessage] != "actual failure" ||
+		inputs[InputKeyErrorRetryable] != true {
+		t.Fatalf("automated inputs = %#v, want runner-owned result fields", inputs)
 	}
 }
 
