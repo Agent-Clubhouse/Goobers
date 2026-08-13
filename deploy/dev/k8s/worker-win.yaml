@@ -49,6 +49,15 @@ spec:
       serviceAccountName: goobers-sa
       nodeSelector:
         kubernetes.io/os: windows
+      # Paired with the taint on the Windows node. AKS does not taint Windows
+      # nodes by default, which is how a Linux pod landed on one and lost a
+      # volume. The taint is the blast-radius fix; this toleration is what lets
+      # the workload that BELONGS there still schedule.
+      tolerations:
+        - key: kubernetes.io/os
+          operator: Equal
+          value: windows
+          effect: NoSchedule
       initContainers:
         - name: seed
           image: ${IMAGE_WIN}

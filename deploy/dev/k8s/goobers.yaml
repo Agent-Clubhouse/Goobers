@@ -106,6 +106,21 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: goobers-sa
+      # PIN THE OS. Not optional the moment a Windows node pool exists, and the
+      # failure if you omit it is genuinely misleading: the Linux pod is
+      # scheduled onto the Windows node, the WINDOWS containerd snapshotter
+      # tries to unpack a Linux image, and kubelet reports
+      #   failed to extract layer ...: Failed to safefile.OpenRelative failed in
+      #   Win32: ... io.containerd.snapshotter.v1.windows ... (0x7b)
+      #   ... failed to authorize: ... 401 Unauthorized
+      # The 401 is downstream noise from an anonymous-token retry, and it is the
+      # part people read — so you go audit ACR credentials that were never
+      # broken. AKS does not taint Windows nodes by default, so nothing else
+      # stops this. Observed live: this deployment ran all night on a
+      # single-node cluster and broke on the first pod recreate after a Windows
+      # node joined.
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -161,7 +176,7 @@ spec:
           # default for the spike: when a stage fails in-cluster there is no
           # terminal to re-run it in, and the harness error alone reports only
           # "exit status 1".
-          args: ["up", "--diagnostics", "/instance"]
+          args: ["up", "--diagnostics", "--disable-read-model-reads", "/instance"]
           env:
             # Preflight reads this from ambient env; see SecretProviderClass.
             - name: COPILOT_GITHUB_TOKEN
@@ -186,7 +201,22 @@ spec:
         - name: dashboard
           image: ${IMAGE}
           imagePullPolicy: Always
-          args: ["dashboard", "--port=8081", "--no-open", "/instance"]
+          # WAIT FOR THE DAEMON BEFORE STARTING, or the portal is permanently
+          # degraded. `goobers dashboard` gives the daemon API
+          # dashboardAttachTimeout = 30s to answer and then falls back to
+          # STANDALONE mode for the life of the process — there is no retry. In
+          # a pod both containers start together, the daemon spends that budget
+          # on config validation and preflight, and the dashboard loses the
+          # race. The standalone reader still serves the journals (so the API
+          # returns real data and curl looks fine), but the UI reads
+          # <meta name="goobers-dashboard-mode" content="standalone"> and
+          # renders "The daemon is unavailable." Confusing precisely because
+          # every endpoint returns 200.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              until (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; do sleep 2; done
+              exec goobers dashboard --port=8081 --no-open /instance
           env:
             - name: HOME
               value: /home/nonroot
@@ -239,6 +269,29 @@ spec:
           resources:
             requests: {cpu: 200m, memory: 512Mi}
             limits: {memory: 4Gi}
+        # ---- DEMO SHIM: public portal. Delete with the cluster. ----
+        # `goobers dashboard` binds 127.0.0.1 with no override
+        # (cmd/goobers/dashboard.go:240), so the portal cannot be served off-box
+        # at all — the #640/#644 auth+TLS work opened the API and left the
+        # portal with no path. This sidecar shares the pod netns to reach the
+        # loopback listener, and adds basic auth so the LoadBalancer below is
+        # not an open control plane (internal/httpapi has 9 mutating handlers).
+        # The real fix is a bind flag on `goobers dashboard` gated the same way
+        # validateAPIConfig gates the API: no non-loopback bind without auth.
+        - name: portal-proxy
+          image: nginx:1.27-alpine
+          ports:
+            - {containerPort: 8088, name: portal}
+          volumeMounts:
+            - {name: portal-nginx, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf}
+            - {name: portal-auth, mountPath: /etc/nginx/auth, readOnly: true}
+            # The pod runs non-root (uid 65532); nginx needs these writable or
+            # it exits with mkdir "/var/cache/nginx/client_temp" (13: Permission denied).
+            - {name: portal-cache, mountPath: /var/cache/nginx}
+            - {name: portal-run, mountPath: /var/run}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
         # OTel collector SIDECAR, not a Deployment: see instance.yaml's telemetry
         # block. Shares this pod's network namespace, so 127.0.0.1:4317
         # satisfies the loopback-only rule for insecure OTLP honestly.
@@ -289,3 +342,26 @@ spec:
         # only volume in the whole spike that two nodes touch at once.
         - name: blobs
           persistentVolumeClaim: {claimName: goobers-blobs}
+        - name: portal-nginx
+          configMap: {name: portal-nginx}
+        - name: portal-auth
+          secret: {secretName: portal-basicauth}
+        - name: portal-cache
+          emptyDir: {}
+        - name: portal-run
+          emptyDir: {}
+---
+# The public-portal LoadBalancer Service that briefly lived here has been
+# REMOVED ON PURPOSE. It exposed the portal on an internet IP with no
+# authentication, which is fine for a supervised ten-minute demo and is not
+# something a public repo should carry a copy-pasteable recipe for.
+#
+# What was learned is recorded instead:
+#   - the portal cannot be served off-loopback at all (#2884) — the sidecar
+#     below reaches it through the pod's shared netns, the same mechanism the
+#     otel collector uses;
+#   - basic auth in front of it BREAKS the portal: its own EventSource/fetch
+#     calls never carry the credential, so every API call is refused and the UI
+#     reports "Daemon unavailable" while `curl -u` sees 200 on every endpoint;
+#   - so the control that actually works here is network-level
+#     (loadBalancerSourceRanges), not a credential.

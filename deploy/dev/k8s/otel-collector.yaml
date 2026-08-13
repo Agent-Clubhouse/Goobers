@@ -54,7 +54,10 @@ data:
       # thing to any backend, not just Application Insights.
       resource:
         attributes:
-          - {key: goobers.cluster,     value: aks-goobernetes,   action: upsert}
+          # Operator-supplied. Deliberately a neutral placeholder rather than a real
+          # cluster name: this repo is public and carries reference collateral, not
+          # anyone's actual deployment. Set it to your own cluster when you adopt this.
+          - {key: goobers.cluster,     value: spike-cluster,     action: upsert}
           - {key: goobers.instance,    value: goobernetes-spike, action: upsert}
           - {key: k8s.node.name,       value: "${env:K8S_NODE_NAME}",  action: upsert}
           - {key: k8s.pod.name,        value: "${env:K8S_POD_NAME}",   action: upsert}

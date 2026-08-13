@@ -15,6 +15,15 @@ metadata:
   namespace: temporal
 spec:
   instances: 1
+  # PIN THE OS, and pin it here rather than trusting the default scheduler.
+  # CNPG takes node placement under spec.affinity, not the pod template. An
+  # unpinned Postgres in a mixed-OS cluster is one reschedule away from Windows
+  # initializing its Azure Disk and writing an MBR over the ext4 superblock —
+  # observed on this cluster, on the goobers instance volume, 2026-08-12.
+  # Temporal's entire history lives here.
+  affinity:
+    nodeSelector:
+      kubernetes.io/os: linux
   # PIN THE MAJOR VERSION. CNPG installs the newest PostgreSQL major when
   # imageName is unset — PG 18 on current CNPG — which is outside Temporal's
   # documented tested set. Silent at install time, interesting later.
