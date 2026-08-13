@@ -227,6 +227,13 @@ jobs:
     needs: sign-macos
     runs-on: windows-latest
     timeout-minutes: 30
+    # Entra federated identity credentials match the OIDC subject claim
+    # exactly — there is no wildcard support, so a per-tag subject
+    # (refs/tags/*) never matches a real tag push. Scoping to a GitHub
+    # Environment gives a stable, exact subject regardless of which tag
+    # triggered the run. Matches the sibling Clubhouse product's working
+    # setup (repo:Agent-Clubhouse/Clubhouse:environment:release).
+    environment: release
     steps:
       - name: Download signed artifacts
         uses: actions/download-artifact@v8
