@@ -119,7 +119,7 @@ _goobers_completion()
             flags+=(--gaggle --temporal-hostport --temporal-namespace)
             ;;
         worker)
-            flags+=(--task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root --instance)
+            flags+=(--task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         dashboard)
             flags+=(--port --no-open --dev-assets)

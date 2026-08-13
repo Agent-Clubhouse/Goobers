@@ -128,7 +128,6 @@ complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-hostport
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespace -r -d 'Temporal namespace'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l drain-timeout -r -d 'Graceful-drain timeout'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l work-root -r -d 'Stage workspace root'
-complete -c goobers -n '__fish_seen_subcommand_from worker' -l instance -r -d 'Instance root; wires the real executors'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
