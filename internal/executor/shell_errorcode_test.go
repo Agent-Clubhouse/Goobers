@@ -43,6 +43,7 @@ func TestShellExecutor_TypedErrorCodeLiftedFromResultFile(t *testing.T) {
 	if result.Outputs["rateLimitReset"] != "2026-07-16T16:59:10Z" {
 		t.Fatalf("outputs[rateLimitReset] = %v, want the reset timestamp", result.Outputs["rateLimitReset"])
 	}
+	assertNoErrorOutputs(t, result.Outputs)
 }
 
 func TestProviderStageInfrastructureFailureCarriesRateLimitReset(t *testing.T) {
@@ -82,6 +83,16 @@ func TestShellExecutor_ErrorCodeIgnoredOnZeroExit(t *testing.T) {
 	}
 	if result.Error != nil {
 		t.Fatalf("error = %+v, want nil", result.Error)
+	}
+	assertNoErrorOutputs(t, result.Outputs)
+}
+
+func assertNoErrorOutputs(t *testing.T, outputs map[string]interface{}) {
+	t.Helper()
+	for _, key := range []string{OutputErrorCode, OutputErrorMessage, OutputErrorRetryable} {
+		if _, ok := outputs[key]; ok {
+			t.Errorf("reserved output %q was not consumed", key)
+		}
 	}
 }
 
