@@ -65,6 +65,17 @@ func TestBacklogCounterRepoRefCarriesConfiguredProvider(t *testing.T) {
 			cfg:  &instance.Config{Repos: []instance.RepoRef{{Owner: "acme", Name: "web"}}},
 			want: providers.ProviderGitHub,
 		},
+		{
+			// Before the fix this returned cfg.Repos[0]'s provider (github) —
+			// the FIRST repo's kind, not the one the counted repoRef actually
+			// names — misrouting this gaggle's backlog count to api.github.com.
+			name: "multi-repo instance matches the target repo, not repos[0]",
+			cfg: &instance.Config{Repos: []instance.RepoRef{
+				{Provider: "github", Owner: "acme", Name: "web"},
+				{Provider: "gitea", Owner: "acme", Name: "widgets"},
+			}},
+			want: providers.ProviderGitea,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,6 +156,57 @@ func TestBacklogCounterCountsAgainstGitea(t *testing.T) {
 	}
 }
 
+// TestBacklogCounterGiteaCachesConfigLoad proves the Gitea arm caches its
+// resolved forge BaseURL across ticks instead of re-reading and
+// re-validating instance.yaml (giteaRepoRefForStage -> instance.LoadConfig)
+// on every EligibleCount call, the way EligibleCount is actually driven (once
+// per scheduler poll interval, for a long-lived daemon). Deleting the config
+// file after the first successful call and asserting the second call STILL
+// succeeds is the only way to observe this from the outside: without the
+// cache, the second call re-reads the now-missing file and fails.
+func TestBacklogCounterGiteaCachesConfigLoad(t *testing.T) {
+	t.Setenv("GITEA_BACKLOG_TOK", "gitea-backlog-token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"number":11,"title":"a","state":"open","labels":[{"name":"goobers:ready"}]}]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	root, cfg := giteaCounterInstance(t, srv.URL)
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/widgets", Env: "GITEA_BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Triggers: []apiv1.Trigger{{
+			Type:     apiv1.TriggerBacklogItem,
+			Selector: map[string]string{"goobers:ready": "true"},
+		}},
+	}}
+	c, err := buildBacklogCounter(cfg, apiv1.Gaggle{}, wf,
+		apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		resolver, &backlogTestRegistrar{}, filepath.Join(root, "scheduler"), nil, root)
+	if err != nil {
+		t.Fatalf("buildBacklogCounter: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected a counter")
+	}
+
+	if _, err := c.EligibleCount(context.Background()); err != nil {
+		t.Fatalf("first EligibleCount: %v", err)
+	}
+
+	if err := os.Remove(instance.NewLayout(root).ConfigFile()); err != nil {
+		t.Fatalf("remove instance config: %v", err)
+	}
+
+	if _, err := c.EligibleCount(context.Background()); err != nil {
+		t.Fatalf("second EligibleCount after the config file was removed: %v — the Gitea arm re-read instance.yaml instead of using its cached BaseURL", err)
+	}
+}
+
 // TestBuildOpenPRRefresherRefusesNonGitHubRepo covers the one audited surface
 // that CANNOT be routed: the #353 open-PR cap polls ListOpenPullRequests, which
 // only the GitHub backend implements. Building a GitHub client for a Gitea repo
@@ -179,6 +241,52 @@ func TestBuildOpenPRRefresherRefusesNonGitHubRepo(t *testing.T) {
 		}
 		if refresher != nil {
 			t.Fatal("expected no refresher when no workflow opts into the cap")
+		}
+	})
+}
+
+// TestBuildOpenPRRefresherChecksPerGaggleRepoProvider is the multi-repo analog
+// of TestBuildOpenPRRefresherRefusesNonGitHubRepo: both the refusal and the
+// hardcoded-GitHub repoRef bug were keyed off cfg.Repos[0] instead of each
+// capped gaggle's own resolved repo (via configuredRepoForProject).
+func TestBuildOpenPRRefresherChecksPerGaggleRepoProvider(t *testing.T) {
+	t.Run("repos[0] gitea does not mask a github gaggle", func(t *testing.T) {
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test"},
+			{Provider: "github", Owner: "acme", Name: "web"},
+		}}
+		workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
+			Gaggle: "main", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1},
+		}}}
+		projects := map[string]apiv1.RepoRef{
+			"main": {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		}
+		set, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		if err != nil {
+			t.Fatalf("a github-projected gaggle must wire cleanly even when cfg.Repos[0] is gitea: %v", err)
+		}
+		if set == nil {
+			t.Fatal("expected a non-nil refresher set")
+		}
+	})
+
+	t.Run("repos[0] github does not mask a gitea gaggle", func(t *testing.T) {
+		cfg := &instance.Config{Repos: []instance.RepoRef{
+			{Provider: "github", Owner: "acme", Name: "web"},
+			{Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "https://gitea.example.test"},
+		}}
+		workflows := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{
+			Gaggle: "site", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1},
+		}}}
+		projects := map[string]apiv1.RepoRef{
+			"site": {Provider: apiv1.ProviderGitea, Owner: "acme", Name: "widgets"},
+		}
+		_, err := buildOpenPRRefresher(cfg, workflows, projects, &backlogTestRegistrar{}, nil, t.TempDir(), nil)
+		if err == nil {
+			t.Fatal("expected the gitea-projected gaggle to be refused, not silently pointed at github")
+		}
+		if !strings.Contains(err.Error(), "maxOpenPRs") || !strings.Contains(err.Error(), "gitea") {
+			t.Fatalf("error = %v, want an explicit unsupported-provider message naming gitea", err)
 		}
 	})
 }

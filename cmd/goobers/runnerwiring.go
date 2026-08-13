@@ -1571,15 +1571,6 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 	if len(cappedGaggles) == 0 {
 		return nil, nil
 	}
-	// The refresher polls through providers.GitHubProvider's
-	// ListOpenPullRequests, which no other backend implements. Rather than
-	// silently building a GitHub client for a non-GitHub repo — which polls
-	// api.github.com with that forge's token and fails 401 on every refresh,
-	// leaving the cap reading a stale/zero count that quietly mis-admits work —
-	// refuse at wiring time so the operator sees the unsupported combination.
-	if repoProvider := cfg.Repos[0].Provider; repoProvider != "" && repoProvider != string(providers.ProviderGitHub) {
-		return nil, fmt.Errorf("workflow readiness.maxOpenPRs is only supported on github repositories, not %q", repoProvider)
-	}
 	resolver, _, err := buildCredentials(cfg, stores, "", "", nil, reg)
 	if err != nil {
 		return nil, fmt.Errorf("build open-pr-list credential resolver: %w", err)
@@ -1602,11 +1593,27 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// list to poll, so its count stays "unknown" (Admit fails open).
 			continue
 		}
+		// The refresher polls through providers.GitHubProvider's
+		// ListOpenPullRequests, which no other backend implements. Rather than
+		// silently building a GitHub client for a non-GitHub repo — which polls
+		// api.github.com with that forge's token and fails 401 on every refresh,
+		// leaving the cap reading a stale/zero count that quietly mis-admits work —
+		// refuse at wiring time so the operator sees the unsupported combination.
+		// Checked against THIS gaggle's own resolved repo, not cfg.Repos[0]: a
+		// multi-repo instance whose first repo happens to be GitHub must not mask
+		// a Gitea-projected capped gaggle, and vice versa.
+		provider := providers.ProviderGitHub
+		if repo.Provider != "" {
+			provider = providers.ProviderKind(repo.Provider)
+		}
+		if provider != providers.ProviderGitHub {
+			return nil, fmt.Errorf("workflow readiness.maxOpenPRs is only supported on github repositories, not %q (gaggle %q)", provider, gaggle)
+		}
 		key := repo.Owner + "/" + repo.Name
 		refresher := byRepo[key]
 		if refresher == nil {
 			lister := &resolvingOpenPRLister{ref: key, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
-			repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
+			repoRef := providers.RepositoryRef{Provider: provider, Owner: repo.Owner, Name: repo.Name}
 			// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 			// the daemon's "parked pending a human" signal on a PR — it cannot be
 			// drained autonomously, so counting it against MaxOpenPRs only starves new
@@ -1646,6 +1653,15 @@ type backlogCounter struct {
 	root   string
 	quota  *localscheduler.ProviderQuotaState
 	cursor string
+	// giteaBaseURL caches the Gitea arm's resolved forge BaseURL across ticks
+	// (guarded by mu). EligibleCount runs once per poll interval for this
+	// counter's whole lifetime, and re-deriving it via giteaRepoRefForStage
+	// (a full instance.LoadConfig — file read, YAML decode, cfg.Validate()
+	// across every configured repo) on every tick is I/O the GitHub arm's
+	// cached decorators already avoid. Empty until the first successful
+	// resolution; a resolution failure is never cached, so the next tick
+	// retries instead of sticking a permanent error.
+	giteaBaseURL string
 }
 
 // backlogCountProvider is the single read the counter needs. Both backends
@@ -1667,13 +1683,37 @@ func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountPr
 			return nil, func() {}, err
 		}
 		b.reg.Register([]byte(token))
-		provider, err := newGiteaProviderForStage(b.root, b.repo, token)
+		baseURL, err := b.giteaCounterBaseURL()
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return provider, func() {}, nil
+		telemetryOpt := providers.WithGiteaRateLimitObserver(
+			telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+		)
+		return providers.NewGiteaProvider(baseURL, token, telemetryOpt), func() {}, nil
 	}
 	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
+}
+
+// giteaCounterBaseURL resolves and caches the Gitea arm's forge BaseURL (see
+// backlogCounter.giteaBaseURL's doc comment) — the token stays resolved fresh
+// per call above, honoring credentials.Resolver's rotation contract; only the
+// static, config-file-derived BaseURL is cached.
+func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.giteaBaseURL != "" {
+		return b.giteaBaseURL, nil
+	}
+	repo, err := giteaRepoRefForStage(b.root, b.repo)
+	if err != nil {
+		return "", err
+	}
+	if repo.BaseURL == "" {
+		return "", fmt.Errorf("gitea repo %s/%s has no baseUrl configured", b.repo.Owner, b.repo.Name)
+	}
+	b.giteaBaseURL = repo.BaseURL
+	return b.giteaBaseURL, nil
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -1777,12 +1817,27 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
 // backlogCounterRepoRef resolves the counted repository, carrying the repo's
-// OWN declared provider kind rather than an unconditional GitHub. The kind is
-// what newCounterProvider dispatches on, so hard-coding it here sent a Gitea
-// instance's backlog count to api.github.com.
+// OWN declared provider kind rather than an unconditional GitHub — or, in a
+// multi-repo instance, another configured repo's provider. The kind is what
+// newCounterProvider dispatches on, so getting it wrong sent a Gitea
+// instance's (or a Gitea gaggle's, in a mixed-provider instance) backlog
+// count to api.github.com. Matched against cfg.Repos by owner/name, the same
+// pattern configuredRepoForProject uses; a repoRef matching no configured
+// repo falls back to cfg.Repos[0]'s provider, preserving the single-repo
+// behavior this had before per-repo matching existed.
 func backlogCounterRepoRef(cfg *instance.Config, repoRef apiv1.RepoRef) providers.RepositoryRef {
 	provider := providers.ProviderGitHub
-	if len(cfg.Repos) > 0 && cfg.Repos[0].Provider != "" {
+	matched := false
+	for _, repo := range cfg.Repos {
+		if repo.Owner == repoRef.Owner && repo.Name == repoRef.Name {
+			if repo.Provider != "" {
+				provider = providers.ProviderKind(repo.Provider)
+			}
+			matched = true
+			break
+		}
+	}
+	if !matched && len(cfg.Repos) > 0 && cfg.Repos[0].Provider != "" {
 		provider = providers.ProviderKind(cfg.Repos[0].Provider)
 	}
 	return providers.RepositoryRef{Provider: provider, Owner: repoRef.Owner, Name: repoRef.Name}
