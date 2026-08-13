@@ -85,7 +85,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 	}
 	defer func() { _ = tel.Shutdown(context.Background()) }()
 
-	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber, tel))
+	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber, tel), scrubber)
 	if err != nil {
 		return err
 	}
@@ -145,18 +145,18 @@ type temporalWorkerRunner struct {
 	once   sync.Once
 }
 
-func newTemporalWorkerRunner(cfg config, goober invoke.Goober) (runtimeWorker, error) {
+func newTemporalWorkerRunner(cfg config, goober invoke.Goober, scrubber journal.Scrubber) (runtimeWorker, error) {
 	c, err := client.Dial(client.Options{HostPort: cfg.temporalHostPort, Namespace: cfg.temporalNamespace})
 	if err != nil {
 		return nil, err
 	}
 	w := worker.New(c, cfg.taskQueue, worker.Options{})
-	registerEngine(w, c, goober)
+	registerEngine(w, c, goober, scrubber)
 	return &temporalWorkerRunner{client: c, worker: w}, nil
 }
 
-func registerEngine(w worker.Worker, temporalClient client.Client, goober invoke.Goober) {
-	bootstrap.RegisterEngine(w, temporalClient, bootstrap.EngineDeps{Goober: goober})
+func registerEngine(w worker.Worker, temporalClient client.Client, goober invoke.Goober, scrubber journal.Scrubber) {
+	bootstrap.RegisterEngine(w, temporalClient, bootstrap.EngineDeps{Goober: goober, Scrubber: scrubber})
 }
 
 func (r *temporalWorkerRunner) Start() error {

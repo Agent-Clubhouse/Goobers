@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -64,7 +65,7 @@ func TestConfigFromEnvUsesTaskQueueDefault(t *testing.T) {
 
 func TestRunRequiresHarnessCommand(t *testing.T) {
 	called := false
-	restore := replaceWorkerRunner(func(config, invoke.Goober) (runtimeWorker, error) {
+	restore := replaceWorkerRunner(func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error) {
 		called = true
 		return &fakeRuntimeWorker{}, nil
 	})
@@ -86,9 +87,11 @@ func TestRunStartsWorkerAndStopsOnContextCancellation(t *testing.T) {
 	fw := &fakeRuntimeWorker{onStart: cancel}
 	var gotConfig config
 	var gotGoober invoke.Goober
-	restore := replaceWorkerRunner(func(cfg config, goober invoke.Goober) (runtimeWorker, error) {
+	var gotScrubber journal.Scrubber
+	restore := replaceWorkerRunner(func(cfg config, goober invoke.Goober, scrubber journal.Scrubber) (runtimeWorker, error) {
 		gotConfig = cfg
 		gotGoober = goober
+		gotScrubber = scrubber
 		return fw, nil
 	})
 	defer restore()
@@ -101,6 +104,9 @@ func TestRunStartsWorkerAndStopsOnContextCancellation(t *testing.T) {
 	}
 	if _, ok := gotGoober.(*gooberruntime.Runtime); !ok {
 		t.Fatalf("goober = %T, want *gooberruntime.Runtime", gotGoober)
+	}
+	if gotScrubber == nil {
+		t.Fatal("worker runner did not receive the runtime scrubber")
 	}
 	if fw.starts != 1 {
 		t.Errorf("starts = %d, want 1", fw.starts)
@@ -117,7 +123,7 @@ func TestRunClosesWorkerWhenStartFails(t *testing.T) {
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
 	startErr := errors.New("worker unavailable")
 	fw := &fakeRuntimeWorker{startErr: startErr}
-	restore := replaceWorkerRunner(func(config, invoke.Goober) (runtimeWorker, error) {
+	restore := replaceWorkerRunner(func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error) {
 		return fw, nil
 	})
 	defer restore()
@@ -162,11 +168,14 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 }
 
 func TestRegisterEngineWiresGooberActivities(t *testing.T) {
+	const secret = "registered-exact-secret"
 	fw := &fakeTemporalWorker{}
-	goober := fakeGoober{}
+	goober := resultGoober{summary: "result contains " + secret}
 	scheduleService := &fakeWorkflowService{}
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
 
-	registerEngine(fw, fakeTemporalClient{service: scheduleService}, goober)
+	registerEngine(fw, fakeTemporalClient{service: scheduleService}, goober, scrubber)
 
 	if len(fw.workflows) != 4 {
 		t.Fatalf("registered workflows = %d, want 4", len(fw.workflows))
@@ -184,9 +193,19 @@ func TestRegisterEngineWiresGooberActivities(t *testing.T) {
 	if activities.ScheduleService != scheduleService {
 		t.Fatal("registered engine activities did not receive the Temporal schedule service")
 	}
+	activities.Workspaces = runtimeTestWorkspaces{path: t.TempDir()}
+	result, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
+		RunID: "run-1", TaskID: "run-1:implement",
+	}, "")
+	if err != nil {
+		t.Fatalf("InvokeGoober: %v", err)
+	}
+	if strings.Contains(result.Summary, secret) || !strings.Contains(result.Summary, journal.Redacted) {
+		t.Fatalf("engine activity result was not exact-value scrubbed: %q", result.Summary)
+	}
 }
 
-func replaceWorkerRunner(fn func(config, invoke.Goober) (runtimeWorker, error)) func() {
+func replaceWorkerRunner(fn func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error)) func() {
 	prev := newWorkerRunner
 	newWorkerRunner = fn
 	return func() { newWorkerRunner = prev }
@@ -220,15 +239,32 @@ func (f *fakeRuntimeWorker) Close() {
 	f.closes++
 }
 
-type fakeGoober struct{}
-
-func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	return apiv1.ResultEnvelope{}, nil
+type resultGoober struct {
+	summary string
 }
 
-func (fakeGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (g resultGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: g.summary}, nil
+}
+
+func (resultGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	return apiv1.Verdict{}, nil
 }
+
+type runtimeTestWorkspaces struct {
+	path string
+}
+
+func (w runtimeTestWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
+	return runtimeTestWorkspace(w), nil
+}
+
+type runtimeTestWorkspace struct {
+	path string
+}
+
+func (w runtimeTestWorkspace) Path() string               { return w.path }
+func (runtimeTestWorkspace) Remove(context.Context) error { return nil }
 
 type fakeTemporalWorker struct {
 	workflows  []interface{}

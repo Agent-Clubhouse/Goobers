@@ -66,6 +66,9 @@ func TestWorkerEngineDepsWiresWorkspacesAndAutomated(t *testing.T) {
 	if deps.Auto == nil {
 		t.Error("no automated gate evaluator wired")
 	}
+	if deps.Scrubber == nil {
+		t.Error("no registry-backed scrubber wired")
+	}
 	// Agentic/deterministic seams deliberately await the runtime wiring slice.
 	if deps.Goober != nil || deps.Det != nil {
 		t.Error("executor seams unexpectedly wired; update the worker help text and this test together")
