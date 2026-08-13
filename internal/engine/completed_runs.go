@@ -9,6 +9,7 @@ import (
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/converter"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -85,7 +86,11 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			errs = append(errs, errors.New("engine: completed workflow has no workflow id"))
 			continue
 		}
-		dir := filepath.Join(runsDir, runID)
+		dir, err := completedRunDir(runsDir, runID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		if journal.Recorded(dir) {
 			if err := observeProjectedRun(ctx, r.observe, runID, dir); err != nil {
 				errs = append(errs, err)
@@ -104,11 +109,21 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 // ProjectCompletedRunForGaggle is the manual projection path with the same
 // gaggle validation and read-model notification used by the reconciler.
 func ProjectCompletedRunForGaggle(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver) (string, error) {
-	dir := filepath.Join(runsDir, workflowID)
+	dir, err := completedRunDir(runsDir, workflowID)
+	if err != nil {
+		return "", err
+	}
 	if journal.Recorded(dir) {
 		return dir, observeProjectedRun(ctx, observe, workflowID, dir)
 	}
 	return projectCompletedRun(ctx, q, workflowID, gaggle, runsDir, observe)
+}
+
+func completedRunDir(runsDir, workflowID string) (string, error) {
+	if !apiv1.ValidRunID(workflowID) {
+		return "", fmt.Errorf("%w: workflow id %q is not a safe path segment", ErrUnprojectable, workflowID)
+	}
+	return filepath.Join(runsDir, workflowID), nil
 }
 
 func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver) (string, error) {

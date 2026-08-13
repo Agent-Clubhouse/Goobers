@@ -175,6 +175,74 @@ func TestProjectCompletedRunForGaggleObservesRecordedJournal(t *testing.T) {
 	}
 }
 
+func TestCompletedRunRecordedJournalFastPathsRejectTraversal(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	proj := executeForProjection(t, projectionInput("escaped-run", spec), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	payload, err := converter.GetDefaultDataConverter().ToPayload("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, *completedRunFake, string, ProjectionObserver) error
+	}{
+		{
+			name: "reconciler",
+			run: func(ctx context.Context, fake *completedRunFake, runsDir string, observe ProjectionObserver) error {
+				fake.executions = []*workflowpb.WorkflowExecutionInfo{{
+					Execution: &commonpb.WorkflowExecution{WorkflowId: filepath.Join("..", proj.Identity.RunID)},
+					Memo:      &commonpb.Memo{Fields: map[string]*commonpb.Payload{RunGaggleMemoKey: payload}},
+				}}
+				reconciler, err := NewCompletedRunReconciler(fake, "default", map[string]string{"web": runsDir}, observe)
+				if err != nil {
+					return err
+				}
+				count, err := reconciler.Reconcile(ctx)
+				if count != 0 {
+					t.Errorf("Reconcile count = %d, want 0", count)
+				}
+				return err
+			},
+		},
+		{
+			name: "manual",
+			run: func(ctx context.Context, fake *completedRunFake, runsDir string, observe ProjectionObserver) error {
+				_, err := ProjectCompletedRunForGaggle(
+					ctx, fake, filepath.Join("..", proj.Identity.RunID), "web", runsDir, observe,
+				)
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			runsDir := filepath.Join(root, "runs")
+			if _, err := ProjectRun(root, proj); err != nil {
+				t.Fatalf("create escaped recorded journal: %v", err)
+			}
+			fake := &completedRunFake{projection: proj}
+			observeCalls := 0
+			err := tc.run(context.Background(), fake, runsDir, func(context.Context, string, uint64) error {
+				observeCalls++
+				return nil
+			})
+			if !errors.Is(err, ErrUnprojectable) {
+				t.Fatalf("err = %v, want ErrUnprojectable", err)
+			}
+			if observeCalls != 0 {
+				t.Fatalf("observer calls = %d, want 0", observeCalls)
+			}
+			if fake.queries != 0 {
+				t.Fatalf("projection queries = %d, want 0", fake.queries)
+			}
+		})
+	}
+}
+
 func TestProjectionJournalsTypedIntegrityRefusal(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
