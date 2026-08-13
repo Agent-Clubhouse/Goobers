@@ -178,11 +178,29 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// stage before the workflows are compiled, so the runner executes the
 	// gaggle's own suite in place of the stage's declared `make ci` default.
 	instance.ApplyGaggleCICommand(set)
-	// RRQ-1/#1101: fail closed at startup when a gaggle/stage requires a runner
-	// capability the runner (instance.yaml runner.capabilities) does not claim,
-	// rather than letting every schedule tick refuse the run at runtime.
+	// RRQ-1/#1101, revised for fleets (#2860): a gaggle/stage requiring a runner
+	// capability nothing claims is REPORTED at startup, not fatal.
+	//
+	// It used to return an error and kill the daemon. That was defensible when a
+	// runner was a single process whose capabilities could not change while it
+	// ran. It stopped being defensible once stages can be placed on OTHER
+	// workers: the daemon is then admitting on behalf of a fleet it cannot
+	// enumerate, and "no runner claims os=windows" may simply mean the Windows
+	// worker has not started yet. The sibling provider-capability check below
+	// says as much in its own comment — a missing runner capability CAN
+	// self-heal at runtime, which is exactly why it must not be terminal.
+	//
+	// Nothing is lost by downgrading it. localscheduler already enforces the
+	// same invariant per entry at dispatch (scheduler.go, ReasonMissingCapability):
+	// the run is refused, journalled as tick.skipped with the missing capability
+	// named, and marked Blocked in telemetry. That path is per-run, self-healing,
+	// and describes itself as the seam a multi-runner router grows from. The
+	// startup check was an eager, whole-instance, fatal copy of it.
+	//
+	// So: one unsatisfiable stage no longer takes the whole instance down, and
+	// every OTHER gaggle keeps running.
 	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
 	// capability its gaggle's connected provider does not declare — a
