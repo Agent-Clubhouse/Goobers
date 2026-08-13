@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ENGINE PROJECT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers engine-project \- write a completed engine run's journal into the instance (experimental)
+.SH SYNOPSIS
+\fBgoobers engine-project\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's standard journal into the instance.
+
+Exit codes: 0 = projected or already present, 1 = query/write failure,
+2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers engine-project --gaggle example <run-id>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

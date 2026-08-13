@@ -57,6 +57,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
+| [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
@@ -997,6 +999,44 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers elect-lander
+~~~
+
+## `goobers engine-project`
+
+write a completed engine run's journal into the instance (experimental)
+
+~~~text
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's standard journal into the instance.
+
+Exit codes: 0 = projected or already present, 1 = query/write failure,
+2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-project --gaggle example <run-id>
+~~~
+
+## `goobers engine-start`
+
+dispatch one run onto the tier-3 engine via Temporal (experimental)
+
+~~~text
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental). The run id is
+derived from gaggle, workflow, and --dedupe-key.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-start default-implement
 ~~~
 
 ## `goobers escalations`
