@@ -83,7 +83,17 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// The queue watch itself (PollMergeQueueEntry/DequeuePullRequest) stays
+	// GitHub-concrete: Gitea has no merge queue (providers/gitea.go), so
+	// there is no dispatched provider to build here. The post-merge
+	// branch-cleanup path below is dispatched separately, since it needs no
+	// merge-queue-specific method and is reachable on either forge.
 	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	cleanupProvider, err := mergeStageProviderWithRecorder(root, repo, token, sidecarMutationRecorder{kind: "pr"})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -169,7 +179,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			if optedOut {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return mergeQueuePollMerged(ctx, cleanupProvider, root, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
 					entrySeen = true
 					absentStreak = 0
@@ -192,7 +202,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			} else {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return mergeQueuePollMerged(ctx, cleanupProvider, root, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryEvicted:
 					return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
@@ -268,13 +278,13 @@ func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writ
 // same branch cleanup merge-pr's direct-merge path already does — a
 // separate PollPullRequest call resolves the head branch/repository
 // PollMergeQueueEntryResult does not itself carry.
-func mergeQueuePollMerged(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+func mergeQueuePollMerged(ctx context.Context, provider mergeProvider, root string, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
 	var cleanup *mergeBranchCleanup
 	poll, pollErr := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 	if pollErr != nil {
 		pf(stderr, "warning: merge queue merged pr #%s but branch cleanup lookup failed: %v\n", pullNumber, pollErr)
 	} else {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merge queue merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)

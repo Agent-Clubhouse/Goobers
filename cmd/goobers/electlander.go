@@ -286,13 +286,21 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// sibling's blocker set. Set the provider up and list PRs up front so one
 	// list feeds both, and so apply-verdict (which re-derives the same election)
 	// resolves an identical demoted set from the same source.
+	repo, err := providerRepo(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
-	repo, err := providerRepo(root)
+	// Dispatch by routed repo kind — same idiom as pr-select/apply-verdict, so
+	// this stage and apply-verdict resolve resolveElectionPolicyForCluster from
+	// identical provider data (see that function's doc comment) instead of
+	// diverging once a Gitea-routed repo is in play.
+	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
