@@ -94,6 +94,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		Gaggle:              "goobers",
 		BranchNamespace:     "goobers/",
 		BaseBranch:          "main",
+		Goober:              "implementer",
 		Goal:                "implement the claimed issue",
 		InstructionAddendum: "Preserve the public contract.",
 		Workspace:           "/workspace",

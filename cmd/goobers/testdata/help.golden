@@ -164,7 +164,7 @@ Advanced operator commands:
                                 dispatch one run onto the tier-3 engine (experimental)
   goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
                                 write a completed engine run's journal into the instance (experimental)
-  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>]
+  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>]
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
@@ -1989,6 +1989,13 @@ wired; agentic and deterministic executor seams arrive with the runtime
 wiring slice, and stages needing them fail closed with a clear error.
 
 Flags:
+  --instance <dir>           instance root; wires the real agentic and
+                             deterministic executors (default
+                             $GOOBERS_INSTANCE_ROOT)
+  --blob-store <dir>         directory backing the fleet-wide
+                             content-addressed artifact store; required
+                             for a run whose stages are served by more
+                             than one worker (default $GOOBERS_BLOB_STORE)
   --task-queue <queue>       task queue to serve; repeatable for multiple
                              queues (default $GOOBERS_TASK_QUEUE, else
                              "goobers-engine")

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
@@ -30,6 +31,13 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"wired; agentic and deterministic executor seams arrive with the runtime\n" +
 	"wiring slice, and stages needing them fail closed with a clear error.\n\n" +
 	"Flags:\n" +
+	"  --instance <dir>           instance root; wires the real agentic and\n" +
+	"                             deterministic executors (default\n" +
+	"                             $GOOBERS_INSTANCE_ROOT)\n" +
+	"  --blob-store <dir>         directory backing the fleet-wide\n" +
+	"                             content-addressed artifact store; required\n" +
+	"                             for a run whose stages are served by more\n" +
+	"                             than one worker (default $GOOBERS_BLOB_STORE)\n" +
 	"  --task-queue <queue>       task queue to serve; repeatable for multiple\n" +
 	"                             queues (default $GOOBERS_TASK_QUEUE, else\n" +
 	"                             \"goobers-engine\")\n" +
@@ -73,6 +81,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	namespace := fs.String("temporal-namespace", workerEnvOr("GOOBERS_TEMPORAL_NAMESPACE", "default"), "Temporal namespace")
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
+	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
+	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -95,6 +105,42 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = engineRuntime.Close() }()
+
+	// The runtime wiring slice. Without --instance the worker keeps its
+	// previous shape: workspaces and automated gates only, every real stage
+	// failing closed with "not configured". With it, the agentic and
+	// deterministic seams are the SAME executors the local runner builds, from
+	// the same buildRunnerConfig — which is what journal conformance between
+	// the two tiers rests on.
+	if *instanceRoot != "" {
+		// The fleet's content-addressed store, if one is configured. Without it
+		// a run is only safely served by a SINGLE worker: stage artifacts stay
+		// on the node that produced them, and the first ContextPointer resolved
+		// somewhere else fails closed (#2866).
+		var store blobstore.Store
+		if *blobRoot != "" {
+			dirStore, berr := blobstore.NewDir(*blobRoot)
+			if berr != nil {
+				pf(stderr, "error: %v\n", berr)
+				return 1
+			}
+			store = dirStore
+			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+		}
+		seams, serr := newWorkerSeams(*instanceRoot, store)
+		if serr != nil {
+			pf(stderr, "error: %v\n", serr)
+			return 1
+		}
+		engineRuntime.deps.Goober = seams.Agentic()
+		engineRuntime.deps.Det = seams.Deterministic()
+		// Replace the uncredentialed provisioner too: workerEngineDeps builds
+		// its worktree manager before any instance is known, so it has no git
+		// auth and cannot clone a private repo.
+		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
+		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+	}
+
 	host, err := workerhost.New(workerhost.Config{
 		HostPort:     *hostPort,
 		Namespace:    *namespace,
