@@ -1373,6 +1373,42 @@ credentials:
 	}
 }
 
+func TestConfigCapabilityCredentialEnvExposure(t *testing.T) {
+	tests := []struct {
+		name           string
+		tokenEnv       string
+		envPassthrough []string
+		wantErr        bool
+	}{
+		{name: "explicit passthrough", tokenEnv: "MODEL_TOKEN", envPassthrough: []string{"MODEL_TOKEN"}, wantErr: true},
+		{name: "built-in allowlist", tokenEnv: "HOME", wantErr: true},
+		{name: "not stage exposed", tokenEnv: "MODEL_TOKEN"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{
+				Runner: RunnerConfig{EnvPassthrough: test.envPassthrough},
+				Credentials: []CredentialGrant{{
+					Capability: "agent:model",
+					Token:      TokenRef{Env: test.tokenEnv},
+				}},
+			}
+			err := cfg.Validate()
+			if !test.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil ||
+				!strings.Contains(err.Error(), `credentials[0] (capability "agent:model")`) ||
+				!strings.Contains(err.Error(), "must not be exposed to stages") {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigRejectsStageExposedBYOMCPCredentialEnv(t *testing.T) {
 	tests := []struct {
 		name           string
