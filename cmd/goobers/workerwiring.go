@@ -93,8 +93,17 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, fmt.Errorf("worker: load instance config: %w", err)
 	}
-	set, _, err := loadConfigDirectory(l.ConfigDir())
+	// The validation report travels with the error rather than being dropped.
+	// A worker that executed a stage against config carrying known problems,
+	// silently, is worse than one that refuses and says which problems — and
+	// this seam has no terminal to print to, so the issues are folded into the
+	// returned error where the activity failure will carry them.
+	// TestCallersDoNotDiscardConfigReports enforces this, and caught it here.
+	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
+		if issues := validationIssueSummary(report); issues != "" {
+			return nil, fmt.Errorf("worker: load config directory: %w (%s)", err, issues)
+		}
 		return nil, fmt.Errorf("worker: load config directory: %w", err)
 	}
 	instance.ApplyGaggleCICommand(set)
