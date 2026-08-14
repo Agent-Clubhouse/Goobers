@@ -2954,12 +2954,8 @@ type blockedHandlerFakeCommenter struct {
 	nextID   int
 }
 
-func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
-	var out []providers.Comment
-	for _, c := range f.comments {
-		out = append(out, c)
-	}
-	return out, nil
+func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	return append([]providers.Comment(nil), f.comments...), nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
