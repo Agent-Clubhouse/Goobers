@@ -1006,6 +1006,26 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
 }
 
+func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
+	if repository.Provider == providers.ProviderADO {
+		return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+	}
+	ref := repository.Owner + "/" + repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+	}
+	c.reg.Register([]byte(token))
+	if repository.Provider == providers.ProviderGitea {
+		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+		if err != nil {
+			return fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.UpdateComment(ctx, repository, commentID, body)
+	}
+	return newEscalationPoster(token).UpdateComment(ctx, repository, commentID, body)
+}
+
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
 // composition root — a complete, tested implementation that was never
 // constructed, so runner.Config.Escalation stayed nil and a repass-budget
@@ -1175,19 +1195,17 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 // Detailed causes remain in the local run trace because execution errors can
 // contain harness argv, prompts, credentials, environment values, or context.
 //
-// Deliberately does NOT apply goobers:needs-human: that label is reserved for
-// the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
-// no-blockers park), keeping a `failed` terminal distinct from an escalation.
-// Comment-only, via the same escalationCommenter/UpdateWorkItem seam (which
-// normalizes a pr/<n> claim to its bare number).
+// Circuit breaker: after failureStreakThreshold consecutive terminal failures
+// on the same item, applies goobers:needs-human and removes goobers:ready so
+// the retry loop stops. The threshold is counted via a single editable
+// failure-streak comment on the issue (one comment, updated in place, instead
+// of one per run).
 //
 // Like buildBlockedHandler, the handler runs before FinalizeTerminal releases
 // the run's claims, so it resolves the driving item(s) from the claim ledger by
-// run id — implementation and pr-remediation runs (the two workflows that hit
-// this) self-select their item mid-run, so they never carry a StartInput.Item
-// snapshot and the ledger is the only source. Best-effort per item: one item's
-// provider failure doesn't skip the rest; the joined error is journaled by the
-// runner (failed_handling_failed), never fatal to the terminal transition.
+// run id. Best-effort per item: one item's provider failure doesn't skip the
+// rest; the joined error is journaled by the runner (failed_handling_failed),
+// never fatal to the terminal transition.
 func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.FailedHandler {
 	if len(cfg.Repos) == 0 {
 		return nil
@@ -1205,9 +1223,6 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 			return err
 		}
 		if len(itemIDs) == 0 {
-			// No driving item anywhere (a producer/schedule run, or a run whose
-			// claim was already released) — nothing to trace; the journaled
-			// run_failed cause and the failed phase are the whole story.
 			return nil
 		}
 		repoRef := providers.RepositoryRef{
@@ -1217,17 +1232,33 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		}
 		var errs []error
 		for _, itemID := range itemIDs {
-			comment := fmt.Sprintf(
-				"Goobers run %s terminated `failed` (`RUN_FAILED`). Failure details are available only in the local run trace. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
-				o.RunID, providers.LabelNeedsHuman,
-			)
-			if err := gate.PostRunComment(ctx, poster, repoRef, itemID, o.RunID, o.Seq, comment); err != nil {
-				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
+			prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
+			if countErr != nil {
+				errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
+				prevCount = 0
+			}
+			count := prevCount + 1
+
+			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID); err != nil {
+				errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
+			}
+
+			if count >= failureStreakThreshold {
+				if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+					Repository:   repoRef,
+					ID:           itemID,
+					AddLabels:    []string{providers.LabelNeedsHuman},
+					RemoveLabels: []string{providers.LabelReady},
+				}); err != nil {
+					errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
+				}
 			}
 		}
 		return errors.Join(errs...)
 	}
 }
+
+const failureStreakThreshold = 3
 
 // buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
 // exhausted provider quota into the shared ProviderQuotaState the same

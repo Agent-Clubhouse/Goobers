@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2629,6 +2630,10 @@ func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.Updat
 	return providers.WorkItem{}, nil
 }
 
+func (f *escFakeCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
 // TestBuildEscalationNotifier is #312: the notifier is wired at the composition
 // root for a repo-backed instance (so runner.Config.Escalation is no longer
 // always nil), and nil for a repo-less instance (nothing to comment on).
@@ -2944,22 +2949,39 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 // escFakeCommenter, which only keeps the last) — buildBlockedHandler's
 // multi-item fallback path needs every call visible.
 type blockedHandlerFakeCommenter struct {
-	calls []providers.UpdateWorkItemRequest
+	calls    []providers.UpdateWorkItemRequest
+	comments []providers.Comment
+	nextID   int
 }
 
 func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
-	var comments []providers.Comment
-	for _, call := range f.calls {
-		if call.ID == itemID {
-			comments = append(comments, providers.Comment{Body: call.Comment})
-		}
+	var out []providers.Comment
+	for _, c := range f.comments {
+		out = append(out, c)
 	}
-	return comments, nil
+	return out, nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.calls = append(f.calls, req)
+	if req.Comment != "" {
+		f.nextID++
+		f.comments = append(f.comments, providers.Comment{
+			ID:   strconv.Itoa(f.nextID),
+			Body: req.Comment,
+		})
+	}
 	return providers.WorkItem{}, nil
+}
+
+func (f *blockedHandlerFakeCommenter) UpdateComment(_ context.Context, _ providers.RepositoryRef, commentID, body string) error {
+	for i, c := range f.comments {
+		if c.ID == commentID {
+			f.comments[i].Body = body
+			return nil
+		}
+	}
+	return fmt.Errorf("comment %s not found", commentID)
 }
 
 func blockedHandlerTestResolver(t *testing.T) credentials.Resolver {
@@ -3615,12 +3637,10 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
-// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman proves a run that
-// ends terminal `failed` while claiming an item leaves a human-visible trace
-// with a stable public code and run id, but never the potentially sensitive
-// execution cause. It applies no labels: goobers:needs-human stays reserved for
-// the escalated/park path.
-func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
+// TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
+// posts a streak comment with count=1 but does NOT apply needs-human. The
+// circuit breaker only fires at failureStreakThreshold (3).
+func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
 	newEscalationPoster = func(string) gate.Commenter { return fake }
@@ -3670,22 +3690,77 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 		t.Fatalf("request repository = %+v, want %+v", got.Repository, wantRepo)
 	}
 	if len(got.AddLabels) != 0 || len(got.RemoveLabels) != 0 {
-		t.Fatalf("labels = add %v / remove %v, want NONE — a `failed` terminal must not touch labels (needs-human stays reserved for escalation)", got.AddLabels, got.RemoveLabels)
+		t.Fatalf("labels = add %v / remove %v, want NONE on first failure", got.AddLabels, got.RemoveLabels)
 	}
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "run=run-timeout seq=17") {
-		t.Fatalf("comment = %q, want run+seq marker", got.Comment)
+	if !strings.Contains(got.Comment, `data-count="1"`) {
+		t.Fatalf("comment = %q, want data-count=1 on first failure", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "RUN_FAILED") || !strings.Contains(got.Comment, "local run trace") {
-		t.Fatalf("comment = %q, want stable code and local trace guidance", got.Comment)
+	if !strings.Contains(got.Comment, "implement") {
+		t.Fatalf("comment = %q, want stage name", got.Comment)
 	}
 	if strings.Contains(got.Comment, sensitivePrompt) || strings.Contains(got.Comment, "claude -p") {
 		t.Fatalf("comment = %q, must not expose harness argv or prompt", got.Comment)
 	}
-	if strings.Contains(got.Comment, providers.LabelNeedsHuman) && (len(got.AddLabels) > 0) {
-		t.Fatalf("comment = %q, must not apply needs-human", got.Comment)
+}
+
+// TestBuildFailedHandlerCircuitBreakerTripsAtThreshold proves that after
+// failureStreakThreshold consecutive failures, needs-human is applied and ready
+// is removed — the circuit breaker engages.
+func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-trip", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	// Simulate failureStreakThreshold failures by calling the handler repeatedly.
+	// Each call reads the streak from prior comments, increments, and upserts.
+	for i := 0; i < failureStreakThreshold; i++ {
+		err = h(context.Background(), runner.FailedOutcome{
+			RunID:   "run-trip",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+			Stage:   "implement",
+		})
+		if err != nil {
+			t.Fatalf("handler call %d: %v", i+1, err)
+		}
+	}
+
+	// Find the label-change call (the one with AddLabels set).
+	var labelCall *providers.UpdateWorkItemRequest
+	for i := range fake.calls {
+		if len(fake.calls[i].AddLabels) > 0 {
+			labelCall = &fake.calls[i]
+			break
+		}
+	}
+	if labelCall == nil {
+		t.Fatal("circuit breaker did not fire after threshold failures")
+	}
+	if !slices.Contains(labelCall.AddLabels, providers.LabelNeedsHuman) {
+		t.Fatalf("AddLabels = %v, want %s", labelCall.AddLabels, providers.LabelNeedsHuman)
+	}
+	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
+		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
 	}
 }
 
