@@ -2,6 +2,7 @@ import { API_VERSION, SCHEMA_VERSION } from "./types";
 
 export type DaemonClientErrorKind =
   | "api"
+  | "auth"
   | "cancelled"
   | "timeout"
   | "malformed-response"
@@ -27,6 +28,29 @@ export class DaemonApiError extends DaemonClientError {
     message: string,
   ) {
     super(message, "api");
+  }
+}
+
+/**
+ * Thrown when the daemon (or an intermediary in front of it, such as a
+ * reverse proxy) rejects a request with HTTP 401 or 403 (#2916).
+ *
+ * This is deliberately its own error kind, distinct from
+ * DaemonUnavailableError: the daemon (or its front door) is reachable and
+ * answering, it is just refusing this request's credentials. The status is
+ * classified before the response body is ever inspected, so a non-JSON body
+ * (an HTML login page, plain text from a proxy, an empty body) is still
+ * correctly identified as an auth failure rather than falling through to a
+ * generic "malformed response" or "unavailable" error.
+ */
+export class DaemonAuthError extends DaemonClientError {
+  constructor(readonly status: 401 | 403) {
+    super(
+      status === 401
+        ? "Authentication is required to reach the daemon (HTTP 401)."
+        : "This credential is not authorized to reach the daemon (HTTP 403).",
+      "auth",
+    );
   }
 }
 
