@@ -14,7 +14,7 @@ and [`docs/VISION.md`](docs/VISION.md).
 
 ## Development setup
 
-You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.5),
+You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.6),
 Node.js 24 with npm, Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)).
