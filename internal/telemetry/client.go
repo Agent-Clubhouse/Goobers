@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -158,11 +159,13 @@ func (c *Client) StartRun(ctx context.Context, attrs RunAttributes) (context.Con
 		return ctx, Span{}, err
 	}
 	ctx = contextWithRequestedTraceID(ctx, traceID)
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)),
+	opts := []trace.SpanStartOption{
 		trace.WithNewRoot(),
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, runAttributeSet(attrs))...),
-	)
+	}
+	opts = appendStartTime(opts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)), opts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
@@ -358,4 +361,13 @@ func validateCommon(gaggle, workflowID, runID string) error {
 		return errors.New("telemetry span requires run id")
 	}
 	return nil
+}
+
+// appendStartTime backdates a span when an explicit start time is supplied.
+// Zero means "stamp it now", which is every live tier-1 call site.
+func appendStartTime(opts []trace.SpanStartOption, at time.Time) []trace.SpanStartOption {
+	if at.IsZero() {
+		return opts
+	}
+	return append(opts, trace.WithTimestamp(at))
 }
