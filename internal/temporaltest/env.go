@@ -17,8 +17,10 @@
 package temporaltest
 
 import (
+	"context"
 	"time"
 
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 )
@@ -44,4 +46,27 @@ func NewWorkflowEnvironment(ts *testsuite.WorkflowTestSuite) *testsuite.TestWork
 	env := ts.NewTestWorkflowEnvironment()
 	env.SetWorkerOptions(worker.Options{DeadlockDetectionTimeout: DeadlockDetectionTimeout})
 	return env
+}
+
+// ProjectionQuerier adapts a TestWorkflowEnvironment's QueryWorkflow to the
+// (ctx, workflowID, runID, queryType, args...) shape a real Temporal
+// client.Client exposes (#2903). internal/engine's journal-projection helpers
+// (ProjectCompletedRun, ProjectCompletedRunForGaggle, and the
+// CompletedRunReconciler) are written against that client shape so they work
+// unmodified against a live server; this adapter lets the same, unmodified
+// projection code be driven hermetically against the SDK test environment
+// once a workflow run inside it, connecting the engine-start half (env.
+// ExecuteWorkflow) to the completed-run-projection half in one process — the
+// callable path an integration test needs without a live Temporal server.
+//
+// The test environment hosts exactly one workflow at a time, so ctx,
+// workflowID, and runID are accepted only for signature compatibility and are
+// otherwise ignored.
+type ProjectionQuerier struct {
+	Env *testsuite.TestWorkflowEnvironment
+}
+
+// QueryWorkflow satisfies the query shape engine's projection helpers expect.
+func (q ProjectionQuerier) QueryWorkflow(_ context.Context, _, _, queryType string, args ...interface{}) (converter.EncodedValue, error) {
+	return q.Env.QueryWorkflow(queryType, args...)
 }

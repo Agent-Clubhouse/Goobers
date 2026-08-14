@@ -200,6 +200,7 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
+github.com/goobers/goobers/internal/temporaltest.ProjectionQuerier.QueryWorkflow # Adapts the test environment to engine's projectionQuerier shape so ProjectCompletedRun* can run hermetically (#2903); used by test/e2e's engine-start/engine-project round trip.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 
