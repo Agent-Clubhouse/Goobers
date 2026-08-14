@@ -128,6 +128,9 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	if captured.TaskID != in.RunID+":implement" {
 		t.Errorf("taskId = %q, want %q", captured.TaskID, in.RunID+":implement")
 	}
+	if captured.Goober != "coder" {
+		t.Errorf("goober = %q, want %q — a Temporal worker has only the envelope to route the agentic seam on (#2904)", captured.Goober, "coder")
+	}
 	if captured.Workspace == "" {
 		t.Fatal("envelope workspace is empty — the closed invocation schema requires it")
 	}
@@ -475,6 +478,9 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if want := []string{"agent:model"}; !reflect.DeepEqual(captured.Capabilities, want) {
 		t.Errorf("gate capabilities = %v, want %v (the reviewer goober's pinned grants)", captured.Capabilities, want)
 	}
+	if captured.Goober != "reviewer" {
+		t.Errorf("gate goober = %q, want %q (AgenticGate.Goober, #2904)", captured.Goober, "reviewer")
+	}
 	if captured.Goal != "gate: review" {
 		t.Errorf("gate goal = %q, want %q (local-runner naming)", captured.Goal, "gate: review")
 	}
@@ -661,6 +667,9 @@ func TestAutomatedGateGetsNoWorkspace(t *testing.T) {
 	}
 	if gateEnv.Workspace != "" {
 		t.Errorf("automated gate workspace = %q, want empty (#112: no worktree for pure checks)", gateEnv.Workspace)
+	}
+	if gateEnv.Goober != "" {
+		t.Errorf("automated gate goober = %q, want empty — automated gates run no agent", gateEnv.Goober)
 	}
 	if len(gateEnv.Capabilities) != 0 {
 		t.Errorf("automated gate capabilities = %v, want none", gateEnv.Capabilities)
