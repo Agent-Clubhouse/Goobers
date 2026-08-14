@@ -4687,6 +4687,10 @@ func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.Upda
 	return providers.WorkItem{}, nil
 }
 
+func (*blockingCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
 type recordingCommenter struct {
 	requests  []providers.UpdateWorkItemRequest
 	persisted []providers.UpdateWorkItemRequest
@@ -4709,6 +4713,10 @@ func (c *recordingCommenter) UpdateWorkItem(_ context.Context, req providers.Upd
 		c.persisted = append(c.persisted, req)
 	}
 	return providers.WorkItem{}, c.err
+}
+
+func (c *recordingCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
 }
 
 type fixedOutcomeAutomated string
