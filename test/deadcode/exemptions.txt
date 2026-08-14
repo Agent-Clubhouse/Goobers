@@ -170,6 +170,7 @@ github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal sche
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
+github.com/goobers/goobers/internal/engine.WithSpanSource # Span-adoption seam (#2907) shipped ahead of its caller: no process wires a fleet blob store into the projection driver yet, so only projection tests configure a SpanSource today. Exercised by spanprojection_test.go; goes stale when a production caller (e.g. cmd/goobers's projection driver) lands.
 github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
 github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.

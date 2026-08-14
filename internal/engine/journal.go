@@ -24,17 +24,20 @@ import (
 const JournalQuery = "goobers.journal.v1"
 
 // Journal op kinds. An op is one journal write the workflow committed to:
-// either a plain event append or a content-addressed artifact record (which
-// the projection writer turns into blob + artifact.recorded event, exactly as
-// the local runner's journal does).
+// a plain event append, a content-addressed artifact record (which the
+// projection writer turns into blob + artifact.recorded event, exactly as
+// the local runner's journal does), or a span record (#2907) — an
+// executor-produced blob (a harness transcript) the workflow can reference by
+// digest but never itself hold the bytes of.
 const (
 	opAppend   = "append"
 	opArtifact = "artifact"
+	opSpan     = "span"
 )
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
-	// Kind is opAppend or opArtifact.
+	// Kind is opAppend, opArtifact, or opSpan.
 	Kind string `json:"kind"`
 	// Event is the append payload (Kind == opAppend). Seq and Schema are
 	// assigned by the journal writer; Time here is the deterministic
@@ -43,6 +46,8 @@ type JournalOp struct {
 	Event *journal.Event `json:"event,omitempty"`
 	// Artifact is the record payload (Kind == opArtifact).
 	Artifact *JournalArtifactOp `json:"artifact,omitempty"`
+	// Span is the record payload (Kind == opSpan).
+	Span *JournalSpanOp `json:"span,omitempty"`
 	// Time is the workflow-deterministic timestamp for this write.
 	Time time.Time `json:"time"`
 }
@@ -60,6 +65,23 @@ type JournalArtifactOp struct {
 	Name      string               `json:"name"`
 	Data      []byte               `json:"data"`
 	Integrity apiv1.Integrity      `json:"integrity"`
+}
+
+// JournalSpanOp records one within-stage span (a harness transcript) the
+// executor that ran the stage already committed to content-addressed storage
+// — journal.Run.RecordSpanWithSchema on the local runner, workerhost's
+// StagingArtifacts on a tier-3 worker (#2900, #2935). Unlike JournalArtifactOp
+// the workflow never holds the bytes: apiv1.ResultEnvelope.Transcript carries
+// only the pointer the executor already wrote, so Ref is what the workflow
+// deterministically knows from history, and the projection writer adopts the
+// span by fetching Ref.Digest rather than recomputing it (#2907).
+type JournalSpanOp struct {
+	Stage      string               `json:"stage,omitempty"`
+	Attempt    int                  `json:"attempt,omitempty"`
+	Class      journal.AttemptClass `json:"class,omitempty"`
+	Name       string               `json:"name"`
+	DataSchema string               `json:"dataSchema,omitempty"`
+	Ref        journal.Ref          `json:"ref"`
 }
 
 // JournalProjection is the complete, self-contained journal projection of one
@@ -174,6 +196,11 @@ func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opArtifact, Artifact: &o, Time: at})
 }
 
+func (r *runJournal) spanAt(at time.Time, op JournalSpanOp) {
+	o := op
+	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opSpan, Span: &o, Time: at})
+}
+
 // runStarted mirrors journal.Create's own opening append.
 func (r *runJournal) runStarted(ctx workflow.Context) {
 	r.append(ctx, journal.Event{Type: journal.EventRunStarted, Status: string(journal.PhaseRunning)})
@@ -285,8 +312,17 @@ func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admiss
 }
 
 // stageFinished mirrors runTask's stage.finished append, including the
-// tolerated-failure output discard.
+// tolerated-failure output discard. A transcript the executor recorded is
+// journaled as a span op immediately before stage.finished, mirroring the
+// local runner's own ordering (the harness executor records its span mid-run,
+// before runTask appends stage.finished) — see JournalSpanOp (#2907).
 func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) {
+	if result.Transcript != nil {
+		r.spanAt(workflow.Now(ctx), JournalSpanOp{
+			Stage: stage, Attempt: attempt, Class: class,
+			Name: stage + ".transcript", Ref: journalRefFrom(*result.Transcript),
+		})
+	}
 	outputs := result.Outputs
 	if result.Status == apiv1.ResultFailure && continueOnError {
 		outputs = nil
@@ -479,9 +515,14 @@ func journalRefsFrom(artifacts []apiv1.ArtifactPointer) []journal.Ref {
 	}
 	out := make([]journal.Ref, len(artifacts))
 	for i, a := range artifacts {
-		out[i] = journal.Ref{
-			Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
-		}
+		out[i] = journalRefFrom(a)
 	}
 	return out
+}
+
+// journalRefFrom converts one wire ArtifactPointer to journal.Ref form.
+func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
+	return journal.Ref{
+		Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
+	}
 }
