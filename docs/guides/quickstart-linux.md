@@ -23,7 +23,7 @@ lifecycle under a real `SIGTERM` — on the GitHub-hosted `ubuntu-latest` runner
 |---|---|
 | Distribution | Ubuntu 24.04 LTS (`ubuntu-latest`) |
 | Architecture | linux/amd64 |
-| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |
+| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.6**) |
 | Git | `git worktree add`/`remove` are the only requirements → **git ≥ 2.17** |
 
 A representative captured run (from the CI evidence artifact): Ubuntu 24.04.4
@@ -52,9 +52,9 @@ cat ./linux-validation-evidence/summary.md
 ## 1. Install prerequisites
 
 ```sh
-# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;
+# Go — install the toolchain matching go.mod (1.26.6). Distro packages often lag;
 # prefer the official tarball:
-curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+curl -sSfL https://go.dev/dl/go1.26.6.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
 export PATH="/usr/local/go/bin:$(go env GOPATH)/bin:$PATH"
 
 # Git (>= 2.17 — any supported Ubuntu/Debian is newer):
@@ -113,7 +113,7 @@ those changes are expected.
 |---|---|
 | Linux | Prefer the validated Ubuntu 24.04 LTS, linux/amd64 baseline. On another distribution, record the distribution and kernel and ensure unprivileged user namespaces are available for `network: none` stages. |
 | Git | Git 2.17 or newer, with `git worktree add` and `git worktree remove`. |
-| Go | Go 1.26.5 (the repository's currently pinned version), on the PATH inherited by Goobers. The target repository's complete build/test toolchain must be on that PATH too. |
+| Go | Go 1.26.6 (the repository's currently pinned version), on the PATH inherited by Goobers. The target repository's complete build/test toolchain must be on that PATH too. |
 | Copilot CLI | A current stable GitHub Copilot CLI on the same user's PATH, an active Copilot entitlement, and an organization policy that permits Copilot CLI. Record `copilot --version`. |
 | Goobers instance | A validated instance containing the `implementation` workflow, repository capability credentials, working local and hosted CI, and exactly one dedicated issue eligible under that workflow's trust/readiness labels. The shipped workflow expects `goobers:approved` and `goobers:ready`; open-PR caps and run budgets must also admit the run. |
 
