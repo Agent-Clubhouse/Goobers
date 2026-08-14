@@ -651,7 +651,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 	if mcpArg != "" {
-		argv = append(argv, "--additional-mcp-config", mcpArg)
+		argv = append(argv, "--additional-mcp-config", "@"+mcpArg)
 	}
 
 	env, err := c.credentialEnv(ctx, req)
