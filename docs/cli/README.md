@@ -861,11 +861,14 @@ $ goobers connect acme/web --json ./my-instance
 serve and open the local operations portal
 
 ~~~text
-Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]
+Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
 
 Serve the embedded portal against the live daemon when `goobers up` is
 running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
+--listen overrides the full bind address (host:port) and takes the place
+of --port when given; binding a non-loopback host requires api.auth to be
+configured in instance.yaml (SEC-043) — there is no insecure override.
 Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
 browser failure, 2 = usage/IO error.
 ~~~

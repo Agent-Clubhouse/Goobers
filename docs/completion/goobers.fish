@@ -131,6 +131,7 @@ complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespac
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l drain-timeout -r -d 'Graceful-drain timeout'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l work-root -r -d 'Stage workspace root'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'
+complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l listen -r -d 'Bind address as host:port; non-loopback requires api.auth'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l port -r -d 'Server port, or auto'

@@ -211,6 +211,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
+		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 	},
