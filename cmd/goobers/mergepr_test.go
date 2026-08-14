@@ -1332,7 +1332,7 @@ func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
 
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
-	held, err := lock.Acquire(lockPath)
+	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatalf("pre-acquire merge lock: %v", err)
 	}

@@ -17,11 +17,6 @@ type Handle struct {
 	file *os.File
 }
 
-// Acquire opens path and waits until it holds an exclusive lock.
-func Acquire(path string) (*Handle, error) {
-	return acquire(path, false)
-}
-
 // TryAcquire opens path and attempts to take an exclusive lock without waiting.
 func TryAcquire(path string) (*Handle, error) {
 	return acquire(path, true)

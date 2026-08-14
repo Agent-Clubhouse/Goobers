@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/goobers/goobers/internal/platform/lock"
 )
 
 // objectCacheDirName is the node-level object cache's directory name under
@@ -51,7 +49,7 @@ func (m *Manager) ensureObjectCache(ctx context.Context, repoURL, key string) (s
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", fmt.Errorf("worktree: create object cache parent for %s: %w", repoURL, err)
 	}
-	handle, err := lock.Acquire(m.objectCacheLockPath(key))
+	handle, err := acquireObjectCacheLock(m.objectCacheLockPath(key))
 	if err != nil {
 		return "", fmt.Errorf("worktree: acquire object cache lock for %s: %w", repoURL, err)
 	}
@@ -119,7 +117,7 @@ func (m *Manager) GCObjectCache(repoURL string, workcopiesRoots []string) (GCObj
 		cacheObjectsDir = resolved
 	}
 
-	handle, err := lock.Acquire(m.objectCacheLockPath(key))
+	handle, err := acquireObjectCacheLock(m.objectCacheLockPath(key))
 	if err != nil {
 		return GCObjectCacheResult{}, fmt.Errorf("worktree: acquire object cache lock for %s: %w", repoURL, err)
 	}
