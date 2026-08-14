@@ -628,7 +628,9 @@ export interface TelemetryStatsResult {
 export interface NodeCredit {
   gaggle: string;
   workflow: string;
+  kind: "stage" | "gate";
   stage: string;
+  identity?: string;
   routedRuns: number;
   failureRuns: number;
   failureShare: number;

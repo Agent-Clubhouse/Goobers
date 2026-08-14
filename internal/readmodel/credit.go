@@ -24,16 +24,16 @@ type CreditOptions struct {
 type NodeCredit struct {
 	Gaggle             string
 	Workflow           string
+	Kind               string
 	Stage              string
+	Identity           string
 	RoutedRuns         int
 	FailureRuns        int
 	EscalationRuns     int
 	RetryWasteAttempts int
 }
 
-// CreditAssignment returns the highest-contributing graph nodes. Failed and
-// escalated runs contribute one point to every node they routed through;
-// attempts after the first contribute retry-waste to that node.
+// CreditAssignment returns the highest-contributing graph nodes.
 func (s *Store) CreditAssignment(ctx context.Context, options CreditOptions) ([]NodeCredit, error) {
 	limit := options.Limit
 	if limit <= 0 {
@@ -61,19 +61,21 @@ func (s *Store) CreditAssignment(ctx context.Context, options CreditOptions) ([]
 	args = append(args, limit)
 
 	query := `
-SELECT r.gaggle, r.workflow, rs.stage,
+SELECT r.gaggle, r.workflow, rn.kind, rn.name, rn.identity,
        COUNT(*) AS routed_runs,
-       SUM(CASE WHEN r.phase = 'failed' THEN 1 ELSE 0 END) AS failure_runs,
-       SUM(CASE WHEN r.phase = 'escalated' THEN 1 ELSE 0 END) AS escalation_runs,
-       SUM(CASE WHEN rs.attempts > 1 THEN rs.attempts - 1 ELSE 0 END) AS retry_waste
-FROM run_stage rs
-JOIN run r ON r.run_id = rs.run_id
+       SUM(CASE WHEN r.outcome_target = '@abort'
+                     OR lower(r.outcome_verdict) IN ('fail', 'failure', 'reject', 'rejected')
+                THEN 1 ELSE 0 END) AS failure_runs,
+       SUM(CASE WHEN r.outcome_target = '@escalate' THEN 1 ELSE 0 END) AS escalation_runs,
+       SUM(rn.retry_waste_attempts) AS retry_waste
+FROM run_node rn
+JOIN run r ON r.run_id = rn.run_id
 WHERE ` + strings.Join(predicates, " AND ") + `
-GROUP BY r.gaggle, r.workflow, rs.stage
+GROUP BY r.gaggle, r.workflow, rn.kind, rn.name, rn.identity
 HAVING failure_runs > 0 OR escalation_runs > 0 OR retry_waste > 0
 ORDER BY failure_runs + escalation_runs + retry_waste DESC,
          failure_runs DESC, escalation_runs DESC, retry_waste DESC,
-         r.gaggle ASC, r.workflow ASC, rs.stage ASC
+         r.gaggle ASC, r.workflow ASC, rn.kind ASC, rn.name ASC, rn.identity ASC
 LIMIT ?`
 
 	db, release, err := s.readHandle()
@@ -93,7 +95,9 @@ LIMIT ?`
 		if err := rows.Scan(
 			&item.Gaggle,
 			&item.Workflow,
+			&item.Kind,
 			&item.Stage,
+			&item.Identity,
 			&item.RoutedRuns,
 			&item.FailureRuns,
 			&item.EscalationRuns,

@@ -363,14 +363,16 @@ function CreditAssignment({
                 filters,
                 credit.gaggle,
                 credit.workflow,
-                credit.stage,
+                credit.kind === "stage" ? credit.stage : undefined,
               ),
             })}
-            key={`${credit.gaggle}:${credit.workflow}:${credit.stage}`}
+            key={`${credit.gaggle}:${credit.workflow}:${credit.kind}:${credit.stage}:${credit.identity ?? ""}`}
           >
             <span className="distribution-name">
               <strong>{credit.stage}</strong>
-              <small>{credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed runs</small>
+              <small>
+                {credit.kind} · {credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed runs
+              </small>
             </span>
             <strong>{formatRate(credit.failureShare)}</strong>
             <strong>{credit.failureRuns}</strong>

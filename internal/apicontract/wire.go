@@ -498,7 +498,8 @@ func newWireFixtures() wireFixtures {
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{
 			CreditAssignment: []readservice.NodeCredit{{
-				Gaggle: "core", Workflow: "implementation", Stage: "review",
+				Gaggle: "core", Workflow: "implementation", Kind: "gate",
+				Stage: "review", Identity: "sha256:reviewer",
 				RoutedRuns: 4, FailureRuns: 1, FailureShare: 0.25,
 				EscalationRuns: 1, RetryWasteAttempts: 2,
 			}},

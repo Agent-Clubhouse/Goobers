@@ -60,7 +60,9 @@ type TelemetryStatsResult struct {
 type NodeCredit struct {
 	Gaggle             string  `json:"gaggle"`
 	Workflow           string  `json:"workflow"`
+	Kind               string  `json:"kind"`
 	Stage              string  `json:"stage"`
+	Identity           string  `json:"identity,omitempty"`
 	RoutedRuns         int     `json:"routedRuns"`
 	FailureRuns        int     `json:"failureRuns"`
 	FailureShare       float64 `json:"failureShare"`
@@ -655,7 +657,8 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 			failureShare = float64(credit.FailureRuns) / float64(credit.RoutedRuns)
 		}
 		result.CreditAssignment = append(result.CreditAssignment, NodeCredit{
-			Gaggle: credit.Gaggle, Workflow: credit.Workflow, Stage: credit.Stage,
+			Gaggle: credit.Gaggle, Workflow: credit.Workflow, Kind: credit.Kind,
+			Stage: credit.Stage, Identity: credit.Identity,
 			RoutedRuns: credit.RoutedRuns, FailureRuns: credit.FailureRuns,
 			FailureShare: failureShare, EscalationRuns: credit.EscalationRuns,
 			RetryWasteAttempts: credit.RetryWasteAttempts,

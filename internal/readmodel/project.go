@@ -134,6 +134,22 @@ type StageRow struct {
 	RetryWaste      bool
 }
 
+// NodeRow is one graph node visited by a run. Unlike StageRow it includes gates
+// and the resolved goober identity shared by prompts and tools.
+type NodeRow struct {
+	RunID              string
+	Kind               string
+	Name               string
+	Identity           string
+	Attempts           int
+	RetryWasteAttempts int
+
+	branchAttempts map[int]int
+	gateOpen       map[int]bool
+	humanVisit     map[int]bool
+	humanRequested map[int]bool
+}
+
 // StageMeasurement is what the telemetry rollup knows about one stage that the
 // journal does not.
 //
@@ -216,6 +232,7 @@ func (p *Projection) rollUpMeasurement() {
 type Projection struct {
 	Run    RunRow
 	Stages []StageRow
+	Nodes  []NodeRow
 }
 
 // ProjectRun folds a run's identity and events into a projection.
@@ -253,6 +270,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 
 	seenStages := stageSet(prev.Run.Stages)
 	stages := carryStages(prev.Stages)
+	nodes := carryNodes(prev.Nodes)
 
 	for _, event := range events {
 		if event.Seq > row.LastSeq {
@@ -296,6 +314,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				at := event.Time
 				s.StartedAt = &at
 			}
+			nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+				recordAttempt(event.Branch, event.AttemptClass)
 
 		case journal.EventError:
 			if event.Stage == "" || event.Error == nil || event.Error.Code != "executor_error" {
@@ -311,6 +331,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				// The journal reference synthesizes an attempt when dispatch
 				// fails before stage.started can be recorded.
 				s.Attempts++
+				nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+					recordAttempt(event.Branch, event.AttemptClass)
 			}
 			s.LastStatus = "failure"
 			s.LastAttemptClass = string(event.AttemptClass)
@@ -340,9 +362,22 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
 			row.CurrentStage = event.Gate
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, identity.GooberDigest)
+			node.recordAttempt(event.Branch, "")
+			node.gateOpen[event.Branch] = true
 		case journal.EventGateEvaluated:
 			if row.CurrentStage == event.Gate {
 				row.CurrentStage = ""
+			}
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, identity.GooberDigest)
+			if !node.gateOpen[event.Branch] {
+				node.recordAttempt(event.Branch, "")
+			}
+			node.gateOpen[event.Branch] = false
+			if event.Target == "@abort" || event.Target == "@escalate" ||
+				event.Target == journal.TargetComplete {
+				row.OutcomeVerdict = event.Verdict
+				row.OutcomeTarget = event.Target
 			}
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
@@ -350,6 +385,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.FinishedAt = nil
 			row.CurrentStage = event.Stage
 			row.RepassCount++
+			nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+				humanRequested[event.Branch] = true
 		case journal.EventRunFinished:
 			// The journal-derived reference closes attempts still open at run
 			// termination as failures. Mirror that before projecting the run's
@@ -388,6 +425,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Sorted so a rebuild produces byte-identical rows in a stable order
 	// (§14.9); map iteration order would defeat that.
 	sort.Slice(out, func(i, j int) bool { return out[i].Stage < out[j].Stage })
+	outNodes := make([]NodeRow, 0, len(nodes))
+	for _, node := range nodes {
+		outNodes = append(outNodes, *node)
+	}
+	sort.Slice(outNodes, func(i, j int) bool {
+		if outNodes[i].Kind != outNodes[j].Kind {
+			return outNodes[i].Kind < outNodes[j].Kind
+		}
+		if outNodes[i].Name != outNodes[j].Name {
+			return outNodes[i].Name < outNodes[j].Name
+		}
+		return outNodes[i].Identity < outNodes[j].Identity
+	})
 
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
@@ -397,7 +447,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		row.Disposition = DispositionNoWork
 	}
 
-	return Projection{Run: row, Stages: out}
+	return Projection{Run: row, Stages: out, Nodes: outNodes}
 }
 
 const workspaceResetSuggestionPrefix = "Workspace reset suggested:"
@@ -462,6 +512,83 @@ func carryStages(prev []StageRow) map[string]*StageRow {
 	for i := range prev {
 		row := prev[i]
 		out[row.Stage] = &row
+	}
+	return out
+}
+
+func carryNodes(prev []NodeRow) map[string]*NodeRow {
+	out := make(map[string]*NodeRow, len(prev))
+	for i := range prev {
+		row := prev[i]
+		row.branchAttempts = cloneIntMap(row.branchAttempts)
+		row.gateOpen = cloneBoolMap(row.gateOpen)
+		row.humanVisit = cloneBoolMap(row.humanVisit)
+		row.humanRequested = cloneBoolMap(row.humanRequested)
+		out[nodeKey(row.Kind, row.Name, row.Identity)] = &row
+	}
+	return out
+}
+
+func nodeRow(nodes map[string]*NodeRow, runID, kind, name, identity string) *NodeRow {
+	key := nodeKey(kind, name, identity)
+	if node, ok := nodes[key]; ok {
+		return node
+	}
+	node := &NodeRow{
+		RunID: runID, Kind: kind, Name: name, Identity: identity,
+		branchAttempts: make(map[int]int), gateOpen: make(map[int]bool),
+		humanVisit: make(map[int]bool), humanRequested: make(map[int]bool),
+	}
+	nodes[key] = node
+	return node
+}
+
+func (n *NodeRow) recordAttempt(branch int, class journal.AttemptClass) {
+	if n.branchAttempts == nil {
+		n.branchAttempts = make(map[int]int)
+	}
+	if n.gateOpen == nil {
+		n.gateOpen = make(map[int]bool)
+	}
+	if n.humanVisit == nil {
+		n.humanVisit = make(map[int]bool)
+	}
+	if n.humanRequested == nil {
+		n.humanRequested = make(map[int]bool)
+	}
+	newTraversal := class == ""
+	if class == journal.AttemptHuman {
+		newTraversal = n.humanRequested[branch] || !n.humanVisit[branch]
+		n.humanVisit[branch] = true
+		n.humanRequested[branch] = false
+	} else if class == "" {
+		n.humanVisit[branch] = false
+		n.humanRequested[branch] = false
+	}
+	if newTraversal && n.branchAttempts[branch] > 0 {
+		n.RetryWasteAttempts += n.branchAttempts[branch]
+		n.branchAttempts[branch] = 0
+	}
+	n.Attempts++
+	n.branchAttempts[branch]++
+}
+
+func nodeKey(kind, name, identity string) string {
+	return kind + "\x00" + name + "\x00" + identity
+}
+
+func cloneIntMap(in map[int]int) map[int]int {
+	out := make(map[int]int, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneBoolMap(in map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(in))
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }
