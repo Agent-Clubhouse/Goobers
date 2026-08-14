@@ -561,11 +561,12 @@ func (n *NodeRow) recordAttempt(branch int, class journal.AttemptClass) {
 		n.humanRequested = make(map[int]bool)
 	}
 	newTraversal := class == ""
-	if class == journal.AttemptHuman {
+	switch class {
+	case journal.AttemptHuman:
 		newTraversal = n.humanRequested[branch] || !n.humanVisit[branch]
 		n.humanVisit[branch] = true
 		n.humanRequested[branch] = false
-	} else if class == "" {
+	case "":
 		n.humanVisit[branch] = false
 		n.humanRequested[branch] = false
 	}
