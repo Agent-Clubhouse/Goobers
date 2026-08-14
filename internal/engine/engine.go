@@ -439,7 +439,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
-	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream, t.Goober)
 	env.MinimumIntegrity = t.MinimumIntegrity
 	// Both admission checks run before dispatch, matching the local runner.
 	// The engine resolves inputsFrom only against the immediately preceding
@@ -525,7 +525,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// subject stage's ResultEnvelope over the wire envelope (§2.4), so
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil, "")
 		env.Inputs, err = gate.AutomatedInputs(subject)
 		if err != nil {
 			return "", nil, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
@@ -546,10 +546,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// (#294). AgenticGate carries no stage-level capabilities, so they are
 		// sourced from the reviewer goober's own grants, pinned at start.
 		var gateCaps []string
+		var reviewerGoober string
 		if g.Agentic != nil {
-			gateCaps = in.GateGooberCapabilities[g.Agentic.Goober]
+			reviewerGoober = g.Agentic.Goober
+			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var verdict apiv1.Verdict
@@ -604,7 +606,16 @@ func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespac
 // host provisions one fresh per attempt and stamps it into the envelope
 // before the stage executes (Activities.provisionWorkspace) — failing closed,
 // never dispatching a partial envelope.
-func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
+//
+// goober is the ONE field the local runner's buildEnvelope deliberately
+// omits and the engine must set (#2904): the local runner dispatches from
+// the workflow Definition and hands the goober name to its executor factory
+// directly, so its envelope never needed to carry it. A Temporal worker has
+// only the envelope — invoke.Goober.Invoke(ctx, env) is the whole signature
+// the worker seam dispatches through — so leaving it empty here strands
+// every agentic activity with no goober identity to route on. Empty for a
+// deterministic task or an automated gate.
+func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, goober string) apiv1.InvocationEnvelope {
 	inputs := make(map[string]interface{}, len(taskInputs))
 	for k, v := range taskInputs {
 		inputs[k] = v
@@ -625,6 +636,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		BranchNamespace: in.BranchNamespace,
 		BaseBranch:      baseBranch,
 		Goal:            goal,
+		Goober:          goober,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
 		ContextPointers: upstream,
