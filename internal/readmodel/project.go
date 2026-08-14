@@ -299,13 +299,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if suggestion, ok := RunnerResetSuggestion(event); ok {
 				row.CurrentStage = suggestion
 			}
-		case journal.EventRunResumed, journal.EventGateOverridden:
+		case journal.EventRunResumed:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
 			row.Phase = journal.PhaseRunning
 			row.FinishedAt = nil
 			row.CurrentStage = event.Target
 			row.OutcomeVerdict, row.OutcomeTarget = "", ""
+		case journal.EventGateOverridden:
+			row.Phase = journal.PhaseRunning
+			row.FinishedAt = nil
+			row.CurrentStage = event.Target
+			row.OutcomeVerdict = event.Verdict
+			row.OutcomeTarget = event.Target
 		case journal.EventStageStarted:
 			row.CurrentStage = event.Stage
 			s := stageRow(stages, row.RunID, event.Stage)
