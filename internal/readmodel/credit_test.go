@@ -14,14 +14,14 @@ func TestCreditAssignmentRanksSharedNodesAcrossRuns(t *testing.T) {
 	start := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 
 	seedCreditRun(t, store, "failed-a", start, journal.PhaseCompleted, "reject", "@abort", []NodeRow{
-		{RunID: "failed-a", Kind: "gate", Name: "shared-review", Identity: "sha256:reviewer", Attempts: 2, RetryWasteAttempts: 1},
+		projectCreditGate(t, "failed-a", "sha256:participant-set-a", 2, 1),
 		{RunID: "failed-a", Kind: "stage", Name: "implement", Identity: "sha256:implementer", Attempts: 1},
 	})
-	seedCreditRun(t, store, "escalated-b", start.Add(time.Hour), journal.PhaseCompleted, "needs-changes", "@escalate", []NodeRow{
-		{RunID: "escalated-b", Kind: "gate", Name: "shared-review", Identity: "sha256:reviewer", Attempts: 3, RetryWasteAttempts: 2},
+	seedCreditRun(t, store, "escalated-b", start.Add(time.Hour), journal.PhaseEscalated, "needs-changes", "park-escalated", []NodeRow{
+		projectCreditGate(t, "escalated-b", "sha256:participant-set-b", 3, 2),
 	})
 	seedCreditRun(t, store, "completed-c", start.Add(2*time.Hour), journal.PhaseFailed, "pass", journal.TargetComplete, []NodeRow{
-		{RunID: "completed-c", Kind: "gate", Name: "shared-review", Identity: "sha256:reviewer", Attempts: 1},
+		projectCreditGate(t, "completed-c", "sha256:participant-set-c", 1, 0),
 	})
 
 	got, err := store.CreditAssignment(ctx, CreditOptions{
@@ -37,7 +37,7 @@ func TestCreditAssignmentRanksSharedNodesAcrossRuns(t *testing.T) {
 	}
 	if got[0] != (NodeCredit{
 		Gaggle: "core", Workflow: "implementation", Kind: "gate",
-		Stage: "shared-review", Identity: "sha256:reviewer",
+		Stage:      "shared-review",
 		RoutedRuns: 3, FailureRuns: 1, EscalationRuns: 1, RetryWasteAttempts: 3,
 	}) {
 		t.Errorf("top node = %+v", got[0])
@@ -124,12 +124,54 @@ func TestProjectRunProjectsGateIdentityAndTerminalOutcome(t *testing.T) {
 		t.Fatalf("nodes = %+v, want one gate node", projection.Nodes)
 	}
 	if node := projection.Nodes[0]; node.Kind != "gate" || node.Name != "review" ||
-		node.Identity != identity.GooberDigest {
+		node.Identity != "" {
 		t.Fatalf("gate node = %+v", node)
 	}
 	if projection.Run.OutcomeVerdict != "reject" || projection.Run.OutcomeTarget != "@abort" {
 		t.Fatalf("outcome = %q/%q", projection.Run.OutcomeVerdict, projection.Run.OutcomeTarget)
 	}
+}
+
+func TestProjectRunRetainsOutcomeRoutedThroughIntermediateStage(t *testing.T) {
+	projection := ProjectRun(testIdentity(), Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Verdict, e.Target, e.Escalated = "review", "needs-changes", "park-escalated", true
+		}),
+		ev(2, 2*time.Second, journal.EventStageStarted, func(e *journal.Event) {
+			e.Stage, e.Attempt = "park-escalated", 1
+		}),
+		ev(3, 3*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Attempt, e.Status = "park-escalated", 1, "success"
+		}),
+		ev(4, 4*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseEscalated)
+		}),
+	})
+
+	if projection.Run.OutcomeVerdict != "needs-changes" ||
+		projection.Run.OutcomeTarget != "park-escalated" {
+		t.Fatalf("outcome = %q/%q, want deferred escalation decision",
+			projection.Run.OutcomeVerdict, projection.Run.OutcomeTarget)
+	}
+}
+
+func projectCreditGate(t *testing.T, runID, gooberDigest string, attempts, waste int) NodeRow {
+	t.Helper()
+	identity := testIdentity()
+	identity.RunID = runID
+	identity.GooberDigest = gooberDigest
+	projection := ProjectRun(identity, Projection{}, []journal.Event{
+		ev(1, time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Verdict, e.Target = "shared-review", "pass", journal.TargetComplete
+		}),
+	})
+	if len(projection.Nodes) != 1 {
+		t.Fatalf("project %s nodes = %+v, want one gate", runID, projection.Nodes)
+	}
+	node := projection.Nodes[0]
+	node.Attempts = attempts
+	node.RetryWasteAttempts = waste
+	return node
 }
 
 func seedCreditRun(

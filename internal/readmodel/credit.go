@@ -18,9 +18,10 @@ type CreditOptions struct {
 	Limit    int
 }
 
-// NodeCredit is one stage identity's accumulated contribution to adverse
-// outcomes. Identity includes gaggle and workflow because stage names are only
-// unique within a workflow.
+// NodeCredit is one graph node's accumulated contribution to adverse outcomes.
+// Gaggle and workflow are part of the identity because node names are only
+// unique within a workflow. Identity is populated only when the journal carries
+// a node-specific prompt or tool identity.
 type NodeCredit struct {
 	Gaggle             string
 	Workflow           string
@@ -66,7 +67,8 @@ SELECT r.gaggle, r.workflow, rn.kind, rn.name, rn.identity,
        SUM(CASE WHEN r.outcome_target = '@abort'
                      OR lower(r.outcome_verdict) IN ('fail', 'failure', 'reject', 'rejected')
                 THEN 1 ELSE 0 END) AS failure_runs,
-       SUM(CASE WHEN r.outcome_target = '@escalate' THEN 1 ELSE 0 END) AS escalation_runs,
+       SUM(CASE WHEN r.phase = 'escalated' OR r.outcome_target = '@escalate'
+                THEN 1 ELSE 0 END) AS escalation_runs,
        SUM(rn.retry_waste_attempts) AS retry_waste
 FROM run_node rn
 JOIN run r ON r.run_id = rn.run_id

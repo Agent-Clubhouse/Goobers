@@ -134,8 +134,9 @@ type StageRow struct {
 	RetryWaste      bool
 }
 
-// NodeRow is one graph node visited by a run. Unlike StageRow it includes gates
-// and the resolved goober identity shared by prompts and tools.
+// NodeRow is one graph node visited by a run. Unlike StageRow it includes gates.
+// Identity is reserved for a node-specific prompt or tool identity when the
+// journal carries one; the run-wide goober digest must not be used here.
 type NodeRow struct {
 	RunID              string
 	Kind               string
@@ -314,7 +315,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				at := event.Time
 				s.StartedAt = &at
 			}
-			nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+			nodeRow(nodes, row.RunID, "stage", event.Stage, "").
 				recordAttempt(event.Branch, event.AttemptClass)
 
 		case journal.EventError:
@@ -331,7 +332,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				// The journal reference synthesizes an attempt when dispatch
 				// fails before stage.started can be recorded.
 				s.Attempts++
-				nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+				nodeRow(nodes, row.RunID, "stage", event.Stage, "").
 					recordAttempt(event.Branch, event.AttemptClass)
 			}
 			s.LastStatus = "failure"
@@ -362,30 +363,27 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
 			row.CurrentStage = event.Gate
-			node := nodeRow(nodes, row.RunID, "gate", event.Gate, identity.GooberDigest)
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, "")
 			node.recordAttempt(event.Branch, "")
 			node.gateOpen[event.Branch] = true
 		case journal.EventGateEvaluated:
 			if row.CurrentStage == event.Gate {
 				row.CurrentStage = ""
 			}
-			node := nodeRow(nodes, row.RunID, "gate", event.Gate, identity.GooberDigest)
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, "")
 			if !node.gateOpen[event.Branch] {
 				node.recordAttempt(event.Branch, "")
 			}
 			node.gateOpen[event.Branch] = false
-			if event.Target == "@abort" || event.Target == "@escalate" ||
-				event.Target == journal.TargetComplete {
-				row.OutcomeVerdict = event.Verdict
-				row.OutcomeTarget = event.Target
-			}
+			row.OutcomeVerdict = event.Verdict
+			row.OutcomeTarget = event.Target
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
 			row.Phase = journal.PhaseRunning
 			row.FinishedAt = nil
 			row.CurrentStage = event.Stage
 			row.RepassCount++
-			nodeRow(nodes, row.RunID, "stage", event.Stage, identity.GooberDigest).
+			nodeRow(nodes, row.RunID, "stage", event.Stage, "").
 				humanRequested[event.Branch] = true
 		case journal.EventRunFinished:
 			// The journal-derived reference closes attempts still open at run
