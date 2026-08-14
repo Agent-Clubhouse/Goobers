@@ -69,6 +69,26 @@ func TestCreditAssignmentAppliesWindowAndWorkflowScope(t *testing.T) {
 	}
 }
 
+func TestRemoveRunDeletesCreditNodes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	seedCreditRun(t, store, "removed", time.Now(), journal.PhaseCompleted, "fail", "@abort", []NodeRow{
+		{RunID: "removed", Kind: "stage", Name: "review", Attempts: 1},
+	})
+
+	if err := store.RemoveRun(ctx, "removed"); err != nil {
+		t.Fatal(err)
+	}
+	var nodes int
+	if err := store.reader.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM run_node WHERE run_id = ?`, "removed").Scan(&nodes); err != nil {
+		t.Fatal(err)
+	}
+	if nodes != 0 {
+		t.Fatalf("run_node rows after removal = %d, want 0", nodes)
+	}
+}
+
 func TestProjectRunDistinguishesRetriesFromSupersededTraversals(t *testing.T) {
 	identity := testIdentity()
 	identity.GooberDigest = "sha256:shared-prompt"
