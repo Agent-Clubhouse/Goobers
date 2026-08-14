@@ -206,7 +206,7 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	holder, err := lock.Acquire(lockPath)
+	holder, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}

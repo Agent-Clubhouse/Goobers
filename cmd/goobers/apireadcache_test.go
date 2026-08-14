@@ -626,8 +626,8 @@ func TestAPIReadCacheSnapshotPreservesPullRequestFilteringAndOrder(t *testing.T)
 }
 
 // TestNewAPIReadCacheCleansStaleListLocksAtStartup covers the per-list-key
-// lock file debris (apiReadListLockPath): lock.Acquire creates its file with
-// O_CREATE but Release only unlocks and closes it, never unlinking it, so
+// lock file debris (apiReadListLockPath): acquiring a lock creates its file
+// with O_CREATE but Release only unlocks and closes it, never unlinking it, so
 // every distinct list-request key a scheduler dir has ever seen leaves a
 // permanent zero-byte file behind. newAPIReadCache's startup sweep must
 // remove only the ones old enough to be safely considered abandoned, leave a
@@ -678,7 +678,7 @@ func TestNewAPIReadCacheCleansStaleListLocksAtStartup(t *testing.T) {
 func TestNewAPIReadCacheCleanupSkipsHeldLock(t *testing.T) {
 	dir := t.TempDir()
 	held := apiReadListLockPath(dir, "held-key")
-	handle, err := lock.Acquire(held)
+	handle, err := lock.TryAcquire(held)
 	if err != nil {
 		t.Fatal(err)
 	}
