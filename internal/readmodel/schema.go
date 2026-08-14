@@ -545,8 +545,8 @@ CREATE TABLE IF NOT EXISTS run_node (
 CREATE INDEX IF NOT EXISTS idx_run_node_identity
 	ON run_node(kind, name, identity, run_id);
 
-UPDATE projection_state SET ready = 0 WHERE id = 1;
-DELETE FROM run_stage;
-DELETE FROM run;
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
 `,
 }
