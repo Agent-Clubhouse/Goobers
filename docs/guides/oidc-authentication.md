@@ -176,12 +176,20 @@ VITE_OIDC_REDIRECT_URI=https://goobers.example.com \
 npm --prefix portal run build
 ```
 
-The current `goobers dashboard` attach proxy cannot supply a bearer token to an
+The `goobers dashboard` attach proxy still cannot supply a bearer token to an
 authenticated running daemon, and the portal data client does not yet attach
 the token produced by the authentication seam. Do not treat these build
-variables as a working remote-portal access control. Keep the dashboard
-loopback-only and use a client that sends a bearer token in the
-`Authorization` header when accessing an OIDC-protected daemon.
+variables as a working access control for that attached-to-a-live-daemon
+case — it stays loopback-only; stop the daemon or query its API directly if
+you need authenticated access to it through the portal.
+
+The standalone dashboard (no live `goobers up` daemon reachable) is
+different: `goobers dashboard --listen <host:port>` accepts a non-loopback
+host once `api.auth.oidc` is configured, gated the same way `api.listen` is
+(SEC-043) — there is no insecure override, and the standalone handler
+validates the same bearer tokens the daemon API does. Loopback stays the
+default; `--listen` to a non-loopback host without `api.auth` configured is
+refused outright.
 
 ## Verify authentication and authorization
 

@@ -107,7 +107,7 @@ func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr
 		pf(stderr, "error: initialize portal assets: %v\n", errors.Join(err, guided.close()))
 		return 1
 	}
-	listener, err := listenDashboard(port)
+	listener, err := listenDashboard("127.0.0.1", port)
 	if err != nil {
 		pf(stderr, "error: %v\n", errors.Join(err, guided.close()))
 		return 1

@@ -124,7 +124,10 @@ func (s *guidedServer) apiHandler() http.Handler {
 		s.errorLog.Printf("guided API: invalid tutorial instance.yaml: %v", err)
 		return nil
 	}
-	api, err := standaloneDashboardAPI(layout, config, s.errorLog)
+	// The guided onboarding server always binds loopback (see the
+	// listenDashboard("127.0.0.1", ...) call in dashboard.go's getting-started
+	// path), so the reveal-in-Finder action is always same-machine here.
+	api, err := standaloneDashboardAPI(layout, config, s.errorLog, true)
 	if err != nil {
 		s.errorLog.Printf("guided API: initialize standalone read API: %v", err)
 		return nil
