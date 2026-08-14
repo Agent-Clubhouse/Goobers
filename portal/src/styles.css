@@ -573,6 +573,12 @@ summary:focus-visible {
   justify-content: space-between;
 }
 
+.daemon-state-auth {
+  align-items: end;
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  justify-content: space-between;
+}
+
 .empty-state img {
   height: 64px;
   object-fit: contain;
@@ -5811,7 +5817,8 @@ a.telemetry-error-row:hover {
     grid-template-columns: 1fr;
   }
 
-  .daemon-state-error {
+  .daemon-state-error,
+  .daemon-state-auth {
     align-items: start;
     display: grid;
   }

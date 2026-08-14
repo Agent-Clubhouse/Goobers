@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DaemonApiError,
+  DaemonAuthError,
   DaemonUnavailableError,
   MalformedResponseError,
   RequestCancelledError,
@@ -276,6 +277,68 @@ describe("HttpDaemonClient", () => {
 
     await expect(new HttpDaemonClient({ baseUrl: started.baseUrl }).getHealth()).rejects.toBeInstanceOf(
       DaemonUnavailableError,
+    );
+  });
+
+  // #2916: a 401/403 must be classified as an auth failure — not
+  // "malformed response" or "daemon unavailable" — no matter what shape the
+  // response body takes, since a proxy/gateway in front of the daemon may
+  // reject the request itself with something other than the daemon's JSON
+  // error envelope.
+  describe("auth failures (#2916)", () => {
+    it.each([401, 403] as const)(
+      "classifies a %d response with a JSON body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          json(response, { error: { code: "unauthorized", message: "nope" } }, status);
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with a non-JSON (HTML) body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status, { "Content-Type": "text/html" });
+          response.end("<html><body>Please log in</body></html>");
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with a non-JSON (plain text) body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status, { "Content-Type": "text/plain" });
+          response.end("Forbidden by the proxy");
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with an empty body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status);
+          response.end();
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
     );
   });
 });
