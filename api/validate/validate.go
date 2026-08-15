@@ -898,7 +898,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
-		for _, def := range ix.featureDefinitionsForGaggle(g.Spec.Gaggle) {
+		for _, def := range ix.featureDefinitionsForGoober(g.Spec) {
 			r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
 		}
@@ -973,6 +973,33 @@ func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
 	byVersion := map[string]wf.Definition{}
 	for identity, indexed := range ix.workflows {
 		if identity.gaggle != gaggle {
+			continue
+		}
+		definition := indexed.definition
+		byVersion[definition.DSLVersion] = wf.Definition{
+			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		}
+	}
+	if len(byVersion) == 0 {
+		return []wf.Definition{{}}
+	}
+	versions := make([]string, 0, len(byVersion))
+	for version := range byVersion {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	definitions := make([]wf.Definition, 0, len(versions))
+	for _, version := range versions {
+		definitions = append(definitions, byVersion[version])
+	}
+	return definitions
+}
+
+func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
+	byVersion := map[string]wf.Definition{}
+	for _, name := range spec.Workflows {
+		indexed, ok := ix.workflows[workflowIdentity{gaggle: spec.Gaggle, name: name}]
+		if !ok {
 			continue
 		}
 		definition := indexed.definition

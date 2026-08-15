@@ -17,6 +17,17 @@ import (
 
 func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	root := initIntrospectionInstance(t)
+	currentPath := defaultWorkflowPath(root)
+	raw, err := os.ReadFile(currentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
+	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	const nextOnly workflow.FeatureID = "goober.spec.next-only"
 	var versions []string
 	features, code := instanceUsedFeaturesWithResolver(
@@ -39,8 +50,8 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("instanceUsedFeaturesWithResolver code = %d", code)
 	}
-	if !slices.Contains(versions, supportmatrix.NextDSLVersion) {
-		t.Fatalf("resolver versions = %v, want %q", versions, supportmatrix.NextDSLVersion)
+	if len(versions) != 1 || versions[0] != supportmatrix.NextDSLVersion {
+		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.NextDSLVersion)
 	}
 	if !slices.ContainsFunc(features, func(feature workflow.Feature) bool {
 		return feature.ID == nextOnly

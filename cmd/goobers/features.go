@@ -213,7 +213,7 @@ func instanceUsedFeaturesWithResolver(
 	}
 	for i := range set.Goobers {
 		g := &set.Goobers[i]
-		for _, def := range featureDefinitionsForGaggle(set.Workflows, g.Spec.Gaggle) {
+		for _, def := range featureDefinitionsForGoober(set.Workflows, g.Spec) {
 			features, err := resolveGoober(def, g.Spec)
 			if err != nil {
 				pf(stderr, "error: goober %q: %v\n", g.Name, err)
@@ -258,6 +258,21 @@ func featureDefinitionsForGaggle(workflows []apiv1.Workflow, gaggle string) []wo
 		definitions = append(definitions, byVersion[version])
 	}
 	return definitions
+}
+
+func featureDefinitionsForGoober(workflows []apiv1.Workflow, spec apiv1.GooberSpec) []workflow.Definition {
+	referenced := make(map[string]bool, len(spec.Workflows))
+	for _, name := range spec.Workflows {
+		referenced[name] = true
+	}
+	matching := make([]apiv1.Workflow, 0, len(spec.Workflows))
+	for i := range workflows {
+		wf := workflows[i]
+		if wf.Spec.Gaggle == spec.Gaggle && referenced[wf.Name] {
+			matching = append(matching, wf)
+		}
+	}
+	return featureDefinitionsForGaggle(matching, spec.Gaggle)
 }
 
 func addUsedFeature(used map[workflow.FeatureID]workflow.Feature, feature workflow.Feature) {
