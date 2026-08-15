@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -24,7 +25,9 @@ type Feature = vcurrent.Feature
 type DSLFeatureSupport = vcurrent.DSLFeatureSupport
 
 // FeatureRegistry is an immutable feature-support lookup table.
-type FeatureRegistry = vcurrent.FeatureRegistry
+type FeatureRegistry struct {
+	entries map[FeatureID]Feature
+}
 
 // FeatureDiagnostic describes one support-level finding.
 type FeatureDiagnostic = vcurrent.FeatureDiagnostic
@@ -47,6 +50,24 @@ func NewFeatureRegistry(def Definition, features []Feature) (FeatureRegistry, er
 		return FeatureRegistry{}, err
 	}
 	return interpreter.newFeatureRegistry(features)
+}
+
+// Lookup returns the support metadata for id.
+func (r FeatureRegistry) Lookup(id FeatureID) (Feature, bool) {
+	feature, ok := r.entries[id]
+	return cloneFeature(feature), ok
+}
+
+// All returns every feature in stable ID order.
+func (r FeatureRegistry) All() []Feature {
+	features := make([]Feature, 0, len(r.entries))
+	for _, feature := range r.entries {
+		features = append(features, cloneFeature(feature))
+	}
+	sort.Slice(features, func(i, j int) bool {
+		return features[i].ID < features[j].ID
+	})
+	return features
 }
 
 // LookupFeature returns support metadata across registered interpreters.
@@ -155,15 +176,31 @@ func CheckGooberFeatureSupport(def Definition, spec apiv1.GooberSpec, allowPrevi
 	return CheckFeatureSupport(def, features, allowPreview)
 }
 
+func newCurrentFeatureRegistry(features []Feature) (FeatureRegistry, error) {
+	validated, err := vcurrent.NewFeatureRegistry(features)
+	if err != nil {
+		return FeatureRegistry{}, err
+	}
+	return featureRegistry(validated.All()), nil
+}
+
 func newNextFeatureRegistry(features []Feature) (FeatureRegistry, error) {
+	return newNextFeatureRegistryWith(features, vnext.NewFeatureRegistry)
+}
+
+func newNextFeatureRegistryWith(
+	features []Feature,
+	validate func([]vnext.Feature) (vnext.FeatureRegistry, error),
+) (FeatureRegistry, error) {
 	next := make([]vnext.Feature, len(features))
 	for i, feature := range features {
 		next[i] = featureForNext(feature)
 	}
-	if _, err := vnext.NewFeatureRegistry(next); err != nil {
+	validated, err := validate(next)
+	if err != nil {
 		return FeatureRegistry{}, err
 	}
-	return vcurrent.NewFeatureRegistry(features)
+	return featureRegistry(featuresFromNext(validated.All())), nil
 }
 
 func nextFeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
@@ -284,4 +321,18 @@ func nextFeature(feature vnext.Feature) Feature {
 		}
 	}
 	return out
+}
+
+func featureRegistry(features []Feature) FeatureRegistry {
+	entries := make(map[FeatureID]Feature, len(features))
+	for _, feature := range features {
+		entries[feature.ID] = cloneFeature(feature)
+	}
+	return FeatureRegistry{entries: entries}
+}
+
+func cloneFeature(feature Feature) Feature {
+	feature.History = slices.Clone(feature.History)
+	feature.DSLVersions = slices.Clone(feature.DSLVersions)
+	return feature
 }

@@ -50,7 +50,7 @@ var currentInterpreter = versionedInterpreter{
 	checkStageContractWarnings:  vcurrent.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vcurrent.CheckStageTimeoutCoherence,
 	checkPathSimulation:         vcurrent.CheckPathSimulation,
-	newFeatureRegistry:          vcurrent.NewFeatureRegistry,
+	newFeatureRegistry:          newCurrentFeatureRegistry,
 	featuresAtDSLVersion:        vcurrent.FeaturesAtDSLVersion,
 	featuresForWorkflow:         vcurrent.FeaturesForWorkflow,
 	featuresForGaggle:           vcurrent.FeaturesForGaggle,

@@ -142,6 +142,39 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 	}
 }
 
+func TestNextFeatureRegistryDoesNotRevalidateWithCurrentInterpreter(t *testing.T) {
+	input := []Feature{{ID: "rejected-by-current"}}
+	if _, err := vcurrent.NewFeatureRegistry(input); err == nil {
+		t.Fatal("test feature unexpectedly passed current validation")
+	}
+
+	const nextOnly FeatureID = "goober.spec.next-only"
+	registry, err := newNextFeatureRegistryWith(
+		input,
+		func([]vnext.Feature) (vnext.FeatureRegistry, error) {
+			return vnext.NewFeatureRegistry([]vnext.Feature{{
+				ID:           vnext.FeatureID(nextOnly),
+				Level:        vnext.SupportPreview,
+				SinceVersion: "v0.1.0",
+				History: []vnext.SupportTransition{{
+					Level:        vnext.SupportPreview,
+					SinceVersion: "v0.1.0",
+				}},
+				DSLVersions: []vnext.DSLFeatureSupport{{
+					Version: vnext.DSLVersion,
+					Level:   vnext.SupportPreview,
+				}},
+			}})
+		},
+	)
+	if err != nil {
+		t.Fatalf("next registry rejected interpreter-validated features: %v", err)
+	}
+	if feature, ok := registry.Lookup(nextOnly); !ok || feature.ID != nextOnly {
+		t.Fatalf("Lookup(%q) = %+v, %v", nextOnly, feature, ok)
+	}
+}
+
 func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
 	const nextOnly FeatureID = "goober.spec.next-only"
 	original := nextInterpreter.featuresForGoober
