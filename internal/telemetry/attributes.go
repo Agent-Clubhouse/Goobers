@@ -139,6 +139,8 @@ type RunAttributes struct {
 
 // TaskAttributes describes one task attempt span.
 type TaskAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
@@ -159,6 +161,8 @@ type TaskAttributes struct {
 
 // GateAttributes describes one gate evaluation span.
 type GateAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string

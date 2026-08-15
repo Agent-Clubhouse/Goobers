@@ -32,7 +32,17 @@ type CompletedRunReconciler struct {
 	namespace     string
 	runsDirs      map[string]string
 	observe       ProjectionObserver
+	spans         SpanSink
 	nextPageToken []byte
+}
+
+// WithSpans attaches a span sink, so each newly projected run also emits
+// backdated telemetry (#2865). Optional: a nil sink leaves the reconciler
+// exactly as it was, which is the shape for an instance with telemetry
+// disabled.
+func (r *CompletedRunReconciler) WithSpans(sink SpanSink) *CompletedRunReconciler {
+	r.spans = sink
+	return r
 }
 
 // NewCompletedRunReconciler constructs a reconciler scoped to configured
@@ -104,7 +114,7 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 				continue
 			}
 		}
-		if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe); err != nil {
+		if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe, r.spans); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -129,7 +139,12 @@ func ProjectCompletedRunForGaggle(ctx context.Context, q projectionQuerier, work
 			return dir, observeProjectedRun(ctx, observe, workflowID, dir)
 		}
 	}
-	return projectCompletedRun(ctx, q, workflowID, gaggle, runsDir, observe)
+	// No span sink on the manual path. `goobers engine-project` is a one-shot
+	// command that builds no telemetry client, and a run projected by hand is
+	// almost always being recovered rather than observed. The daemon's
+	// reconciler is where spans are emitted, because that is the path every run
+	// takes automatically.
+	return projectCompletedRun(ctx, q, workflowID, gaggle, runsDir, observe, nil)
 }
 
 func completedRunDir(runsDir, workflowID string) (string, error) {
@@ -139,7 +154,7 @@ func completedRunDir(runsDir, workflowID string) (string, error) {
 	return filepath.Join(runsDir, workflowID), nil
 }
 
-func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver) (string, error) {
+func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver, spans SpanSink) (string, error) {
 	proj, err := queryProjection(ctx, q, workflowID)
 	if err != nil {
 		return "", err
@@ -156,6 +171,13 @@ func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, g
 	}
 	if err := observeProjectedRun(ctx, observe, workflowID, dir); err != nil {
 		return "", err
+	}
+	// Telemetry is emitted AFTER the journal is durable, and its failure does
+	// not fail the projection: a run whose journal was written correctly has not
+	// failed because a span could not be exported. The reverse would trade the
+	// durable record for the observability of it.
+	if err := SynthesizeRunSpans(ctx, spans, proj); err != nil {
+		return dir, nil
 	}
 	return dir, nil
 }

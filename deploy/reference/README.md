@@ -88,3 +88,109 @@ Copy one of `gaggle-namespace/examples/*`, set `namespace:` to the gaggle's name
 name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME egress CIDRs
 and workload-identity annotation for that gaggle (§3: one namespace and one federated
 identity per gaggle; GAG-012, SEC-001/002).
+
+## Operating notes from a real cluster
+
+Everything below was hit while standing up these shapes on AKS end to end
+(Goobernetes spike, epic #2889): a Linux daemon, a Windows worker, Temporal with
+CloudNativePG, and a workflow that merged a pull request across both operating
+systems. They are recorded because each one cost real time to diagnose and none
+of them are guessable from the manifests.
+
+### Mixed-OS clusters: pin every workload, taint the Windows nodes
+
+**AKS does not taint Windows nodes.** `kubectl get node <win> -o jsonpath='{.spec.taints}'`
+returns empty, so nothing stops a Linux pod from being scheduled onto one.
+
+That is not a scheduling inconvenience, it is **data loss**. A Linux pod with no
+`nodeSelector` landed on a Windows node, Windows initialized the attached managed
+disk, and an MBR partition table was written over the ext4 superblock — the volume
+was not corrupted, it was replaced (#2883). It survives a pod restart perfectly;
+it does not survive a scheduling accident.
+
+Two defences, and you want both:
+
+```sh
+kubectl taint node <windows-node> kubernetes.io/os=windows:NoSchedule
+```
+
+`NoSchedule` does not evict running pods, so it is safe to apply to a live
+cluster. Give Windows workloads the matching toleration, and pin every Linux
+workload with `nodeSelector: {kubernetes.io/os: linux}` — including anything a
+CRD schedules for you. CloudNativePG takes it under `spec.affinity.nodeSelector`,
+not the pod template, which is easy to miss.
+
+The failure is also **misreported**. The visible error is
+`401 Unauthorized` from the registry, because the Windows containerd snapshotter
+fails to unpack a Linux image and the client falls back to an anonymous token
+request. Ignore the 401 and look for `io.containerd.snapshotter.v1.windows` in the
+message.
+
+### Storage: `doctor --k8s` blessing an RWX class is not a blessing for the journal
+
+The preflight infers RWX capability from the provisioner. On Azure Files, EFS,
+Filestore, CephFS and NFS, POSIX `flock` does not exclude across clients and
+SQLite WAL is documented-unsafe — and the instance root carries both file locks
+and SQLite databases (#2854). Put the **journal** on a ReadWriteOnce block volume.
+
+The **artifact store** is the opposite case and safe on exactly those classes,
+because a content-addressed store never locks: a digest is written once,
+published by rename, and two writers racing on one digest are writing identical
+bytes.
+
+### Secrets
+
+The Secrets Store CSI driver mounts secrets `0644` by design, and
+`internal/platform/secfile` fail-closes on any token file readable by group or
+other. A Kubernetes Secret volume with `defaultMode: 0600` does not help either:
+those files are owned by root, so `0600` makes them unreadable to a non-root
+`runAsUser`. The working shape today is an initContainer that copies and chmods
+into a memory-backed `emptyDir` (#2844 tracks making this unnecessary).
+
+On Windows the same control is expressed through ACLs rather than mode bits, and
+a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
+inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
+
+### Images
+
+The default image carries the binary, git and ca-certificates — **no agent
+harness** — so deterministic stages run and agentic stages fail at the harness
+preflight (#2849). Build your own from it:
+
+```dockerfile
+FROM <registry>/goobers:<tag>
+RUN npm install -g @github/copilot     # or whichever harness you use
+```
+
+and set the matching `runner.harnessCommand` in `instance.yaml`. Which harness to
+install is deliberately yours: `harnessCommand` is a map keyed by harness name.
+
+Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
+pull on a fresh node. Scale a Windows pool to zero when idle, but expect that pull
+on the first run after it scales up.
+
+### Timezones
+
+Windows containers ship no IANA database. `goobers` embeds Go's copy, so a
+location name works — but any other Windows tooling in your image will not have
+it.
+
+### Multi-worker runs need the artifact store
+
+A stage consumes prior work through ContextPointers, which resolve as a path on
+the **local** filesystem. One worker: correct and free. Two workers: stage 2 is
+polled by a node whose staging area is empty and fails closed on an integrity
+fault. `--blob-store` on a ReadWriteMany volume is what makes a run spannable;
+omit it (and the volume) if you run exactly one worker.
+
+Code state is a separate channel and is **not** shared: every stage attempt gets
+a fresh worktree on the run branch, so what survives between stages is the branch
+in that worker's own git mirror. A stage that hands work to another platform must
+push first (#2861).
+
+### Cluster rebuilds
+
+`az aks get-credentials --overwrite-existing` does not reliably repoint `kubectl`
+after a cluster is deleted and recreated under the same name — it can keep
+resolving the old control-plane FQDN and fail with `no such host`. Re-run it
+explicitly as a step rather than trusting the flag.

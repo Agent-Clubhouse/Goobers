@@ -359,7 +359,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Definitions, setup.Watermarks, setup.InstanceLog)
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
