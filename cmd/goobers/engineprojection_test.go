@@ -11,7 +11,7 @@ import (
 func TestEngineProjectionIsInertWithoutTemporalConfiguration(t *testing.T) {
 	t.Setenv("GOOBERS_TEMPORAL_HOSTPORT", "")
 	root := t.TempDir()
-	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), nil, nil, nil)
+	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startEngineProjection: %v", err)
 	}
