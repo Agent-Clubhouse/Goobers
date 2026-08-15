@@ -83,6 +83,14 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			name: "business TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestTLSConfig failed: tls alert handshake failure"},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "persistent TLS certificate failure",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
