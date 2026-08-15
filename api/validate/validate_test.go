@@ -1581,7 +1581,7 @@ func TestFeatureSupportLevelsUseIssueChannel(t *testing.T) {
 				"example",
 				"Workflow",
 				"feature-level",
-				wf.CheckFeatureSupport([]wf.Feature{tc.feature}, tc.allowPreview),
+				wf.CheckFeatureSupport(wf.Definition{}, []wf.Feature{tc.feature}, tc.allowPreview),
 			)
 			if !tc.wantIssue {
 				if len(report.Issues) != 0 {

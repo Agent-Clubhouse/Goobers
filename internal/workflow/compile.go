@@ -24,7 +24,12 @@ type versionedInterpreter struct {
 	checkStageContractWarnings  func(Definition) []string
 	checkStageTimeoutCoherence  func(Definition) []string
 	checkPathSimulation         func(Definition) []string
+	newFeatureRegistry          func([]Feature) (FeatureRegistry, error)
+	featuresAtDSLVersion        func([]Feature, string) ([]Feature, error)
 	featuresForWorkflow         func(Definition) ([]Feature, error)
+	featuresForGaggle           func(apiv1.GaggleSpec) ([]Feature, error)
+	featuresForGoober           func(apiv1.GooberSpec) ([]Feature, error)
+	checkFeatureSupport         func([]Feature, bool) []FeatureDiagnostic
 	checkWorkflowFeatureSupport func(Definition, bool) []FeatureDiagnostic
 	taskInvocationInputs        func(*Machine, apiv1.Task) map[string]string
 	taskLimits                  func(apiv1.Task) apiv1.Limits
@@ -45,7 +50,12 @@ var currentInterpreter = versionedInterpreter{
 	checkStageContractWarnings:  vcurrent.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vcurrent.CheckStageTimeoutCoherence,
 	checkPathSimulation:         vcurrent.CheckPathSimulation,
+	newFeatureRegistry:          vcurrent.NewFeatureRegistry,
+	featuresAtDSLVersion:        vcurrent.FeaturesAtDSLVersion,
 	featuresForWorkflow:         vcurrent.FeaturesForWorkflow,
+	featuresForGaggle:           vcurrent.FeaturesForGaggle,
+	featuresForGoober:           vcurrent.FeaturesForGoober,
+	checkFeatureSupport:         vcurrent.CheckFeatureSupport,
 	checkWorkflowFeatureSupport: vcurrent.CheckWorkflowFeatureSupport,
 	taskInvocationInputs:        vcurrent.TaskInvocationInputs,
 	taskLimits:                  vcurrent.TaskLimits,
@@ -66,7 +76,12 @@ var nextInterpreter = versionedInterpreter{
 	checkStageContractWarnings:  vnext.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vnext.CheckStageTimeoutCoherence,
 	checkPathSimulation:         vnext.CheckPathSimulation,
+	newFeatureRegistry:          newNextFeatureRegistry,
+	featuresAtDSLVersion:        nextFeaturesAtDSLVersion,
 	featuresForWorkflow:         featuresForNextWorkflow,
+	featuresForGaggle:           featuresForNextGaggle,
+	featuresForGoober:           featuresForNextGoober,
+	checkFeatureSupport:         checkNextFeatureSupport,
 	checkWorkflowFeatureSupport: checkNextWorkflowFeatureSupport,
 	taskInvocationInputs:        vnext.TaskInvocationInputs,
 	taskLimits:                  vnext.TaskLimits,

@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -138,5 +139,49 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 		if !got[version] {
 			t.Errorf("stage.ci-poll does not report DSL version %s", version)
 		}
+	}
+}
+
+func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
+	const nextOnly FeatureID = "goober.spec.next-only"
+	original := nextInterpreter.featuresForGoober
+	nextInterpreter.featuresForGoober = func(apiv1.GooberSpec) ([]Feature, error) {
+		return []Feature{{
+			ID:           nextOnly,
+			Level:        SupportPreview,
+			SinceVersion: "v0.1.0",
+			DSLVersions: []DSLFeatureSupport{{
+				Version: vnext.DSLVersion,
+				Level:   SupportPreview,
+			}},
+		}}, nil
+	}
+	t.Cleanup(func() { nextInterpreter.featuresForGoober = original })
+
+	spec := apiv1.GooberSpec{}
+	current, err := FeaturesForGoober(Definition{DSLVersion: vcurrent.DSLVersion}, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := FeaturesForGoober(Definition{DSLVersion: vnext.DSLVersion}, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(current, func(feature Feature) bool { return feature.ID == nextOnly }) {
+		t.Fatalf("DSL %s unexpectedly resolved %q", vcurrent.DSLVersion, nextOnly)
+	}
+	if !slices.ContainsFunc(next, func(feature Feature) bool { return feature.ID == nextOnly }) {
+		t.Fatalf("DSL %s did not resolve %q", vnext.DSLVersion, nextOnly)
+	}
+	if diagnostics := CheckGooberFeatureSupport(
+		Definition{DSLVersion: vcurrent.DSLVersion}, spec, false,
+	); len(diagnostics) != 0 {
+		t.Fatalf("DSL %s diagnostics = %+v, want none", vcurrent.DSLVersion, diagnostics)
+	}
+	diagnostics := CheckGooberFeatureSupport(
+		Definition{DSLVersion: vnext.DSLVersion}, spec, false,
+	)
+	if len(diagnostics) != 1 || diagnostics[0].Feature.ID != nextOnly || !diagnostics[0].Blocking {
+		t.Fatalf("DSL %s diagnostics = %+v, want blocking %q", vnext.DSLVersion, diagnostics, nextOnly)
 	}
 }

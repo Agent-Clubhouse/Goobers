@@ -1,16 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	const nextOnly workflow.FeatureID = "goober.spec.next-only"
+	var versions []string
+	features, code := instanceUsedFeaturesWithResolver(
+		root,
+		&bytes.Buffer{},
+		func(def workflow.Definition, _ apiv1.GooberSpec) ([]workflow.Feature, error) {
+			versions = append(versions, def.DSLVersion)
+			if def.DSLVersion != supportmatrix.NextDSLVersion {
+				return nil, nil
+			}
+			return []workflow.Feature{{
+				ID: nextOnly,
+				DSLVersions: []workflow.DSLFeatureSupport{{
+					Version: supportmatrix.NextDSLVersion,
+					Level:   workflow.SupportPreview,
+				}},
+			}}, nil
+		},
+	)
+	if code != 0 {
+		t.Fatalf("instanceUsedFeaturesWithResolver code = %d", code)
+	}
+	if !slices.Contains(versions, supportmatrix.NextDSLVersion) {
+		t.Fatalf("resolver versions = %v, want %q", versions, supportmatrix.NextDSLVersion)
+	}
+	if !slices.ContainsFunc(features, func(feature workflow.Feature) bool {
+		return feature.ID == nextOnly
+	}) {
+		t.Fatalf("used features do not contain %q: %+v", nextOnly, features)
+	}
+}
 
 // TestFeaturesListsBuildMatrix: the bare command prints the full build feature
 // matrix — every registry feature, with the table header and a trailing count —

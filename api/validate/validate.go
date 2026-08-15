@@ -890,14 +890,18 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkLabelPredicates(r)
 	ix.checkFieldSelections(r)
 	for name, g := range ix.gaggles {
-		r.addFeatureDiagnostics(ix.gaggleFile[name], name, "Gaggle", name,
-			wf.CheckGaggleFeatureSupport(g.Spec, allowPreview))
+		for _, def := range ix.featureDefinitionsForGaggle(name) {
+			r.addFeatureDiagnostics(ix.gaggleFile[name], name, "Gaggle", name,
+				wf.CheckGaggleFeatureSupport(def, g.Spec, allowPreview))
+		}
 	}
 	// Goober -> gaggle / workflow references resolve; instruction file exists.
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
-		r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
-			wf.CheckGooberFeatureSupport(g.Spec, allowPreview))
+		for _, def := range ix.featureDefinitionsForGaggle(g.Spec.Gaggle) {
+			r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
+				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
+		}
 		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
 			ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 				g.Spec.Gaggle, g.Spec.Gaggle)
@@ -963,6 +967,32 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// outcome (how many parse failures, how many reference gaps) is known.
 	ix.flushReferenceIssues(r)
 	ix.checkMissingSkillPackages(r, configRoot)
+}
+
+func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
+	byVersion := map[string]wf.Definition{}
+	for identity, indexed := range ix.workflows {
+		if identity.gaggle != gaggle {
+			continue
+		}
+		definition := indexed.definition
+		byVersion[definition.DSLVersion] = wf.Definition{
+			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		}
+	}
+	if len(byVersion) == 0 {
+		return []wf.Definition{{}}
+	}
+	versions := make([]string, 0, len(byVersion))
+	for version := range byVersion {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	definitions := make([]wf.Definition, 0, len(versions))
+	for _, version := range versions {
+		definitions = append(definitions, byVersion[version])
+	}
+	return definitions
 }
 
 func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
