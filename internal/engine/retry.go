@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -100,6 +101,9 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err)
+		if isStartToCloseTimeout(err) && len(t.PolicyActions) > 0 {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
+		}
 		retryLimit, retryCount := policyMaxAttempts, policyAttempts
 		shouldRetry := policyAttempts < policyMaxAttempts
 		nextRetryClass = journal.AttemptPolicy
@@ -151,11 +155,10 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     A stage overrunning its declared duration limit lands here: the worker
 //     self-enforces the limit and surfaces it as invoke.Timeout →
 //     FailureTypeStage, the same policy class the local runner assigns (#724);
-//   - a Temporal timeout is infrastructure: StartToCloseTimeout runs
-//     stageTimeoutGrace behind the worker's own limit enforcement
-//     (stageActivityOptions), so it only fires when the worker was lost
-//     before the stage produced a verdict — the platform failed, not the
-//     stage's policy (#622);
+//   - a Temporal ScheduleToStart timeout is infrastructure because the
+//     activity never began. StartToClose is policy-classed because the worker
+//     may have been lost after the stage committed an external effect; a task
+//     declaring policyActions is therefore stopped before retry;
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func attemptFailureClass(err error) (journal.AttemptClass, error) {
@@ -168,7 +171,19 @@ func attemptFailureClass(err error) (journal.AttemptClass, error) {
 	}
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return journal.AttemptInfra, nil
+		switch timeoutErr.TimeoutType() {
+		case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START:
+			return journal.AttemptInfra, nil
+		case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+			return journal.AttemptPolicy, nil
+		default:
+			return "", fmt.Errorf("unclassifiable Temporal timeout type %q (refusing a silent %q default): %w", timeoutErr.TimeoutType(), journal.AttemptInfra, err)
+		}
 	}
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
+}
+
+func isStartToCloseTimeout(err error) bool {
+	var timeoutErr *temporal.TimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE
 }

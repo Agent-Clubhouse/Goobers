@@ -12,6 +12,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
@@ -231,7 +232,7 @@ func TestStageActivityOptionsAlwaysCarryExplicitRetryPolicy(t *testing.T) {
 // limit becomes StartToCloseTimeout only after stageTimeoutGrace padding, so
 // the worker's own policy-classed enforcement of the limit (invoke.Timeout →
 // FailureTypeStage, the local runner's class) always beats Temporal's
-// infra-classed timeout; an undeclared limit keeps the constant default.
+// worker-loss timeout; an undeclared limit keeps the constant default.
 func TestStageActivityTimeoutRunsGraceBehindDeclaredLimit(t *testing.T) {
 	if got := stageActivityOptions(apiv1.Limits{}, "").StartToCloseTimeout; got != activityTimeout {
 		t.Fatalf("undeclared limit StartToCloseTimeout = %v, want %v", got, activityTimeout)
@@ -255,7 +256,8 @@ func TestAttemptFailureClass(t *testing.T) {
 		{"infrastructure-typed application error", temporal.NewApplicationError("503", FailureTypeInfrastructure), journal.AttemptInfra, false},
 		{"stage-typed application error", temporal.NewApplicationError("boom", FailureTypeStage), journal.AttemptPolicy, false},
 		{"untyped application error is policy (unmarked means policy)", temporal.NewApplicationError("boom", ""), journal.AttemptPolicy, false},
-		{"temporal timeout is infrastructure", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), journal.AttemptInfra, false},
+		{"schedule-to-start timeout is infrastructure", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, nil), journal.AttemptInfra, false},
+		{"start-to-close timeout is policy", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), journal.AttemptPolicy, false},
 		{"anything else fails closed", errors.New("mystery"), "", true},
 	}
 	for _, tc := range cases {
@@ -272,6 +274,60 @@ func TestAttemptFailureClass(t *testing.T) {
 			}
 			if class != tc.wantClass {
 				t.Fatalf("class = %q, want %q", class, tc.wantClass)
+			}
+		})
+	}
+}
+
+func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		timeoutType   enumspb.TimeoutType
+		wantCalls     int
+		wantErr       bool
+		wantErrSubstr string
+	}{
+		{
+			name:        "schedule-to-start retries because activity never began",
+			timeoutType: enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START,
+			wantCalls:   2,
+		},
+		{
+			name:          "start-to-close does not retry after possible effect",
+			timeoutType:   enumspb.TIMEOUT_TYPE_START_TO_CLOSE,
+			wantCalls:     1,
+			wantErr:       true,
+			wantErrSubstr: "refusing to retry after worker loss",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var calls int
+			var ts testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&ts)
+			env.ExecuteWorkflow(func(ctx workflow.Context) error {
+				task := retrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
+				task.PolicyActions = []string{"external-mutation"}
+				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(workflow.Context) (stageActivityResult, error) {
+					calls++
+					if calls == 1 {
+						return stageActivityResult{}, temporal.NewTimeoutError(test.timeoutType, nil)
+					}
+					return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
+				})
+				return err
+			})
+
+			err := env.GetWorkflowError()
+			if test.wantErr {
+				if err == nil || !strings.Contains(err.Error(), test.wantErrSubstr) {
+					t.Fatalf("workflow error = %v, want %q", err, test.wantErrSubstr)
+				}
+			} else if err != nil {
+				t.Fatalf("workflow error: %v", err)
+			}
+			if calls != test.wantCalls {
+				t.Fatalf("dispatches = %d, want %d", calls, test.wantCalls)
 			}
 		})
 	}

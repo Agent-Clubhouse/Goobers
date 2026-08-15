@@ -48,9 +48,8 @@ const (
 	// invoke.Timeout — a policy-classed stage failure, exactly like the local
 	// runner's dispatch (#724/#622) — so the grace guarantees that
 	// self-enforcement wins the race against Temporal's own timeout. A
-	// temporal.TimeoutError is thereby reserved for genuine worker loss
-	// (attemptFailureClass's infra arm), never a stage merely overrunning its
-	// declared budget.
+	// temporal.TimeoutError is thereby reserved for genuine worker loss, never
+	// a stage merely overrunning its declared budget.
 	// stageScheduleToStart bounds how long a stage may sit on a task queue no
 	// worker is serving. The SDK default is unlimited, so an unroutable stage
 	// would hang the run silently rather than fail with the queue named.
