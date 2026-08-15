@@ -579,6 +579,20 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
     },
     telemetryStats: {
+      creditAssignment: [
+        {
+          gaggle: "core",
+          workflow: "implementation",
+          kind: "gate",
+          stage: "review",
+          identity: "sha256:reviewer",
+          routedRuns: 4,
+          failureRuns: 1,
+          failureShare: 0.25,
+          escalationRuns: 1,
+          retryWasteAttempts: 2,
+        },
+      ],
       gaggles: [
         {
           gaggle: "core",
@@ -968,6 +982,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: {
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],

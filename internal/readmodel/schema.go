@@ -529,4 +529,24 @@ UPDATE projection_state SET ready = 0 WHERE id = 1;
 DELETE FROM run_stage;
 DELETE FROM run;
 `,
+
+	// v9: graph nodes used by cross-run credit assignment. This is separate
+	// from run_stage because gates are nodes but are not stage attempts.
+	`
+CREATE TABLE IF NOT EXISTS run_node (
+	run_id               TEXT NOT NULL,
+	kind                 TEXT NOT NULL,
+	name                 TEXT NOT NULL,
+	identity             TEXT NOT NULL DEFAULT '',
+	attempts             INTEGER NOT NULL DEFAULT 0,
+	retry_waste_attempts INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (run_id, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_run_node_identity
+	ON run_node(kind, name, identity, run_id);
+
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
 }

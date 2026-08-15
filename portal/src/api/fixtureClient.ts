@@ -280,6 +280,11 @@ export class FixtureDaemonClient implements DaemonClient {
     throwIfCancelled(options);
     const stats = this.fixtures.telemetryStats;
     return structuredClone({
+      creditAssignment: stats.creditAssignment.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
       gaggles: stats.gaggles.filter(
         (item) => !request?.gaggle || item.gaggle === request.gaggle,
       ),

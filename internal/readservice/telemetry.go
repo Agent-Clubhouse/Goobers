@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -44,13 +45,29 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles   []TelemetryGaggleStats `json:"gaggles"`
-	Runs      []TelemetryRunStats    `json:"runs"`
-	Stages    []TelemetryStageStats  `json:"stages"`
-	Usage     []TelemetryUsageStats  `json:"usage"`
-	Models    []TelemetryModelStats  `json:"models"`
-	Curation  TelemetryCurationStats `json:"curation"`
-	ReadyPool TelemetryReadyPool     `json:"readyPool"`
+	Gaggles          []TelemetryGaggleStats `json:"gaggles"`
+	Runs             []TelemetryRunStats    `json:"runs"`
+	Stages           []TelemetryStageStats  `json:"stages"`
+	Usage            []TelemetryUsageStats  `json:"usage"`
+	Models           []TelemetryModelStats  `json:"models"`
+	CreditAssignment []NodeCredit           `json:"creditAssignment"`
+	Curation         TelemetryCurationStats `json:"curation"`
+	ReadyPool        TelemetryReadyPool     `json:"readyPool"`
+}
+
+// NodeCredit ranks one workflow node's accumulated contribution to adverse
+// outcomes over the requested telemetry window.
+type NodeCredit struct {
+	Gaggle             string  `json:"gaggle"`
+	Workflow           string  `json:"workflow"`
+	Kind               string  `json:"kind"`
+	Stage              string  `json:"stage"`
+	Identity           string  `json:"identity,omitempty"`
+	RoutedRuns         int     `json:"routedRuns"`
+	FailureRuns        int     `json:"failureRuns"`
+	FailureShare       float64 `json:"failureShare"`
+	EscalationRuns     int     `json:"escalationRuns"`
+	RetryWasteAttempts int     `json:"retryWasteAttempts"`
 }
 
 // TelemetryCurationStats is the windowed action rollup for backlog curation.
@@ -321,11 +338,12 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
-		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
-		Usage:   make([]TelemetryUsageStats, 0, len(stats.Usage)),
-		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
+		Gaggles:          make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:             make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:           make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Usage:            make([]TelemetryUsageStats, 0, len(stats.Usage)),
+		Models:           make([]TelemetryModelStats, 0, len(stats.Models)),
+		CreditAssignment: []NodeCredit{},
 		Curation: TelemetryCurationStats{
 			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,
@@ -622,7 +640,31 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 	if s.telemetry == nil {
 		return TelemetryStatsResult{}, ErrTelemetryUnavailable
 	}
-	return s.telemetry.TelemetryStats(ctx, req)
+	result, err := s.telemetry.TelemetryStats(ctx, req)
+	if err != nil || s.sources.ReadModel == nil {
+		return result, err
+	}
+	credits, err := s.sources.ReadModel.CreditAssignment(ctx, readmodel.CreditOptions{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+	})
+	if err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	result.CreditAssignment = make([]NodeCredit, 0, len(credits))
+	for _, credit := range credits {
+		failureShare := 0.0
+		if credit.RoutedRuns > 0 {
+			failureShare = float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+		}
+		result.CreditAssignment = append(result.CreditAssignment, NodeCredit{
+			Gaggle: credit.Gaggle, Workflow: credit.Workflow, Kind: credit.Kind,
+			Stage: credit.Stage, Identity: credit.Identity,
+			RoutedRuns: credit.RoutedRuns, FailureRuns: credit.FailureRuns,
+			FailureShare: failureShare, EscalationRuns: credit.EscalationRuns,
+			RetryWasteAttempts: credit.RetryWasteAttempts,
+		})
+	}
+	return result, nil
 }
 
 // TelemetryErrorSignatures implements TelemetryReader for the daemon's full local service.

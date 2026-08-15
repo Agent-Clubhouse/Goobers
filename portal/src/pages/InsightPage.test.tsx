@@ -37,6 +37,12 @@ describe("Insight page", () => {
     );
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Highest-contributing nodes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
     expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
@@ -300,6 +306,7 @@ describe("Insight page", () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     getTelemetryStats.mockResolvedValue({
+      creditAssignment: [],
       gaggles: [
         { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
         { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
@@ -384,6 +391,7 @@ describe("Insight page", () => {
   it("flags spend against a configured soft budget threshold", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],
@@ -541,6 +549,7 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],
@@ -652,6 +661,7 @@ describe("Insight page", () => {
     // bounce-cohort writers never once fired for this scope — the exact
     // #2277 bug shape (one writer dead, a sibling writer fine).
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],
@@ -691,6 +701,7 @@ describe("Insight page", () => {
     // Same writers HAVE fired historically, but this window has no rows —
     // must read differently from "never recorded" above.
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],

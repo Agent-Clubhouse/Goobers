@@ -83,6 +83,14 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
+	}
+	for _, node := range p.Nodes {
+		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
 	// The change row commits WITH the fact it describes (§6.2). That ordering is
 	// the point: today the projection updates on run finish while the stream
 	// discovers change by polling the filesystem, so "refetch" and "the data is
@@ -226,6 +234,19 @@ func insertStageRow(
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)
+	}
+	return nil
+}
+
+func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node (
+			run_id, kind, name, identity, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity, node.Attempts, node.RetryWasteAttempts,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
 	}
 	return nil
 }
