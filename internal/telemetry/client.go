@@ -182,10 +182,12 @@ func (c *Client) StartTask(ctx context.Context, attrs TaskAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)),
+	taskOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, taskAttributeSet(attrs))...),
-	)
+	}
+	taskOpts = appendStartTime(taskOpts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)), taskOpts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
@@ -202,10 +204,12 @@ func (c *Client) StartGate(ctx context.Context, attrs GateAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)),
+	gateOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, gateAttributeSet(attrs))...),
-	)
+	}
+	gateOpts = appendStartTime(gateOpts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)), gateOpts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
