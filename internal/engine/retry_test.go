@@ -258,6 +258,8 @@ func TestAttemptFailureClass(t *testing.T) {
 		{"untyped application error is policy (unmarked means policy)", temporal.NewApplicationError("boom", ""), journal.AttemptPolicy, false},
 		{"schedule-to-start timeout is infrastructure", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, nil), journal.AttemptInfra, false},
 		{"start-to-close timeout is policy", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), journal.AttemptPolicy, false},
+		{"schedule-to-start timeout overrides nested stage error", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, temporal.NewApplicationError("boom", FailureTypeStage)), journal.AttemptInfra, false},
+		{"start-to-close timeout overrides nested infrastructure error", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, temporal.NewApplicationError("503", FailureTypeInfrastructure)), journal.AttemptPolicy, false},
 		{"anything else fails closed", errors.New("mystery"), "", true},
 	}
 	for _, tc := range cases {

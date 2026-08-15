@@ -162,13 +162,6 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func attemptFailureClass(err error) (journal.AttemptClass, error) {
-	var appErr *temporal.ApplicationError
-	if errors.As(err, &appErr) {
-		if appErr.Type() == FailureTypeInfrastructure {
-			return journal.AttemptInfra, nil
-		}
-		return journal.AttemptPolicy, nil
-	}
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {
@@ -179,6 +172,13 @@ func attemptFailureClass(err error) (journal.AttemptClass, error) {
 		default:
 			return "", fmt.Errorf("unclassifiable Temporal timeout type %q (refusing a silent %q default): %w", timeoutErr.TimeoutType(), journal.AttemptInfra, err)
 		}
+	}
+	var appErr *temporal.ApplicationError
+	if errors.As(err, &appErr) {
+		if appErr.Type() == FailureTypeInfrastructure {
+			return journal.AttemptInfra, nil
+		}
+		return journal.AttemptPolicy, nil
 	}
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
 }
