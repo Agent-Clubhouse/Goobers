@@ -493,7 +493,7 @@ func migrateLegacyDir(legacy, scoped string) (bool, error) {
 			return false, fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 		}
 		if alias {
-			target, err := filepath.EvalSymlinks(legacy)
+			target, err := resolveRuntimeAlias(legacy)
 			if err != nil {
 				return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
 			}
