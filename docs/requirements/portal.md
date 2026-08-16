@@ -95,6 +95,12 @@ behind every unit of work.
   digest verification, redaction, and media-type controls.
 - **PORT-028 (MUST):** The portal MUST provide keyboard operation, reduced-motion
   support, non-color status cues, and WCAG AA text/control contrast.
+- **PORT-029 (MUST):** Run summaries and detail MUST mark a running run stale only
+  when both its `lastActivityAt` age and the scheduler heartbeat age exceed the
+  configured `runner.livenessTimeout` (two minutes by default). Terminal runs,
+  runs with recent activity, and runs observed through an offline reader with no
+  daemon heartbeat remain unmarked. Run list and detail views MUST render the
+  stale state as "Stale / unmonitored", distinct from "Running".
 - **PORT-025 (WON'T (v1)):** Runner-specific operational views (e.g. Temporal worker
   health, task-queue depth) are not portal scope; if ever surfaced they arrive as
   tier-3 annotations on the same journal shape, not a separate UI. **Tier 3 (V2).**

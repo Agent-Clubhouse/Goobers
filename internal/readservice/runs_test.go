@@ -212,6 +212,60 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	}
 }
 
+func TestRunProjectionsFlagStaleUnmonitoredRunningRun(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-staleness", machine.Def.Name, machine.Def.Spec.Gaggle,
+		startedAt, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	appendFixtureStageAttempt(t, run, clock, "")
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const timeout = time.Minute
+	heartbeatAt := startedAt
+	service.sources.LivenessTimeout = timeout
+	service.sources.SchedulerHeartbeat = func() (time.Time, error) {
+		return heartbeatAt, nil
+	}
+
+	service.now = func() time.Time { return startedAt.Add(30 * time.Second) }
+	recent, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent.Runs) != 1 || recent.Runs[0].Stale {
+		t.Fatalf("recent running list = %+v, want live run", recent.Runs)
+	}
+
+	service.now = func() time.Time { return startedAt.Add(5 * time.Minute) }
+	stale, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale.Runs) != 1 || !stale.Runs[0].Stale {
+		t.Fatalf("inactive list = %+v, want stale run", stale.Runs)
+	}
+	detail, err := service.GetRun(context.Background(), "run-staleness")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.Stale {
+		t.Fatalf("detail stale = false, want true: %+v", detail.RunSummary)
+	}
+
+	heartbeatAt = startedAt.Add(5 * time.Minute)
+	healthy, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(healthy.Runs) != 1 || healthy.Runs[0].Stale {
+		t.Fatalf("heartbeat-healthy list = %+v, want live run", healthy.Runs)
+	}
+}
+
 func TestRunEventsProjectsCompletionIntervention(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(
