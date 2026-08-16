@@ -613,6 +613,9 @@ jobs:
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
+      - name: Windows service transitions
+        run: go test ./internal/winsvc
+
       # Both packages run whole rather than by named test: each costs well
       # under a second on Windows, so a name allowlist here buys no runtime
       # and only creates a way for a new test to silently miss the platform.

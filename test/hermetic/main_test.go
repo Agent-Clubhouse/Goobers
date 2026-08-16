@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -344,6 +345,13 @@ func TestParseShardValidatesSelector(t *testing.T) {
 // drops or double-runs a package.
 func TestSelectShardPartitionsExactly(t *testing.T) {
 	t.Parallel()
+	weights := shardWeights{
+		DefaultSeconds: 1,
+		Packages: map[string]float64{
+			"pkg/a/1": 20,
+			"pkg/b/2": 10,
+		},
+	}
 	for _, total := range []int{1, 2, 3, 5, 8} {
 		for _, size := range []int{0, 1, 7, 40, 137} {
 			packages := make([]string, size)
@@ -353,7 +361,7 @@ func TestSelectShardPartitionsExactly(t *testing.T) {
 			}
 			seen := map[string]int{}
 			for index := 1; index <= total; index++ {
-				for _, pkg := range selectShard(packages, shardSpec{index: index, total: total}) {
+				for _, pkg := range selectShard(packages, shardSpec{index: index, total: total}, weights) {
 					seen[pkg]++
 				}
 			}
@@ -382,9 +390,39 @@ func TestSelectShardIsDeterministicRegardlessOfInputOrder(t *testing.T) {
 	forward := []string{"a", "b", "c", "d", "e"}
 	reversed := []string{"e", "d", "c", "b", "a"}
 	spec := shardSpec{index: 1, total: 2}
-	if !reflect.DeepEqual(selectShard(forward, spec), selectShard(reversed, spec)) {
+	weights := shardWeights{DefaultSeconds: 1}
+	if !reflect.DeepEqual(selectShard(forward, spec, weights), selectShard(reversed, spec, weights)) {
 		t.Fatalf("selectShard depends on input order: %v vs %v",
-			selectShard(forward, spec), selectShard(reversed, spec))
+			selectShard(forward, spec, weights), selectShard(reversed, spec, weights))
+	}
+}
+
+func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
+	root, err := findModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights, err := loadShardWeights(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := exec.Command("go", "list", "./...")
+	list.Dir = root
+	output, err := list.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages := strings.Fields(string(output))
+
+	totals := make([]float64, 3)
+	for index := 1; index <= len(totals); index++ {
+		for _, pkg := range selectShard(packages, shardSpec{index: index, total: len(totals)}, weights) {
+			totals[index-1] += weights.packageSeconds(pkg)
+		}
+	}
+	sort.Float64s(totals)
+	if ratio := totals[len(totals)-1] / totals[0]; ratio > 2 {
+		t.Fatalf("measured shard ratio = %.2fx (%v), want no more than 2x", ratio, totals)
 	}
 }
 
