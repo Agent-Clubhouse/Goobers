@@ -798,11 +798,15 @@ func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
 
 func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	const runID = "parallel-blocked"
+	// The blocker is deliberately a different issue than the driving item:
+	// a self-reference is dropped before the outcome is built (#2961), which
+	// would make this exercise the unattributed path instead of the named-
+	// blocker propagation it is actually about.
 	byTask := map[string]stubTaskResult{
 		runID + ":lens-a": {
 			status:    apiv1.ResultBlocked,
-			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issue #42 must merge first"},
-			outputs:   map[string]interface{}{OutputBlockedBy: "42"},
+			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issue #43 must merge first"},
+			outputs:   map[string]interface{}{OutputBlockedBy: "43"},
 		},
 		runID + ":lens-b": {status: apiv1.ResultSuccess},
 		runID + ":lens-c": {status: apiv1.ResultSuccess},
@@ -830,7 +834,7 @@ func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	if result.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated", result.Phase)
 	}
-	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
+	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "43" {
 		t.Fatalf("BlockedOutcome = %+v", blocked)
 	}
 

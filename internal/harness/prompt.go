@@ -172,7 +172,7 @@ Use "no-work" only when the task completed without error but found nothing to ac
 
 Do not populate "metrics" unless you have numeric measurements. Every metrics value must be a JSON number, never a string, boolean, array, or object. Confidence labels, trust decisions, and issue references belong in "summary" or scalar "outputs", not in metrics.
 
-On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected. Never list the issue you are working on: an issue cannot block itself, the self-reference is discarded, and if it was your only entry the block is treated as unattributed.`
+On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected.`
 
 // verdictShapeHint shows finding.severity as an explicit enum: the schema's
 // finding is additionalProperties:false with severity ∈
