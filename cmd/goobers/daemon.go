@@ -884,7 +884,15 @@ func buildRuntimeRunner(
 		return finalizeTerminalRun(l, instanceLog, manager, runID)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	runnerCfg.NotifyTerminal = terminalNotifier
+	if terminalNotifier != nil {
+		circuitBreaker := runnerCfg.NotifyTerminal
+		runnerCfg.NotifyTerminal = func(runID string, phase journal.RunPhase, finalState string) error {
+			if circuitBreaker != nil {
+				_ = circuitBreaker(runID, phase, finalState)
+			}
+			return terminalNotifier(runID, phase, finalState)
+		}
+	}
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
