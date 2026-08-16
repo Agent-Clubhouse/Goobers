@@ -1044,13 +1044,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
-		lastSeq := uint64(0)
-		if events, err := journal.ReadInstanceLog(l.SchedulerDir()); err == nil && len(events) > 0 {
-			lastSeq = events[len(events)-1].Seq
-		}
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), heartbeatInterval, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -1331,11 +1327,12 @@ func emitHeartbeats(
 	stdout io.Writer,
 	schedulerDir string,
 	workflowCount int,
-	lastSeq uint64,
 	interval time.Duration,
 	done chan<- struct{},
 ) {
 	defer close(done)
+	tail, err := journal.OpenInstanceLogTail(schedulerDir)
+	defer func() { _ = tail.Close() }()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -1344,15 +1341,25 @@ func emitHeartbeats(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			events, err := journal.ReadInstanceLog(schedulerDir)
+			if tail == nil {
+				tail, err = journal.OpenInstanceLogTail(schedulerDir)
+			}
+			if err == nil {
+				var events []journal.Event
+				events, err = tail.Events()
+				if err == nil {
+					activity, _ := summarizeHeartbeat(events, 0)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					continue
+				}
+				_ = tail.Close()
+				tail = nil
+			}
 			if err != nil {
 				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
 				continue
 			}
-			activity, nextSeq := summarizeHeartbeat(events, lastSeq)
-			lastSeq = nextSeq
-			pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-				now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
 		}
 	}
 }
