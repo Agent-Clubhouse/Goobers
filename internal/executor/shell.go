@@ -743,6 +743,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
+	diagnostic := summarizeCommandFailure(outBytes, errBytes)
+	if applyCommandFailureDiagnostic(&result, exitCode, diagnostic, stdoutRef.Path, stderrRef.Path) {
+		return result, nil
+	}
 	if excerpt := stderrFailureExcerpt(errBytes); excerpt != "" {
 		result.Error.Message += "; stderr: " + excerpt
 	}
