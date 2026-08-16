@@ -56,7 +56,10 @@ repos:
       env: GOOBERS_GITHUB_TOKEN
 `
 
-const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
+const (
+	docsUpdaterInertWarning         = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
+	referenceLinuxCapabilityWarning = "WARNING CAP003 Gaggle/goobers: requires runner capability \"os=linux\", but runner.capabilities in instance.yaml does not claim it, so the scheduler would refuse to place every run of this gaggle and `goobers up` fails at startup; add \"os=linux\" to runner.capabilities (schedule-time matching is an exact string match)"
+)
 
 type checkedInTree struct {
 	path            string
@@ -79,6 +82,7 @@ var checkedInTrees = []checkedInTree{
 			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "run-tests", but no skill package directory was found at "gaggles/goobers/skills/run-tests" or "skills/run-tests"`,
 			`WARNING SKILL002 gaggles/goobers/goobers/nominator/goober.yaml Goober/nominator: spec.skills declares "nomination", but no skill package directory was found at "gaggles/goobers/skills/nomination" or "skills/nomination"`,
 			`WARNING SKILL002 gaggles/goobers/goobers/reviewer/goober.yaml Goober/reviewer: spec.skills declares "review", but no skill package directory was found at "gaggles/goobers/skills/review" or "skills/review"`,
+			referenceLinuxCapabilityWarning,
 		},
 	},
 	{path: "config-examples"},
