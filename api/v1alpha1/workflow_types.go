@@ -27,6 +27,7 @@ const (
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 // +kubebuilder:validation:XValidation:rule="!has(self.trustLabel) || self.type == 'backlog-item'",message="trustLabel is supported only for type=backlog-item"
+// +kubebuilder:validation:XValidation:rule="!has(self.idleBackoff) || self.type == 'schedule'",message="idleBackoff is supported only for type=schedule"
 type Trigger struct {
 	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
@@ -62,6 +63,10 @@ type Trigger struct {
 	// type=schedule.
 	// +optional
 	Schedule string `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	// IdleBackoff reduces no-work polling while preserving the configured
+	// schedule whenever work is available. Omitted uses the default policy.
+	// +optional
+	IdleBackoff *IdleBackoff `json:"idleBackoff,omitempty" yaml:"idleBackoff,omitempty"`
 	// Signal is the named external signal for type=signal.
 	// +optional
 	Signal string `json:"signal,omitempty" yaml:"signal,omitempty"`
@@ -70,6 +75,20 @@ type Trigger struct {
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+}
+
+// IdleBackoff configures adaptive delay after consecutive scheduled runs find
+// no work. Floor and Ceiling are Go duration strings.
+type IdleBackoff struct {
+	// Enabled defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Floor defaults to one minute.
+	// +optional
+	Floor string `json:"floor,omitempty" yaml:"floor,omitempty"`
+	// Ceiling defaults to fifteen minutes.
+	// +optional
+	Ceiling string `json:"ceiling,omitempty" yaml:"ceiling,omitempty"`
 }
 
 // ReadinessConditions bound when a run may start and how emergent chains are

@@ -171,6 +171,16 @@
           "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
         },
         "schedule": { "type": "string", "description": "Cron expression or @every interval used by a schedule trigger." },
+        "idleBackoff": {
+          "type": "object",
+          "description": "Adaptive delay after consecutive scheduled runs find no work. Omitted defaults to enabled with a one-minute floor and fifteen-minute ceiling.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable adaptive idle backoff. Defaults to true." },
+            "floor": { "type": "string", "minLength": 1, "description": "Minimum idle interval as a positive Go duration. Defaults to 1m." },
+            "ceiling": { "type": "string", "minLength": 1, "description": "Maximum idle interval as a positive Go duration. Defaults to 15m and must not be below floor." }
+          }
+        },
         "signal": { "type": "string", "description": "External signal name used by a signal trigger." },
         "events": {
           "type": "array",
@@ -184,6 +194,12 @@
           "if": { "required": ["trustLabel"] },
           "then": {
             "properties": { "type": { "const": "backlog-item" } }
+          }
+        },
+        {
+          "if": { "required": ["idleBackoff"] },
+          "then": {
+            "properties": { "type": { "const": "schedule" } }
           }
         }
       ]

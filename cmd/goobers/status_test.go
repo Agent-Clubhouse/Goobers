@@ -1041,6 +1041,13 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		StartedAt:    startedAt,
 		InstanceRoot: root,
 		Version:      "v0.3.0-test",
+		Behavior: &daemonBehavior{
+			WatchConfig:           true,
+			Diagnostics:           true,
+			DrainTimeoutNanos:     int64(30 * time.Second),
+			SkipPreflight:         true,
+			DisableReadModelReads: true,
+		},
 	}
 	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
 	if err != nil {
@@ -1058,6 +1065,7 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		"version v0.3.0-test",
 		"last tick 0s ago",
 		"live runs 1",
+		"daemon behavior: watch-config=true, diagnostics=true, drain-timeout=30s, skip-preflight=true, disable-read-model-reads=true",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)

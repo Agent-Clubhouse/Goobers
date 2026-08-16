@@ -478,7 +478,7 @@ const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
-	"With --daemon, report daemon health instead.\n" +
+	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
@@ -932,11 +932,13 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			pf(stdout, "daemon unhealthy: pid %d, uptime %s, version %s, last tick %s ago (threshold %s), live runs %d\n",
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
+			reportDaemonBehavior(stdout, identity.Behavior)
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
+		reportDaemonBehavior(stdout, identity.Behavior)
 		return 0
 	}
 	if identity != nil {
@@ -944,8 +946,28 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, identity.StartedAt.Format(time.RFC3339), identity.Version, liveRuns)
 		return 1
 	}
+
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
+	if behavior == nil {
+		pln(stdout, "daemon behavior: unavailable (daemon predates behavior reporting)")
+		return
+	}
+	drainTimeout := "unbounded"
+	if behavior.DrainTimeoutNanos > 0 {
+		drainTimeout = time.Duration(behavior.DrainTimeoutNanos).String()
+	}
+	pf(stdout,
+		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t\n",
+		behavior.WatchConfig,
+		behavior.Diagnostics,
+		drainTimeout,
+		behavior.SkipPreflight,
+		behavior.DisableReadModelReads,
+	)
 }
 
 func daemonLivenessLabel(liveness daemonstate.Liveness) string {
