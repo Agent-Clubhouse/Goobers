@@ -223,9 +223,9 @@ func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string
 				"deterministic task %q uses a POSIX inline script without an incompatible os capability",
 				task.Name,
 			))
-		case isPOSIXOnlyCommand(task.Run.Command):
+		case isWindowsIncompatibleCommand(task.Run.Command):
 			problems = append(problems, fmt.Sprintf(
-				"deterministic task %q invokes a POSIX shell without an incompatible os capability",
+				"deterministic task %q invokes a Windows-incompatible command without an incompatible os capability",
 				task.Name,
 			))
 		}
@@ -241,12 +241,12 @@ func isPOSIXOnlyScript(script string) bool {
 	return posixOnlyScriptSyntax.MatchString(script)
 }
 
-func isPOSIXOnlyCommand(command []string) bool {
+func isWindowsIncompatibleCommand(command []string) bool {
 	if len(command) == 0 {
 		return false
 	}
 	switch strings.ToLower(filepath.Base(command[0])) {
-	case "sh", "bash", "dash", "zsh":
+	case "sh", "bash", "dash", "zsh", "python3":
 		return true
 	default:
 		return false
@@ -283,6 +283,20 @@ func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPOSIXCommand(t *te
 		Tasks: []apiv1.Task{{
 			Name: "run", Type: apiv1.TaskDeterministic,
 			Run: &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPython3Command(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "python-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"python3", "-m", "pytest"}},
 		}},
 	}}
 	problems := windowsDeterministicCompatibilityProblems(def)
