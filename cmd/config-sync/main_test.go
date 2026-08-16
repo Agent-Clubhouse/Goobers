@@ -96,6 +96,7 @@ func TestRun_InvalidConfigExitsOne(t *testing.T) {
 
 func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 	const want = `WARNING Workflow/implementation: task "query-backlog" runs backlog-query --claim without inputs.resultFile; empty ticks will report success instead of no-work`
+	const wantDeprecation = `WARNING DVL020 Workflow/implementation: dslVersion "1.4" is deprecated`
 	for _, tc := range []struct {
 		name        string
 		makeInvalid bool
@@ -123,6 +124,9 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 			filtered := compatibilityOutput.String()
 			if !strings.Contains(filtered, want) {
 				t.Fatalf("output missing legacy warning:\n%s", output)
+			}
+			if !strings.Contains(filtered, wantDeprecation) {
+				t.Fatalf("output missing provenance-free deprecation warning:\n%s", output)
 			}
 			if strings.Contains(filtered, "VER003") || strings.Contains(filtered, "Gaggle/acme-web") ||
 				strings.Contains(filtered, "gaggles/acme-web/workflows/implementation.yaml") {
@@ -179,6 +183,7 @@ func warningRepo(t *testing.T, makeInvalid bool) string {
 		t.Fatal(err)
 	}
 	workflowPath := filepath.Join(dir, "gaggles", "acme-web", "workflows", "implementation.yaml")
+	replaceFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
 	replaceFile(t, workflowPath, `        resultFile: "claimed-item.json"`, "")
 	if makeInvalid {
 		replaceFile(t, filepath.Join(dir, "manifest.yaml"), "    environment: dev\n", "")

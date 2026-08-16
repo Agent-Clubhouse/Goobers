@@ -404,8 +404,9 @@ func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("strict validate code=%d, want 0 (deprecation notices are strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "DVL020") {
-		t.Fatalf("strict validate did not render the DVL020 deprecation notice:\n%s", stdout)
+	const want = "WARNING DVL020 gaggles/example/workflows/default-implement.yaml Gaggle/example Workflow/default-implement:"
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("strict validate did not render the DVL020 notice with full provenance:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "--strict treats warnings as errors") {
 		t.Fatalf("strict validate promoted a deprecation notice:\n%s", stdout)
