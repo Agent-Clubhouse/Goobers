@@ -51,15 +51,20 @@ var (
 // Gitea arm stays uncached, exactly like open-pr's and backlog-query's
 // Gitea arms today.
 func remediationStageProvider(root string, repo providers.RepositoryRef, token string, cached bool) (remediationProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderGitea:
-		return newGiteaProviderForStage(root, repo, token)
-	case providers.ProviderGitHub:
-		if cached {
-			return newCachedGitHubProvider(root, token), nil
-		}
-		return newGitHubProvider(token), nil
-	default:
+	if repo.Provider == providers.ProviderADO {
 		return nil, fmt.Errorf("pr-remediation does not support repository provider %q", repo.Provider)
 	}
+	opts := []stageProviderOption{withStageProviderToken(token)}
+	if cached {
+		opts = append(opts, withStageProviderCache())
+	}
+	provider, err := newProviderForStage(root, repo, true, opts...)
+	if err != nil {
+		return nil, err
+	}
+	remediation, ok := provider.(remediationProvider)
+	if !ok {
+		return nil, fmt.Errorf("pr-remediation does not support repository provider %q", repo.Provider)
+	}
+	return remediation, nil
 }

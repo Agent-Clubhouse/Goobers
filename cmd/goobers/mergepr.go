@@ -108,24 +108,19 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps reaches a distinct provider-construction branch (mirroring
-	// the issue-close-out dispatch template): the merge/completion authority
-	// rides on the ADO-specific capability, the provider is built from the
-	// instance's configured ADO auth (never a github: token), and the
+	// Azure DevOps merge/completion authority rides on its dedicated capability;
+	// provider construction still goes through the shared stage factory. The
 	// GitHub-only helpers below (tutor classification, branch cleanup) stay
-	// unreachable. Every conjunct check between here and the land is shared and
-	// unchanged; every GitHub code path stays byte-identical (all ADO behavior
-	// is gated behind isADO, which is always false on GitHub) — part of the ADO
-	// merge epic.
+	// unreachable while every conjunct check between here and the land is shared.
 	isADO := repo.Provider == providers.ProviderADO
+	isGitHub := repo.Provider == providers.ProviderGitHub
 
 	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
 	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
-	// ADO, where both helpers are gated OFF. dispatcher is the provider-neutral
+	// non-GitHub providers, where both helpers are gated OFF. dispatcher is the provider-neutral
 	// landing seam (CONF-1 #2074) every poll/compare/detect/enqueue/merge call
-	// flows through, so both providers run one shared code path.
-	var prProvider *providers.GitHubProvider
-	var dispatcher *providers.Dispatcher
+	// flows through, so every registered provider runs one shared code path.
+	var providerCapability = capability.GitHubPRMerge
 	if isADO {
 		// Merge/completion authority on ADO rides on the dedicated
 		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
@@ -139,28 +134,26 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
+		providerCapability = capability.ADOPRComplete
+	}
+	stageProvider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(providerCapability),
+		withStageProviderCache(),
+		withStageProviderMutations("pr"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	dispatcher := providers.NewDispatcher(stageProvider)
+	var prProvider *providers.GitHubProvider
+	if isGitHub {
+		var ok bool
+		prProvider, ok = stageProvider.(*providers.GitHubProvider)
+		if !ok {
+			pf(stderr, "error: repository provider %q does not support GitHub-only merge helpers\n", repo.Provider)
 			return 1
 		}
-		dispatcher = providers.NewDispatcher(adoProvider)
-	} else {
-		// The capability check IS the "capability absent → refused" acceptance
-		// criterion: providerToken fails closed (no merge attempted, no PR
-		// state even polled) unless this stage's declaration actually grants
-		// github:pr:merge — the same fail-closed mechanism every other
-		// provider-chain subcommand already relies on.
-		token, terr := providerToken(capability.GitHubPRMerge)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		prProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-		// dispatcher is the capability-checked seam (CONF-1 #2074) for the
-		// landing-surface calls below (CompareCommits/DetectMergePolicy/
-		// MergePullRequest/EnqueuePullRequest) — the ones that gap on ADO.
-		dispatcher = providers.NewDispatcher(prProvider)
 	}
 
 	pullNumber := providerInput("pullNumber", "")
@@ -283,10 +276,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		// Tutor-change classification is GitHub-only: classifyRemoteTutorChanges
 		// takes the concrete *GitHubProvider and the tutor lane does not run on
-		// ADO, so gate the whole block OFF on ADO (no-op; ADO tutor parity is
-		// tracked by the ADO merge epic, merge-wiring-plan §1a). On GitHub !isADO
-		// is always true, so behavior is unchanged.
-		if !isADO && isTutorBranch(poll.HeadBranch, providerBranchNamespace()) {
+		// ADO, so gate the whole block to GitHub (no-op; ADO tutor parity is
+		// tracked by the ADO merge epic, merge-wiring-plan §1a).
+		if isGitHub && isTutorBranch(poll.HeadBranch, providerBranchNamespace()) {
 			classification, classifyErr := classifyRemoteTutorChanges(
 				ctx, prProvider, repo, pullNumber, poll.BaseSHA, poll.HeadSHA,
 			)
@@ -445,8 +437,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// on ADO it could only ever fail "did not report a head repository". Gate OFF
 	// (no-op); ADO source-branch deletion rides on the enqueue/merge
 	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8). On GitHub !isADO is always true, so behavior is unchanged.
-	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
+	// §1a/§8).
+	if isGitHub && landResult.Outcome == mergepolicy.OutcomeMerged {
 		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
 		if outcome.Error != "" {
@@ -556,7 +548,6 @@ type mergeBranchCleanup struct {
 
 func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
-	recorder := sidecarMutationRecorder{kind: "branch"}
 	fail := func(err error) mergeBranchCleanup {
 		out.Status = "failed"
 		out.Error = err.Error()
@@ -582,11 +573,13 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return out
 	}
 
-	token, err := providerToken(capability.GitHubBranchDelete)
+	branchProvider, err := newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), *headRepository, false,
+		withStageProviderCapability(capability.GitHubBranchDelete),
+		withStageProviderMutations("branch"),
+	)
 	if err != nil {
 		return fail(err)
 	}
-	branchProvider := newGitHubProvider(token, providers.WithMutationRecorder(recorder))
 	if _, err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))
 	}

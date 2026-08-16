@@ -1413,18 +1413,13 @@ func currentPullRequest(ctx context.Context, provider providers.Provider, repo p
 }
 
 func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.ProviderPRWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token), nil
-	default:
+	if repo.Provider == providers.ProviderGitea {
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
+	return newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderCache(),
+	)
 }
 
 // publishADOPassVerdict publishes a PASS merge-review verdict on Azure DevOps.

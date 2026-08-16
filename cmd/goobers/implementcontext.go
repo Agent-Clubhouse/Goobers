@@ -151,24 +151,18 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 }
 
 func implementationContextProvider(root string, repo providers.RepositoryRef) (openPRTouchesProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubPRWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token)
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubPRWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token), nil
-	default:
+	provider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	contextProvider, ok := provider.(openPRTouchesProvider)
+	if !ok {
 		return nil, fmt.Errorf("gather-implement-context does not support repository provider %q", repo.Provider)
 	}
+	return contextProvider, nil
 }
 
 func implementationHotFileLimit(raw string) (int, error) {

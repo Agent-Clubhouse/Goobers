@@ -457,11 +457,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 //     ListComments) and trusted against AuthenticatedLogin (connectionData).
 //
 // It never resolves a github:* capability token — the ADO provider draws its own
-// org-scoped auth from instance config (newADOProviderForStage). repo:push still
+// org-scoped auth from the shared stage provider factory. repo:push still
 // carries the git checkout credential (the #392 branch rebind), provider-neutral
 // on every backend.
 func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newADOProviderForStage(root, repo)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

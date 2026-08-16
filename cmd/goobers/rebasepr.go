@@ -257,7 +257,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 //     cause (§3.2), so no PR-comment scan is needed and — exactly as on GitHub —
 //     an old pinned policy is byte-for-byte unaffected.
 //
-// The provider is built from config-sourced ADO auth via newADOProviderForStage
+// The provider is built from config-sourced ADO auth via the shared stage factory
 // (no github:* token is resolved); only the provider-neutral repo:push
 // credential feeds the git operations.
 func runRebasePRADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
@@ -291,7 +291,7 @@ func runRebasePRADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		return fail(fmt.Errorf("invalid selectedNumber %q: %w", selectedNumber, err))
 	}
 
-	provider, err := newADOProviderForStage(root, repo)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
 	if err != nil {
 		return fail(err)
 	}
