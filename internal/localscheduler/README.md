@@ -16,13 +16,14 @@ quarantined as a tier-3 component (§11, #15) and revived, not reused, at V2.
 
 ## Cron evaluation
 
-`ParseSchedule` wraps `robfig/cron`'s `ParseStandard`: standard 5-field cron,
-the named descriptors (`@hourly`, `@daily`, ...), and `@every <duration>` — the
-same grammar `internal/workflow.CheckSchedules` structurally validates at
-compile time (which also accepts 6-field cron with a seconds column, since it's
-a looser structural gate). A 6-field expression is rejected here with an
-actionable error: V0 owns firing on 5-field cron only, so it fails closed
-rather than silently misinterpreting a seconds column.
+`ParseSchedule` delegates to `internal/scheduleexpr.ParseRuntime` (backed by
+`robfig/cron/v3`): standard 5-field cron, the named descriptors (`@hourly`,
+`@daily`, ...), and `@every <duration>` — the same grammar
+`internal/workflow.CheckSchedules` structurally validates at compile time
+(which also accepts 6-field cron with a seconds column, since it's a looser
+structural gate). A 6-field expression is rejected here with an actionable
+error: V0 owns firing on 5-field cron only, so it fails closed rather than
+silently misinterpreting a seconds column.
 
 `Schedule.Next(after)` is DST-correct because it does calendar arithmetic in
 `after`'s location, not fixed-duration wall-clock math (`InLocation` pins the

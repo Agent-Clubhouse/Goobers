@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,6 +29,21 @@ func TestParseScheduleRejects6Field(t *testing.T) {
 	_, err := ParseSchedule("0 30 2 * * *")
 	if err == nil {
 		t.Fatal("expected 6-field cron to be rejected in V0")
+	}
+}
+
+func TestParseScheduleRejectsTZPrefixWithTimezoneDiagnostic(t *testing.T) {
+	// A TZ=/CRON_TZ= prefix pads the field count to 6 without being a seconds
+	// column; it must be rejected with the per-expression-timezone message,
+	// not misdiagnosed as the unrelated 6-field-seconds error.
+	for _, expr := range []string{"TZ=UTC 30 2 * * *", "CRON_TZ=UTC 30 2 * * *"} {
+		_, err := ParseSchedule(expr)
+		if err == nil {
+			t.Fatalf("ParseSchedule(%q): expected an error", expr)
+		}
+		if !strings.Contains(err.Error(), "per-expression timezones are not supported") {
+			t.Errorf("ParseSchedule(%q): got %q, want the per-expression-timezone diagnostic", expr, err)
+		}
 	}
 }
 
