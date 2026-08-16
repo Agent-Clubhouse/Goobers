@@ -47,7 +47,8 @@
             "gate-never-fails",
             "gate-repass-churn",
             "workflow-untriggered",
-            "stage-unreached"
+            "stage-unreached",
+            "credit-assignment"
           ]
         },
         "subject": {

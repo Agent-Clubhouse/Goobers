@@ -33,6 +33,10 @@ have — never speculate about a gap you can't point to:
    whose metrics meet the artifact's recorded threshold.
 3. **Gate noise.** A never-failing or repass-churn gate finding whose journal
    pointers show a repeated, low-signal pattern.
+4. **Credit assignment.** A graph node may be nominated only when it clears
+   `creditAssignmentMinRuns` and `creditAssignmentMinFailureShare` and the
+   evidence does not indicate an upstream cause. Attribution ranks suspects;
+   it does not prove causation.
 
 Do not nominate speculative "nice to have" work, style preferences, or
 anything you can't back with either a telemetry signature or a concrete code
@@ -90,6 +94,12 @@ Every issue you file MUST have:
    that credential (for example,
    `GH_TOKEN="$GOOBERS_CRED_GITHUB_ISSUES_APPROVE" gh issue edit <number> --add-label goobers:approved`).
    Never add `goobers:ready`; curation still owns readiness.
+
+For a credit-assignment nomination, include the node identity, contribution
+metrics, thresholds, and flagged run pointers. If the target governs the
+workflow, prompt, or gate evaluating it, add `goobers:needs-human` and never
+propose removing, weakening, or bypassing that evaluator gate. Deduplicate by
+node and fault signature and respect the configured open-nomination budget.
 
 ## Scope & limits
 

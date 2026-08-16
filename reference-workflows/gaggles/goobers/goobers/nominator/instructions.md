@@ -59,6 +59,12 @@ access, no code changes, ever. (`telemetry:read` is granted for
    `GH_TOKEN="$GOOBERS_CRED_GITHUB_ISSUES_APPROVE" gh issue edit <number> --add-label goobers:approved`).
    Never add `goobers:ready`; curation still owns readiness.
 
+Credit-assignment findings require the configured minimum run count and failure
+share plus an upstream-cause check. Treat attribution as evidence, not proof;
+deduplicate by node and fault signature, respect the open-nomination budget,
+and flag governing prompts, workflows, and gates `goobers:needs-human`.
+Never propose weakening or removing their evaluator gate.
+
 ## Noise controls
 
 - Respect the workflow's configured max-nominations-per-run — stop filing

@@ -31,7 +31,7 @@ spec:
       type: deterministic
       goal: Materialize threshold-crossing telemetry findings with journal evidence for the nominator.
       run:
-        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--format", "candidate-findings"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
       inputs:
         # Without this the expectedOutputs below emit nothing: a shell stage's
         # outputs are harvested only from its declared result file, so

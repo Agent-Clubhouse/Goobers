@@ -170,6 +170,7 @@ func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelop
 		"--aggregate", "stage-failure-rate",
 		"--aggregate", "error-signature",
 		"--aggregate", "gate-noise",
+		"--aggregate", "credit-assignment",
 		"--format", "candidate-findings",
 	}
 	if !reflect.DeepEqual(run.Command, wantCommand) {

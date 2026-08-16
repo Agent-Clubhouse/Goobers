@@ -34,6 +34,52 @@ type NodeCredit struct {
 	RetryWasteAttempts int
 }
 
+// CreditAssignmentRunIDs returns bounded journal references for one attributed
+// node in the same window as CreditAssignment.
+func (s *Store) CreditAssignmentRunIDs(ctx context.Context, options CreditOptions, node NodeCredit, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = defaultCreditLimit
+	}
+	predicates := []string{"r.terminal = 1", "r.gaggle = ?", "r.workflow = ?",
+		"rn.kind = ?", "rn.name = ?", "rn.identity = ?"}
+	args := []any{node.Gaggle, node.Workflow, node.Kind, node.Stage, node.Identity}
+	if !options.Since.IsZero() {
+		predicates = append(predicates, "r.started_at >= ?")
+		args = append(args, formatTime(options.Since))
+	}
+	if !options.Until.IsZero() {
+		predicates = append(predicates, "r.started_at <= ?")
+		args = append(args, formatTime(options.Until))
+	}
+	args = append(args, limit)
+	query := `SELECT r.run_id FROM run_node rn
+		JOIN run r ON r.run_id = rn.run_id
+		WHERE ` + strings.Join(predicates, " AND ") + `
+		ORDER BY r.started_at DESC, r.run_id DESC LIMIT ?`
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: credit assignment run ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []string
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			return nil, fmt.Errorf("readmodel: scan credit assignment run id: %w", err)
+		}
+		result = append(result, runID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: credit assignment run ids rows: %w", err)
+	}
+	return result, nil
+}
+
 // CreditAssignment returns the highest-contributing graph nodes.
 func (s *Store) CreditAssignment(ctx context.Context, options CreditOptions) ([]NodeCredit, error) {
 	limit := options.Limit

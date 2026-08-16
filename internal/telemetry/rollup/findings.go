@@ -41,6 +41,9 @@ const (
 	// CoverageRequest with zero stage attempts in the request's window
 	// (TUT-010 coverage-gaps family).
 	FindingStageUnreached FindingKind = "stage-unreached"
+	// FindingCreditAssignment flags a graph node whose adverse-outcome
+	// attribution clears the evidence floor for nomination.
+	FindingCreditAssignment FindingKind = "credit-assignment"
 )
 
 // JournalPointer names a flagged run whose journal a diagnosis step can
@@ -88,6 +91,12 @@ type Thresholds struct {
 	// MaxFlaggedRuns bounds how many example runs each finding carries.
 	// Default 10.
 	MaxFlaggedRuns int
+	// MinCreditRuns is the minimum number of runs routed through a node before
+	// attribution can produce a nomination. Default 5.
+	MinCreditRuns int
+	// MinCreditFailureShare is the minimum failure share for an attributed
+	// node. Default 0.3.
+	MinCreditFailureShare float64
 }
 
 // DefaultThresholds returns the sane-defaults Thresholds a Tutor goober
@@ -100,6 +109,8 @@ func DefaultThresholds() Thresholds {
 		MinGateEvaluations:     5,
 		MaxGateEscalationRate:  0.2,
 		MaxFlaggedRuns:         10,
+		MinCreditRuns:          5,
+		MinCreditFailureShare:  0.3,
 	}
 }
 

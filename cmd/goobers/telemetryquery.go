@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -93,6 +94,7 @@ const (
 	telemetryAggregateGateNoise           telemetryAggregate = "gate-noise"
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
+	telemetryAggregateCreditAssignment    telemetryAggregate = "credit-assignment"
 )
 
 type telemetryAggregateValues []telemetryAggregate
@@ -120,8 +122,10 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateWorkflowUntriggered
 	case string(telemetryAggregateStageUnreached):
 		aggregate = telemetryAggregateStageUnreached
+	case string(telemetryAggregateCreditAssignment):
+		aggregate = telemetryAggregateCreditAssignment
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -158,6 +162,10 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateStageUnreached:
 			if kind == rollup.FindingStageUnreached {
+				return true
+			}
+		case telemetryAggregateCreditAssignment:
+			if kind == rollup.FindingCreditAssignment {
 				return true
 			}
 		}
@@ -233,6 +241,18 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MaxFlaggedRuns = n
+	case "min-credit-runs", "minCreditRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCreditRuns = n
+	case "min-credit-failure-share", "minCreditFailureShare":
+		rate, err := parseRate()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCreditFailureShare = rate
 	default:
 		return fmt.Errorf("unknown threshold %q", key)
 	}
@@ -268,10 +288,10 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -399,7 +419,19 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		return writeJSONArtifact(result, stdout, stderr)
 	}
 
-	result, err := detectCandidateFindings(db, *window, since, queryGaggle, aggregates, thresholds)
+	var creditStore *readmodel.Store
+	if _, statErr := os.Stat(l.ReadDB()); statErr == nil {
+		creditStore, err = readmodel.Open(l.ReadDB())
+		if err != nil {
+			pf(stderr, "error: open run read model %s: %v\n", l.ReadDB(), err)
+			return 1
+		}
+		defer func() { _ = creditStore.Close() }()
+	} else if !os.IsNotExist(statErr) {
+		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
+		return 1
+	}
+	result, err := detectCandidateFindingsWithCredit(db, creditStore, *window, since, queryGaggle, aggregates, thresholds)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -439,12 +471,67 @@ func detectCandidateFindings(
 	aggregates telemetryAggregateValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
+	return detectCandidateFindingsWithCredit(db, nil, window, since, gaggle, aggregates, thresholds)
+}
+
+func detectCandidateFindingsWithCredit(
+	db *rollup.DB,
+	creditStore *readmodel.Store,
+	window time.Duration,
+	since time.Time,
+	gaggle string,
+	aggregates telemetryAggregateValues,
+	thresholds rollup.Thresholds,
+) (candidateFindingsArtifact, error) {
 	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
 	})
 	if err != nil {
 		return candidateFindingsArtifact{}, err
+	}
+	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
+		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
+			Gaggle: gaggle, Since: since,
+		})
+		if creditErr != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment: %w", creditErr)
+		}
+		for _, credit := range credits {
+			if credit.RoutedRuns < thresholds.MinCreditRuns {
+				continue
+			}
+			failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+			if failureShare < thresholds.MinCreditFailureShare {
+				continue
+			}
+			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
+				Gaggle: gaggle, Since: since,
+			}, credit, thresholds.MaxFlaggedRuns)
+			if runErr != nil {
+				return candidateFindingsArtifact{}, fmt.Errorf("credit assignment evidence: %w", runErr)
+			}
+			flaggedRuns := make([]rollup.JournalPointer, 0, len(runIDs))
+			for _, runID := range runIDs {
+				flaggedRuns = append(flaggedRuns, rollup.JournalPointer{RunID: runID})
+			}
+			subject := credit.Workflow + "/" + credit.Kind + "/" + credit.Stage
+			if credit.Identity != "" {
+				subject += "/" + credit.Identity
+			}
+			findings = append(findings, rollup.Finding{
+				Kind: rollup.FindingCreditAssignment, Subject: subject,
+				FlaggedRuns: flaggedRuns,
+				Metrics: map[string]float64{
+					"routedRuns":         float64(credit.RoutedRuns),
+					"failureRuns":        float64(credit.FailureRuns),
+					"failureShare":       failureShare,
+					"escalationRuns":     float64(credit.EscalationRuns),
+					"retryWasteAttempts": float64(credit.RetryWasteAttempts),
+				},
+				Threshold: thresholds.MinCreditFailureShare,
+			})
+		}
 	}
 
 	filtered := make([]rollup.Finding, 0, len(findings))
