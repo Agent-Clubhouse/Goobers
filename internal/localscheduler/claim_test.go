@@ -133,14 +133,19 @@ func TestClaimHistoryForTerminalRunAgesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldKey := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
-	if ok, _, err := ledger.ClaimScoped(oldKey, "terminal-run", "implement", time.Hour); err != nil || !ok {
+	if ok, _, err := ledger.ClaimScoped(oldKey, "terminal-run", "implement", 365*24*time.Hour); err != nil || !ok {
 		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
 	}
+	now = now.Add(time.Hour)
 	if err := ledger.ReleaseScoped(oldKey, "terminal-run"); err != nil {
 		t.Fatal(err)
 	}
 
 	now = now.Add(claimHistoryTTL + 2*time.Hour)
+	if history := ledger.HistoryForRun("terminal-run"); len(history) != 1 ||
+		!history[0].ExpiresAt.After(now) {
+		t.Fatalf("terminal-run history before pruning = %+v, want unexpired long lease", history)
+	}
 	if ok, _, err := ledger.Claim("current-item", "current-run", "implement", time.Hour); err != nil || !ok {
 		t.Fatalf("trigger history pruning: ok=%v err=%v", ok, err)
 	}

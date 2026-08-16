@@ -41,14 +41,15 @@ func (k ClaimKey) storageKey() (string, error) {
 
 // ClaimEntry is one lease in the claim ledger.
 type ClaimEntry struct {
-	ItemID     string    `json:"itemId"`
-	Gaggle     string    `json:"gaggle,omitempty"`
-	Provider   string    `json:"provider,omitempty"`
-	ExternalID string    `json:"externalId,omitempty"`
-	RunID      string    `json:"runId"`
-	Workflow   string    `json:"workflow"`
-	ClaimedAt  time.Time `json:"claimedAt"`
-	ExpiresAt  time.Time `json:"expiresAt"`
+	ItemID     string     `json:"itemId"`
+	Gaggle     string     `json:"gaggle,omitempty"`
+	Provider   string     `json:"provider,omitempty"`
+	ExternalID string     `json:"externalId,omitempty"`
+	RunID      string     `json:"runId"`
+	Workflow   string     `json:"workflow"`
+	ClaimedAt  time.Time  `json:"claimedAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -485,7 +486,7 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 		return nil
 	}
 	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
-	l.recordHistory(storageKey, entry)
+	l.recordReleasedHistory(storageKey, entry, l.now())
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		// Same rollback discipline as Claim: a failed persist must not leave
@@ -538,7 +539,7 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 		return nil
 	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
-	l.recordHistory(storageKey, entry)
+	l.recordReleasedHistory(storageKey, entry, l.now())
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		l.entries[storageKey] = entry
@@ -589,7 +590,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	for storageKey, entry := range l.entries {
 		if entry.expired(now) {
 			previous, hadHistoryEntry := l.historyEntry(entry.RunID, storageKey)
-			l.recordHistory(storageKey, entry)
+			l.recordReleasedHistory(storageKey, entry, now)
 			delete(l.entries, storageKey)
 			released = append(released, releasedClaim{
 				storageKey: storageKey, entry: entry,
@@ -757,8 +758,12 @@ func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]Claim
 		if !active {
 			var newest time.Time
 			for _, entry := range history {
-				if entry.ExpiresAt.After(newest) {
-					newest = entry.ExpiresAt
+				activity := entry.ClaimedAt
+				if entry.ReleasedAt != nil {
+					activity = *entry.ReleasedAt
+				}
+				if activity.After(newest) {
+					newest = activity
 				}
 			}
 			if !newest.After(cutoff) {
@@ -775,6 +780,11 @@ func (l *ClaimLedger) recordHistory(storageKey string, entry ClaimEntry) {
 		l.history[entry.RunID] = make(map[string]ClaimEntry)
 	}
 	l.history[entry.RunID][storageKey] = entry
+}
+
+func (l *ClaimLedger) recordReleasedHistory(storageKey string, entry ClaimEntry, releasedAt time.Time) {
+	entry.ReleasedAt = &releasedAt
+	l.recordHistory(storageKey, entry)
 }
 
 func (l *ClaimLedger) historyEntry(runID, storageKey string) (ClaimEntry, bool) {
