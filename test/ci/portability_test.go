@@ -250,7 +250,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 }
 
-func TestCIWorkflowScopesMainPushToPostMergeJobs(t *testing.T) {
+func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
@@ -259,21 +259,41 @@ func TestCIWorkflowScopesMainPushToPostMergeJobs(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"checks", "unit-macos"} {
+	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		if section == "" {
-			t.Errorf("CI workflow is missing post-merge job %q", job)
+			t.Errorf("CI workflow is missing main validation job %q", job)
 		} else if strings.Contains(section, "github.event_name != 'push'") {
-			t.Errorf("post-merge job %q must run on main pushes", job)
+			t.Errorf("main validation job %q must run on main pushes", job)
 		}
 	}
 	for _, job := range []string{
-		"deadcode", "lint", "darwin-build", "unit", "shipped", "integration",
-		"conformance", "windows-smoke", "vulnerability-scan", "required-ci",
+		"deadcode", "darwin-build", "integration",
+		"conformance", "vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
 		if section := workflowJob(workflow, job); !strings.Contains(section, "github.event_name != 'push'") {
-			t.Errorf("merge-gate job %q must not rerun on main pushes", job)
+			t.Errorf("PR-only job %q must not rerun on main pushes", job)
+		}
+	}
+
+	escalation := workflowJob(workflow, "escalate-main-failure")
+	for _, want := range []string{
+		"github.event_name == 'push'",
+		"needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]",
+		"issues: write",
+		"actions/github-script@v9",
+		"github.rest.issues.create",
+		`labels: ["goobers:critical", "type:bug", "area:workflows"]`,
+	} {
+		if !strings.Contains(escalation, want) {
+			t.Errorf("main failure escalation job must contain %q", want)
+		}
+	}
+	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+		want := "needs." + job + ".result == 'failure'"
+		if !strings.Contains(escalation, want) {
+			t.Errorf("main failure escalation job must detect a failed %q job", job)
 		}
 	}
 }
