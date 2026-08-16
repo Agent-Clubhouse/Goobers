@@ -108,6 +108,13 @@ POSIX-shell syntax. On Windows, stock `cmd.exe` is used only for Node's
 `npm.cmd` shim, and GNU Make is not required. Other convenience targets can
 still use a POSIX shell.
 
+Micro-benchmarks for journal event encoding, scrubbing, parsing, and read-model
+projection are opt-in and do not run with ordinary tests:
+
+```sh
+go test -run=^$ -bench=. ./internal/journal ./internal/readmodel
+```
+
 ### Platform prerequisites
 
 | Platform | Required tools | Merge-tier invocation |
