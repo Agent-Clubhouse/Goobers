@@ -267,8 +267,8 @@ schema-description-coverage:
 test: schema-description-coverage
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, test, run browser e2e, and verify the Go wire contract.
-.PHONY: portal-install portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-contract portal-ci
+## portal-ci: Install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
+.PHONY: portal-install portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
 
@@ -288,6 +288,10 @@ portal-playwright-install: portal-install
 portal-e2e: portal-playwright-install
 	$(NPM) --prefix portal run test:e2e
 
+## portal-deadcode: Reject unreviewed production TypeScript files and exports.
+portal-deadcode: portal-install
+	$(NPM) --prefix portal run deadcode
+
 ## portal-contract: Regenerate, diff, type-check, and test the Go/TypeScript wire contract.
 portal-contract: portal-install
 	$(GO) generate ./internal/apicontract
@@ -295,7 +299,7 @@ portal-contract: portal-install
 	$(NPM) --prefix portal run typecheck
 	$(NPM) --prefix portal run test:contract
 
-portal-ci: portal-build portal-test portal-e2e portal-contract
+portal-ci: portal-build portal-test portal-e2e portal-deadcode portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover
