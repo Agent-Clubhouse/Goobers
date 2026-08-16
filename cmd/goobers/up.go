@@ -223,7 +223,14 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"forces every list request onto the journal-derived paths for this run,\n" +
 	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
 	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n"
+	"serving wrong or incomplete results.\n\n" +
+	"These five behavior controls are intentionally flag-only: --watch-config\n" +
+	"selects a process-local development watcher, --diagnostics is temporary\n" +
+	"debug capture, --drain-timeout applies only after this process receives a\n" +
+	"shutdown signal, --skip-preflight is an unsafe startup escape hatch, and\n" +
+	"--disable-read-model-reads is an emergency rollback. Keeping them out of\n" +
+	"instance.yaml prevents temporary operational overrides from becoming\n" +
+	"durable policy. `goobers status --daemon` reports their effective values.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -321,7 +328,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, &daemonBehavior{
+		WatchConfig:           *watchConfig,
+		Diagnostics:           *diagnostics,
+		DrainTimeoutNanos:     int64(*drainTimeout),
+		SkipPreflight:         *skipPreflight,
+		DisableReadModelReads: *disableReadModelReads,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
