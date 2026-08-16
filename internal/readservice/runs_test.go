@@ -71,6 +71,35 @@ func fixtureService(t *testing.T) (*Local, instance.Layout, *workflow.Machine) {
 	return service, layout, fixtureMachine(t)
 }
 
+func TestOfflineRunsListsJournalsWithoutDaemon(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-offline",
+		machine.Def.Name,
+		machine.Def.Spec.Gaggle,
+		time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	offline, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := offline.ListRuns(context.Background(), RunListOptions{ShowNoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 || page.Runs[0].ID != "run-offline" {
+		t.Fatalf("offline list = %+v, want run-offline", page.Runs)
+	}
+}
+
 func createFixtureRun(
 	t *testing.T,
 	layout instance.Layout,
