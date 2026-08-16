@@ -518,6 +518,7 @@ type Result struct {
 	Phase      journal.RunPhase
 	FinalState string
 	Steps      int
+	NoWork     bool
 	// FailureStage/FailureCode/FailureMessage carry a PhaseFailed run's actual
 	// cause (issue #710) — populated by taskOutcome's business-failure arm
 	// (FailureCode/Message from the stage's own ErrorInfo, bounded), by
@@ -2310,6 +2311,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
 		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
+		res.NoWork = true
 		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the

@@ -786,6 +786,9 @@ func TestRunnerRetriesTransientWorktreeProvisioningAsInfrastructure(t *testing.T
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
+	if !res.NoWork {
+		t.Fatal("no-work outcome was not exposed to the scheduler")
+	}
 	if executor.calls != 1 {
 		t.Fatalf("executor called %d times, want 1 (the worktree failure never reached the executor)", executor.calls)
 	}
