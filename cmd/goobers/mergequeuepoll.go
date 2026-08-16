@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -417,15 +418,15 @@ func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// mergeQueuePollBackoff returns base<<attempt capped at max — this
-// package's own copy of internal/executor/cipoll.go's unexported backoff,
-// for the same capped-exponential poll cadence.
+// mergeQueuePollBackoff returns a jittered duration between half and all of
+// base<<attempt, with the exponential ceiling capped at max.
 func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
-	d := base << attempt
-	if d <= 0 || d > max {
-		return max
+	ceiling := base << attempt
+	if ceiling <= 0 || ceiling > max {
+		ceiling = max
 	}
-	return d
+	floor := ceiling / 2
+	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
 // runMergeQueuePollADO is merge-queue-poll's Azure DevOps land oracle
