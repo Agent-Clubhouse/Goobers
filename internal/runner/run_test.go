@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2950,6 +2951,43 @@ func TestParseBlockedBy(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("parseBlockedBy = %v, want %v", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// TestFilterSelfBlockers pins #2961: a driving item can never be its own
+// blocker, so a self-reference is dropped before it can be persisted as a
+// one-node self-edge that the cycle detector then parks as a circular
+// dependency. Normalization matches "#441" and "owner/repo#441" against item
+// 441, while a PR item is never self-blocked by the like-numbered issue.
+func TestFilterSelfBlockers(t *testing.T) {
+	cases := []struct {
+		name        string
+		blockers    []string
+		itemID      string
+		wantKept    []string
+		wantDropped []string
+	}{
+		{"self only", []string{"411"}, "411", nil, []string{"411"}},
+		{"self among real blockers", []string{"411", "512"}, "411", []string{"512"}, []string{"411"}},
+		{"no self reference", []string{"512", "513"}, "411", []string{"512", "513"}, nil},
+		{"hash prefixed blocker", []string{"#411"}, "411", nil, []string{"#411"}},
+		{"repository qualified blocker", []string{"acme/web#411"}, "411", nil, []string{"acme/web#411"}},
+		{"hash prefixed item", []string{"411"}, "#411", nil, []string{"411"}},
+		{"empty item id keeps everything", []string{"411"}, "", []string{"411"}, nil},
+		{"pr item not self blocked by like numbered issue", []string{"536"}, "pr/536", []string{"536"}, nil},
+		{"pr item self reference", []string{"pr/536"}, "pr/536", nil, []string{"pr/536"}},
+		{"no blockers", nil, "411", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kept, dropped := FilterSelfBlockers(tc.blockers, tc.itemID)
+			if !slices.Equal(kept, tc.wantKept) {
+				t.Errorf("kept = %v, want %v", kept, tc.wantKept)
+			}
+			if !slices.Equal(dropped, tc.wantDropped) {
+				t.Errorf("dropped = %v, want %v", dropped, tc.wantDropped)
 			}
 		})
 	}
