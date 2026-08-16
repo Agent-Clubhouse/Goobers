@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1238,6 +1239,10 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		if len(itemIDs) == 0 {
 			return nil
 		}
+		runURL, err := failureRunURL(l, cfg, o.RunID)
+		if err != nil {
+			return fmt.Errorf("resolve failed run URL: %w", err)
+		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
@@ -1252,7 +1257,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 			}
 			count := prevCount + 1
 
-			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID); err != nil {
+			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 
@@ -1272,6 +1277,14 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 }
 
 const failureStreakThreshold = 3
+
+func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {
+	address, err := dashboardDaemonAPIAddress(l, cfg.APIListenAddress())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s://%s/#/run/%s", daemonAPIScheme(cfg), address, url.PathEscape(runID)), nil
+}
 
 // buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
 // exhausted provider quota into the shared ProviderQuotaState the same
