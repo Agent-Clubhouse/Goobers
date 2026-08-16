@@ -100,7 +100,7 @@ func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(jour
 		// identity is a YAML parse of run.yaml — and on a long-lived instance
 		// all but a handful of runs are terminal, so parsing every run.yaml
 		// buys nothing. The old order paid both for all 54,333 of them.
-		phase, err := rd.PhaseBounded()
+		phase, err := rd.PhaseBounded(ctx)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
