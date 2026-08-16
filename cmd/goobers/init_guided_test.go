@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 type guidedInitCallbackWriter struct {
@@ -24,6 +25,75 @@ func (w *guidedInitCallbackWriter) Write(p []byte) (int, error) {
 		w.onWrite(string(p))
 	}
 	return w.Buffer.Write(p)
+}
+
+type guidedPromptTranscriptWriter struct {
+	bytes.Buffer
+	transcript strings.Builder
+}
+
+func (w *guidedPromptTranscriptWriter) Write(p []byte) (int, error) {
+	if bytes.HasSuffix(p, []byte(": ")) {
+		w.transcript.Write(p)
+		w.transcript.WriteByte('\n')
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestGuidedInitReleasePromptTranscript(t *testing.T) {
+	goldenPath, err := filepath.Abs(filepath.Join("testdata", "guided-init-release.prompts.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := os.ReadFile(filepath.Join("testdata", "guided-init-release.answers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := bytes.NewReader(answers)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "Makefile"), []byte("ci:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+
+	var stdout guidedPromptTranscriptWriter
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--guided", filepath.Join("smoke", "quickstart-instance")},
+		input,
+		&stdout,
+		&stderr,
+	)
+	got := strings.ReplaceAll(stdout.transcript.String(), workspace, "<workspace>")
+	got = strings.ReplaceAll(got, string(filepath.Separator), "/")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		diff, diffErr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A:        difflib.SplitLines(string(want)),
+			B:        difflib.SplitLines(got),
+			FromFile: goldenPath,
+			ToFile:   "actual guided-init prompts",
+			Context:  3,
+		})
+		if diffErr != nil {
+			t.Fatalf("diff guided-init prompt transcript: %v", diffErr)
+		}
+		t.Fatalf("guided-init prompt transcript changed:\n%s", diff)
+	}
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != 0 {
+		t.Fatalf("guided init left %d scripted answer bytes unread", input.Len())
+	}
 }
 
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
