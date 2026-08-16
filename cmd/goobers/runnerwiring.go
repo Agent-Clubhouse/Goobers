@@ -1070,10 +1070,14 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
-// issue if a human re-promotes it before every dependency closes. If a new
-// record closes a cycle, every issue in that cycle is parked goobers:needs-human
-// and receives a cycle-specific comment for human resolution. The runner's
-// shared EscalationNotifier owns the normal explanatory provider comment.
+// issue if a human re-promotes it before every dependency closes. Blockers
+// naming the driving item itself are dropped first (#2961) — an item cannot
+// depend on itself, and persisting that self-edge makes findBlockedCycle
+// report a one-node cycle and park the issue needs-human over a dependency
+// that does not exist. If a new record closes a real cycle, every issue in
+// that cycle is parked goobers:needs-human and receives a cycle-specific
+// comment for human resolution. The runner's shared EscalationNotifier owns
+// the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -1127,12 +1131,21 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		// escalationCommenter before the work-item call.
 		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
+			// #2961: an item can never be its own blocker. The runner already
+			// drops the self-reference when the run carried its driving item,
+			// but a run that claims its item(s) mid-run resolves them here, so
+			// the same guard has to apply per item — otherwise a self-edge
+			// reaches blocked.json and findBlockedCycle parks the issue
+			// needs-human for a dependency cycle that does not exist.
+			blockers, _ := runner.FilterSelfBlockers(o.Blockers, itemID)
 			// #2028: a named blocker is a self-healing dependency park
 			// (blocked-on-sibling), not a human decision; only an
 			// unattributed block stays needs-human. A detected cycle
 			// overrides this below with its own needs-human cycleReq.
+			// A block whose only named blocker was the item itself is
+			// unattributed once filtered, so it correctly stays needs-human.
 			label := providers.LabelNeedsHuman
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				label = blockedOnSiblingLabel
 			}
 			req := providers.UpdateWorkItemRequest{
@@ -1141,14 +1154,14 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				AddLabels:    []string{label},
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recordKey := blockedRecordKey(repoRef, itemID)
 					recs[recordKey] = blockedRecord{
 						Repository: repoRef,
 						ItemID:     itemID,
-						Blockers:   o.Blockers,
+						Blockers:   blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,

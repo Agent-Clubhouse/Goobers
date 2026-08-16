@@ -151,7 +151,9 @@ type BlockedOutcome struct {
 	// Blockers are the blocking issue numbers the stage referenced via the
 	// documented outputs.blockedBy convention (comma-separated numbers in a
 	// scalar string — see docs/stage-contract.md). Empty when the stage named
-	// none in machine-readable form.
+	// none in machine-readable form. Any reference to the driving item itself
+	// is dropped before the handler sees it (#2961); handlers resolving items
+	// from the claim ledger must apply FilterSelfBlockers per resolved item.
 	Blockers []string
 }
 
@@ -1994,6 +1996,52 @@ func parseBlockedBy(outputs map[string]interface{}) []string {
 // convention.
 const OutputBlockedBy = "blockedBy"
 
+// SelfBlockerDroppedKind tags the runner.annotation recording that a stage
+// named its own driving item in outputs.blockedBy and the self-reference was
+// dropped before persistence (#2961).
+const SelfBlockerDroppedKind = "blocked_by.self_reference_dropped"
+
+// FilterSelfBlockers removes blockers naming the driving item itself, which an
+// item can never depend on (#2961). Admitting a self-reference writes a
+// one-node self-edge into scheduler/blocked.json that the cycle detector then
+// correctly reports as a circular dependency, parking the issue for human
+// resolution over a dependency that does not exist. The detector is not the
+// bug — the missing validation at the point model-authored blocker output is
+// admitted is, so this filters on the way in and leaves persisted-graph
+// self-loop handling intact for legacy or corrupt records.
+//
+// Both sides are normalized (repository qualifier and "#" prefix stripped) so
+// "#441", "owner/repo#441" and "441" all match item 441. Matching is exact
+// after normalization: a pull-request item ("pr/536") is never considered
+// self-blocked by issue 536, which is a legitimate dependency.
+// Returns the blockers to keep and those dropped, in first-seen order.
+func FilterSelfBlockers(blockers []string, itemID string) (kept, dropped []string) {
+	self := normalizeBlockerToken(itemID)
+	if self == "" {
+		return blockers, nil
+	}
+	for _, blocker := range blockers {
+		if normalizeBlockerToken(blocker) == self {
+			dropped = append(dropped, blocker)
+			continue
+		}
+		kept = append(kept, blocker)
+	}
+	return kept, dropped
+}
+
+// normalizeBlockerToken reduces an item id or blocker reference to the bare
+// identifier both sides of a self-comparison can be keyed on, mirroring the
+// CLI's normalizeBlockedReference: drop any repository qualifier ahead of the
+// last "#", then any leading "#".
+func normalizeBlockerToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if separator := strings.LastIndex(raw, "#"); separator >= 0 {
+		raw = raw[separator+1:]
+	}
+	return strings.TrimSpace(strings.TrimPrefix(raw, "#"))
+}
+
 // failTerminal journals the run's terminal run.finished(PhaseFailed) event
 // before surfacing origErr, so a walk-level error never leaves phase=running
 // forever — the daemon auto-resumes every PhaseRunning run on restart
@@ -2132,6 +2180,26 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		}
 		if item != nil {
 			o.ItemID = item.ID
+			// #2961: an item cannot block itself. Drop the self-reference
+			// before it reaches the blocked record, and leave an
+			// operator-visible note naming the run, stage and item so the
+			// dropped edge is diagnosable rather than silent.
+			if kept, dropped := FilterSelfBlockers(o.Blockers, item.ID); len(dropped) > 0 {
+				o.Blockers = kept
+				if aerr := jr.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: t.Name,
+					Runner: map[string]any{
+						"kind":              SelfBlockerDroppedKind,
+						"runID":             runID,
+						"itemID":            item.ID,
+						"droppedBlockers":   dropped,
+						"remainingBlockers": len(kept),
+					},
+				}); aerr != nil {
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal self-referential blockedBy for %q: %w", t.Name, aerr))
+					return "", res, false, err
+				}
+			}
 		}
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name,
