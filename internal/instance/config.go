@@ -31,6 +31,17 @@ const (
 	ConfigKind                       = "Instance"
 	DefaultAPIListenAddress          = "127.0.0.1:8080"
 	DefaultWebhookListenAddress      = "127.0.0.1:8081"
+	DefaultTemporalHostPort          = "127.0.0.1:7233"
+	DefaultTemporalNamespace         = "default"
+	DefaultEngineTaskQueue           = "goobers-engine"
+	TemporalHostPortEnv              = "GOOBERS_TEMPORAL_HOSTPORT"
+	TemporalAddressEnv               = "GOOBERS_TEMPORAL_ADDRESS"
+	TemporalAddressLegacyEnv         = "TEMPORAL_ADDRESS"
+	TemporalNamespaceEnv             = "GOOBERS_TEMPORAL_NAMESPACE"
+	TemporalNamespaceLegacyEnv       = "TEMPORAL_NAMESPACE"
+	TaskQueueEnv                     = "GOOBERS_TASK_QUEUE"
+	TemporalTaskQueueEnv             = "GOOBERS_TEMPORAL_TASK_QUEUE"
+	TemporalTaskQueueLegacyEnv       = "TEMPORAL_TASK_QUEUE"
 	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
 	DefaultWorkflowSourceRef         = "main"
@@ -74,6 +85,11 @@ type Config struct {
 	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
+	// projection loop disabled; standalone engine commands still use defaults.
+	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
+	engineResolutionApplied bool
+	engineProjectionEnabled bool
 	// ExternalTelemetry declares named, read-only operational telemetry
 	// connectors. Workflows select only a connector name and generic query
 	// inputs; provider fields remain confined to each connector's config.
@@ -998,6 +1014,14 @@ type OTLPConfig struct {
 	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
+// EngineConfig identifies the Temporal frontend and task queue shared by all
+// tier-3 engine processes.
+type EngineConfig struct {
+	HostPort  string `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	TaskQueue string `json:"taskQueue,omitempty" yaml:"taskQueue,omitempty"`
+}
+
 // RunConditions are instance-level run conditions (§7): max parallel runs and
 // per-workflow run budgets.
 type RunConditions struct {
@@ -1207,6 +1231,110 @@ func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPC
 	return resolved, nil
 }
 
+// ResolveEngineConfig applies process environment overrides to instance.yaml
+// and validates the resulting Temporal connection configuration.
+func (c *Config) ResolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, bool, error) {
+	resolved, env, err := c.resolveEngineConfig(lookupEnv)
+	return resolved, c.Engine != nil || env.anyOverride, err
+}
+
+type engineEnvResolution struct {
+	anyOverride  bool
+	hostOverride bool
+}
+
+func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, engineEnvResolution, error) {
+	resolved := EngineConfig{
+		HostPort:  DefaultTemporalHostPort,
+		Namespace: DefaultTemporalNamespace,
+		TaskQueue: DefaultEngineTaskQueue,
+	}
+	if c.Engine != nil {
+		if c.Engine.HostPort != "" {
+			resolved.HostPort = c.Engine.HostPort
+		}
+		if c.Engine.Namespace != "" {
+			resolved.Namespace = c.Engine.Namespace
+		}
+		if c.Engine.TaskQueue != "" {
+			resolved.TaskQueue = c.Engine.TaskQueue
+		}
+	}
+	var envResolution engineEnvResolution
+	overrides := []struct {
+		keys   []string
+		target *string
+		host   bool
+	}{
+		{[]string{TemporalHostPortEnv, TemporalAddressEnv, TemporalAddressLegacyEnv}, &resolved.HostPort, true},
+		{[]string{TemporalNamespaceEnv, TemporalNamespaceLegacyEnv}, &resolved.Namespace, false},
+		{[]string{TaskQueueEnv, TemporalTaskQueueEnv, TemporalTaskQueueLegacyEnv}, &resolved.TaskQueue, false},
+	}
+	for _, override := range overrides {
+		for i, env := range override.keys {
+			if value, ok := lookupEnv(env); ok {
+				value = strings.TrimSpace(value)
+				if value == "" {
+					// Compatibility aliases historically used os.Getenv and
+					// treated an empty value as unset.
+					if i > 0 {
+						continue
+					}
+					return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("%s must not be empty when set", env)
+				}
+				*override.target = value
+				envResolution.anyOverride = true
+				envResolution.hostOverride = envResolution.hostOverride || override.host
+				break
+			}
+		}
+	}
+	if err := resolved.Validate(); err != nil {
+		return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("engine: %w", err)
+	}
+	return resolved, envResolution, nil
+}
+
+// EffectiveEngineConfig returns the resolved engine configuration stored by
+// LoadConfig, or the standalone defaults when engine is not configured.
+func (c *Config) EffectiveEngineConfig() EngineConfig {
+	if c.Engine != nil {
+		return *c.Engine
+	}
+	return EngineConfig{
+		HostPort:  DefaultTemporalHostPort,
+		Namespace: DefaultTemporalNamespace,
+		TaskQueue: DefaultEngineTaskQueue,
+	}
+}
+
+// EngineProjectionEnabled reports whether instance YAML or a host/address
+// environment override configured a Temporal connection for the daemon.
+func (c *Config) EngineProjectionEnabled() bool {
+	if c.engineResolutionApplied {
+		return c.engineProjectionEnabled
+	}
+	return c.Engine != nil
+}
+
+// Validate checks the Temporal frontend and task queue fields.
+func (c EngineConfig) Validate() error {
+	if strings.TrimSpace(c.HostPort) != c.HostPort {
+		return fmt.Errorf("hostPort must not contain leading or trailing whitespace")
+	}
+	host, port, err := net.SplitHostPort(c.HostPort)
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("hostPort %q must be in host:port form", c.HostPort)
+	}
+	if strings.TrimSpace(c.Namespace) != c.Namespace || c.Namespace == "" {
+		return fmt.Errorf("namespace must be non-empty without leading or trailing whitespace")
+	}
+	if strings.TrimSpace(c.TaskQueue) != c.TaskQueue || c.TaskQueue == "" {
+		return fmt.Errorf("taskQueue must be non-empty without leading or trailing whitespace")
+	}
+	return nil
+}
+
 // Enabled reports whether collector push is configured.
 func (c OTLPConfig) Enabled() bool {
 	return c.Endpoint != ""
@@ -1337,6 +1465,16 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Telemetry.OTLP != nil || resolvedOTLP.Enabled() {
 		cfg.Telemetry.OTLP = &resolvedOTLP
 	}
+	yamlEngineConfigured := cfg.Engine != nil
+	resolvedEngine, engineEnv, err := cfg.resolveEngineConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if yamlEngineConfigured || engineEnv.anyOverride {
+		cfg.Engine = &resolvedEngine
+	}
+	cfg.engineResolutionApplied = true
+	cfg.engineProjectionEnabled = yamlEngineConfigured || engineEnv.hostOverride
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

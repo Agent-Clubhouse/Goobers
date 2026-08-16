@@ -22,8 +22,8 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("engine-project", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the run")
-	hostPort := fs.String("temporal-hostport", workerEnvOr("GOOBERS_TEMPORAL_HOSTPORT", "127.0.0.1:7233"), "Temporal frontend host:port")
-	namespace := fs.String("temporal-namespace", workerEnvOr("GOOBERS_TEMPORAL_NAMESPACE", "default"), "Temporal namespace")
+	hostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port")
+	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	fs.Usage = helpUsage(stderr, "engine-project")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -37,9 +37,17 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 	l := instance.NewLayout(root)
-	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
 		pf(stderr, "error: load instance config: %v\n", err)
 		return 2
+	}
+	engineConfig := cfg.EffectiveEngineConfig()
+	if *hostPort == "" {
+		*hostPort = engineConfig.HostPort
+	}
+	if *namespace == "" {
+		*namespace = engineConfig.Namespace
 	}
 	watermarks, err := intake.Open(l.IntakeDB())
 	if err != nil {

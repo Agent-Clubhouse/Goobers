@@ -1159,6 +1159,154 @@ telemetry:
 	}
 }
 
+func TestLoadConfigEngineEnvironmentOverridesFile(t *testing.T) {
+	t.Setenv(TemporalHostPortEnv, "temporal.internal:7233")
+	t.Setenv(TemporalNamespaceEnv, "production")
+	t.Setenv(TaskQueueEnv, "production-engine")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  namespace: development
+  taskQueue: development-engine
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := EngineConfig{HostPort: "temporal.internal:7233", Namespace: "production", TaskQueue: "production-engine"}
+	if got := cfg.EffectiveEngineConfig(); got != want {
+		t.Fatalf("EffectiveEngineConfig = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveEngineConfig(t *testing.T) {
+	t.Run("defaults without enabling projection", func(t *testing.T) {
+		resolved, configured, err := (&Config{}).ResolveEngineConfig(func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if configured {
+			t.Fatal("unconfigured engine unexpectedly enabled")
+		}
+		if resolved != (EngineConfig{HostPort: DefaultTemporalHostPort, Namespace: DefaultTemporalNamespace, TaskQueue: DefaultEngineTaskQueue}) {
+			t.Fatalf("resolved engine = %+v", resolved)
+		}
+	})
+
+	t.Run("invalid YAML is actionable", func(t *testing.T) {
+		cfg := Config{Engine: &EngineConfig{HostPort: "missing-port"}}
+		_, _, err := cfg.ResolveEngineConfig(func(string) (string, bool) { return "", false })
+		if err == nil || !strings.Contains(err.Error(), `engine: hostPort "missing-port" must be in host:port form`) {
+			t.Fatalf("ResolveEngineConfig error = %v", err)
+		}
+	})
+
+	t.Run("empty environment override fails closed", func(t *testing.T) {
+		_, _, err := (&Config{}).ResolveEngineConfig(func(key string) (string, bool) {
+			return "", key == TemporalNamespaceEnv
+		})
+		if err == nil || !strings.Contains(err.Error(), TemporalNamespaceEnv+" must not be empty") {
+			t.Fatalf("ResolveEngineConfig error = %v", err)
+		}
+	})
+
+	t.Run("compatibility aliases retain precedence", func(t *testing.T) {
+		env := map[string]string{
+			TemporalHostPortEnv:        "canonical:7233",
+			TemporalAddressEnv:         "goobers-alias:7233",
+			TemporalAddressLegacyEnv:   "legacy:7233",
+			TemporalNamespaceEnv:       "canonical-namespace",
+			TemporalNamespaceLegacyEnv: "legacy-namespace",
+			TaskQueueEnv:               "canonical-queue",
+			TemporalTaskQueueEnv:       "goobers-alias-queue",
+			TemporalTaskQueueLegacyEnv: "legacy-queue",
+		}
+		resolved, _, err := (&Config{}).ResolveEngineConfig(func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := EngineConfig{HostPort: "canonical:7233", Namespace: "canonical-namespace", TaskQueue: "canonical-queue"}
+		if resolved != want {
+			t.Fatalf("resolved engine = %+v, want %+v", resolved, want)
+		}
+	})
+
+	t.Run("empty compatibility alias falls through", func(t *testing.T) {
+		env := map[string]string{
+			TemporalAddressEnv:       "",
+			TemporalAddressLegacyEnv: "legacy:7233",
+		}
+		resolved, _, err := (&Config{}).ResolveEngineConfig(func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.HostPort != "legacy:7233" {
+			t.Fatalf("hostPort = %q", resolved.HostPort)
+		}
+	})
+
+	for name, env := range map[string]map[string]string{
+		"goobers address":    {TemporalAddressEnv: "temporal:7233"},
+		"legacy address":     {TemporalAddressLegacyEnv: "temporal:7233"},
+		"legacy namespace":   {TemporalNamespaceLegacyEnv: "production"},
+		"goobers task queue": {TemporalTaskQueueEnv: "production"},
+		"legacy task queue":  {TemporalTaskQueueLegacyEnv: "production"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolved, _, err := (&Config{}).ResolveEngineConfig(func(key string) (string, bool) {
+				value, ok := env[key]
+				return value, ok
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(name, "address") && resolved.HostPort != "temporal:7233" {
+				t.Fatalf("hostPort = %q", resolved.HostPort)
+			}
+			if strings.Contains(name, "namespace") && resolved.Namespace != "production" {
+				t.Fatalf("namespace = %q", resolved.Namespace)
+			}
+			if strings.Contains(name, "task queue") && resolved.TaskQueue != "production" {
+				t.Fatalf("taskQueue = %q", resolved.TaskQueue)
+			}
+		})
+	}
+}
+
+func TestEngineProjectionActivationIgnoresNamespaceAndTaskQueueOverrides(t *testing.T) {
+	cfg := &Config{}
+	resolved, env, err := cfg.resolveEngineConfig(func(key string) (string, bool) {
+		values := map[string]string{
+			TemporalNamespaceEnv: "production",
+			TaskQueueEnv:         "production",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Engine = &resolved
+	cfg.engineResolutionApplied = true
+	cfg.engineProjectionEnabled = env.hostOverride
+
+	if cfg.EngineProjectionEnabled() {
+		t.Fatal("namespace/task-queue-only overrides enabled projection")
+	}
+	if got := cfg.EffectiveEngineConfig(); got.Namespace != "production" || got.TaskQueue != "production" {
+		t.Fatalf("effective engine config = %+v", got)
+	}
+}
+
 func TestLoadConfigOTLPRejectsInlineHeaderSecret(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

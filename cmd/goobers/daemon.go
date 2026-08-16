@@ -683,6 +683,7 @@ func buildSchedulerDefinitions(
 		// config did nothing at runtime; Scheduler.Signal fires every
 		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
+		var scheduleBackoffs []localscheduler.IdleBackoffConfig
 		var sigs []string
 		hasRepositoryWebhook := false
 		var pollPriority int32
@@ -694,6 +695,11 @@ func buildSchedulerDefinitions(
 					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
 				scheds = append(scheds, localscheduler.InLocation(schedule, loc))
+				backoff, err := localscheduler.ParseIdleBackoff(trigger.IdleBackoff)
+				if err != nil {
+					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+				}
+				scheduleBackoffs = append(scheduleBackoffs, backoff)
 			}
 			if trigger.Type == apiv1.TriggerSignal && trigger.Signal != "" {
 				sigs = append(sigs, trigger.Signal)
@@ -751,6 +757,7 @@ func buildSchedulerDefinitions(
 			Gaggle:            wf.Spec.Gaggle,
 			Readiness:         wf.Spec.Readiness,
 			Schedules:         scheds,
+			ScheduleBackoffs:  scheduleBackoffs,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
 			BacklogCounter:    backlogCounter,
@@ -1032,6 +1039,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
+		NoWork:         res.NoWork,
 		FailureStage:   res.FailureStage,
 		FailureCode:    res.FailureCode,
 		FailureMessage: res.FailureMessage,
