@@ -250,6 +250,23 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+
+	const requiredCheckName = "    name: make ci (fmt-check · vet · build · test · lint)"
+	// Repository ruleset 19093039 pins this exact required-check name:
+	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
+	requiredCI := workflowJob(string(data), "required-ci")
+	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
+		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))
+	}
+}
+
 func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
