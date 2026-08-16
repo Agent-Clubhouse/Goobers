@@ -158,6 +158,7 @@ future-design docs above until its child issues land.
 | Path | Contents | Status |
 |---|---|---|
 | `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active |
+| `config/` | CRD manifests for tier-3 config delivery | **Quarantined** — reserved for cloud-scale execution |
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
 | `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
 | `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
@@ -174,7 +175,7 @@ future-design docs above until its child issues land.
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
 | `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
-| `evals/` | EvalSuite design docs (sandbox/adapter API, cassette format) for deterministic, reproducible workflow evaluation | Design — no runner/adapter implementation shipped yet |
+| `evals/` | EvalSuite design docs and prototype runner/adapter implementation for deterministic, reproducible workflow evaluation | Prototype runner in-tree — not shipped behavior |
 | `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
 | `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |

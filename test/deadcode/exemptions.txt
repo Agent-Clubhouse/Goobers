@@ -273,9 +273,3 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
-
-
-# constructed by `goobers worker --blob-store`, which lands with the worker
-# runtime-seams slice; MaterializeContext already consumes the Store interface.
-# These exemptions become stale the moment that slice merges, and test/deadcode
-# rejects stale entries — so removing them is part of that change, by design.
