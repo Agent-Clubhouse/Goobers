@@ -57,23 +57,17 @@ func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scru
 	if scrubber != nil {
 		logOut = scrubbedWriter{dst: logOut, scrubber: scrubber}
 	}
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(logOut)
-	var (
-		showVersion = fs.Bool("version", false, "print version information and exit")
-		logLevel    = fs.String("log-level", "info", "log level: debug, info, warn, error")
-		logFormat   = fs.String("log-format", "json", "log format: json or text")
-	)
-	if err := fs.Parse(args); err != nil {
+	options, err := ParseArgs(name, args, logOut, false)
+	if err != nil {
 		return 2
 	}
 
-	if *showVersion {
+	if options.showVersion {
 		_, _ = fmt.Fprintf(logOut, "%s %s\n", name, version.Get())
 		return 0
 	}
 
-	log := newLogger(logOut, *logLevel, *logFormat).With("component", name)
+	log := newLogger(logOut, options.logLevel, options.logFormat).With("component", name)
 	log.Info("starting", "version", version.Get().String())
 
 	ctx, stop := signals.SetupSignalContext()
@@ -85,6 +79,29 @@ func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scru
 	}
 	log.Info("shutdown complete")
 	return 0
+}
+
+type cliOptions struct {
+	showVersion bool
+	logLevel    string
+	logFormat   string
+}
+
+// ParseArgs parses control-plane binary arguments without starting the binary.
+func ParseArgs(name string, args []string, output io.Writer, rejectPositionals bool) (cliOptions, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(output)
+	var options cliOptions
+	fs.BoolVar(&options.showVersion, "version", false, "print version information and exit")
+	fs.StringVar(&options.logLevel, "log-level", "info", "log level: debug, info, warn, error")
+	fs.StringVar(&options.logFormat, "log-format", "json", "log format: json or text")
+	if err := fs.Parse(args); err != nil {
+		return cliOptions{}, err
+	}
+	if rejectPositionals && fs.NArg() != 0 {
+		return cliOptions{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return options, nil
 }
 
 type scrubbedWriter struct {
