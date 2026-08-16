@@ -66,12 +66,14 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 ## Validation
 
-No cluster is required — `make deploy-validate` runs the kustomize builds, or by hand:
+No cluster is required. The merge gate runs `make deploy-validate`, which renders all
+three kustomizations and passes them through strict kubeconform schema validation.
+The Go test suite also checks every Deployment's container arguments against the
+registered CLI flags and requires execution-critical worker flags such as `--instance`.
+Run the same render and schema gate locally with:
 
 ```sh
-kubectl kustomize deploy/reference/goobers-system
-kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a
-kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b
+make deploy-validate
 
 # Temporal values render (pinned chart version — see temporal/values.yaml header):
 helm repo add temporal https://go.temporal.io/helm-charts
