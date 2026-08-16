@@ -16,6 +16,8 @@ type stageProviderConfig struct {
 	cached       bool
 	mutationKind string
 	openPR       bool
+	noRetries    bool
+	observeToken func(string)
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -47,6 +49,18 @@ func withStageProviderMutations(kind string) stageProviderOption {
 func withStageProviderOpenPR() stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.openPR = true
+	}
+}
+
+func withStageProviderRetriesDisabled() stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.noRetries = true
+	}
+}
+
+func withStageProviderTokenObserver(observer func(string)) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.observeToken = observer
 	}
 }
 
@@ -92,10 +106,20 @@ func newProviderForStageAs[T providers.Provider](root string, repo providers.Rep
 }
 
 func stageProviderToken(cfg stageProviderConfig) (string, error) {
+	var token string
 	if cfg.token != "" {
-		return cfg.token, nil
+		token = cfg.token
+	} else {
+		var err error
+		token, err = providerToken(cfg.capability)
+		if err != nil {
+			return "", err
+		}
 	}
-	return providerToken(cfg.capability)
+	if cfg.observeToken != nil {
+		cfg.observeToken(token)
+	}
+	return token, nil
 }
 
 func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
@@ -106,6 +130,9 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	var opts []func(*providers.GitHubProvider)
 	if !cfg.readOnly && cfg.mutationKind != "" {
 		opts = append(opts, providers.WithMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
+	}
+	if cfg.noRetries {
+		opts = append(opts, providers.WithMaxRateLimitRetries(0), providers.WithMaxTransientRetries(0))
 	}
 	if cfg.cached {
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil

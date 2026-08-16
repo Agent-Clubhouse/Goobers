@@ -71,6 +71,26 @@ func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 	}
 }
 
+func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
+	const token = "branch-token"
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), token)
+
+	var observed string
+	_, err := newProviderForStage(
+		t.TempDir(),
+		providers.RepositoryRef{Provider: providers.ProviderGitHub},
+		false,
+		withStageProviderCapability(capability.GitHubBranchDelete),
+		withStageProviderTokenObserver(func(token string) { observed = token }),
+	)
+	if err != nil {
+		t.Fatalf("newProviderForStage: %v", err)
+	}
+	if observed != token {
+		t.Fatalf("observed token = %q, want %q", observed, token)
+	}
+}
+
 func TestNewProviderForStageAsRejectsUnsupportedConcreteOperation(t *testing.T) {
 	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
 
