@@ -1,6 +1,6 @@
 # Design: Multiple capability-scoped credentials (per-capability token sourcing)
 
-> Status: **Implemented — historical record** (2026-07-23) · Area: `SEC` / `area:runner` ·
+> Status: **implemented — historical record** (2026-07-23) · Area: `SEC` / `area:runner` ·
 > Milestone: **V0.2** (unblocked the #30 live-run gate) with a defined path to
 > per-stage isolation. Shipped: the `agent:model` capability, the `credentials:`
 > block in instance config, and per-goober scoping (#823); §5's forward path has

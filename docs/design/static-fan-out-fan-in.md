@@ -1,6 +1,6 @@
 # Design: Static fan-out/fan-in — bounded parallel branches and a real join
 
-> Status: **Implemented — GA in #1939** · Area prefix: `FO` · Milestone:
+> Status: **implemented — GA in #1939** · Area prefix: `FO` · Milestone:
 > **Versioning & Releases — DSL compatibility + tagged builds** (#12)
 > Resolves the **static half** of #1310 — the explicit parallel failure policy and the
 > bounded `parallel` construct, spec'd against the conformance surface. #1310's

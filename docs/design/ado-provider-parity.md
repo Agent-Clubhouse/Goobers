@@ -1,6 +1,6 @@
 # Azure DevOps Provider Parity — the PR lifecycle on ADO
 
-> Status: **Draft for review.**
+> Status: **draft — for review.**
 > Driving epic: #2061 (ADO end-to-end). Builds on `docs/design/provider-contract-conformance.md`
 > (the capability model) and `docs/design/v0/pr-lifecycle-loop.md` (the stage contract).
 

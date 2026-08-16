@@ -1,6 +1,6 @@
 # ADR 0001: Use OS-native sandboxes for local agentic stages
 
-- Status: Accepted
+- Status: approved
 - Date: 2026-07-18
 - Decision owner: SEC-Q6 / issue #163
 

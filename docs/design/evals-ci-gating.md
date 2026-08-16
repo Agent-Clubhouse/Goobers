@@ -1,6 +1,6 @@
 # Design: EvalSuite CI gating, baseline management & alerting
 
-> Status: **Proposed** (research-phase deliverable; not yet wired to a runner)
+> Status: **draft — proposed** (research-phase deliverable; not yet wired to a runner)
 > Area prefix: evals
 > Related: #2662 (EvalSuite epic), #2663 (DSL & schema), #2664 (judge harness),
 > #2665 (sandbox/adapter API), #2666 (adapter prototype), #2667 (runner

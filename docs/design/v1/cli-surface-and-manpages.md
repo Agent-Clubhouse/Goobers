@@ -1,6 +1,6 @@
 # Design: CLI robustness — registry-sourced help + generated man pages
 
-> Status: **Draft for review** · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
+> Status: **draft — for review** · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
 > (#435) References: `cmd/goobers/main.go` (usage), `cmd/goobers/runtime_capabilities.go`
 > (registry/dispatch), `cmd/goobers/completion.go` (static completion), `internal/apicontract`.
 > Origin: the V1 usability goal — audit CLI commands for robustness, correct/complete man

@@ -1,6 +1,6 @@
 # Design: Tutor workflow (journal-mining → config PRs) — V1 epic #36
 
-> Status: **Draft for review** · Area prefix: `TUT` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `TUT` · Milestone: **V1**
 > Requirements: [`docs/requirements/tutor.md`](../../requirements/tutor.md) ·
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §4 (journals), §8
 > (telemetry), §9 (security), §12 (roadmap)
