@@ -20,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsync"
 )
 
@@ -53,7 +54,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	if errors.Is(err, configsync.ErrInvalidConfig) {
 		_, _ = fmt.Fprintf(stderr, "config-sync: invalid config (%d objects, %d files):\n", report.Objects, report.Files)
 		for _, iss := range report.Issues {
-			_, _ = fmt.Fprintf(stderr, "  %s\n", iss.CLIString())
+			_, _ = fmt.Fprintf(stderr, "  %s\n", configSyncCLIString(iss))
 		}
 		return 1
 	}
@@ -63,7 +64,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	// Surface non-fatal warnings.
 	for _, iss := range report.Issues {
-		_, _ = fmt.Fprintf(stderr, "  %s\n", iss.CLIString())
+		_, _ = fmt.Fprintf(stderr, "  %s\n", configSyncCLIString(iss))
 	}
 
 	if *apply {
@@ -82,6 +83,16 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "rendered %d manifests to %s\n", len(written), *outDir)
 	return 0
+}
+
+func configSyncCLIString(issue validate.Issue) string {
+	if issue.Severity == validate.Warning &&
+		issue.Code == validate.WarningDeprecatedDSLVersion &&
+		issue.Kind == "Workflow" {
+		issue.File = ""
+		issue.Gaggle = ""
+	}
+	return issue.CLIString()
 }
 
 // applyFn performs the direct-apply path; overridable in tests so the apply
