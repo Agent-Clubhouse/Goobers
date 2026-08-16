@@ -423,6 +423,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			group:        groupChecks,
 		},
 		check{
+			label:        "portal-deadcode",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "deadcode"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
 			label:        "portal-e2e",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "run", "test:e2e"},
