@@ -136,7 +136,8 @@ func DefaultChecks() map[string]CheckFunc {
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
 		},
 		// "failure-class": pass for success, infra for a retryable failure or
-		// a generic command failure carrying a known host-contention signature,
+		// a generic command failure carrying a known host-contention or
+		// dependency-transport signature,
 		// and fail for every other status. No params.
 		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			status := stringField(inputs, InputKeyStatus)
@@ -144,7 +145,7 @@ func DefaultChecks() map[string]CheckFunc {
 				return OutcomePass, nil
 			}
 			retryable, _ := inputs[InputKeyErrorRetryable].(bool)
-			if status == string(apiv1.ResultFailure) && (retryable || isHostContentionFailure(inputs)) {
+			if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
 				return OutcomeInfra, nil
 			}
 			return OutcomeFail, nil
@@ -329,7 +330,7 @@ func DefaultChecks() map[string]CheckFunc {
 	}
 }
 
-func isHostContentionFailure(inputs map[string]interface{}) bool {
+func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
 		return false
 	}
@@ -344,7 +345,8 @@ func isHostContentionFailure(inputs map[string]interface{}) bool {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(message, "npm error openssl/") &&
+		strings.Contains(message, "tls alert handshake failure")
 }
 
 func boolOutcome(pass bool) string {

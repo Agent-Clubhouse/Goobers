@@ -75,6 +75,30 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			name: "dependency download TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "npm error OpenSSL/3.6.0: error:0A000410:SSL routines::ssl/tls alert handshake failure"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "business TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestTLSConfig failed: tls alert handshake failure"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "persistent TLS certificate failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "tls: failed to verify certificate: x509: certificate signed by unknown authority"},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "typed business failure with contention words",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
