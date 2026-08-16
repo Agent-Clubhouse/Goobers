@@ -3635,10 +3635,11 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 
 func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
 	tests := []struct {
-		name  string
-		cfg   *instance.Config
-		runID string
-		want  string
+		name      string
+		cfg       *instance.Config
+		published string
+		runID     string
+		want      string
 	}{
 		{
 			name:  "default local daemon",
@@ -3655,10 +3656,32 @@ func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
 			runID: "run/1",
 			want:  "https://ops.example:8443/#/run/run%2F1",
 		},
+		{
+			name: "published ephemeral port",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "127.0.0.1:0",
+			}},
+			published: "127.0.0.1:43210",
+			runID:     "run-2",
+			want:      "http://127.0.0.1:43210/#/run/run-2",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := failureRunURL(test.cfg, test.runID); got != test.want {
+			l := instance.NewLayout(t.TempDir())
+			if test.published != "" {
+				if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName), []byte(test.published+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := failureRunURL(l, test.cfg, test.runID)
+			if err != nil {
+				t.Fatalf("failureRunURL() error = %v", err)
+			}
+			if got != test.want {
 				t.Fatalf("failureRunURL() = %q, want %q", got, test.want)
 			}
 		})
