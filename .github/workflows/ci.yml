@@ -669,11 +669,13 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
-      # Named rather than the whole package: the Windows-only regression guard
-      # verifies that legacy migrations create an NTFS junction without
-      # requiring the symlink privilege (#2862).
-      - name: Windows instance runtime alias
-        run: go test ./internal/instance -run '^TestCreateLegacyRuntimeAliasCreatesJunction$'
+      # The whole package, not one named test. #3064 added this step scoped to
+      # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
+      # four migration tests that actually exercise alias *resolution* stayed
+      # unrun on Windows — the same "green because it never executes" gap #3064
+      # set out to close (#2862, and the junction-resolution fix in this change).
+      - name: Windows instance runtime
+        run: go test ./internal/instance
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
