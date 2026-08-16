@@ -294,9 +294,10 @@ Contract rules:
 daemon (scheduler + runner); `goobers run <workflow>` triggers one manually (still
 honoring run conditions); `goobers status` / `goobers trace <run-id>` inspect it.
 These are the anchor commands of a wider registry-sourced CLI documented in the
-guarded [generated CLI reference](cli/README.md), including the built-in stage kinds
-workflows invoke as subcommands (`backlog-query`, `open-pr`, `merge-pr`,
-`elect-lander`, `apply-verdict`, …). The daemon also serves a **loopback-only HTTP API**
+guarded [generated CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md),
+including the built-in stage kinds workflows invoke as subcommands (`backlog-query`,
+`open-pr`, `merge-pr`, `elect-lander`, `apply-verdict`, …). The daemon also serves a
+**loopback-only HTTP API**
 (`internal/httpapi`: `/api/v1/*` reads, health, event stream) backing an embedded
 dashboard (`goobers dashboard`); long-lived daemons run under platform supervision
 (systemd/launchd/Windows service — `docs/guides/supervision.md`).
