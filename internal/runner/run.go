@@ -522,8 +522,9 @@ type Result struct {
 	// FailureStage/FailureCode/FailureMessage carry a PhaseFailed run's actual
 	// cause (issue #710) — populated by taskOutcome's business-failure arm
 	// (FailureCode/Message from the stage's own ErrorInfo, bounded), by
-	// failTerminal (FailureCode "run_failed", FailureStage the failing
-	// stage/gate name, FailureMessage the walk-level error, bounded), and by
+	// failTerminal (FailureCode the typed stage error code when available,
+	// otherwise "run_failed"; FailureStage the failing stage/gate name,
+	// FailureMessage the walk-level error, bounded), and by
 	// refuseResume (FailureCode the WF-016 refusal code, FailureStage empty —
 	// a resume-time digest check, not stage-scoped). Every caller reading
 	// Phase == PhaseFailed downstream (the scheduler's and daemon's run-
@@ -2078,7 +2079,12 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// (the scheduler/daemon echo) needs; finalState is the failing stage/gate
 	// name where available (a gate-eval error, e.g.), empty for a genuinely
 	// state-less failure (max-steps, unknown state).
-	res.FailureStage, res.FailureCode, res.FailureMessage = finalState, "run_failed", message
+	failureCode := "run_failed"
+	var coded stageCodedError
+	if errors.As(origErr, &coded) && coded.StageErrorCode() != "" {
+		failureCode = coded.StageErrorCode()
+	}
+	res.FailureStage, res.FailureCode, res.FailureMessage = finalState, failureCode, message
 	if ferr != nil {
 		return res, fmt.Errorf("%w (additionally failed to finalize terminal failure: %w)", origErr, ferr)
 	}

@@ -1939,7 +1939,8 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		if startErr == nil {
 			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())
 		}
-		if startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed {
+		if (startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed) ||
+			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {
 			s.openAuthCircuit(identity)
 		}
 		// #710: this echo used to carry only the bare phase string — a
