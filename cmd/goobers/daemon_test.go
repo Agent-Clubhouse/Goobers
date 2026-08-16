@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -185,6 +186,85 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 	if _, err := setup.ReadModel.State(context.Background()); err != nil {
 		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	ctx := context.Background()
+
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := buildReadModelIfNeeded(ctx, store, state, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO change(at, kind) VALUES ('2026-08-16T00:00:00.000000000Z', 'definitions.changed')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50_001; i++ {
+		if _, err := stmt.ExecContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := setup.ReadModel.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.MinChangeSeq == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("change feed retention floor = %d, want 2", state.MinChangeSeq)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	changes, err := setup.ReadModel.Changes(ctx, 0, 50_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 50_000 {
+		t.Fatalf("default daemon retained %d change rows, want 50000", len(changes))
 	}
 }
 
