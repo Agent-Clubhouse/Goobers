@@ -12,11 +12,12 @@ import (
 	"strings"
 	"time"
 
+	hashiversion "github.com/hashicorp/go-version"
+
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/version"
-	hashiversion "github.com/hashicorp/go-version"
 )
 
 const defaultDrainTimeout = 40 * time.Second
