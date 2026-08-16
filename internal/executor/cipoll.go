@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"runtime"
 	"strings"
 	"time"
@@ -713,14 +714,15 @@ func ciPollOutcome(checkState providers.CheckState, summary string) apiv1.Result
 	}
 }
 
-// backoff returns base<<attempt capped at max, matching the shape of the
-// repo's other capped-exponential backoff (providers.backoffDuration).
+// backoff returns a jittered duration between half and all of base<<attempt,
+// with the exponential ceiling capped at max.
 func backoff(base, max time.Duration, attempt int) time.Duration {
-	d := base << attempt
-	if d <= 0 || d > max {
-		return max
+	ceiling := base << attempt
+	if ceiling <= 0 || ceiling > max {
+		ceiling = max
 	}
-	return d
+	floor := ceiling / 2
+	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
 // contextSleep waits for d or until ctx is cancelled, whichever comes first —
