@@ -1232,51 +1232,93 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
-		itemIDs, err := claimedItemIDsForRun(l, o.RunID)
-		if err != nil {
-			return err
-		}
-		if len(itemIDs) == 0 {
-			return nil
-		}
-		runURL, err := failureRunURL(l, cfg, o.RunID)
-		if err != nil {
-			return fmt.Errorf("resolve failed run URL: %w", err)
-		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
 			Name:     o.RepoRef.Name,
 		}
-		var errs []error
-		for _, itemID := range itemIDs {
-			prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
-			if countErr != nil {
-				errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
-				prevCount = 0
-			}
-			count := prevCount + 1
-
-			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID, runURL); err != nil {
-				errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
-			}
-
-			if count >= failureStreakThreshold {
-				if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-					Repository:   repoRef,
-					ID:           itemID,
-					AddLabels:    []string{providers.LabelNeedsHuman},
-					RemoveLabels: []string{providers.LabelReady},
-				}); err != nil {
-					errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
-				}
-			}
-		}
-		return errors.Join(errs...)
+		runURL, _ := failureRunURL(l, cfg, o.RunID)
+		return applyCircuitBreaker(ctx, poster, l, repoRef, o.RunID, o.Stage, runURL)
 	}
 }
 
 const failureStreakThreshold = 3
+
+// applyCircuitBreaker increments the failure streak for each claimed item and
+// parks the issue (needs-human + remove ready) once the threshold is reached.
+// Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
+// (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
+// toward the same streak.
+func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, stage, runURL string) error {
+	itemIDs, err := claimedItemIDsForRun(l, runID)
+	if err != nil {
+		return err
+	}
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, itemID := range itemIDs {
+		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
+		if countErr != nil {
+			errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
+			prevCount = 0
+		}
+		count := prevCount + 1
+
+		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
+		}
+
+		if count >= failureStreakThreshold {
+			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository:   repoRef,
+				ID:           itemID,
+				AddLabels:    []string{providers.LabelNeedsHuman},
+				RemoveLabels: []string{providers.LabelReady},
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// buildTerminalCircuitBreaker wraps an existing TerminalNotifier with circuit
+// breaker logic for PhaseEscalated and PhaseAborted. PhaseFailed is handled by
+// buildFailedHandler (which calls applyCircuitBreaker directly), so this
+// wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
+// is configured.
+func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
+	if len(cfg.Repos) == 0 {
+		return inner
+	}
+	poster := &escalationCommenter{
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
+	}
+	repo := cfg.Repos[0]
+	repoRef := providers.RepositoryRef{
+		Provider: providers.ProviderKind(repo.Provider),
+		Owner:    repo.Owner,
+		Name:     repo.Name,
+	}
+
+	return func(runID string, phase journal.RunPhase, finalState string) error {
+		if phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			runURL, _ := failureRunURL(l, cfg, runID)
+			_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+		}
+		if inner != nil {
+			return inner(runID, phase, finalState)
+		}
+		return nil
+	}
+}
 
 func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {
 	address, err := dashboardDaemonAPIAddress(l, cfg.APIListenAddress())
@@ -2361,6 +2403,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
+		// covers PhaseFailed; this covers the remaining non-completed terminals
+		// so that a repeating escalation loop doesn't churn indefinitely.
+		NotifyTerminal: buildTerminalCircuitBreaker(l, cfg, resolver, sharedReg, nil),
 		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —

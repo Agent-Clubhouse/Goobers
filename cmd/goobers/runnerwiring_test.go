@@ -4045,6 +4045,92 @@ func TestBuildFailedHandlerNoClaimIsANoop(t *testing.T) {
 	}
 }
 
+// TestTerminalCircuitBreakerTripsOnEscalated proves that repeated PhaseEscalated
+// terminals trigger the circuit breaker (needs-human + remove ready).
+func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("4", "run-esc", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	if h == nil {
+		t.Fatal("expected non-nil terminal notifier")
+	}
+
+	for i := 0; i < failureStreakThreshold; i++ {
+		if err := h("run-esc", journal.PhaseEscalated, "open-pr-gate"); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+
+	var labelCall *providers.UpdateWorkItemRequest
+	for i := range fake.calls {
+		if len(fake.calls[i].AddLabels) > 0 {
+			labelCall = &fake.calls[i]
+			break
+		}
+	}
+	if labelCall == nil {
+		t.Fatal("circuit breaker did not fire after threshold escalated terminals")
+	}
+	if !slices.Contains(labelCall.AddLabels, providers.LabelNeedsHuman) {
+		t.Fatalf("AddLabels = %v, want %s", labelCall.AddLabels, providers.LabelNeedsHuman)
+	}
+	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
+		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+// TestTerminalCircuitBreakerSkipsCompleted proves completed terminals do not
+// increment the failure streak.
+func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("5", "run-ok", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+
+	for i := 0; i < failureStreakThreshold+1; i++ {
+		_ = h("run-ok", journal.PhaseCompleted, "done")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Fatalf("completed terminals should not produce any provider calls, got %d", len(fake.calls))
+	}
+}
+
 // TestBranchNamespacesByGaggle covers #1010: two gaggles with different
 // configured branch namespaces (and one that omits it) each resolve to the
 // correct run-branch namespace root, normalized to a trailing slash, so a
