@@ -78,6 +78,19 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 	return factory(cfg)
 }
 
+func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
+	var zero T
+	provider, err := newProviderForStage(root, repo, readOnly, opts...)
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := provider.(T)
+	if !ok {
+		return zero, fmt.Errorf("repository provider %q does not support this stage operation", repo.Provider)
+	}
+	return typed, nil
+}
+
 func stageProviderToken(cfg stageProviderConfig) (string, error) {
 	if cfg.token != "" {
 		return cfg.token, nil

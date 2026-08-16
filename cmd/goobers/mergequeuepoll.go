@@ -79,12 +79,14 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runMergeQueuePollADO(root, repo, stdout, stderr)
 	}
-	token, err := providerToken(capability.GitHubPRMerge)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRMerge),
+		withStageProviderMutations("pr"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -320,7 +322,14 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	labelProvider := newGitHubProvider(labelToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	labelProvider, err := newProviderForStage(providerStageRoot(""), repo, false,
+		withStageProviderToken(labelToken),
+		withStageProviderMutations("pr"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if _, err := labelProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: pullNumber, AddLabels: []string{needsRemediationLabel}, Comment: comment,
 	}); err != nil {
@@ -468,7 +477,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	adoProvider, err := newADOProviderForStage(root, repo)
+	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

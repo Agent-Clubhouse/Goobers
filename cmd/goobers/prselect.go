@@ -96,12 +96,14 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runPRSelectADO(root, repo, stdout, stderr)
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
@@ -376,7 +378,7 @@ func pullRequestsForSelection(
 // provider-neutral *Dispatcher rather than a concrete *providers.GitHubProvider:
 //
 //   - The provider is built from config-sourced ADO auth via
-//     newADOProviderForStage — no github:pr:write token is resolved. The
+//     the shared stage provider factory — no github:pr:write token is resolved. The
 //     GitHubPRWrite grant maps to ado:pr:write on ADO, carried by the configured
 //     auth source; pr-select performs no merge/completion, so it needs no
 //     ado:pr:complete authority (that grant gates merge-pr/queue-watch only).
@@ -393,7 +395,7 @@ func pullRequestsForSelection(
 //     satisfy, and several would otherwise issue a PR-as-work-item write against
 //     wit/workitems (wrong-object hazard). No sibling is parked here.
 func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newADOProviderForStage(root, repo)
+	adoProvider, err := newProviderForStage(root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

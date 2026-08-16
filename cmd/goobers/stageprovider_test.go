@@ -70,3 +70,16 @@ func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 		t.Fatalf("token = %q, want %q", gotToken, token)
 	}
 }
+
+func TestNewProviderForStageAsRejectsUnsupportedConcreteOperation(t *testing.T) {
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
+
+	_, err := newProviderForStageAs[*providers.ADOProvider](
+		t.TempDir(),
+		providers.RepositoryRef{Provider: providers.ProviderGitHub},
+		true,
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not support this stage operation") {
+		t.Fatalf("error = %v, want unsupported-operation error", err)
+	}
+}

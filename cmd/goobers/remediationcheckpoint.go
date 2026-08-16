@@ -1250,7 +1250,7 @@ func runRemediationCheckpointADO(
 	budgetOverride int,
 	stdout, stderr io.Writer,
 ) int {
-	provider, err := newADOProviderForStage(root, repo)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
