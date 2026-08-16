@@ -23,8 +23,9 @@ const (
 
 var (
 	testFailurePattern   = regexp.MustCompile(`(?i)^(?:FAIL\s+.+|--- FAIL:\s*.+|Failed\s+.+|\S.*\s[>›]\s.+)$`)
-	compilerErrorPattern = regexp.MustCompile(`(?i)(?:^|[\s:])(?:fatal\s+)?error(?:\[[A-Z0-9]+\]|\s+[A-Z]+\d+)?:`)
-	buildFailurePattern  = regexp.MustCompile(`(?i)(?:BUILD FAILED|FAILURE: Build failed|make(?:\[\d+\])?: \*\*\*|ninja: build stopped|error: command failed|npm error|ELIFECYCLE|\[ERROR\].*failed to execute goal)`)
+	compilerErrorPattern = regexp.MustCompile(`(?i)(?:^|[\s:])(?:fatal\s+)?error(?:\[[A-Z0-9]+\]|\s+[A-Z]+\d+)?:|(?:^|\s)\S+\.go:\d+(?::\d+)?:\s+(?:undefined:|cannot |assignment mismatch|declared and not used|imported and not used|invalid operation|not enough arguments|too many arguments|syntax error:)`)
+	buildFailurePattern  = regexp.MustCompile(`(?i)(?:make(?:\[\d+\])?: \*\*\*|Execution failed for task\b|error: command failed|\[ERROR\].*failed to execute goal)`)
+	buildSummaryPattern  = regexp.MustCompile(`(?i)(?:BUILD FAILED|FAILURE: Build failed|ninja: build stopped|npm error|ELIFECYCLE)`)
 	warningPattern       = regexp.MustCompile(`(?i)(?:^|[\s:])warn(?:ing)?(?:\s|:|\[)`)
 	assertionPattern     = regexp.MustCompile(`(?i)(?:AssertionError|Error Message:|Assert\.|Expected:|Received:|expected .+ (?:to|but)|panic:|\.go:\d+|error\s+[A-Z]+\d+:)`)
 	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
@@ -58,7 +59,7 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 	} {
 		lines := splitOutputLines(stream.data)
 		for i, line := range lines {
-			priority := failureLinePriority(line.text)
+			priority := failureLineSpecificity(line.text)
 			if priority == 0 || priority < best.priority {
 				continue
 			}
@@ -96,17 +97,19 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 	return commandFailureDiagnostic{failure: best, warning: warning}
 }
 
-func failureLinePriority(line string) int {
+func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {
 	case testFailurePattern.MatchString(line) &&
 		!strings.HasPrefix(strings.ToLower(line), "failed tests") &&
 		!strings.HasPrefix(line, "FAIL\t"):
-		return 100
+		return 2
 	case compilerErrorPattern.MatchString(line):
-		return 90
+		return 2
 	case buildFailurePattern.MatchString(line):
-		return 70
+		return 2
+	case buildSummaryPattern.MatchString(line):
+		return 1
 	default:
 		return 0
 	}

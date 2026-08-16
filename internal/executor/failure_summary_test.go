@@ -74,6 +74,11 @@ func TestCommandFailureDiagnosticRecognizesCommonRunnerFormats(t *testing.T) {
 			want:   "error TS2322",
 		},
 		{
+			name:   "go compiler",
+			output: "# github.com/example/users\n./users.go:12: undefined: userID\n",
+			want:   "users.go:12: undefined: userID",
+		},
+		{
 			name:   "build target",
 			output: "make: *** [Makefile:12: build] Error 2\n",
 			want:   "Makefile:12: build",
@@ -88,6 +93,11 @@ func TestCommandFailureDiagnosticRecognizesCommonRunnerFormats(t *testing.T) {
 			output: "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:compile\n",
 			want:   "maven-compiler-plugin:compile",
 		},
+		{
+			name:   "gradle target",
+			output: "Execution failed for task ':app:compileJava'.\n> Compilation failed\nBUILD FAILED in 2s\n",
+			want:   "Execution failed for task ':app:compileJava'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -100,6 +110,21 @@ func TestCommandFailureDiagnosticRecognizesCommonRunnerFormats(t *testing.T) {
 				t.Fatalf("failure range = %d-%d for %d-byte output", got.start, got.end, len(tt.output))
 			}
 		})
+	}
+}
+
+func TestCommandFailureDiagnosticPrefersFinalSpecificFailure(t *testing.T) {
+	output := []byte(`FAIL src/earlier.test.ts > reports an earlier assertion
+AssertionError: expected true
+./users.go:12: undefined: userID
+`)
+
+	got := summarizeCommandFailure(output, nil).failure
+	if !strings.Contains(got.text, "users.go:12: undefined: userID") {
+		t.Fatalf("failure = %+v, want final compiler failure", got)
+	}
+	if strings.Contains(got.text, "earlier.test.ts") {
+		t.Fatalf("failure = %+v, must not select earlier test failure", got)
 	}
 }
 
