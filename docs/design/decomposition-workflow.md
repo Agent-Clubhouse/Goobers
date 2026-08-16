@@ -1,6 +1,6 @@
 # Design: Decomposition workflow
 
-> Status: **Proposed for staged implementation** (2026-08-02)
+> Status: **draft — proposed for staged implementation** (2026-08-02)
 > Area prefix: `DEC`
 > Related: #318, #419, #415, #489, #491
 > Builds on: `implementation`, `backlog-curation`, the claim ledger, and the

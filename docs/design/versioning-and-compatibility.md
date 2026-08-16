@@ -1,6 +1,6 @@
 # Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix
 
-> Status: **Shipped** (VER-1..4 + REL-1..3 #427–#434 closed — feature registry, coded warnings, generated feature-matrix live; §5.2 resolved by `dsl-version-lifecycle.md`; task.expectedOutputs remains declared-not-enforced; header refreshed 2026-08-07) · Area prefix: `VER` (new), `REL` (new) · Milestone: **Versioning & Releases** (#12)
+> Status: **implemented — shipped** (VER-1..4 + REL-1..3 #427–#434 closed — feature registry, coded warnings, generated feature-matrix live; §5.2 resolved by `dsl-version-lifecycle.md`; task.expectedOutputs remains declared-not-enforced; header refreshed 2026-08-07) · Area prefix: `VER` (new), `REL` (new) · Milestone: **Versioning & Releases** (#12)
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md) (CFG-Q5), [`docs/requirements/workflow.md`](../requirements/workflow.md) (WF-016)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #279 (`--version`), #33 (packaging/release binaries), #252 (one validation path), #150 (Goober.spec.model)

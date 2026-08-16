@@ -1,6 +1,6 @@
 # Design: Separate GitHub repository sink for docs-updater
 
-> **Status:** Accepted design contract (2026-07-25); runtime implementation is
+> **Status:** approved — accepted design contract (2026-07-25); runtime implementation is
 > tracked by #1495.
 >
 > **Related:** #472 (docs-updater epic), #1016 (`docsRoots`), #1019 (this

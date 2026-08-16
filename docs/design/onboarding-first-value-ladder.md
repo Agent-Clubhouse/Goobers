@@ -1,6 +1,6 @@
 # Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)
 
-Status: draft for review. Filed 2026-08-07 from a nine-dimension recon of the
+Status: draft — for review. Filed 2026-08-07 from a nine-dimension recon of the
 onboarding journey, the init/setup code surface, the DSL and its validation,
 the shipped agent-context assets, the backlog, prior design art, test/e2e
 coverage, stack neutrality, and CLI-surface coherence — plus PO directives

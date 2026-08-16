@@ -1,6 +1,6 @@
 # Provider Contract & Conformance — capability-declared providers, test-defined parity
 
-> Status: **Draft for review.**
+> Status: **draft — for review.**
 > Driving epic: #2061 (hero: ADO end-to-end). Related: #2026, #2050, #2059, #2064.
 > Author: state-of-repo review follow-up, 2026-07-31.
 
