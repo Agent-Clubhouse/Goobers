@@ -165,7 +165,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 	// omits it would measure a code path production does not take. Readers then
 	// serve the last sample from memory.
 	stopSampler := service.StartActiveRunSampler(time.Hour)
-	defer stopSampler()
+	defer func() { _ = stopSampler() }()
 	// Wait for the first sample so the measurement reflects a warm daemon rather
 	// than the "not sampled yet" state. That state is real and the portal renders
 	// it, but it is a startup transient, not the steady state under test.

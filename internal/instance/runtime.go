@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -43,11 +44,23 @@ func (l Layout) EnsureGaggleRuntime(gaggle string) error {
 // Scoped layouts return only their own root. An instance layout also includes
 // the legacy flat root when present so pre-GAG-011 journals remain readable.
 func (l Layout) RunDirs() ([]string, error) {
+	return l.RunDirsContext(context.Background())
+}
+
+// RunDirsContext returns every existing run-journal root, checking ctx between
+// filesystem operations. Individual filesystem calls may still block.
+func (l Layout) RunDirsContext(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if l.gaggle != "" {
 		return []string{l.RunsDir()}, nil
 	}
 
 	var dirs []string
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if info, err := os.Lstat(l.RunsDir()); err == nil {
 		alias, err := isLegacyRuntimeAlias(l.RunsDir(), info)
 		if err != nil {
@@ -66,6 +79,9 @@ func (l Layout) RunDirs() ([]string, error) {
 		return nil, fmt.Errorf("inspect legacy runs directory: %w", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(l.GagglesDir())
 	if errors.Is(err, fs.ErrNotExist) {
 		return dirs, nil
@@ -74,6 +90,9 @@ func (l Layout) RunDirs() ([]string, error) {
 		return nil, fmt.Errorf("read gaggles directory: %w", err)
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -83,6 +102,9 @@ func (l Layout) RunDirs() ([]string, error) {
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("inspect runs directory for gaggle %q: %w", entry.Name(), err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	sort.Strings(dirs)
 	return dirs, nil
