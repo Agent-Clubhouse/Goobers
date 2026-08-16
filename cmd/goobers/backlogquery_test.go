@@ -1361,3 +1361,28 @@ func TestBacklogQueryClaimAndReleaseAreMutuallyExclusive(t *testing.T) {
 		t.Fatalf("code = %d, want 2 (usage error)", code)
 	}
 }
+
+func TestSelectBacklogQueryMode(t *testing.T) {
+	tests := []struct {
+		name                       string
+		readOnly, claim, reconcile bool
+		release                    bool
+		want                       backlogQueryMode
+		ok                         bool
+	}{
+		{name: "plain", want: backlogQueryModePlain, ok: true},
+		{name: "read only", readOnly: true, want: backlogQueryModeReadOnly, ok: true},
+		{name: "claim", claim: true, want: backlogQueryModeClaim, ok: true},
+		{name: "reconcile", reconcile: true, want: backlogQueryModeReconcile, ok: true},
+		{name: "release", release: true, want: backlogQueryModeRelease, ok: true},
+		{name: "conflicting modes", claim: true, reconcile: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := selectBacklogQueryMode(test.readOnly, test.claim, test.reconcile, test.release)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("selectBacklogQueryMode() = (%v, %v), want (%v, %v)", got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
