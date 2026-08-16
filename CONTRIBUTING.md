@@ -70,6 +70,24 @@ Ordinary unit tests should use in-process fakes; integration tests are for real
 local executables, not network services, cloud credentials, or heavyweight
 infrastructure.
 
+### Design-document status
+
+Every Markdown document under `docs/design/` and `docs/adr/` must put a
+`Status:` marker in its first 10 lines. The first word after the marker is one
+of this controlled enum:
+
+| Status | Meaning |
+|---|---|
+| `draft` | Proposed, exploratory, or under review |
+| `approved` | Accepted as a design or decision, but not necessarily implemented |
+| `implemented` | Reflected in the shipped system |
+| `superseded` | Replaced in whole or in part by a newer source of record |
+| `historical` | Retained as a completed campaign, survey, or other historical record |
+
+Status values are case-insensitive. Free-text detail may follow the enum value,
+for example `> Status: **implemented — GA in #1939**`. The merge gate rejects a
+missing marker or a value outside the enum.
+
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
 gate, and `verify-full` on a Unix-like host with the pinned envtest and native
 sandbox prerequisites available. **Agent workflow authors:** a Goobers

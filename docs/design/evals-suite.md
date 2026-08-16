@@ -1,6 +1,6 @@
 # Design: EvalSuite — end-to-end workflow evaluation
 
-> Status: **Research and early implementation** (in progress)
+> Status: **draft — research and early implementation** (in progress)
 > Epic: [#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662)
 > Children: [#2663](https://github.com/Agent-Clubhouse/Goobers/issues/2663) DSL & schema tests ·
 > [#2664](https://github.com/Agent-Clubhouse/Goobers/issues/2664) judge harness design ·

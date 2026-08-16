@@ -72,6 +72,9 @@ const (
 	ErrCodeProviderFailed = "provider_error"
 	ErrCodePollProvider   = "poll_provider_error"
 	ErrCodeGitHubAuth     = "github_auth_failed"
+	// ErrCodeCredentialUnavailable identifies a declared credential whose
+	// configured source cannot currently be materialized.
+	ErrCodeCredentialUnavailable = "credential_unavailable"
 )
 
 var wellKnownErrorCodes = map[string]ErrorClass{
@@ -86,11 +89,12 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	// Exact, so it beats the "timeout" substring heuristic below: waiting out
 	// another process's claims lock is contention, not a stage running long,
 	// and the two want different remedies.
-	ErrCodeClaimsLock:     ErrorClassInfraLock,
-	ErrCodeExecutor:       ErrorClassExecutor,
-	ErrCodeProviderFailed: ErrorClassProvider,
-	ErrCodePollProvider:   ErrorClassProvider,
-	ErrCodeGitHubAuth:     ErrorClassProvider,
+	ErrCodeClaimsLock:            ErrorClassInfraLock,
+	ErrCodeExecutor:              ErrorClassExecutor,
+	ErrCodeProviderFailed:        ErrorClassProvider,
+	ErrCodePollProvider:          ErrorClassProvider,
+	ErrCodeGitHubAuth:            ErrorClassProvider,
+	ErrCodeCredentialUnavailable: ErrorClassInfra,
 }
 
 // ClassifyError normalizes a journal error event's Code into an ErrorClass.

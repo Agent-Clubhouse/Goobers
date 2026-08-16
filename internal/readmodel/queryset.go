@@ -114,6 +114,18 @@ func normalise(dims []Dim) []Dim {
 			out = append(out, want)
 		}
 	}
+	var unknown []string
+	for _, dim := range dims {
+		if _, ok := seen[dim]; ok {
+			continue
+		}
+		seen[dim] = struct{}{}
+		unknown = append(unknown, string(dim))
+	}
+	sort.Strings(unknown)
+	for _, dim := range unknown {
+		out = append(out, Dim(dim))
+	}
 	return out
 }
 

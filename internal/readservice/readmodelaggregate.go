@@ -100,13 +100,3 @@ func (s *Local) listLatestWorkflowOutcomesFromReadModel(ctx context.Context, opt
 	}
 	return result, nil
 }
-
-// readModelAggregateEligible reports whether the aggregate can serve this page.
-//
-// Same gate as the list cutover: the store attached and the flag on. There is no
-// filter-combination check because the aggregate accepts only gaggle and
-// workflow — runs.go rejects every other dimension before reaching here — and
-// both are indexed.
-func (s *Local) readModelAggregateEligible() bool {
-	return s.readModelReads && s.sources.ReadModel != nil
-}

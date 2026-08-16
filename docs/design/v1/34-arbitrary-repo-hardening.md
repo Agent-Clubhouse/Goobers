@@ -1,6 +1,6 @@
 # Design: Arbitrary-repo hardening + multi-gaggle instances — V1 epic #34
 
-> Status: **Draft for review** · Area prefix: `GAG` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `GAG` · Milestone: **V1**
 > Requirements: [`docs/requirements/gaggle.md`](../../requirements/gaggle.md),
 > [`docs/requirements/instance.md`](../../requirements/instance.md) ·
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §6

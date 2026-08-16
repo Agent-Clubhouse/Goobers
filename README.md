@@ -14,6 +14,20 @@ current product claim; the cluster entrypoints in this repository remain
 quarantined. What is intended to stay constant is the configuration and run
 contract, so scaling execution does not require redefining the workforce.
 
+## Install
+
+Install the current `v0.1.0` release on Linux or macOS:
+
+```sh
+/bin/sh -c "$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)" \
+  -- v0.1.0
+```
+
+The installer verifies the downloaded archive against the release checksum and
+places `goobers` in `$HOME/.local/bin`. See
+[Release installation and verification](docs/guides/releases.md) for
+prerequisites, install-directory overrides, and the Windows path.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,

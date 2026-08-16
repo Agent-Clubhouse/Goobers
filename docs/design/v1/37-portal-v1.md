@@ -1,6 +1,6 @@
 # Historical design: Portal v1 - superseded by dashboard and HITL designs
 
-> Status: **Superseded for dispatch** (2026-07-16) · Historical context only
+> Status: **superseded — for dispatch** (2026-07-16) · Historical context only
 > Requirements: [`docs/requirements/portal.md`](../../requirements/portal.md)
 > (PORT-010..025), [`docs/requirements/gate.md`](../../requirements/gate.md) (GT-003/GT-012)
 >

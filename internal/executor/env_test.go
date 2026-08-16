@@ -2,13 +2,16 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // TestBaseEnvMatchesProcenv is the #248 drift-guard: executor's baseEnv()
@@ -93,6 +96,43 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 	}
 	if !foundLang {
 		t.Fatalf("expected the exact allowlisted LANG to still pass through, got %v", env)
+	}
+}
+
+func TestBuildStageEnvTypesUnavailableCredential(t *testing.T) {
+	const (
+		capability = "repo:push"
+		envName    = "GOOBERS_TEST_UNAVAILABLE_CREDENTIAL"
+	)
+	t.Setenv(envName, "")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: "push-token",
+		Env:  envName,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: capability,
+		Ref:        "push-token",
+	}}, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = buildStageEnv(
+		context.Background(), injector, []string{capability}, noopRegistrar{},
+		"", "", "", "", "", "", false, nil, nil, nil, nil,
+	)
+	var coded interface {
+		error
+		StageErrorCode() string
+	}
+	if !errors.As(err, &coded) {
+		t.Fatalf("buildStageEnv error = %v, want typed credential failure", err)
+	}
+	if got := coded.StageErrorCode(); got != telemetry.ErrCodeCredentialUnavailable {
+		t.Fatalf("StageErrorCode() = %q, want %q", got, telemetry.ErrCodeCredentialUnavailable)
 	}
 }
 

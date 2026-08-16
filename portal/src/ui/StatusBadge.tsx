@@ -17,13 +17,14 @@ const statusLabels: Record<RunPhase, string> = {
   running: "Running",
 };
 
-export function StatusBadge({ status }: { status: RunPhase }) {
+export function StatusBadge({ stale = false, status }: { stale?: boolean; status: RunPhase }) {
+  const effectiveStatus = stale ? "stale" : status;
   return (
-    <span className={`status-badge status-${status}`} data-status={status}>
+    <span className={`status-badge status-${effectiveStatus}`} data-status={effectiveStatus}>
       <span className="status-symbol">
-        <Icon name={statusIcons[status]} size={12} />
+        <Icon name={stale ? "alert" : statusIcons[status]} size={12} />
       </span>
-      {statusLabels[status]}
+      {stale ? "Stale / unmonitored" : statusLabels[status]}
     </span>
   );
 }

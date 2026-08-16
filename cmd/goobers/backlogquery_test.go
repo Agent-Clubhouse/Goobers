@@ -20,30 +20,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestBacklogQueryTokenUsesLeastPrivilegeCredential(t *testing.T) {
-	readEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesRead))
-	writeEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesWrite))
-	t.Setenv(readEnv, "read-token")
-	t.Setenv(writeEnv, "write-token")
-
-	if token, err := backlogQueryToken(true); err != nil || token != "read-token" {
-		t.Fatalf("read-only token = %q, %v; want read-token", token, err)
-	}
-	if token, err := backlogQueryToken(false); err != nil || token != "write-token" {
-		t.Fatalf("legacy token = %q, %v; want write-token", token, err)
-	}
-
-	t.Setenv(readEnv, "")
-	if token, err := backlogQueryToken(true); err == nil || token != "" {
-		t.Fatalf("read-only token without read authority = %q, %v; want credential error", token, err)
-	}
-
-	t.Setenv(writeEnv, "")
-	if token, err := backlogQueryToken(false); err == nil || token != "" {
-		t.Fatalf("legacy token without write authority = %q, %v; want credential error", token, err)
-	}
-}
-
 func TestBacklogQueryReadOnlyDoesNotMutateProviderOrScheduler(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

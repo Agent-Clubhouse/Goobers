@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // CredentialEnvVar returns the deterministic env var name a stage's declared
@@ -210,7 +211,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	}
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, err
+		return nil, StageFailure(telemetry.ErrCodeCredentialUnavailable, err)
 	}
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)

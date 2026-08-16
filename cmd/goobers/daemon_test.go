@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -137,6 +138,335 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
+func unsetTestEnv(t *testing.T, name string) {
+	t.Helper()
+	previous, wasSet := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(name, previous)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialForScheduledTerminalTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_TERMINAL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML,
+		"  start: local-ci\n  tasks:\n    - name: local-ci",
+		"  start: prepare\n  tasks:\n    - name: prepare\n      type: deterministic\n      goal: prepare without credentials\n      run:\n        command: [\"true\"]\n      next: local-ci\n    - name: local-ci\n      capabilities: [\"repo:push\"]",
+		1,
+	)
+	if workflowYAML == deterministicWorkflowYAML {
+		t.Fatal("deterministic workflow fixture did not contain expected terminal task")
+	}
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing scheduled credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want capability and missing environment variable", err)
+	}
+
+	entries, readErr := os.ReadDir(instance.NewLayout(root).ForGaggle("example").RunsDir())
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scheduled runs started with missing credential: %v", entries)
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_DEFAULT_REPO_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = []byte(strings.Replace(string(instanceYAML), "env: GOOBERS_GITHUB_TOKEN", "env: "+tokenEnv, 1))
+	if !strings.Contains(string(instanceYAML), "env: "+tokenEnv) {
+		t.Fatal("instance fixture did not contain the default repo token")
+	}
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML, "      type: deterministic\n", "      type: deterministic\n      capabilities: [\"repo:push\"]\n", 1)
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing default repo credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want default repo capability and missing environment variable", err)
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialInScheduledParallelBranch(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_PARALLEL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const parallelWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: prepare
+      run:
+        command: ["true"]
+      next: checks
+    - name: credentialed
+      type: deterministic
+      goal: credentialed branch
+      capabilities: ["repo:push"]
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: uncredentialed
+      type: deterministic
+      goal: uncredentialed branch
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: finish
+      type: deterministic
+      goal: finish
+      run:
+        command: ["true"]
+  parallels:
+    - name: checks
+      failurePolicy: continue_on_error
+      branches:
+        - name: credentialed
+          start: credentialed
+        - name: uncredentialed
+          start: uncredentialed
+      join: finish
+`
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(parallelWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing parallel branch credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want parallel branch capability and missing environment variable", err)
+	}
+}
+
+func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Token:    instance.TokenRef{Env: "REPO_TOKEN"},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:  instance.GitHubAuthPAT,
+			Token: &instance.TokenRef{Env: "DAEMON_TOKEN"},
+		},
+		Credentials: []instance.CredentialGrant{{
+			Capability: "repo:push",
+			Token:      instance.TokenRef{Env: "EXPLICIT_PUSH_TOKEN"},
+		}},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"repo:push":           "EXPLICIT_PUSH_TOKEN",
+		"github:issues:write": "DAEMON_TOKEN",
+		"github:issues:read":  "REPO_TOKEN",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
+	}
+}
+
+func TestScheduledWorkflowCredentialEnvironmentsUsesGitHubAppPrivateKeys(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       instance.GitHubAuthApp,
+				PrivateKey: &instance.TokenRef{Env: "REPO_APP_KEY"},
+			},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:       instance.GitHubAuthApp,
+			PrivateKey: &instance.TokenRef{Env: "DAEMON_APP_KEY"},
+		},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"github:issues:read": "REPO_APP_KEY",
+		"github:pr:write":    "DAEMON_APP_KEY",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesConditionalTaskLazy(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "decision"},
+			{ID: "conditional"},
+			{ID: "finish"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "decision"},
+			{Source: "decision", Target: "conditional"},
+			{Source: "decision", Target: "finish"},
+			{Source: "conditional", Target: "finish"},
+			{Source: "finish", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	for _, state := range []string{"prepare", "decision", "finish"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
+	}
+	if required["conditional"] {
+		t.Error("conditional state is required; its credential would be materialized eagerly")
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesPostJoinTaskConditionalOnParallelFailure(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "checks", Kind: workflow.GraphNodeParallel},
+			{ID: "first"},
+			{ID: "second"},
+			{ID: "credentialed-join"},
+			{ID: "recover"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "checks"},
+			{Source: "checks", Target: "first", Branch: "first"},
+			{Source: "checks", Target: "second", Branch: "second"},
+			{Source: "checks", Target: "recover", Outcome: "branch-failed"},
+			{Source: "first", Target: "credentialed-join"},
+			{Source: "second", Target: "credentialed-join"},
+			{Source: "credentialed-join", Terminal: workflow.GraphTerminalComplete},
+			{Source: "recover", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	if required["credentialed-join"] {
+		t.Error("post-join task is required despite the parallel onFailure route")
+	}
+	for _, state := range []string{"prepare", "checks"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
+	}
+}
+
 // TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled is #2036's
 // decoupling fix: read.db answers the portal's run listing, a feature
 // independent of telemetry, so telemetry.enabled: false must not silently
@@ -185,6 +515,85 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 	if _, err := setup.ReadModel.State(context.Background()); err != nil {
 		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	ctx := context.Background()
+
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := buildReadModelIfNeeded(ctx, store, state, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO change(at, kind) VALUES ('2026-08-16T00:00:00.000000000Z', 'definitions.changed')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50_001; i++ {
+		if _, err := stmt.ExecContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := setup.ReadModel.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.MinChangeSeq == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("change feed retention floor = %d, want 2", state.MinChangeSeq)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	changes, err := setup.ReadModel.Changes(ctx, 0, 50_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 50_000 {
+		t.Fatalf("default daemon retained %d change rows, want 50000", len(changes))
 	}
 }
 
