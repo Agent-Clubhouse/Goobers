@@ -392,9 +392,11 @@ func platformToolSpecs(goos string) []toolSpec {
 		return []toolSpec{
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
-			{name: "icacls", required: true},
+			{name: "icacls.exe", required: true},
 			{name: "node", required: true},
 			{name: "npm.cmd", required: true},
+			{name: "powershell.exe", required: true},
+			{name: "sh", required: true},
 		}
 	}
 

@@ -111,7 +111,7 @@ func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
 	}{
 		{goos: "linux", tools: []string{"as", "ld", "node", "npm"}},
 		{goos: "darwin", tools: []string{"node", "npm"}},
-		{goos: "windows", tools: []string{"node", "npm.cmd"}},
+		{goos: "windows", tools: []string{"icacls.exe", "node", "npm.cmd", "powershell.exe", "sh"}},
 	} {
 		t.Run(tt.goos, func(t *testing.T) {
 			required := make(map[string]bool)
