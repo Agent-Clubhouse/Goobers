@@ -920,7 +920,10 @@ func applyAdvisoryVerdict(
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
 	}
-	comment := renderVerdictComment(verdict)
+	comment := renderScopeGateStateComment(
+		renderVerdictComment(verdict),
+		providerInput("scopeGateParked", "") == "true",
+	)
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
