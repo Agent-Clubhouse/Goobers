@@ -32,7 +32,7 @@ func migrationPrefixDigest(prefix []string) string {
 // catch: every upgraded store silently stops applying the inserted DDL
 // forever while fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "79a850c099501e9caefabded579da9d2217f3780edfd7f55e7501abfd7d00943"
+	const wantDigest = "ec003d890372878cc8267d38c14bdc246bf33f16312a78ee08ba18ae92f59331"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
@@ -53,7 +53,8 @@ func TestStageOutcomeMigrationMarksProjectionUnreadyAndClearsRows(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, migration := range migrations[:len(migrations)-1] {
+	const stageOutcomeMigration = 8
+	for i, migration := range migrations[:stageOutcomeMigration] {
 		if _, err := tx.ExecContext(ctx, migration); err != nil {
 			t.Fatalf("apply migration %d: %v", i+1, err)
 		}

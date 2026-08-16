@@ -549,4 +549,12 @@ UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
 DELETE FROM run_stage WHERE TRUE;
 DELETE FROM run WHERE TRUE;
 `,
+
+	// v10: durable keyset cursor for the projected-to-journal repair direction.
+	`
+ALTER TABLE sweep_cursor ADD COLUMN reverse_after_started_at TEXT;
+ALTER TABLE sweep_cursor ADD COLUMN reverse_after_run_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sweep_cursor ADD COLUMN reverse_cycle_before TEXT;
+CREATE INDEX IF NOT EXISTS idx_run_oldest ON run(started_at ASC, run_id ASC);
+`,
 }
