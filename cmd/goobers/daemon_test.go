@@ -138,19 +138,24 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
-func TestBuildSchedulerSetupRejectsMissingCredentialForScheduledTerminalTask(t *testing.T) {
-	const tokenEnv = "GOOBERS_TEST_SCHEDULED_TERMINAL_TOKEN"
-	previous, wasSet := os.LookupEnv(tokenEnv)
-	if err := os.Unsetenv(tokenEnv); err != nil {
+func unsetTestEnv(t *testing.T, name string) {
+	t.Helper()
+	previous, wasSet := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if wasSet {
-			_ = os.Setenv(tokenEnv, previous)
+			_ = os.Setenv(name, previous)
 		} else {
-			_ = os.Unsetenv(tokenEnv)
+			_ = os.Unsetenv(name)
 		}
 	})
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialForScheduledTerminalTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_TERMINAL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
 
 	root := initDeterministicDemo(t)
 	instancePath := filepath.Join(root, "instance.yaml")
@@ -199,6 +204,167 @@ credentials:
 	}
 	if len(entries) != 0 {
 		t.Fatalf("scheduled runs started with missing credential: %v", entries)
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_DEFAULT_REPO_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = []byte(strings.Replace(string(instanceYAML), "env: GOOBERS_GITHUB_TOKEN", "env: "+tokenEnv, 1))
+	if !strings.Contains(string(instanceYAML), "env: "+tokenEnv) {
+		t.Fatal("instance fixture did not contain the default repo token")
+	}
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML, "      type: deterministic\n", "      type: deterministic\n      capabilities: [\"repo:push\"]\n", 1)
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing default repo credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want default repo capability and missing environment variable", err)
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialInScheduledParallelBranch(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_PARALLEL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const parallelWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: prepare
+      run:
+        command: ["true"]
+      next: checks
+    - name: credentialed
+      type: deterministic
+      goal: credentialed branch
+      capabilities: ["repo:push"]
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: uncredentialed
+      type: deterministic
+      goal: uncredentialed branch
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: finish
+      type: deterministic
+      goal: finish
+      run:
+        command: ["true"]
+  parallels:
+    - name: checks
+      failurePolicy: continue_on_error
+      branches:
+        - name: credentialed
+          start: credentialed
+        - name: uncredentialed
+          start: uncredentialed
+      join: finish
+`
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(parallelWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing parallel branch credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want parallel branch capability and missing environment variable", err)
+	}
+}
+
+func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Token:    instance.TokenRef{Env: "REPO_TOKEN"},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:  instance.GitHubAuthPAT,
+			Token: &instance.TokenRef{Env: "DAEMON_TOKEN"},
+		},
+		Credentials: []instance.CredentialGrant{{
+			Capability: "repo:push",
+			Token:      instance.TokenRef{Env: "EXPLICIT_PUSH_TOKEN"},
+		}},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"repo:push":           "EXPLICIT_PUSH_TOKEN",
+		"github:issues:write": "DAEMON_TOKEN",
+		"github:issues:read":  "REPO_TOKEN",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
 	}
 }
 

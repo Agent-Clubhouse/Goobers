@@ -718,7 +718,8 @@ func buildSchedulerDefinitions(
 			}
 		}
 		if len(scheds) > 0 {
-			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg.Credentials); err != nil {
+			project := gaggleProjects[wf.Spec.Gaggle]
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project); err != nil {
 				return nil, err
 			}
 		}
@@ -806,12 +807,10 @@ func buildSchedulerDefinitions(
 	}, nil
 }
 
-func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, grants []instance.CredentialGrant) error {
-	envByCapability := make(map[string]string, len(grants))
-	for _, grant := range grants {
-		if grant.Capability != "" && grant.Token.Env != "" {
-			envByCapability[grant.Capability] = grant.Token.Env
-		}
+func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {
+	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project)
+	if err != nil {
+		return err
 	}
 	required := staticallyRequiredWorkflowStates(machine.Graph())
 	for _, task := range machine.Def.Spec.Tasks {
@@ -835,36 +834,112 @@ func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, g
 	return nil
 }
 
+func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef) (map[string]string, error) {
+	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	envByRef := make(map[string]string, len(cfg.Repos)+len(cfg.Credentials)+1)
+	for _, repo := range cfg.Repos {
+		owner := repo.Owner
+		if repo.Provider == string(apiv1.ProviderADO) && repo.Project != "" {
+			owner += "/" + repo.Project
+		}
+		ref := owner + "/" + repo.Name
+		tokenRef := ""
+		if repo.Token.Configured() || repo.GitHubAppAuth() {
+			tokenRef = ref
+		}
+		if repo.Token.Env != "" {
+			envByRef[ref] = repo.Token.Env
+		}
+		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
+	}
+
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
+	if cfg.DaemonIdentity != nil {
+		for _, capability := range daemonIdentityCapabilities {
+			overrides = append(overrides, credentials.Grant{Capability: string(capability), Ref: daemonIdentityRefName})
+		}
+		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
+			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
+		}
+	}
+	for _, grant := range cfg.Credentials {
+		key, err := credentialGrantKey(grant)
+		if err != nil {
+			return nil, fmt.Errorf("build scheduled workflow credential preflight: %w", err)
+		}
+		ref := credentialRefName(key)
+		overrides = append(overrides, credentials.Grant{Capability: key, Ref: ref})
+		if grant.Token.Env != "" {
+			envByRef[ref] = grant.Token.Env
+		}
+	}
+
+	owner := project.Owner
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		owner += "/" + project.Project
+	}
+	caps := make([]string, len(credentialedCapabilities))
+	for i, capability := range credentialedCapabilities {
+		caps[i] = string(capability)
+	}
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	envByCapability := make(map[string]string, len(grants))
+	for _, grant := range grants {
+		if env := envByRef[grant.Ref]; env != "" {
+			envByCapability[grant.Capability] = env
+		}
+	}
+	return envByCapability, nil
+}
+
 func staticallyRequiredWorkflowStates(graph workflow.Graph) map[string]bool {
 	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	parallel := make(map[string]bool, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
 	}
+	for _, node := range graph.Nodes {
+		parallel[node.ID] = node.Kind == workflow.GraphNodeParallel
+	}
 	required := make(map[string]bool, len(graph.Nodes))
 	for _, candidate := range graph.Nodes {
-		if candidate.ID == graph.Start {
-			required[candidate.ID] = true
-			continue
-		}
-		visited := make(map[string]bool, len(graph.Nodes))
-		pending := []string{graph.Start}
-		canFinishWithoutCandidate := false
-		for len(pending) > 0 && !canFinishWithoutCandidate {
-			state := pending[len(pending)-1]
-			pending = pending[:len(pending)-1]
-			if state == candidate.ID || visited[state] {
-				continue
-			}
-			visited[state] = true
-			for _, edge := range outgoing[state] {
-				if edge.Terminal != "" {
-					canFinishWithoutCandidate = true
-					break
+		canFinish := make(map[string]bool, len(graph.Nodes))
+		changed := true
+		for changed {
+			changed = false
+			for _, node := range graph.Nodes {
+				if node.ID == candidate.ID || canFinish[node.ID] {
+					continue
 				}
-				pending = append(pending, edge.Target)
+				edges := outgoing[node.ID]
+				if parallel[node.ID] {
+					allBranchesFinish := false
+					for _, edge := range edges {
+						if edge.Branch == "" {
+							continue
+						}
+						if !canFinish[edge.Target] {
+							allBranchesFinish = false
+							break
+						}
+						allBranchesFinish = true
+					}
+					if allBranchesFinish {
+						canFinish[node.ID] = true
+						changed = true
+					}
+					continue
+				}
+				for _, edge := range edges {
+					if edge.Terminal != "" || canFinish[edge.Target] {
+						canFinish[node.ID] = true
+						changed = true
+						break
+					}
+				}
 			}
 		}
-		required[candidate.ID] = !canFinishWithoutCandidate
+		required[candidate.ID] = !canFinish[graph.Start]
 	}
 	return required
 }
