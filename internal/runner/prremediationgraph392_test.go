@@ -657,6 +657,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 
 func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.T) {
 	const runID = "impl-ci-repass"
+	const annotationDiagnostic = "panic: nil map"
 	machine := loadShippedImplementation(t)
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -735,6 +736,23 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 	}
 	if !hasContextPointer(remediationEnv, "ci-poll.artifact[0]", apiv1.IntegrityUnapproved) {
 		t.Errorf("remediate-ci context = %+v, want unapproved ci-poll evidence", remediationEnv.ContextPointers)
+	}
+	var evidence *apiv1.ArtifactPointer
+	for _, pointer := range remediationEnv.ContextPointers {
+		if pointer.Name == "ci-poll.artifact[0]" {
+			evidence = pointer.Artifact
+			break
+		}
+	}
+	if evidence == nil {
+		t.Fatal("remediate-ci invocation has no CI failure artifact")
+	}
+	data, err := os.ReadFile(filepath.Join(instanceRoot, "runs", runID, evidence.Path))
+	if err != nil {
+		t.Fatalf("read remediate-ci evidence: %v", err)
+	}
+	if !strings.Contains(string(data), annotationDiagnostic) {
+		t.Fatalf("remediate-ci evidence = %s, want annotation diagnostic %q", data, annotationDiagnostic)
 	}
 }
 
@@ -822,7 +840,7 @@ func (d *ciRepassDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 		if !ok {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("CI repass executor: integrity recorder unavailable")
 		}
-		ref, err := recorder.RecordArtifactWithIntegrity("ci-checks.json", []byte(`{"checks":[{"name":"test","state":"failing"}]}`), apiv1.IntegrityUnapproved)
+		ref, err := recorder.RecordArtifactWithIntegrity("ci-checks.json", []byte(`{"checks":[{"name":"test","state":"failing","annotations":[{"path":"widget.go","startLine":42,"level":"failure","message":"panic: nil map"}]}]}`), apiv1.IntegrityUnapproved)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, err
 		}
